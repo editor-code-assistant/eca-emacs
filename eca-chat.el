@@ -1259,7 +1259,10 @@ If FORCE? decide to OPEN? or not."
                              (origin (plist-get content :origin))
                              (args (plist-get content :arguments))
                              (outputs (append (plist-get content :outputs) nil))
-                             (summary (plist-get content :summary))
+                             (summary (or (plist-get content :summary)
+                                          (format "Called %s tool: %s"
+                                                  (if (string= "mcp" origin) "MCP" "ECA")
+                                                  name)))
                              (error? (plist-get content :error))
                              (output-contents (-reduce-from (lambda (txt output) (concat txt "\n" (plist-get output :text)))
                                                             ""
@@ -1280,11 +1283,7 @@ If FORCE? decide to OPEN? or not."
                               (eca-chat--file-change-diff (plist-get details :path) (plist-get details :diff) roots)))
                           (eca-chat--update-expandable-content
                            id
-                           (concat (propertize (or summary
-                                                   (format "Called %s tool: %s"
-                                                           (if (string= "mcp" origin) "MCP" "ECA")
-                                                           name))
-                                               'font-lock-face 'eca-chat-mcp-tool-call-label-face)
+                           (concat (propertize summary 'font-lock-face 'eca-chat-mcp-tool-call-label-face)
                                    " "
                                    status-icon)
                            (eca-chat--content-table `(("Arguments" . ,args)
