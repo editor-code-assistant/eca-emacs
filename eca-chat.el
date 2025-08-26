@@ -856,6 +856,13 @@ If FORCE? decide to OPEN? or not."
         (f-relative filename))
       filename))
 
+(defun eca-chat--context-presentable-path (filename)
+  "Return the presentable string for FILENAME."
+  (or (when (-first (lambda (root) (f-ancestor-of? root filename))
+                        (eca--session-workspace-folders (eca-session)))
+        (f-filename filename))
+      filename))
+
 (defun eca-chat--refresh-context ()
   "Refresh chat context."
   (save-excursion
@@ -868,12 +875,12 @@ If FORCE? decide to OPEN? or not."
         (insert
          (pcase type
            ("file" (propertize (concat eca-chat-context-prefix
-                                       (f-filename (plist-get context :path))
+                                       (eca-chat--context-presentable-path (plist-get context :path))
                                        (-when-let ((&plist :start start :end end) (plist-get context :linesRange))
                                          (format " (%d-%d)" start end)))
                                'eca-chat-context-item context
                                'font-lock-face 'eca-chat-context-file-face))
-           ("directory" (propertize (concat eca-chat-context-prefix (f-filename (plist-get context :path)))
+           ("directory" (propertize (concat eca-chat-context-prefix (eca-chat--context-presentable-path (plist-get context :path)))
                                     'eca-chat-context-item context
                                     'font-lock-face 'eca-chat-context-file-face))
            ("repoMap" (propertize (concat eca-chat-context-prefix "repoMap")
@@ -1057,6 +1064,22 @@ If FORCE? decide to OPEN? or not."
 
   (goto-char (point-max)))
 
+(defun eca-chat--context-find-typed-query ()
+  "Return the text typed after the last context prefix on the context line.
+For example: `@foo @bar @baz` => `baz`. If nothing is typed, returns an empty
+string."
+  (let ((prompt-area (eca-chat--prompt-area-start-point))
+        (prefix eca-chat-context-prefix))
+    (save-excursion
+      (goto-char prompt-area)
+      (end-of-line)
+      (let* ((line-start (line-beginning-position))
+             (line-end (point))
+             (last-prefix-pos (search-backward prefix line-start t)))
+        (if last-prefix-pos
+            (string-trim (buffer-substring-no-properties (+ last-prefix-pos (length prefix)) line-end))
+          "")))))
+
 (defun eca-chat-completion-at-point ()
   "Complete at point in the chat."
   (let* ((full-text (buffer-substring-no-properties (line-beginning-position) (point)))
@@ -1085,7 +1108,7 @@ If FORCE? decide to OPEN? or not."
                                                                         (eca-session)
                                                                         :method "chat/queryContext"
                                                                         :params (list :chatId eca-chat--id
-                                                                                      :query (thing-at-point 'symbol t)
+                                                                                      :query (eca-chat--context-find-typed-query)
                                                                                       :contexts (vconcat eca-chat--context)))))
                                      (-map #'eca-chat--context-to-completion contexts)))
 
