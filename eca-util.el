@@ -41,6 +41,8 @@
                default-directory)
     (file-truename)))
 
+(defvar-local eca--session-id-cache nil)
+
 (defvar eca--sessions '())
 (defvar eca--session-ids 0)
 
@@ -94,11 +96,15 @@
 
 (defun eca-session ()
   "Return the session related to root of current buffer otherwise nil."
-  (let ((root (eca-find-root-for-buffer)))
-    (-first (lambda (session)
-              (-first (lambda (folder) (string= folder root))
-                      (eca--session-workspace-folders session)))
-            (eca-vals eca--sessions))))
+  (or (eca-get eca--sessions eca--session-id-cache)
+      (let* ((root (eca-find-root-for-buffer))
+             (session (-first (lambda (session)
+                                (--first (string= it root)
+                                         (eca--session-workspace-folders session)))
+                              (eca-vals eca--sessions))))
+        (when session
+          (setq-local eca--session-id-cache (eca--session-id session)))
+        session)))
 
 (defun eca-create-session (workspace-roots)
   "Create a new ECA session for WORKSPACE-ROOTS."

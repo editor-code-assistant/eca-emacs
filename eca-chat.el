@@ -72,7 +72,7 @@ ECA chat opens in a regular buffer that follows standard
   :type 'boolean
   :group 'eca)
 
-(defcustom eca-chat-cursor-context-debounce 0.5
+(defcustom eca-chat-cursor-context-debounce 0.8
   "Seconds to debounce updates when tracking cursor to context."
   :type 'number
   :group 'eca)
@@ -977,27 +977,24 @@ If FORCE? decide to OPEN? or not."
 
 (defun eca-chat--track-context-at-point (&rest _args)
   "Change chat context considering current open file and point."
-  (condition-case _err
-      (when eca-chat-auto-track-context
-        (when-let ((session (eca-session)))
-          (when-let ((workspaces (eca--session-workspace-folders session)))
-            (when-let ((path (buffer-file-name)))
-              (when (--any? (and it (f-ancestor-of? it path))
-                            workspaces)
-                (eca-chat--with-current-buffer (eca-chat--get-buffer session)
-                  (when eca-chat--empty
-                    (eca-chat--set-context 'open-file (list :type "file"
-                                                            :path path)))))))))
-    (error nil)))
+  (when eca-chat-auto-track-context
+    (when-let ((session (eca-session)))
+      (when-let ((workspaces (eca--session-workspace-folders session)))
+        (when-let ((path (buffer-file-name)))
+          (when (--any? (and it (f-ancestor-of? it path))
+                        workspaces)
+            (when-let (buffer (eca-chat--get-buffer session))
+              (eca-chat--with-current-buffer buffer
+                (when eca-chat--empty
+                  (eca-chat--set-context 'open-file (list :type "file"
+                                                          :path path)))))))))))
 
-(defun eca-chat--post-command-schedule ()
+(defun eca-chat--track-context-at-point-schedule ()
   "Debounce `eca-chat--track-context-at-point' via an idle timer."
-  (when eca-chat--cursor-context-timer
-    (cancel-timer eca-chat--cursor-context-timer)
-    (setq eca-chat--cursor-context-timer nil))
-  (setq eca-chat--cursor-context-timer
-        (run-with-idle-timer eca-chat-cursor-context-debounce nil
-                             #'eca-chat--track-context-at-point)))
+  (unless eca-chat--cursor-context-timer
+    (setq eca-chat--cursor-context-timer
+          (run-with-idle-timer eca-chat-cursor-context-debounce t
+                               #'eca-chat--track-context-at-point))))
 
 (declare-function evil-delete-backward-word "evil" ())
 (declare-function evil-delete-back-to-indentation "evil" ())
@@ -1322,7 +1319,7 @@ If FORCE? decide to OPEN? or not."
         (when eca-chat-auto-add-repomap
           (eca-chat--add-context (list :type "repoMap")))
         (when eca-chat-auto-track-context
-          (add-hook 'post-command-hook #'eca-chat--post-command-schedule)
+          (eca-chat--track-context-at-point-schedule)
           (with-current-buffer opened-buffer
             (eca-chat--track-context-at-point))))
       (unless (eca--session-chat session)
