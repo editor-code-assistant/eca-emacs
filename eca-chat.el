@@ -272,6 +272,7 @@ Must be a valid model supported by server, check `eca-chat-select-model`."
 (defvar-local eca-chat--message-output-tokens nil)
 (defvar-local eca-chat--session-tokens nil)
 (defvar-local eca-chat--empty t)
+(defvar-local eca-chat--track-context t)
 
 ;; Timer used to debounce post-command driven context updates
 (defvar eca-chat--cursor-context-timer nil)
@@ -527,6 +528,7 @@ the prompt/context line."
            (overlay-get cur-ov 'eca-chat-context-area)
            (string= eca-chat-context-prefix (string (char-before (point)))))
       (setq-local eca-chat--context (delete (car (last eca-chat--context)) eca-chat--context))
+      (setq-local eca-chat--track-context nil)
       (eca-chat--refresh-context)
       (end-of-line))
 
@@ -956,6 +958,7 @@ If FORCE? decide to OPEN? or not."
 (defun eca-chat--completion-context-exit-function (item _status)
   "Add to context the selected ITEM."
   (eca-chat--add-context (get-text-property 0 'eca-chat-completion-item item))
+  (setq-local eca-chat--track-context nil)
   (end-of-line))
 
 (defun eca-chat--context-to-completion (context)
@@ -992,7 +995,7 @@ If FORCE? decide to OPEN? or not."
                         workspaces)
             (when-let (buffer (eca-chat--get-buffer session))
               (eca-chat--with-current-buffer buffer
-                (when eca-chat--empty
+                (when (and eca-chat--empty eca-chat--track-context)
                   (eca-chat--set-context 'open-file (list :type "file"
                                                           :path path)))))))))))
 
@@ -1406,6 +1409,7 @@ string."
     (setq-local eca-chat--message-cost nil)
     (setq-local eca-chat--session-cost nil)
     (setq-local eca-chat--empty t)
+    (setq-local eca-chat--track-context t)
     (eca-chat--clear (eca-session))))
 
 ;;;###autoload
@@ -1461,7 +1465,8 @@ Consider the defun at point unless a region is selected."
     (eca-chat--with-current-buffer (eca-chat--get-buffer (eca-session))
       (eca-chat--add-context (list :type "file"
                                    :path path
-                                   :linesRange (list :start start :end end))))))
+                                   :linesRange (list :start start :end end)))
+      (setq eca-chat--track-context nil))))
 
 ;;;###autoload
 (defun eca-chat-add-file-context (&optional arg)
@@ -1475,6 +1480,7 @@ if ARG is current prefix, ask for file, otherwise add current file."
     (eca-chat--with-current-buffer (eca-chat--get-buffer (eca-session))
       (eca-chat--add-context (list :type "file"
                                    :path path))
+      (setq eca-chat--track-context nil)
       (eca-chat-open (eca-session)))))
 
 ;;;###autoload
