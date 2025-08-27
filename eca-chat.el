@@ -1359,6 +1359,12 @@ string."
       (force-mode-line-update)
       (goto-char (point-max))
       (rename-buffer (concat (buffer-name) ":closed") t)
+      ;; Keep only the most recently closed chat buffer; kill older ones.
+      (let ((current (current-buffer)))
+        (dolist (b (buffer-list))
+          (when (and (not (eq b current))
+                     (string-match-p "^<eca-chat:.*>:closed$" (buffer-name b)))
+            (kill-buffer b))))
       (when-let* ((window (get-buffer-window (eca-chat--get-buffer session))))
         (quit-window nil window)))))
 

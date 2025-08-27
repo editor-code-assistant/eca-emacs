@@ -337,7 +337,23 @@ Call HANDLE-MSG for new msgs processed."
   "Stop the eca process for SESSION if running."
   (when session
     (kill-process (eca--session-process session))
-    (kill-buffer (eca-process--buffer-name session))))
+    (kill-buffer (eca-process--buffer-name session))
+    ;; Rename stderr buffer to closed and clean up older closed ones
+    (let ((stderr-buffer (get-buffer (eca-process--stderr-buffer-name session))))
+      (when stderr-buffer
+        (with-current-buffer stderr-buffer
+          (rename-buffer (concat (buffer-name) ":closed") t)
+          (setq-local mode-line-format '("*Closed session*"))
+          (when-let ((win (get-buffer-window (current-buffer))))
+            (quit-window nil win))
+          ;; Keep only the most recently closed stderr buffer; kill older ones.
+          (let ((current (current-buffer)))
+            (dolist (b (buffer-list))
+              (when (and (not (eq b current))
+                         (or
+                          (string-match-p "^<eca:stderr:.*>:closed$" (buffer-name b))
+                          (string-match-p "^<eca:stderr:.*>$" (buffer-name b))))
+                (kill-buffer b)))))))))
 
 (defun eca-process-show-stderr (session)
   "Open the eca process stderr buffer for SESSION if running."
