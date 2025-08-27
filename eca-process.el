@@ -105,23 +105,34 @@ https://github.com/emacs-lsp/lsp-mode/issues/4746#issuecomment-2957183423"
       (unless (= exit-code 0)
         (error "Curl failed with exit code %d" exit-code)))))
 
+(defun eca--download-string (url)
+  "Download content from URL as a string, shelling out to curl."
+  (let ((curl-cmd (or (executable-find "curl")
+                      (executable-find "curl.exe"))))
+    (unless curl-cmd
+      (error "Curl not found. Please install curl or customize eca-custom-command"))
+    (let ((output (shell-command-to-string
+                   (format "%s -L -s -S -f %s"
+                           (shell-quote-argument curl-cmd)
+                           (shell-quote-argument url)))))
+      (when (s-blank? output)
+        (error "Curl failed to download from %s" url))
+      output)))
+
 (defun eca-process--get-latest-server-version ()
   "Return the latest server version."
   (or eca-process--latest-server-version
-      (condition-case _err
+      (condition-case err
           (let* ((releases-url "https://api.github.com/repos/editor-code-assistant/eca/releases")
-                 (buffer (url-retrieve-synchronously releases-url t t 30)))
-            (unless buffer
-              (error "Failed to retrieve releases list"))
-            (with-current-buffer buffer
-              ;; Skip HTTP headers
+                 (json-string (eca--download-string releases-url)))
+            (with-temp-buffer
+              (insert json-string)
               (goto-char (point-min))
-              (unless (search-forward "\n\n" nil t)
-                (error "Malformed HTTP response"))
-              (setq eca-process--latest-server-version (plist-get (elt (eca-api--json-read-buffer) 0) :tag_name))
-              (kill-buffer buffer))
+              (setq eca-process--latest-server-version
+                    (plist-get (elt (eca-api--json-read-buffer) 0) :tag_name)))
             eca-process--latest-server-version)
         (error
+         (eca-warn "Failed to get latest server version: %s" err)
          nil))))
 
 (defun eca-process--get-current-server-version ()
