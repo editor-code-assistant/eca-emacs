@@ -289,6 +289,7 @@ Must be a valid model supported by server, check `eca-chat-select-model`."
     (define-key map (kbd "C-<up>") #'eca-chat--key-pressed-previous-prompt-history)
     (define-key map (kbd "C-<down>") #'eca-chat--key-pressed-next-prompt-history)
     (define-key map (kbd "<return>") #'eca-chat--key-pressed-return)
+    (define-key map (kbd "C-c C-<return>") #'eca-chat-send-prompt-at-chat)
     (define-key map (kbd "<tab>") #'eca-chat--key-pressed-tab)
     (define-key map (kbd "C-c C-k") #'eca-chat-reset)
     (define-key map (kbd "C-c C-l") #'eca-chat-clear)
@@ -1489,6 +1490,20 @@ if ARG is current prefix, ask for file, otherwise add current file."
   (interactive "sPrompt: ")
   (eca-assert-session-running (eca-session))
   (eca-chat--send-prompt (eca-session) prompt))
+
+;;;###autoload
+(defun eca-chat-send-prompt-at-chat ()
+  "Send the prompt in chat if not empty."
+  (interactive)
+  (eca-chat--with-current-buffer (eca-chat--get-buffer (eca-session))
+    (let* ((prompt-start (eca-chat--prompt-field-start-point))
+           (session (eca-session))
+           (prompt (save-excursion
+                     (goto-char prompt-start)
+                     (string-trim (buffer-substring-no-properties (point) (point-max))))))
+      (when (and (not (string-empty-p prompt))
+                 (not eca-chat--chat-loading))
+        (eca-chat--send-prompt session prompt)))))
 
 (declare-function whisper-run "ext:whisper" ())
 
