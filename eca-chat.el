@@ -289,6 +289,7 @@ Must be a valid model supported by server, check `eca-chat-select-model`."
     (define-key map (kbd "C-<up>") #'eca-chat--key-pressed-previous-prompt-history)
     (define-key map (kbd "C-<down>") #'eca-chat--key-pressed-next-prompt-history)
     (define-key map (kbd "<return>") #'eca-chat--key-pressed-return)
+    (define-key map (kbd "RET") #'eca-chat--key-pressed-return)
     (define-key map (kbd "C-c C-<return>") #'eca-chat-send-prompt-at-chat)
     (define-key map (kbd "<tab>") #'eca-chat--key-pressed-tab)
     (define-key map (kbd "C-c C-k") #'eca-chat-reset)
