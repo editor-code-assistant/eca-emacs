@@ -165,6 +165,22 @@
 ;; Public
 
 ;;;###autoload
+(defun eca-debug-nrepl-connect ()
+  "Connect in eca nrepl port for development."
+  (interactive)
+  (eca-assert-session-running (eca-session))
+  (with-current-buffer (eca-process--stderr-buffer-name (eca-session))
+    (save-excursion
+      (goto-char (point-min))
+      (when (re-search-forward "started on port \\([0-9]+\\)" nil t)
+
+        (when-let ((nrepl-port (string-to-number (match-string 1))))
+          (save-match-data
+            (when (functionp 'cider-connect-clj)
+              (cider-connect-clj `(:host "localhost"
+                                   :port ,nrepl-port)))))))))
+
+;;;###autoload
 (defun eca (&optional arg)
   "Start or switch to a eca session.
 When ARG is current prefix, ask for workspace roots to use."

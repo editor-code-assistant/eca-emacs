@@ -190,14 +190,5 @@
     ("R" "Stop" eca-restart)
     ("S" "Stop" eca-stop)]])
 
-;;;###autoload
-(defun eca-debug-nrepl-connect ()
-  "Connect in eca nrepl port for development."
-  (interactive)
-  (save-match-data
-    (when (functionp 'cider-connect-clj)
-      (cider-connect-clj `(:host "localhost"
-                           :port 9990)))))
-
 (provide 'eca-util)
 ;;; eca-util.el ends here
