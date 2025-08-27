@@ -1021,6 +1021,7 @@ If FORCE? decide to OPEN? or not."
   (hl-line-mode -1)
   (setq-local eca-chat--history '())
   (setq-local eca-chat--history-index -1)
+  (buffer-disable-undo)
 
   ;; Show diff blocks in markdown-mode with colors.
   (setq-local markdown-fontify-code-blocks-natively t)
