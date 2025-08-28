@@ -767,13 +767,16 @@ Applies LABEL-FACE to label and CONTENT-FACE to content."
   "Update to LABEL and CONTENT the expandable content of id ID."
   (when-let* ((ov-label (eca-chat--get-expandable-content id)))
     (let* ((ov-content (overlay-get ov-label 'eca-chat--expandable-content-ov-content))
+           (existing (overlay-get ov-content 'eca-chat--expandable-content-content))
+           (delta (propertize content 'line-prefix "   "))
            (new-content (if append-content?
-                            (concat (overlay-get ov-content 'eca-chat--expandable-content-content) content)
-                          content))
-           (new-content (propertize new-content 'line-prefix "   "))
+                            (concat existing delta)
+                          delta))
            (open? (overlay-get ov-label 'eca-chat--expandable-content-toggle)))
+      ;; Update stored content string
       (overlay-put ov-content 'eca-chat--expandable-content-content new-content)
       (save-excursion
+        ;; Refresh the label line (cheap even when appending)
         (goto-char (overlay-start ov-label))
         (delete-region (point) (1- (overlay-start ov-content)))
         (insert (propertize label
@@ -783,9 +786,16 @@ Applies LABEL-FACE to label and CONTENT-FACE to content."
                                              eca-chat-expandable-block-open-symbol))
                             'help-echo "mouse-1 / RET / tab: expand/collapse"))
         (when open?
-          (delete-region (overlay-start ov-content) (overlay-end ov-content))
-          (goto-char (overlay-start ov-content))
-          (insert new-content))))))
+          (if append-content?
+              ;; Fast path: just append the delta to the visible content
+              (progn
+                (goto-char (overlay-end ov-content))
+                (insert delta))
+            ;; Replace the whole visible content
+            (progn
+              (delete-region (overlay-start ov-content) (overlay-end ov-content))
+              (goto-char (overlay-start ov-content))
+              (insert new-content))))))))
 
 (defun eca-chat--expandable-content-toggle (id &optional force? open?)
   "Toggle the expandable-content of ID.
