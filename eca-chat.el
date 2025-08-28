@@ -1353,9 +1353,7 @@ string."
             (eca-chat--track-context-at-point))))
       (unless (eca--session-chat session)
         (setf (eca--session-chat session) (current-buffer)))
-      (if (window-live-p (get-buffer-window (buffer-name)))
-          (eca-chat--select-window)
-        (eca-chat--pop-window)))))
+      (eca-chat-toggle-window))))
 
 (defun eca-chat-exit (session)
   "Exit the ECA chat for SESSION."
@@ -1506,6 +1504,26 @@ if ARG is current prefix, ask for file, otherwise add current file."
       (when (and (not (string-empty-p prompt))
                  (not eca-chat--chat-loading))
         (eca-chat--send-prompt session prompt)))))
+
+;;;###autoload
+(defun eca-chat-toggle-window ()
+  "Toggle presenting ECA chat window."
+  (interactive)
+  (let ((session (eca-session)))
+    (eca-assert-session-running session)
+    (let ((buffer (eca-chat--get-buffer session)))
+      (if (buffer-live-p buffer)
+          (if-let ((win (get-buffer-window buffer t)))
+              ;; If visible, hide it
+              (quit-window nil win)
+            ;; If not visible, display it according to user settings
+            (progn
+              (eca-chat--display-buffer buffer)
+              (with-current-buffer buffer
+                (goto-char (point-max)))))
+        (if (window-live-p (get-buffer-window (buffer-name)))
+            (eca-chat--select-window)
+          (eca-chat--pop-window))))))
 
 (declare-function whisper-run "ext:whisper" ())
 

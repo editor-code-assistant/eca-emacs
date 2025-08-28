@@ -180,7 +180,8 @@
     ("r" "Reset" eca-chat-reset)
     ("t" "Talk" eca-chat-talk)
     ("m" "Select model" eca-chat-select-model)
-    ("b" "Change behavior" eca-chat-select-behavior)]
+    ("b" "Change behavior" eca-chat-select-behavior)
+    ("o" "Open/close chat window" eca-chat-toggle-window)]
 
    ["Navigation"
     ("C" "Chat" eca)
