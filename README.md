@@ -53,6 +53,7 @@ M-x package-install eca
 - `eca-keep-all-suggested-changes`: Accept planned edit changes on file.
 - `eca-discard-all-suggested-changes`: Reject planned edit changes on file.
 - `eca-chat-send-prompt`: In case you wanna send prompts programatically in elisp.
+- `eca-chat-toggle-window`: toggle chat window.
 
 ### Variables
 
@@ -112,14 +113,7 @@ Calling `M-x eca` with prefix `C-u` will ask for what workspaces to start the pr
 
 ## Troubleshooting
 
-#### Environment Variables Not Available (macOS/Linux GUI)
-
-When launching Emacs from a GUI application (Dock, Applications folder, or desktop environment), it doesn't inherit environment variables from your shell configuration files (`.zshrc`, `.bashrc`, etc.). Since the ECA server is started as a subprocess from Emacs, it inherits Emacs' environment, which may be missing your API keys and other configuration.
-
-##### Symptoms
-- ECA fails to start with authentication errors
-- Missing API keys for OpenAI, Anthropic, or other providers
-- Custom configuration variables not found
+Check before the [server troubleshooting](https://eca.dev/troubleshooting/).
 
 ##### Solution: Use exec-path-from-shell
 
@@ -144,24 +138,6 @@ Install and configure `exec-path-from-shell` to import your shell environment in
     (exec-path-from-shell-initialize)))
 ```
 
-#### Alternative Solutions
-
-1. **Launch Emacs from Terminal**: Start Emacs from your shell where environment variables are already loaded:
-   ```bash
-   emacs &
-   ```
-
-2. **Manual Environment Setup**: Set variables directly in your Emacs configuration:
-   ```elisp
-   (setenv "ANTHROPIC_API_KEY" "your-key-here")
-   (setenv "OPENAI_API_KEY" "your-key-here")
-   ```
-
-3. **System-wide Environment**: On macOS, you can set environment variables system-wide using `launchctl`:
-   ```bash
-   launchctl setenv ANTHROPIC_API_KEY "your-key-here"
-   ```
-
 ### ECA Server Connection Issues
 
 #### Problem: ECA server fails to start or connect
@@ -180,21 +156,6 @@ Install and configure `exec-path-from-shell` to import your shell environment in
    ```elisp
    M-x eval-expression RET (getenv "ANTHROPIC_API_KEY") RET
    ```
-
-### Model-Specific Issues
-
-#### OpenAI Models Not Working
-- Ensure `OPENAI_API_KEY` is set in your environment
-- For custom endpoints, set `OPENAI_API_URL`
-
-#### Anthropic Models Not Working
-- Ensure `ANTHROPIC_API_KEY` is set in your environment
-- For custom endpoints, set `ANTHROPIC_API_URL`
-
-#### Ollama Models Not Working
-- Ensure Ollama is running locally
-- Set `OLLAMA_API_BASE` if using a custom endpoint
-- Use the `ollama/` prefix for model names (e.g., `ollama/llama2`)
 
 ### Debugging Steps
 
