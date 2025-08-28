@@ -169,7 +169,8 @@
     (propertize text
                 'eca-button-on-action callback
                 'pointer 'hand
-                'keymap km)))
+                'help-echo text
+                'local-map km)))
 
 (transient-define-prefix eca-transient-menu
   ()
