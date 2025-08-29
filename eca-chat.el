@@ -1363,7 +1363,9 @@ string."
             (eca-chat--track-context-at-point))))
       (unless (eca--session-chat session)
         (setf (eca--session-chat session) (current-buffer)))
-      (eca-chat-toggle-window))))
+      (if (window-live-p (get-buffer-window (buffer-name)))
+          (eca-chat--select-window)
+        (eca-chat--pop-window)))))
 
 (defun eca-chat-exit (session)
   "Exit the ECA chat for SESSION."
