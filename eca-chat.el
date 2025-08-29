@@ -1495,6 +1495,21 @@ if ARG is current prefix, ask for file, otherwise add current file."
       (eca-chat-open (eca-session)))))
 
 ;;;###autoload
+(defun eca-chat-drop-file-context (&optional arg)
+  "Drop file from chat as context.
+if ARG is current prefix, ask for file, otherwise add current file."
+  (interactive "P")
+  (eca-assert-session-running (eca-session))
+  (-let ((path (if (equal arg '(4))
+                   (read-file-name "Select the file to drop from context: " (eca-find-root-for-buffer))
+                 (buffer-file-name))))
+    (eca-chat--with-current-buffer (eca-chat--get-buffer (eca-session))
+      (eca-chat--remove-context (list :type "file"
+                                      :path path))
+      (setq eca-chat--track-context nil)
+      (eca-chat-open (eca-session)))))
+
+;;;###autoload
 (defun eca-chat-send-prompt (prompt)
   "Send PROMPT to current chat session."
   (interactive "sPrompt: ")

@@ -188,8 +188,13 @@
     ("M" "MCP details" eca-mcp-details)
     ("E" "Show stderr (logs)" eca-show-stderr)]
 
+   ["Context"
+    ("f" "Add current file" eca-chat-add-file-context)
+    ("o" "Drop current file" eca-chat-drop-file-context)
+    ("s" "Add current selection" eca-chat-add-context-at-point)]
+
    ["Server"
-    ("R" "Stop" eca-restart)
+    ("R" "Restart" eca-restart)
     ("S" "Stop" eca-stop)]])
 
 (provide 'eca-util)
