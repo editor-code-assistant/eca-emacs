@@ -133,13 +133,11 @@ Must be a valid model supported by server, check `eca-chat-select-model`."
   :type '(repeat
           (choice
            (string :tag "any string like separators")
-           (const :tag "Last input tokens sent" :message-input-tokens)
-           (const :tag "Last output tokens received" :message-output-tokens)
            (const :tag "Total tokens sent + received" :session-tokens)
            (const :tag "Total session cost" :session-cost)
            (const :tag "The context limit" :context-limit)
            (const :tag "The output limit" :output-limit)
-           (const :tag "Last message cost" :mesage-cost)))
+           (const :tag "Last message cost" :last-mesage-cost)))
   :group 'eca)
 
 ;; Faces
