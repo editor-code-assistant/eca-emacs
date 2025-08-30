@@ -1227,7 +1227,8 @@ string."
                                (eca-chat--add-expandable-content id
                                                                  label
                                                                  (eca-chat--content-table
-                                                                  `(("arguments" . ,argsText)))))))
+                                                                  `(("Tool" . ,name)
+                                                                    ("Arguments" . ,argsText)))))))
         ("toolCallRun" (let* ((name (plist-get content :name))
                               (origin (plist-get content :origin))
                               (args (plist-get content :arguments))
@@ -1270,7 +1271,8 @@ string."
                                     " "
                                     eca-chat-mcp-tool-call-loading-symbol
                                     approvalText)
-                            (eca-chat--content-table `(("arguments" . ,args)))))))
+                            (eca-chat--content-table `(("Tool" . ,name)
+                                                       ("Arguments" . ,args)))))))
         ("toolCallRejected" (let* ((name (plist-get content :name))
                                    (origin (plist-get content :origin))
                                    (args (plist-get content :arguments))
@@ -1295,7 +1297,8 @@ string."
                                                      'font-lock-face 'eca-chat-mcp-tool-call-label-face)
                                          " "
                                          eca-chat-mcp-tool-call-error-symbol)
-                                 (eca-chat--content-table `(("arguments" . ,args)))))))
+                                 (eca-chat--content-table `(("Tool" . ,name)
+                                                            ("Arguments" . ,args)))))))
         ("toolCalled" (let* ((id (plist-get content :id))
                              (name (plist-get content :name))
                              (origin (plist-get content :origin))
@@ -1328,7 +1331,8 @@ string."
                            (concat (propertize summary 'font-lock-face 'eca-chat-mcp-tool-call-label-face)
                                    " "
                                    status-icon)
-                           (eca-chat--content-table `(("Arguments" . ,args)
+                           (eca-chat--content-table `(("Tool" . ,name)
+                                                      ("Arguments" . ,args)
                                                       ("Output" . ,output-contents)))))))
         ("progress" (pcase (plist-get content :state)
                       ("running" (progn
