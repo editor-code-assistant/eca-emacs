@@ -128,7 +128,7 @@ Must be a valid model supported by server, check `eca-chat-select-model`."
   :type 'string
   :group 'eca)
 
-(defcustom eca-chat-usage-string-format '(:message-cost " / " :session-cost)
+(defcustom eca-chat-usage-string-format '(:session-tokens " / " :context-limit " (" :session-cost ")")
   "Format to show about chat usage tokens/costs."
   :type '(repeat
           (choice
@@ -137,6 +137,8 @@ Must be a valid model supported by server, check `eca-chat-select-model`."
            (const :tag "Last output tokens received" :message-output-tokens)
            (const :tag "Total tokens sent + received" :session-tokens)
            (const :tag "Total session cost" :session-cost)
+           (const :tag "The context limit" :context-limit)
+           (const :tag "The output limit" :output-limit)
            (const :tag "Last message cost" :mesage-cost)))
   :group 'eca)
 
@@ -271,6 +273,8 @@ Must be a valid model supported by server, check `eca-chat-select-model`."
 (defvar-local eca-chat--message-input-tokens nil)
 (defvar-local eca-chat--message-output-tokens nil)
 (defvar-local eca-chat--session-tokens nil)
+(defvar-local eca-chat--session-limit-context nil)
+(defvar-local eca-chat--session-limit-output nil)
 (defvar-local eca-chat--empty t)
 (defvar-local eca-chat--track-context t)
 
@@ -646,6 +650,8 @@ the prompt/context line."
                           (:session-tokens (number-to-string eca-chat--session-tokens))
                           (:message-cost (concat "$" eca-chat--message-cost))
                           (:session-cost (concat "$" eca-chat--session-cost))
+                          (:context-limit (number-to-string eca-chat--session-limit-context))
+                          (:output-limit (number-to-string eca-chat--session-limit-output))
                           (_ (propertize segment 'font-lock-face 'eca-chat-usage-string-face))))
                       eca-chat-usage-string-format)
                 (string-join ""))))
@@ -1338,6 +1344,8 @@ string."
                    (setq-local eca-chat--message-input-tokens (plist-get content :messageInputTokens))
                    (setq-local eca-chat--message-output-tokens (plist-get content :messageOutputTokens))
                    (setq-local eca-chat--session-tokens (plist-get content :sessionTokens))
+                   (setq-local eca-chat--session-limit-context (plist-get (plist-get content :limit) :context))
+                   (setq-local eca-chat--session-limit-output (plist-get (plist-get content :limit) :output))
                    (setq-local eca-chat--message-cost (plist-get content :messageCost))
                    (setq-local eca-chat--session-cost (plist-get content :sessionCost))))))))
 
