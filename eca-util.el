@@ -126,9 +126,14 @@
   (unless session
     (user-error "ECA must be running, no session found, start with `eca` command")))
 
+(defvar eca--uri-file-prefix (pcase system-type
+                               (`windows-nt "file:///")
+                               (_ "file://"))
+  "Prefix for a file-uri.")
+
 (defun eca--path-to-uri (path)
   "Convert a PATH to a uri."
-  (concat "file://"
+  (concat eca--uri-file-prefix
           (--> path
                (expand-file-name it)
                (or (file-remote-p it 'localname t) it))))
