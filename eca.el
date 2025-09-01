@@ -136,17 +136,8 @@
                                                     (list :uri (eca--path-to-uri folder)
                                                           :name (file-name-nondirectory (directory-file-name folder))))
                                                   (eca--session-workspace-folders session))))
-   :success-callback (-lambda ((&plist :chatWelcomeMessage msg
-                                       :chatBehaviors chat-behaviors
-                                       :chatDefaultBehavior chat-default-behavior
-                                       :chatDefaultModel chat-default-model
-                                       :models models))
+   :success-callback (-lambda (_)
                        (setf (eca--session-status session) 'started)
-                       (setf (eca--session-chat-welcome-message session) msg)
-                       (setf (eca--session-models session) models)
-                       (setf (eca--session-chat-behaviors session) chat-behaviors)
-                       (setf (eca--session-chat-default-model session) chat-default-model)
-                       (setf (eca--session-chat-default-behavior session) chat-default-behavior)
                        (eca-api-notify session :method "initialized")
                        (eca-info "Started with workspaces: %s" (string-join (eca--session-workspace-folders session) ","))
                        (eca-chat-open session)

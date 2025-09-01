@@ -1168,15 +1168,15 @@ string."
 
 (defun eca-chat-config-updated (session chat-config)
   "Update chat based on the CHAT-CONFIG for SESSION."
-  (-some->> (plist-get chat-config :welcome-message)
+  (-some->> (plist-get chat-config :welcomeMessage)
     (setf (eca--session-chat-welcome-message session)))
   (-some->> (plist-get chat-config :models)
     (setf (eca--session-models session)))
   (-some->> (plist-get chat-config :behaviors)
     (setf (eca--session-chat-behaviors session)))
-  (-some->> (plist-get chat-config :default-model)
+  (-some->> (plist-get chat-config :defaultModel)
     (setf (eca--session-chat-default-model session)))
-  (-some->> (plist-get chat-config :default-behavior)
+  (-some->> (plist-get chat-config :defaultBehavior)
     (setf (eca--session-chat-default-behavior session))))
 
 (defun eca-chat-content-received (session params)
