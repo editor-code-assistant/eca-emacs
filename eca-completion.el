@@ -1,0 +1,246 @@
+;;; eca-completion.el --- ECA (Editor Code Assistant) completion -*- lexical-binding: t; -*-
+;; Copyright (C) 2025 Eric Dallo
+;;
+;; SPDX-License-Identifier: Apache-2.0
+;;
+;; This file is not part of GNU Emacs.
+;;
+;;; Commentary:
+;;
+;;  The ECA (Editor Code Assistant) completion.
+;;
+;;; Code:
+
+(require 'map)
+
+(require 'eca-util)
+
+;; Variables
+
+(defcustom eca-completion-idle-delay 0
+  "Time in seconds to wait before starting completion.
+
+Complete immediately if set to 0.
+Disable idle completion if set to nil."
+  :type '(choice
+          (number :tag "Seconds of delay")
+          (const :tag "Idle completion disabled" nil))
+  :group 'eca)
+
+(defface eca-completion-overlay-face
+  '((t :inherit shadow))
+  "Face for the ECA completion inline overlay."
+  :group 'eca)
+
+;; Internal
+
+(defvar-local eca-completion--real-posn nil
+  "Posn information without overlay.
+To work around posn problems with after-string property.")
+
+(defvar-local eca-completion--overlay nil
+  "Overlay for ECA completion.")
+
+(defvar-local eca-completion--doc-version 0
+  "The document version of the current buffer.
+Incremented after each change.")
+
+(defvar-local eca-completion--last-doc-version 0
+  "The document version of the last completion.")
+
+(defvar-local eca-completion--line-bias 1
+  "Line bias for completion.")
+
+(defvar eca-completion--post-command-timer nil)
+
+(defun eca-completion--string-common-prefix (str1 str2)
+  "Find the common prefix of STR1 and STR2 directly."
+  (let ((min-len (min (length str1) (length str2)))
+        (i 0))
+    (while (and (< i min-len)
+                (= (aref str1 i) (aref str2 i)))
+      (setq i (1+ i)))
+    (substring str1 0 i)))
+
+(defun eca-completion--get-overlay ()
+  "Create or get overlay for ECA completion."
+  (unless (overlayp eca-completion--overlay)
+    (setq eca-completion--overlay (make-overlay 1 1 nil nil t))
+    ;; TODO add custom keymap
+    ;; (overlay-put
+    ;;  eca-completion--overlay 'keymap-overlay ...)
+    )
+  eca-completion--overlay)
+
+(defun eca-completion--set-overlay-text (ov text)
+  "Set overlay OV with TEXT."
+  (move-overlay ov (point) (line-end-position))
+
+  (let* ((tail (buffer-substring (- (line-end-position) (overlay-get ov 'tail-length)) (line-end-position)))
+         (text-p (concat (propertize text 'face 'eca-completion-overlay-face)
+                               tail)))
+    (if (eolp)
+        (progn
+          (overlay-put ov 'after-string "")
+          (setq eca-completion--real-posn (cons (point) (posn-at-point)))
+          (put-text-property 0 1 'cursor t text-p)
+          (overlay-put ov 'display "")
+          (overlay-put ov 'after-string text-p))
+      (overlay-put ov 'display (substring text-p 0 1))
+      (overlay-put ov 'after-string (substring text-p 1)))
+    (overlay-put ov 'completion text)
+    (overlay-put ov 'start (point))))
+
+(defun eca-completion--display-overlay-completion (text id start end)
+  "Show TEXT with ID between START and END."
+  (eca-completion--clear-overlay)
+  (when (and (not (string-blank-p text))
+             (or (<= start (point))))
+    (let* ((ov (eca-completion--get-overlay)))
+      (overlay-put ov 'tail-length (- (line-end-position) end))
+      (eca-completion--set-overlay-text ov text)
+      (overlay-put ov 'id id)
+      (overlay-put ov 'completion-start start))))
+
+(defun eca-completion--overlay-visible ()
+  "Return whether completion overlay is being shown."
+  (and (overlayp eca-completion--overlay)
+       (overlay-buffer eca-completion--overlay)))
+
+(defun eca-completion--clear-overlay ()
+  "Clear ECA completion overlay."
+  (interactive)
+  (when (eca-completion--overlay-visible)
+    (delete-overlay eca-completion--overlay)
+    (setq eca-completion--real-posn nil)))
+
+(defun eca-completion--find-completion (&key on-success)
+  ""
+  (let ((line (- (line-number-at-pos) eca-completion--line-bias))
+        (character (- (point) (line-beginning-position))))
+    (funcall on-success
+             (list (list :text "foo"
+                         :id "123"
+                         :doc-version 0
+                         :range (list :start (list :line line :character character)
+                                      :end (list :line line :character character)))
+                   (list :text "foobar"
+                         :id "234"
+                         :doc-version 0
+                         :range (list :start (list :line line :character character)
+                                      :end (list :line line :character character)))))))
+
+
+(defun eca-completion--post-command-debounce (buffer)
+  "Complete in BUFFER."
+  (when (and (buffer-live-p buffer)
+             (equal (current-buffer) buffer)
+             (derived-mode-p 'eca-completion-mode))
+    (eca-complete)))
+
+(defun eca-completion--self-insert (command)
+  "Handle the case where the char just inserted is the start of the completion.
+If so, update the overlays and continue.  COMMAND is the command that triggered
+in `post-command-hook'."
+  )
+
+(defun eca-completion--post-command ()
+  "Auto complete when idle."
+  (when (and this-command
+             (not (and (symbolp this-command)
+                       (or
+                        (string-prefix-p "eca-" (symbol-name this-command))
+                        (eca-completion--self-insert this-command)))))
+    (eca-completion--clear-overlay)
+    (when eca-completion--post-command-timer
+      (cancel-timer eca-completion--post-command-timer))
+    (when (numberp eca-completion-idle-delay)
+      (setq eca-completion--post-command-timer
+            (run-with-idle-timer eca-completion-idle-delay
+                                 nil
+                                 #'eca-completion--post-command-debounce
+                                 (current-buffer))))))
+
+(defun eca-completion--mode-activate ()
+  "Initial setup for eca-completion-mode."
+  (add-hook 'post-command-hook #'eca-completion--post-command nil 'local))
+
+(defun eca-completion--mode-deactivate ()
+  "Teardown for eca-completion-mode."
+  (remove-hook 'post-command-hook #'eca-completion--post-command 'local))
+
+(defun eca-completion--posn-advice (&rest args)
+  "Remap posn if in eca-completion-mode with ARGS."
+  (when (derived-mode-p 'eca-completion-mode)
+    (let ((pos (or (car-safe args) (point))))
+      (when (and eca-completion--real-posn
+                 (eq pos (car eca-completion--real-posn)))
+        (cdr eca-completion--real-posn)))))
+
+(defun eca-completion--show-completion (completion)
+  "Show COMPLETION."
+  (-let* (((&plist :text text :id id :range range :doc-version doc-version) completion)
+          ((&plist :start start :end end) range)
+          ((&plist :line start-line :character start-char) start)
+          ((&plist :character end-char) end))
+    (when (= doc-version eca-completion--doc-version)
+      (save-excursion
+        (save-restriction
+          (widen)
+          (let* ((p (point))
+                 (goto-line! (lambda ()
+                               (goto-char (point-min))
+                               (forward-line (1- (+ start-line eca-completion--line-bias)))))
+                 (start (progn
+                          (funcall goto-line!)
+                          (forward-char start-char)
+                          (let* ((cur-line (buffer-substring-no-properties (point) (line-end-position)))
+                                 (common-prefix-len (length (eca-completion--string-common-prefix text cur-line))))
+                            ;; (setq text (substring text common-prefix-len))
+                            (forward-char common-prefix-len)
+                            (point))))
+                 (end (progn
+                        (funcall goto-line!)
+                        (forward-char end-char)
+                        (point))))
+            (goto-char p)
+            (eca-completion--display-overlay-completion text id start end)))))))
+
+;; Public
+
+(defvar eca-completion-mode-map (make-sparse-keymap)
+  "Keymap for eca-completion minor mode.
+Use this for custom bindings in `eca-completion-mode'.")
+
+;;;###autoload
+(define-minor-mode eca-completion-mode
+  "Minor mode for ECA completions."
+  :init-value nil
+  :lighter " ECA completion"
+  (eca-completion--clear-overlay)
+  (advice-add 'posn-at-point :before-until #'eca-completion--posn-advice)
+  (if eca-completion-mode
+      (eca-completion--mode-activate)
+    (eca-completion--mode-deactivate)))
+
+;;;###autoload
+(defun eca-complete ()
+  "Complete at the current point."
+  (interactive)
+  (setq eca-completion--last-doc-version eca-completion--doc-version)
+
+  ;; TODO add cache
+  ;; (setq eca-completion--completion-cache nil)
+
+  (let ((called-interactively (called-interactively-p 'interactive)))
+    (eca-completion--find-completion
+     :on-succeess
+     (lambda (completions)
+       (let ((completion (if (seq-empty-p completions) nil (seq-elt completions 0))))
+         (if completion
+             (eca-completion--show-completion completion)
+           (when called-interactively
+             (eca-warn "No completion is available."))))))))
+
+(provide 'eca-completion)
+;;; eca-completion.el ends here

@@ -28,6 +28,7 @@
 (require 'eca-chat)
 (require 'eca-mcp)
 (require 'eca-editor)
+(require 'eca-completion)
 
 (defgroup eca nil
   "ECA group."
