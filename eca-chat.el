@@ -1166,6 +1166,19 @@ string."
      :annotation-function annotation-fn
      :exit-function exit-fn)))
 
+(defun eca-chat-config-updated (session chat-config)
+  "Update chat based on the CHAT-CONFIG for SESSION."
+  (-some->> (plist-get chat-config :welcome-message)
+    (setf (eca--session-chat-welcome-message session)))
+  (-some->> (plist-get chat-config :models)
+    (setf (eca--session-models session)))
+  (-some->> (plist-get chat-config :behaviors)
+    (setf (eca--session-chat-behaviors session)))
+  (-some->> (plist-get chat-config :default-model)
+    (setf (eca--session-chat-default-model session)))
+  (-some->> (plist-get chat-config :default-behavior)
+    (setf (eca--session-chat-default-behavior session))))
+
 (defun eca-chat-content-received (session params)
   "Handle the content received notification with PARAMS for SESSION."
   (let* ((role (plist-get params :role))

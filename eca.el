@@ -66,6 +66,11 @@
       ("warning" (eca-warn msg))
       ("info" (eca-info msg)))))
 
+(defun eca-config-updated (session config)
+  "Handle CONFIG updated notification for SESSION."
+  (when-let ((chat (plist-get config :chat)))
+    (eca-chat-config-updated session chat)))
+
 (defun eca--tool-server-updated (session server)
   "Handle tool server updated message with SERVER for SESSION."
   (setf (eca--session-tool-servers session)
@@ -80,10 +85,11 @@
   (let ((method (plist-get notification :method))
         (params (plist-get notification :params)))
     (pcase method
+      ("config/updated" (eca-config-updated session params))
       ("chat/contentReceived" (eca-chat-content-received session params))
       ("tool/serverUpdated" (eca--tool-server-updated session params))
       ("$/showMessage" (eca--handle-show-message params))
-      (_ (eca-warn "Unknown server notification %s" method)))))
+      (_ 'ignore))))
 
 (defun eca--handle-server-request (session request)
   "Handle REQUEST sent by server for SESSION."
