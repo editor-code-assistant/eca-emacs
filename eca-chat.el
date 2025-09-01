@@ -348,14 +348,12 @@ Must be a valid model supported by server, check `eca-chat-select-model`."
 (defun eca-chat--behavior (session)
   "The chat behavior considering what's in SESSION and user option."
   (or eca-chat-custom-behavior
-      (eca--session-chat-selected-behavior session)
-      (eca--session-chat-default-behavior session)))
+      (eca--session-chat-selected-behavior session)))
 
 (defun eca-chat--model (session)
   "The chat model considering what's in SESSION and user option."
   (or eca-chat-custom-model
-      (eca--session-chat-selected-model session)
-      (eca--session-chat-default-model session)))
+      (eca--session-chat-selected-model session)))
 
 (defun eca-chat--mcps-summary (session)
   "The summary of MCP servers for SESSION."
@@ -1174,10 +1172,10 @@ string."
     (setf (eca--session-models session)))
   (-some->> (plist-get chat-config :behaviors)
     (setf (eca--session-chat-behaviors session)))
-  (-some->> (plist-get chat-config :defaultModel)
-    (setf (eca--session-chat-default-model session)))
-  (-some->> (plist-get chat-config :defaultBehavior)
-    (setf (eca--session-chat-default-behavior session))))
+  (-some->> (plist-get chat-config :selectModel)
+    (setf (eca--session-chat-selected-model session)))
+  (-some->> (plist-get chat-config :selectBehavior)
+    (setf (eca--session-chat-selected-behavior session))))
 
 (defun eca-chat-content-received (session params)
   "Handle the content received notification with PARAMS for SESSION."
