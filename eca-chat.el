@@ -1429,7 +1429,10 @@ string."
   (interactive)
   (eca-assert-session-running (eca-session))
   (when-let* ((behavior (completing-read "Select a behavior:" (append (eca--session-chat-behaviors (eca-session)) nil) nil t)))
-    (setf (eca--session-chat-selected-behavior (eca-session)) behavior)))
+    (setf (eca--session-chat-selected-behavior (eca-session)) behavior)
+    (eca-api-notify (eca-session)
+                    :method "chat/selectedBehaviorChanged"
+                    :params (list :behavior behavior))))
 
 ;;;###autoload
 (defun eca-chat-reset ()
