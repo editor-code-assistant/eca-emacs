@@ -197,6 +197,11 @@ Must be a valid model supported by server, check `eca-chat-select-model`."
   "Face for the reason messages in chat."
   :group 'eca)
 
+(defface eca-chat-time-face
+  '((t :inherit font-lock-comment-face :slant italic :height 0.8))
+  "Face for times spent in chat."
+  :group 'eca)
+
 (defface eca-chat-mcp-tool-call-label-face
   '((t :inherit font-lock-function-call-face))
   "Face for the MCP tool calls in chat."
@@ -344,6 +349,11 @@ Must be a valid model supported by server, check `eca-chat-select-model`."
     (cancel-timer eca-chat--spinner-timer)
     (setq eca-chat--spinner-timer nil))
   (setq eca-chat--spinner-string ""))
+
+(defun eca-chat--time->presentable-time (ms)
+  "Return a presentable time for MS."
+  (let ((secs (/ (float ms) 1000)))
+    (propertize (format "%.2f s" secs) 'font-lock-face 'eca-chat-time-face)))
 
 (defun eca-chat--behavior (session)
   "The chat behavior considering what's in SESSION and user option."
@@ -1216,8 +1226,13 @@ string."
                             (id (plist-get content :id))
                             (label (propertize "Thinking..." 'font-lock-face 'eca-chat-reason-label-face)))
                         (eca-chat--update-expandable-content id label text t)))
-        ("reasonFinished" (let ((id (plist-get content :id))
-                                (label (propertize "Thoughts" 'font-lock-face 'eca-chat-reason-label-face)))
+        ("reasonFinished" (let* ((id (plist-get content :id))
+                                 (base-label (propertize "Thought" 'font-lock-face 'eca-chat-reason-label-face))
+                                 (total-time-ms (-some-> (plist-get content :totalTimeMs)
+                                                  (eca-chat--time->presentable-time)))
+                                 (label (if total-time-ms
+                                            (concat base-label " " total-time-ms)
+                                          base-label)))
                             (eca-chat--update-expandable-content id label "" t)))
         ("toolCallPrepare" (let* ((name (plist-get content :name))
                                   (origin (plist-get content :origin))
@@ -1340,6 +1355,10 @@ string."
                              (origin (plist-get content :origin))
                              (args (plist-get content :arguments))
                              (outputs (append (plist-get content :outputs) nil))
+                             (total-time-ms-str (or (-some->> (plist-get content :totalTimeMs)
+                                                      (eca-chat--time->presentable-time)
+                                                      (concat " "))
+                                                    ""))
                              (summary (or (plist-get content :summary)
                                           (format "Called %s tool: %s"
                                                   (if (string= "mcp" origin) "MCP" "ECA")
@@ -1361,7 +1380,8 @@ string."
                              (concat (propertize summary 'font-lock-face 'eca-chat-mcp-tool-call-label-face)
                                      " "
                                      (eca-chat--file-change-details-label details)
-                                     status-icon)
+                                     status-icon
+                                     total-time-ms-str)
                              (concat
                               "Tool: `" name "`\n"
                               (eca-chat--file-change-diff (plist-get details :path) (plist-get details :diff) roots)))
@@ -1369,7 +1389,8 @@ string."
                            id
                            (concat (propertize summary 'font-lock-face 'eca-chat-mcp-tool-call-label-face)
                                    " "
-                                   status-icon)
+                                   status-icon
+                                   total-time-ms-str)
                            (eca-chat--content-table `(("Tool" . ,name)
                                                       ("Arguments" . ,args)
                                                       ("Output" . ,output-contents)))))))
