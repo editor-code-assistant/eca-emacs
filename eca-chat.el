@@ -1282,6 +1282,33 @@ string."
                                     approvalText)
                             (eca-chat--content-table `(("Tool" . ,name)
                                                        ("Arguments" . ,args)))))))
+        ("toolCallRunning" (let* ((name (plist-get content :name))
+                                  (origin (plist-get content :origin))
+                                  (args (plist-get content :arguments))
+                                  (id (plist-get content :id))
+                                  (details (plist-get content :details))
+                                  (summary (plist-get content :summary)))
+                             (if (string= "fileChange" (plist-get details :type))
+                                 (eca-chat--update-expandable-content
+                                  id
+                                  (concat (propertize summary 'font-lock-face 'eca-chat-mcp-tool-call-label-face)
+                                          " "
+                                          (eca-chat--file-change-details-label details)
+                                          eca-chat-mcp-tool-call-loading-symbol)
+                                  (concat
+                                   "Tool: `" name "`\n"
+                                   (eca-chat--file-change-diff (plist-get details :path) (plist-get details :diff) roots)))
+                               (eca-chat--update-expandable-content
+                                id
+                                (concat (propertize (or summary
+                                                        (format "Calling %s tool: %s"
+                                                                (if (string= "mcp" origin) "MCP" "ECA")
+                                                                name))
+                                                    'font-lock-face 'eca-chat-mcp-tool-call-label-face)
+                                        " "
+                                        eca-chat-mcp-tool-call-loading-symbol)
+                                (eca-chat--content-table `(("Tool" . ,name)
+                                                           ("Arguments" . ,args)))))))
         ("toolCallRejected" (let* ((name (plist-get content :name))
                                    (origin (plist-get content :origin))
                                    (args (plist-get content :arguments))
@@ -1321,6 +1348,9 @@ string."
                              (output-contents (-reduce-from (lambda (txt output) (concat txt "\n" (plist-get output :text)))
                                                             ""
                                                             outputs))
+                             (output-contents (if (string-blank-p output-contents)
+                                                  "Empty"
+                                                output-contents))
                              (details (plist-get content :details))
                              (status-icon (if error?
                                               eca-chat-mcp-tool-call-error-symbol
