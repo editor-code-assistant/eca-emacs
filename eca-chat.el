@@ -14,6 +14,7 @@
 (require 'f)
 (require 'markdown-mode)
 (require 'compat)
+(require 'svg-lib)
 
 (require 'eca-util)
 (require 'eca-api)
@@ -607,6 +608,31 @@ the prompt/context line."
   (eq (line-number-at-pos (point))
       (line-number-at-pos (eca-chat--prompt-field-start-point))))
 
+(defun eca-chat--header-line-icon (icon)
+  "Create an SVG icon for use in the header line.
+ICON is the name of the Bootstrap icon to display.
+Returns an SVG image suitable for insertion in the header line,
+styled to match the current theme's header-line face."
+  (svg-lib-icon icon nil
+                :background (face-background 'header-line nil 'mode-line)
+                :collection "bootstrap"
+                :foreground (face-foreground 'eca-chat-option-key-face nil t)
+                :stroke 0))
+
+(defun eca-chat--header-line-label (name icon)
+  "Create a formatted label string for the header line.
+NAME is the text label to display.
+ICON is the Bootstrap icon name to display before the name.
+Returns a string containing the icon (if in graphical display) followed
+by the name and a colon separator, suitable for header line display."
+  (with-temp-buffer
+    (when (display-graphic-p)
+      (when-let ((svg-icon (eca-chat--header-line-icon icon)))
+        (insert-image svg-icon)))
+    (insert name)
+    (insert ": ")
+    (buffer-substring (point-min) (point-max))))
+
 (defun eca-chat--header-line-string (session)
   "Update chat header line for SESSION."
   (let ((model-keymap (make-sparse-keymap))
@@ -615,25 +641,28 @@ the prompt/context line."
     (define-key model-keymap (kbd "<header-line> <mouse-1>") #'eca-chat-select-model)
     (define-key behavior-keymap (kbd "<header-line> <mouse-1>") #'eca-chat-select-behavior)
     (define-key mcp-keymap (kbd "<header-line> <mouse-1>") #'eca-mcp-details)
-    (list (propertize "model:"
+    (list (propertize (eca-chat--header-line-label "Model" "cpu")
                       'font-lock-face 'eca-chat-option-key-face
                       'pointer 'hand
                       'keymap model-keymap)
+
+          " "
           (propertize (eca-chat--model session)
                       'font-lock-face 'eca-chat-option-value-face
                       'pointer 'hand
                       'keymap model-keymap)
-          "  "
-          (propertize "behavior:"
+          " "
+          (propertize (eca-chat--header-line-label "Behavior" "robot")
                       'font-lock-face 'eca-chat-option-key-face
                       'pointer 'hand
                       'keymap behavior-keymap)
+          " "
           (propertize (eca-chat--behavior session)
                       'font-lock-face 'eca-chat-option-value-face
                       'pointer 'hand
                       'keymap behavior-keymap)
-          "  "
-          (propertize "mcps:"
+          " "
+          (propertize (eca-chat--header-line-label "MCPs" "server")
                       'font-lock-face 'eca-chat-option-key-face
                       'pointer 'hand
                       'keymap mcp-keymap)
