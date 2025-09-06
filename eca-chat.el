@@ -14,6 +14,8 @@
 (require 'f)
 (require 'markdown-mode)
 (require 'compat)
+(require 'ediff)
+(require 'smerge-mode)
 
 (require 'eca-util)
 (require 'eca-api)
@@ -138,6 +140,17 @@ Must be a valid model supported by server, check `eca-chat-select-model`."
            (const :tag "The context limit" :context-limit)
            (const :tag "The output limit" :output-limit)
            (const :tag "Last message cost" :last-mesage-cost)))
+  :group 'eca)
+
+(defcustom eca-chat-diff-tool 'ediff
+  "The tool to use for displaying file change diffs.
+Can be one of the following symbols:
+- `ediff`: Use a side-by-side interactive diff.
+- `smerge`: Use `smerge-mode` for reviewing and applying changes hunk-by-hunk.
+- `text`: Display the diff as plain text in a separate buffer (original behavior)."
+  :type '(choice (const :tag "Side-by-side diff" ediff)
+                 (const :tag "Hunk-based review" smerge)
+                 (const :tag "Plain text" text))
   :group 'eca)
 
 ;; Faces
@@ -882,6 +895,56 @@ If FORCE? decide to OPEN? or not."
         (f-relative filename))
       filename))
 
+(defun eca-chat--show-text-diff (diff)
+  "Show the plain text DIFF in a dedicated buffer."
+  (with-current-buffer (get-buffer-create "*eca-file-change-preview*")
+    (let ((inhibit-read-only t))
+      (erase-buffer)
+      (insert diff)
+      (diff-mode))
+    (display-buffer "*eca-file-change-preview*")))
+
+(defun eca-chat--show-ediff-for-change (uri new-content)
+  "Show a side-by-side ediff for a file change.
+URI is the file's identifier and NEW-CONTENT is the proposed text."
+  (let* ((file-path (uri-to-filename uri))
+         (file-name (file-name-nondirectory file-path))
+         (old-content (if (file-exists-p file-path)
+                          (with-temp-buffer
+                            (insert-file-contents file-path)
+                            (buffer-string))
+                        ""))) ;; Handle new files by starting with empty content
+    (ediff-strings old-content new-content)
+    ;; Set the buffer names in the ediff session for clarity
+    (with-current-buffer (get-buffer (format "A-on-%s" file-name))
+      (rename-buffer (format "*%s (Original)*" file-name)))
+    (with-current-buffer (get-buffer (format "B-on-%s" file-name))
+      (rename-buffer (format "*%s (Proposed Changes)*" file-name)))))
+
+(defun eca-chat--show-smerge-for-change (uri new-content)
+  "Show a diff using `smerge-mode` for hunk-based review.
+This implementation follows the maintainer's suggestion in issue #13."
+  (let* ((file-path (uri-to-filename uri))
+         (old-content (if (file-exists-p file-path)
+                          (with-temp-buffer
+                            (insert-file-contents file-path)
+                            (buffer-string))
+                        "")))
+    (with-current-buffer (get-buffer-create (format "*eca-smerge: %s*" (file-name-nondirectory file-path)))
+      (let ((inhibit-read-only t))
+        (erase-buffer)
+        (insert old-content)
+        (smerge-mode)
+        (smerge-diff (generate-new-buffer (format "*%s (Proposed Changes)*" (file-name-nondirectory file-path))) new-content)
+        (smerge-next)))))
+
+(defun eca-chat--show-diff (uri new-content diff)
+  "Dispatch to the correct diff tool based on `eca-chat-diff-tool`."
+  (pcase eca-chat-diff-tool
+    ('ediff (eca-chat--show-ediff-for-change uri new-content))
+    ('smerge (eca-chat--show-smerge-for-change uri new-content))
+    (_ (eca-chat--show-text-diff diff))))
+
 (defun eca-chat--context-presentable-path (filename)
   "Return the presentable string for FILENAME."
   (or (when (-first (lambda (root) (f-ancestor-of? root filename))
@@ -1375,16 +1438,26 @@ string."
                                               eca-chat-mcp-tool-call-error-symbol
                                             eca-chat-mcp-tool-call-success-symbol)))
                         (if (string= "fileChange" (plist-get details :type))
-                            (eca-chat--update-expandable-content
-                             id
-                             (concat (propertize summary 'font-lock-face 'eca-chat-mcp-tool-call-label-face)
-                                     " "
-                                     (eca-chat--file-change-details-label details)
-                                     status-icon
-                                     total-time-ms-str)
-                             (concat
-                              "Tool: `" name "`\n"
-                              (eca-chat--file-change-diff (plist-get details :path) (plist-get details :diff) roots)))
+                            (let* ((uri (plist-get details :uri))
+                                   (new-content (plist-get details :newContent))
+                                   (diff (plist-get details :diff))
+                                   (view-diff-button
+                                    ;; Only show the button if the server provides the full new content.
+                                    (when new-content
+                                      (concat " " (eca-buttonize
+                                                   (propertize "[View Diff]" 'font-lock-face 'link)
+                                                   `(lambda () (interactive) (eca-chat--show-diff ,uri ,new-content ,diff)))))))
+                              (eca-chat--update-expandable-content
+                               id
+                               (concat (propertize summary 'font-lock-face 'eca-chat-mcp-tool-call-label-face)
+                                       " "
+                                       (eca-chat--file-change-details-label details)
+                                       status-icon
+                                       total-time-ms-str
+                                       view-diff-button)
+                               (concat
+                                "Tool: `" name "`\n"
+                                (eca-chat--file-change-diff (plist-get details :path) diff roots))))
                           (eca-chat--update-expandable-content
                            id
                            (concat (propertize summary 'font-lock-face 'eca-chat-mcp-tool-call-label-face)
