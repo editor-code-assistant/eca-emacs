@@ -609,37 +609,38 @@ the prompt/context line."
 
 (defun eca-chat--header-line-string (session)
   "Update chat header line for SESSION."
-  (let ((model-keymap (make-sparse-keymap))
-        (behavior-keymap (make-sparse-keymap))
-        (mcp-keymap (make-sparse-keymap)))
-    (define-key model-keymap (kbd "<header-line> <mouse-1>") #'eca-chat-select-model)
-    (define-key behavior-keymap (kbd "<header-line> <mouse-1>") #'eca-chat-select-behavior)
-    (define-key mcp-keymap (kbd "<header-line> <mouse-1>") #'eca-mcp-details)
-    (list (propertize "model:"
-                      'font-lock-face 'eca-chat-option-key-face
-                      'pointer 'hand
-                      'keymap model-keymap)
-          (propertize (eca-chat--model session)
-                      'font-lock-face 'eca-chat-option-value-face
-                      'pointer 'hand
-                      'keymap model-keymap)
-          "  "
-          (propertize "behavior:"
-                      'font-lock-face 'eca-chat-option-key-face
-                      'pointer 'hand
-                      'keymap behavior-keymap)
-          (propertize (eca-chat--behavior session)
-                      'font-lock-face 'eca-chat-option-value-face
-                      'pointer 'hand
-                      'keymap behavior-keymap)
-          "  "
-          (propertize "mcps:"
-                      'font-lock-face 'eca-chat-option-key-face
-                      'pointer 'hand
-                      'keymap mcp-keymap)
-          (propertize (eca-chat--mcps-summary session)
-                      'pointer 'hand
-                      'keymap mcp-keymap))))
+  (when session
+    (let ((model-keymap (make-sparse-keymap))
+          (behavior-keymap (make-sparse-keymap))
+          (mcp-keymap (make-sparse-keymap)))
+      (define-key model-keymap (kbd "<header-line> <mouse-1>") #'eca-chat-select-model)
+      (define-key behavior-keymap (kbd "<header-line> <mouse-1>") #'eca-chat-select-behavior)
+      (define-key mcp-keymap (kbd "<header-line> <mouse-1>") #'eca-mcp-details)
+      (list (propertize "model:"
+                        'font-lock-face 'eca-chat-option-key-face
+                        'pointer 'hand
+                        'keymap model-keymap)
+            (propertize (eca-chat--model session)
+                        'font-lock-face 'eca-chat-option-value-face
+                        'pointer 'hand
+                        'keymap model-keymap)
+            "  "
+            (propertize "behavior:"
+                        'font-lock-face 'eca-chat-option-key-face
+                        'pointer 'hand
+                        'keymap behavior-keymap)
+            (propertize (eca-chat--behavior session)
+                        'font-lock-face 'eca-chat-option-value-face
+                        'pointer 'hand
+                        'keymap behavior-keymap)
+            "  "
+            (propertize "mcps:"
+                        'font-lock-face 'eca-chat-option-key-face
+                        'pointer 'hand
+                        'keymap mcp-keymap)
+            (propertize (eca-chat--mcps-summary session)
+                        'pointer 'hand
+                        'keymap mcp-keymap)))))
 
 (defun eca-chat--mode-line-string ()
   "Update chat mode line."
