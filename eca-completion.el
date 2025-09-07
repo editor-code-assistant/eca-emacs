@@ -53,6 +53,11 @@ Incremented after each change.")
 
 (defvar eca-completion--post-command-timer nil)
 
+(defvar eca-completion-map
+  (let ((map (make-sparse-keymap)))
+    (define-key map (kbd "C-c C-<return>") #'eca-completion-accept))
+  "Keymap for ECA completion overlay.")
+
 (defun eca-completion--string-common-prefix (str1 str2)
   "Find the common prefix of STR1 and STR2 directly."
   (let ((min-len (min (length str1) (length str2)))
@@ -66,10 +71,8 @@ Incremented after each change.")
   "Create or get overlay for ECA completion."
   (unless (overlayp eca-completion--overlay)
     (setq eca-completion--overlay (make-overlay 1 1 nil nil t))
-    ;; TODO add custom keymap
-    ;; (overlay-put
-    ;;  eca-completion--overlay 'keymap-overlay ...)
-    )
+    (overlay-put eca-completion--overlay 'keymap eca-completion-map)
+    (overlay-put eca-completion--overlay 'priority 101))
   eca-completion--overlay)
 
 (defun eca-completion--set-overlay-text (ov text)
@@ -114,6 +117,38 @@ Incremented after each change.")
     (delete-overlay eca-completion--overlay)
     (setq eca-completion--real-posn nil)))
 
+(declare-function vterm-delete-region "ext:vterm.el")
+(declare-function vterm-insert "ext:vterm.el")
+
+(defun eca-completion-accept ()
+  "Accept completion."
+  (interactive)
+  (when (eca-completion--overlay-visible)
+    (let* ((text (overlay-get eca-completion--overlay 'completion))
+           (start (overlay-get eca-completion--overlay 'start))
+           (end (- (line-end-position) (overlay-get eca-completion--overlay 'tail-length)))
+           (completion-start (overlay-get eca-completion--overlay 'completion-start)))
+      ;; If there is extra indentation before the point, delete it and shift the completion
+      (when (and (< completion-start (point))
+                 ;; Region we are about to delete contains only blanks …
+                 (string-blank-p (buffer-substring-no-properties completion-start (point)))
+                 ;; … *and* everything from BOL to completion-start is blank
+                 ;; as well — i.e. we are really inside the leading indentation.
+                 (string-blank-p (buffer-substring-no-properties (line-beginning-position) completion-start)))
+        (setq start completion-start)
+        (setq end (- end (- (point) completion-start)))
+        (delete-region completion-start (point)))
+      (eca-completion--clear-overlay)
+      (if (derived-mode-p 'vterm-mode)
+          (progn
+            (vterm-delete-region start end)
+            (vterm-insert text))
+        (delete-region start end)
+        (insert text))
+      t)))
+
+
+
 (defun eca-completion--find-completion (&key on-success)
   ""
   (let ((line (- (line-number-at-pos) eca-completion--line-bias))
@@ -142,7 +177,16 @@ Incremented after each change.")
   "Handle the case where the char just inserted is the start of the completion.
 If so, update the overlays and continue.  COMMAND is the command that triggered
 in `post-command-hook'."
-  )
+  (when (and (eq command 'self-insert-command)
+             (eca-completion--overlay-visible))
+    (let* ((ov eca-completion--overlay)
+           (completion (overlay-get ov 'completion)))
+      ;; The char just inserted is the next char of completion
+      (when (eq last-command-event (elt completion 0))
+        (if (= (length completion) 1)
+            ;; If there is only one char in the completion, accept it
+            (eca-completion-accept)
+          (eca-completion--set-overlay-text ov (substring completion 1)))))))
 
 (defun eca-completion--post-command ()
   "Auto complete when idle."

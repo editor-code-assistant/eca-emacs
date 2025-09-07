@@ -197,6 +197,11 @@ Must be a valid model supported by server, check `eca-chat-select-model`."
   "Face for the reason messages in chat."
   :group 'eca)
 
+(defface eca-chat-time-face
+  '((t :inherit font-lock-comment-face :slant italic :height 0.8))
+  "Face for times spent in chat."
+  :group 'eca)
+
 (defface eca-chat-mcp-tool-call-label-face
   '((t :inherit font-lock-function-call-face))
   "Face for the MCP tool calls in chat."
@@ -344,6 +349,11 @@ Must be a valid model supported by server, check `eca-chat-select-model`."
     (cancel-timer eca-chat--spinner-timer)
     (setq eca-chat--spinner-timer nil))
   (setq eca-chat--spinner-string ""))
+
+(defun eca-chat--time->presentable-time (ms)
+  "Return a presentable time for MS."
+  (let ((secs (/ (float ms) 1000)))
+    (propertize (format "%.2f s" secs) 'font-lock-face 'eca-chat-time-face)))
 
 (defun eca-chat--behavior (session)
   "The chat behavior considering what's in SESSION and user option."
@@ -599,37 +609,38 @@ the prompt/context line."
 
 (defun eca-chat--header-line-string (session)
   "Update chat header line for SESSION."
-  (let ((model-keymap (make-sparse-keymap))
-        (behavior-keymap (make-sparse-keymap))
-        (mcp-keymap (make-sparse-keymap)))
-    (define-key model-keymap (kbd "<header-line> <mouse-1>") #'eca-chat-select-model)
-    (define-key behavior-keymap (kbd "<header-line> <mouse-1>") #'eca-chat-select-behavior)
-    (define-key mcp-keymap (kbd "<header-line> <mouse-1>") #'eca-mcp-details)
-    (list (propertize "model:"
-                      'font-lock-face 'eca-chat-option-key-face
-                      'pointer 'hand
-                      'keymap model-keymap)
-          (propertize (eca-chat--model session)
-                      'font-lock-face 'eca-chat-option-value-face
-                      'pointer 'hand
-                      'keymap model-keymap)
-          "  "
-          (propertize "behavior:"
-                      'font-lock-face 'eca-chat-option-key-face
-                      'pointer 'hand
-                      'keymap behavior-keymap)
-          (propertize (eca-chat--behavior session)
-                      'font-lock-face 'eca-chat-option-value-face
-                      'pointer 'hand
-                      'keymap behavior-keymap)
-          "  "
-          (propertize "mcps:"
-                      'font-lock-face 'eca-chat-option-key-face
-                      'pointer 'hand
-                      'keymap mcp-keymap)
-          (propertize (eca-chat--mcps-summary session)
-                      'pointer 'hand
-                      'keymap mcp-keymap))))
+  (when session
+    (let ((model-keymap (make-sparse-keymap))
+          (behavior-keymap (make-sparse-keymap))
+          (mcp-keymap (make-sparse-keymap)))
+      (define-key model-keymap (kbd "<header-line> <mouse-1>") #'eca-chat-select-model)
+      (define-key behavior-keymap (kbd "<header-line> <mouse-1>") #'eca-chat-select-behavior)
+      (define-key mcp-keymap (kbd "<header-line> <mouse-1>") #'eca-mcp-details)
+      (list (propertize "model:"
+                        'font-lock-face 'eca-chat-option-key-face
+                        'pointer 'hand
+                        'keymap model-keymap)
+            (propertize (eca-chat--model session)
+                        'font-lock-face 'eca-chat-option-value-face
+                        'pointer 'hand
+                        'keymap model-keymap)
+            "  "
+            (propertize "behavior:"
+                        'font-lock-face 'eca-chat-option-key-face
+                        'pointer 'hand
+                        'keymap behavior-keymap)
+            (propertize (eca-chat--behavior session)
+                        'font-lock-face 'eca-chat-option-value-face
+                        'pointer 'hand
+                        'keymap behavior-keymap)
+            "  "
+            (propertize "mcps:"
+                        'font-lock-face 'eca-chat-option-key-face
+                        'pointer 'hand
+                        'keymap mcp-keymap)
+            (propertize (eca-chat--mcps-summary session)
+                        'pointer 'hand
+                        'keymap mcp-keymap)))))
 
 (defun eca-chat--mode-line-string ()
   "Update chat mode line."
@@ -1216,8 +1227,13 @@ string."
                             (id (plist-get content :id))
                             (label (propertize "Thinking..." 'font-lock-face 'eca-chat-reason-label-face)))
                         (eca-chat--update-expandable-content id label text t)))
-        ("reasonFinished" (let ((id (plist-get content :id))
-                                (label (propertize "Thoughts" 'font-lock-face 'eca-chat-reason-label-face)))
+        ("reasonFinished" (let* ((id (plist-get content :id))
+                                 (base-label (propertize "Thought" 'font-lock-face 'eca-chat-reason-label-face))
+                                 (total-time-ms (-some-> (plist-get content :totalTimeMs)
+                                                  (eca-chat--time->presentable-time)))
+                                 (label (if total-time-ms
+                                            (concat base-label " " total-time-ms)
+                                          base-label)))
                             (eca-chat--update-expandable-content id label "" t)))
         ("toolCallPrepare" (let* ((name (plist-get content :name))
                                   (origin (plist-get content :origin))
@@ -1282,6 +1298,33 @@ string."
                                     approvalText)
                             (eca-chat--content-table `(("Tool" . ,name)
                                                        ("Arguments" . ,args)))))))
+        ("toolCallRunning" (let* ((name (plist-get content :name))
+                                  (origin (plist-get content :origin))
+                                  (args (plist-get content :arguments))
+                                  (id (plist-get content :id))
+                                  (details (plist-get content :details))
+                                  (summary (plist-get content :summary)))
+                             (if (string= "fileChange" (plist-get details :type))
+                                 (eca-chat--update-expandable-content
+                                  id
+                                  (concat (propertize summary 'font-lock-face 'eca-chat-mcp-tool-call-label-face)
+                                          " "
+                                          (eca-chat--file-change-details-label details)
+                                          eca-chat-mcp-tool-call-loading-symbol)
+                                  (concat
+                                   "Tool: `" name "`\n"
+                                   (eca-chat--file-change-diff (plist-get details :path) (plist-get details :diff) roots)))
+                               (eca-chat--update-expandable-content
+                                id
+                                (concat (propertize (or summary
+                                                        (format "Calling %s tool: %s"
+                                                                (if (string= "mcp" origin) "MCP" "ECA")
+                                                                name))
+                                                    'font-lock-face 'eca-chat-mcp-tool-call-label-face)
+                                        " "
+                                        eca-chat-mcp-tool-call-loading-symbol)
+                                (eca-chat--content-table `(("Tool" . ,name)
+                                                           ("Arguments" . ,args)))))))
         ("toolCallRejected" (let* ((name (plist-get content :name))
                                    (origin (plist-get content :origin))
                                    (args (plist-get content :arguments))
@@ -1313,6 +1356,10 @@ string."
                              (origin (plist-get content :origin))
                              (args (plist-get content :arguments))
                              (outputs (append (plist-get content :outputs) nil))
+                             (total-time-ms-str (or (-some->> (plist-get content :totalTimeMs)
+                                                      (eca-chat--time->presentable-time)
+                                                      (concat " "))
+                                                    ""))
                              (summary (or (plist-get content :summary)
                                           (format "Called %s tool: %s"
                                                   (if (string= "mcp" origin) "MCP" "ECA")
@@ -1321,6 +1368,9 @@ string."
                              (output-contents (-reduce-from (lambda (txt output) (concat txt "\n" (plist-get output :text)))
                                                             ""
                                                             outputs))
+                             (output-contents (if (string-blank-p output-contents)
+                                                  "Empty"
+                                                output-contents))
                              (details (plist-get content :details))
                              (status-icon (if error?
                                               eca-chat-mcp-tool-call-error-symbol
@@ -1331,7 +1381,8 @@ string."
                              (concat (propertize summary 'font-lock-face 'eca-chat-mcp-tool-call-label-face)
                                      " "
                                      (eca-chat--file-change-details-label details)
-                                     status-icon)
+                                     status-icon
+                                     total-time-ms-str)
                              (concat
                               "Tool: `" name "`\n"
                               (eca-chat--file-change-diff (plist-get details :path) (plist-get details :diff) roots)))
@@ -1339,7 +1390,8 @@ string."
                            id
                            (concat (propertize summary 'font-lock-face 'eca-chat-mcp-tool-call-label-face)
                                    " "
-                                   status-icon)
+                                   status-icon
+                                   total-time-ms-str)
                            (eca-chat--content-table `(("Tool" . ,name)
                                                       ("Arguments" . ,args)
                                                       ("Output" . ,output-contents)))))))

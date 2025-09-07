@@ -12,7 +12,6 @@
 ;;; Code:
 
 (require 'cl-lib)
-(require 'vc-git)
 (require 'dash)
 (require 'transient)
 
@@ -36,10 +35,14 @@
 
 (defun eca-find-root-for-buffer ()
   "Get the project root using git falling back to file directory."
-  (-some-> (or (vc-git-root default-directory)
-               (when buffer-file-name (file-name-directory buffer-file-name))
-               default-directory)
-    (file-truename)))
+  (or (when (fboundp 'project-current)
+        (when-let* ((project (project-current)))
+          (if (fboundp 'project-root)
+              (project-root project)
+            (car (with-no-warnings
+                   (project-roots project))))))
+      (when buffer-file-name (file-name-directory buffer-file-name))
+      default-directory))
 
 (defvar-local eca--session-id-cache nil)
 
