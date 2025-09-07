@@ -14,6 +14,7 @@
 (require 'map)
 
 (require 'eca-util)
+(require 'eca-api)
 
 ;; Variables
 
@@ -40,6 +41,8 @@ To work around posn problems with after-string property.")
 
 (defvar-local eca-completion--overlay nil
   "Overlay for ECA completion.")
+(defvar-local eca-completion--keymap-overlay nil
+  "Overlay used to surround point and make eca-completion-keymap activate.")
 
 (defvar-local eca-completion--doc-version 0
   "The document version of the current buffer.
@@ -55,7 +58,9 @@ Incremented after each change.")
 
 (defvar eca-completion-map
   (let ((map (make-sparse-keymap)))
-    (define-key map (kbd "C-c C-<return>") #'eca-completion-accept))
+    (define-key map (kbd "<tab>") #'eca-completion-accept)
+    (define-key map (kbd "TAB") #'eca-completion-accept)
+    map)
   "Keymap for ECA completion overlay.")
 
 (defun eca-completion--string-common-prefix (str1 str2)
@@ -67,17 +72,26 @@ Incremented after each change.")
       (setq i (1+ i)))
     (substring str1 0 i)))
 
+(defun eca-completion--get-or-create-keymap-overlay ()
+  "Make or return the local keymap overlay."
+  (unless (overlayp eca-completion--keymap-overlay)
+    (setq eca-completion--keymap-overlay (make-overlay 1 1 nil nil t))
+    (overlay-put eca-completion--keymap-overlay 'keymap eca-completion-map)
+    (overlay-put eca-completion--keymap-overlay 'local-map eca-completion-map)
+    (overlay-put eca-completion--keymap-overlay 'priority 101))
+  eca-completion--keymap-overlay)
+
 (defun eca-completion--get-overlay ()
   "Create or get overlay for ECA completion."
   (unless (overlayp eca-completion--overlay)
     (setq eca-completion--overlay (make-overlay 1 1 nil nil t))
-    (overlay-put eca-completion--overlay 'keymap eca-completion-map)
-    (overlay-put eca-completion--overlay 'priority 101))
+    (overlay-put eca-completion--overlay 'keymap-overlay (eca-completion--get-or-create-keymap-overlay)))
   eca-completion--overlay)
 
 (defun eca-completion--set-overlay-text (ov text)
   "Set overlay OV with TEXT."
   (move-overlay ov (point) (line-end-position))
+  (move-overlay (overlay-get ov 'keymap-overlay) (point) (min (point-max) (+ 1 (point))))
 
   (let* ((tail (buffer-substring (- (line-end-position) (overlay-get ov 'tail-length)) (line-end-position)))
          (text-p (concat (propertize text 'face 'eca-completion-overlay-face)
@@ -115,6 +129,7 @@ Incremented after each change.")
   (interactive)
   (when (eca-completion--overlay-visible)
     (delete-overlay eca-completion--overlay)
+    (delete-overlay eca-completion--keymap-overlay)
     (setq eca-completion--real-posn nil)))
 
 (declare-function vterm-delete-region "ext:vterm.el")
@@ -147,30 +162,24 @@ Incremented after each change.")
         (insert text))
       t)))
 
-
-
 (defun eca-completion--find-completion (&key on-success)
-  ""
+  "Find completion requesting server calling ON-SUCCESS for the response."
   (let ((line (- (line-number-at-pos) eca-completion--line-bias))
         (character (- (point) (line-beginning-position))))
-    (funcall on-success
-             (list (list :text "foo"
-                         :id "123"
-                         :doc-version 0
-                         :range (list :start (list :line line :character character)
-                                      :end (list :line line :character character)))
-                   (list :text "foobar"
-                         :id "234"
-                         :doc-version 0
-                         :range (list :start (list :line line :character character)
-                                      :end (list :line line :character character)))))))
-
+    (when-let ((session (eca-session)))
+      (eca-api-request-async session
+                             :method "completion/inline"
+                             :params (list :uri 1
+                                           :doc-version eca-completion--doc-version
+                                           :position (list :line line :character character))
+                             :success-callback (-lambda ((&plist :items items))
+                                                 (funcall on-success items))))))
 
 (defun eca-completion--post-command-debounce (buffer)
   "Complete in BUFFER."
   (when (and (buffer-live-p buffer)
              (equal (current-buffer) buffer)
-             (derived-mode-p 'eca-completion-mode))
+             eca-completion-mode)
     (eca-complete)))
 
 (defun eca-completion--self-insert (command)
@@ -223,7 +232,7 @@ in `post-command-hook'."
 
 (defun eca-completion--show-completion (completion)
   "Show COMPLETION."
-  (-let* (((&plist :text text :id id :range range :doc-version doc-version) completion)
+  (-let* (((&plist :text text :id id :range range :docVersion doc-version) completion)
           ((&plist :start start :end end) range)
           ((&plist :line start-line :character start-char) start)
           ((&plist :character end-char) end))
@@ -252,10 +261,6 @@ in `post-command-hook'."
 
 ;; Public
 
-(defvar eca-completion-mode-map (make-sparse-keymap)
-  "Keymap for eca-completion minor mode.
-Use this for custom bindings in `eca-completion-mode'.")
-
 ;;;###autoload
 (define-minor-mode eca-completion-mode
   "Minor mode for ECA completions."
@@ -279,10 +284,10 @@ Use this for custom bindings in `eca-completion-mode'.")
   (let ((called-interactively (called-interactively-p 'interactive)))
     (eca-completion--find-completion
      :on-succeess
-     (lambda (completions)
-       (let ((completion (if (seq-empty-p completions) nil (seq-elt completions 0))))
-         (if completion
-             (eca-completion--show-completion completion)
+     (lambda (items)
+       (let ((item (if (seq-empty-p items) nil (seq-elt items 0))))
+         (if item
+             (eca-completion--show-completion item)
            (when called-interactively
              (eca-warn "No completion is available."))))))))
 
