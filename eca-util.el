@@ -166,7 +166,6 @@
                         (interactive)
                         (funcall callback))))
     (define-key km (kbd "<mouse-1>") callback-int)
-    (define-key km (kbd "<tab>") callback-int)
     (define-key km (kbd "<return>") callback-int)
     (propertize text
                 'eca-button-on-action callback
