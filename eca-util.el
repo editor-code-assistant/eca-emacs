@@ -167,11 +167,13 @@
                         (funcall callback))))
     (define-key km (kbd "<mouse-1>") callback-int)
     (define-key km (kbd "<return>") callback-int)
+    (define-key km (kbd "RET") callback-int)
     (propertize text
                 'eca-button-on-action callback
                 'pointer 'hand
                 'help-echo text
-                'local-map km)))
+                'local-map km
+                'keymap km)))
 
 (transient-define-prefix eca-transient-menu
   ()
