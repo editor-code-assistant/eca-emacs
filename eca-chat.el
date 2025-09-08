@@ -466,7 +466,7 @@ Otherwise to a not loading state."
 (defun eca-chat--key-pressed-newline ()
   "Insert a newline character at point."
   (interactive)
-  (when (eq (line-beginning-position) (eca-chat--prompt-field-start-point))
+  (when (>= (point) (eca-chat--prompt-field-start-point))
     (insert "\n")))
 
 (defun eca-chat--key-pressed-tab ()
