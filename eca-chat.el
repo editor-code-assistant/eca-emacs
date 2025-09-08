@@ -637,19 +637,20 @@ the prompt/context line."
                         'font-lock-face 'eca-chat-option-key-face
                         'pointer 'hand
                         'keymap model-keymap)
-            (propertize (eca-chat--model session)
-                        'font-lock-face 'eca-chat-option-value-face
-                        'pointer 'hand
-                        'keymap model-keymap)
+            (-some-> (eca-chat--model session)
+              (propertize
+               'font-lock-face 'eca-chat-option-value-face
+               'pointer 'hand
+               'keymap model-keymap))
             "  "
             (propertize "behavior:"
                         'font-lock-face 'eca-chat-option-key-face
                         'pointer 'hand
                         'keymap behavior-keymap)
-            (propertize (eca-chat--behavior session)
-                        'font-lock-face 'eca-chat-option-value-face
-                        'pointer 'hand
-                        'keymap behavior-keymap)
+            (-some-> (eca-chat--behavior session)
+              (propertize 'font-lock-face 'eca-chat-option-value-face
+                          'pointer 'hand
+                          'keymap behavior-keymap))
             "  "
             (propertize "mcps:"
                         'font-lock-face 'eca-chat-option-key-face
