@@ -163,22 +163,22 @@ Must be a valid model supported by server, check `eca-chat-select-model`."
   :group 'eca)
 
 (defface eca-chat-context-unlinked-face
-  '((t (:foreground "gold")))
+  '((t (:foreground "gold" :height 0.9)))
   "Face for contexts to be added."
   :group 'eca)
 
 (defface eca-chat-context-file-face
-  '((t (:foreground "coral" :underline t)))
+  '((t (:foreground "coral" :underline t :height 0.9)))
   "Face for contexts of file type."
   :group 'eca)
 
 (defface eca-chat-context-repo-map-face
-  '((t (:foreground "turquoise" :underline t)))
+  '((t (:foreground "turquoise" :underline t :height 0.9)))
   "Face for contexts of repoMap type."
   :group 'eca)
 
 (defface eca-chat-context-mcp-resource-face
-  '((t (:foreground "lime green" :underline t)))
+  '((t (:foreground "lime green" :underline t :height 0.9)))
   "Face for contexts of mcpResource type."
   :group 'eca)
 
