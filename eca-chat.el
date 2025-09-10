@@ -270,7 +270,6 @@ Must be a valid model supported by server, check `eca-chat-select-model`."
 (defvar-local eca-chat--id nil)
 (defvar-local eca-chat--last-request-id 0)
 (defvar-local eca-chat--context '())
-(defvar-local eca-chat--context-ids '())
 (defvar-local eca-chat--spinner-string "")
 (defvar-local eca-chat--spinner-timer nil)
 (defvar-local eca-chat--progress-text "")
@@ -973,13 +972,6 @@ If FORCE? decide to OPEN? or not."
   "Remove from chat CONTEXT."
   (setq eca-chat--context (remove context eca-chat--context))
   (eca-chat--refresh-context))
-
-(defun eca-chat--set-context (id context)
-  "Add to chat CONTEXT if ID not present, otherwise update."
-  (when-let ((existing-context (eca-get eca-chat--context-ids id)))
-    (eca-chat--remove-context existing-context))
-  (setq eca-chat--context-ids (eca-assoc eca-chat--context-ids id context))
-  (eca-chat--add-context context))
 
 (defun eca-chat--completion-context-annotate (roots item-label)
   "Annonate ITEM-LABEL detail for ROOTS."
