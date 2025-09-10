@@ -180,22 +180,22 @@ Defaults to ‘ediff’ for an interactive visual diff experience."
   :group 'eca)
 
 (defface eca-chat-context-unlinked-face
-  '((t (:foreground "gold")))
+  '((t (:foreground "gold" :height 0.9)))
   "Face for contexts to be added."
   :group 'eca)
 
 (defface eca-chat-context-file-face
-  '((t (:foreground "coral" :underline t)))
+  '((t (:foreground "coral" :underline t :height 0.9)))
   "Face for contexts of file type."
   :group 'eca)
 
 (defface eca-chat-context-repo-map-face
-  '((t (:foreground "turquoise" :underline t)))
+  '((t (:foreground "turquoise" :underline t :height 0.9)))
   "Face for contexts of repoMap type."
   :group 'eca)
 
 (defface eca-chat-context-mcp-resource-face
-  '((t (:foreground "lime green" :underline t)))
+  '((t (:foreground "lime green" :underline t :height 0.9)))
   "Face for contexts of mcpResource type."
   :group 'eca)
 
@@ -483,7 +483,7 @@ Otherwise to a not loading state."
 (defun eca-chat--key-pressed-newline ()
   "Insert a newline character at point."
   (interactive)
-  (when (eq (line-beginning-position) (eca-chat--prompt-field-start-point))
+  (when (>= (point) (eca-chat--prompt-field-start-point))
     (insert "\n")))
 
 (defun eca-chat--key-pressed-tab ()
