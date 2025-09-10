@@ -69,12 +69,12 @@ ECA chat opens in a regular buffer that follows standard
   :type 'boolean
   :group 'eca)
 
-(defcustom eca-chat-auto-track-context t
-  "Whether to auto track open workspace files and add them to context."
+(defcustom eca-chat-auto-add-cursor t
+  "Whether to auto track cursor opened files/position and add them to context."
   :type 'boolean
   :group 'eca)
 
-(defcustom eca-chat-cursor-context-debounce 0.8
+(defcustom eca-chat-cursor-context-debounce 0.3
   "Seconds to debounce updates when tracking cursor to context."
   :type 'number
   :group 'eca)
@@ -197,6 +197,11 @@ Must be a valid model supported by server, check `eca-chat-select-model`."
   "Face for contexts of mcpResource type."
   :group 'eca)
 
+(defface eca-chat-context-cursor-face
+  '((t (:foreground "gainsboro" :underline t :height 0.9)))
+  "Face for contexts of cursor type."
+  :group 'eca)
+
 (defface eca-chat-user-messages-face
   '((t :inherit font-lock-doc-face))
   "Face for the user sent messages in chat."
@@ -280,7 +285,6 @@ Must be a valid model supported by server, check `eca-chat-select-model`."
 (defvar-local eca-chat--id nil)
 (defvar-local eca-chat--last-request-id 0)
 (defvar-local eca-chat--context '())
-(defvar-local eca-chat--context-ids '())
 (defvar-local eca-chat--spinner-string "")
 (defvar-local eca-chat--spinner-timer nil)
 (defvar-local eca-chat--progress-text "")
@@ -294,7 +298,7 @@ Must be a valid model supported by server, check `eca-chat-select-model`."
 (defvar-local eca-chat--session-limit-context nil)
 (defvar-local eca-chat--session-limit-output nil)
 (defvar-local eca-chat--empty t)
-(defvar-local eca-chat--track-context t)
+(defvar-local eca-chat--cursor-context nil)
 
 ;; Timer used to debounce post-command driven context updates
 (defvar eca-chat--cursor-context-timer nil)
@@ -555,16 +559,24 @@ the prompt/context line."
            (overlay-get cur-ov 'eca-chat-context-area)
            (string= eca-chat-context-prefix (string (char-before (point)))))
       (setq-local eca-chat--context (delete (car (last eca-chat--context)) eca-chat--context))
-      (setq-local eca-chat--track-context nil)
       (eca-chat--refresh-context)
       (end-of-line))
 
      (t (funcall side-effect-fn)))))
 
+(defun eca-chat--refine-context (context)
+  "Refine CONTEXT before sending in prompt."
+  (pcase (plist-get context :type)
+    ("cursor" (-> context
+                  (plist-put :path (plist-get eca-chat--cursor-context :path))
+                  (plist-put :position (plist-get eca-chat--cursor-context :position))))
+    (_ context)))
+
 (defun eca-chat--send-prompt (session prompt)
   "Send PROMPT to server for SESSION."
   (eca-chat--with-current-buffer (eca-chat--get-buffer session)
-    (let* ((prompt-start (eca-chat--prompt-field-start-point)))
+    (let* ((prompt-start (eca-chat--prompt-field-start-point))
+           (refined-contexts (-map #'eca-chat--refine-context eca-chat--context)))
       (when (seq-empty-p eca-chat--history) (eca-chat--clear session))
       (add-to-list 'eca-chat--history prompt)
       (setq eca-chat--history-index -1)
@@ -579,7 +591,7 @@ the prompt/context line."
                      :chatId eca-chat--id
                      :model (eca-chat--model session)
                      :behavior (eca-chat--behavior session)
-                     :contexts (vconcat eca-chat--context))
+                     :contexts (vconcat refined-contexts))
        :success-callback (-lambda (res)
                            (setq-local eca-chat--id (plist-get res :chatId)))))))
 
@@ -1164,6 +1176,9 @@ frame and the temporary buffer are cleaned up.  Adds a local q binding to quit."
            ("mcpResource" (propertize (concat eca-chat-context-prefix (plist-get context :server) ":" (plist-get context :name))
                                       'eca-chat-context-item context
                                       'font-lock-face 'eca-chat-context-mcp-resource-face))
+           ("cursor" (propertize (concat eca-chat-context-prefix "cursor")
+                                 'eca-chat-context-item context
+                                 'font-lock-face 'eca-chat-context-cursor-face))
            (_ (propertize (concat eca-chat-context-prefix "unkown:" type)
                           'eca-chat-context-item context))))
         (insert " ")))
@@ -1173,6 +1188,7 @@ frame and the temporary buffer are cleaned up.  Adds a local q binding to quit."
   '(("file" . file)
     ("directory" . folder)
     ("repoMap" . module)
+    ("cursor" . class)
     ("mcpPrompt" . function)
     ("mcpResource" . file)
     ("native" . variable)))
@@ -1204,13 +1220,6 @@ frame and the temporary buffer are cleaned up.  Adds a local q binding to quit."
   (setq eca-chat--context (remove context eca-chat--context))
   (eca-chat--refresh-context))
 
-(defun eca-chat--set-context (id context)
-  "Add to chat CONTEXT if ID not present, otherwise update."
-  (when-let ((existing-context (eca-get eca-chat--context-ids id)))
-    (eca-chat--remove-context existing-context))
-  (setq eca-chat--context-ids (eca-assoc eca-chat--context-ids id context))
-  (eca-chat--add-context context))
-
 (defun eca-chat--completion-context-annotate (roots item-label)
   "Annonate ITEM-LABEL detail for ROOTS."
   (-let (((&plist :type type :path path :description description) (get-text-property 0 'eca-chat-completion-item item-label)))
@@ -1218,6 +1227,7 @@ frame and the temporary buffer are cleaned up.  Adds a local q binding to quit."
       ("file" (eca-chat--relativize-filename-for-workspace-root path roots))
       ("directory" (eca-chat--relativize-filename-for-workspace-root path roots))
       ("repoMap" "Summary view of workspaces files")
+      ("cursor" "Current cursor file + position")
       ("mcpResource" description)
       (_ ""))))
 
@@ -1231,7 +1241,6 @@ frame and the temporary buffer are cleaned up.  Adds a local q binding to quit."
 (defun eca-chat--completion-context-exit-function (item _status)
   "Add to context the selected ITEM."
   (eca-chat--add-context (get-text-property 0 'eca-chat-completion-item item))
-  (setq-local eca-chat--track-context nil)
   (end-of-line))
 
 (defun eca-chat--context-to-completion (context)
@@ -1241,6 +1250,7 @@ frame and the temporary buffer are cleaned up.  Adds a local q binding to quit."
      ("file" (f-filename (plist-get context :path)))
      ("directory" (f-filename (plist-get context :path)))
      ("repoMap" "repoMap")
+     ("cursor" "cursor")
      ("mcpResource" (concat (plist-get context :server) ":" (plist-get context :name)))
      (_ (concat "Unknown - " (plist-get context :type))))
    'eca-chat-completion-item context))
@@ -1258,26 +1268,46 @@ frame and the temporary buffer are cleaned up.  Adds a local q binding to quit."
                               (overlays-in range-min range-max))))
         (goto-char (overlay-start ov))))))
 
-(defun eca-chat--track-context-at-point (&rest _args)
-  "Change chat context considering current open file and point."
-  (when eca-chat-auto-track-context
-    (when-let ((session (eca-session)))
-      (when-let ((workspaces (eca--session-workspace-folders session)))
-        (when-let ((path (buffer-file-name)))
-          (when (--any? (and it (f-ancestor-of? it path))
-                        workspaces)
-            (when-let (buffer (eca-chat--get-buffer session))
-              (eca-chat--with-current-buffer buffer
-                (when (and eca-chat--empty eca-chat--track-context)
-                  (eca-chat--set-context 'open-file (list :type "file"
-                                                          :path path)))))))))))
+(defun eca-chat--cur-position ()
+  "Return the start and end positions for current point.
+Returns a cons cell (START . END) where START and END are cons cells
+of (LINE . CHARACTER) representing the current selection or cursor position."
+  (let* ((start-pos (if (use-region-p) (region-beginning) (point)))
+         (end-pos (if (use-region-p) (region-end) (point)))
+         (start-line (line-number-at-pos start-pos))
+         (start-char (save-excursion
+                       (goto-char start-pos)
+                       (current-column)))
+         (end-line (line-number-at-pos end-pos))
+         (end-char (save-excursion
+                     (goto-char end-pos)
+                     (current-column))))
+    (cons (cons start-line start-char)
+          (cons end-line end-char))))
 
-(defun eca-chat--track-context-at-point-schedule ()
-  "Debounce `eca-chat--track-context-at-point' via an idle timer."
+(defun eca-chat--track-cursor (&rest _args)
+  "Change chat context considering current open file and point."
+  (when-let ((session (eca-session)))
+    (when-let ((workspaces (eca--session-workspace-folders session)))
+      (when-let ((path (buffer-file-name)))
+        (when (--any? (and it (f-ancestor-of? it path))
+                      workspaces)
+          (when-let (buffer (eca-chat--get-buffer session))
+            (-let* (((start . end) (eca-chat--cur-position))
+                    ((start-line . start-character) start)
+                    ((end-line . end-character) end))
+              (eca-chat--with-current-buffer buffer
+                (setq eca-chat--cursor-context
+                      (list :path path
+                            :position (list :start (list :line start-line :character start-character)
+                                            :end (list :line end-line :character end-character))))))))))))
+
+(defun eca-chat--track-cursor-position-schedule ()
+  "Debounce `eca-chat--track-cursor' via an idle timer."
   (unless eca-chat--cursor-context-timer
     (setq eca-chat--cursor-context-timer
           (run-with-idle-timer eca-chat-cursor-context-debounce t
-                               #'eca-chat--track-context-at-point))))
+                               #'eca-chat--track-cursor))))
 
 (declare-function evil-delete-backward-word "evil" ())
 (declare-function evil-delete-back-to-indentation "evil" ())
@@ -1669,23 +1699,22 @@ string."
 (defun eca-chat-open (session)
   "Open or create dedicated eca chat window for SESSION."
   (eca-assert-session-running session)
-  (let ((opened-buffer (current-buffer)))
-    (unless (buffer-live-p (eca-chat--get-buffer session))
-      (eca-chat--create-buffer session))
-    (eca-chat--with-current-buffer (eca-chat--get-buffer session)
-      (unless (derived-mode-p 'eca-chat-mode)
-        (eca-chat-mode)
-        (when eca-chat-auto-add-repomap
-          (eca-chat--add-context (list :type "repoMap")))
-        (when eca-chat-auto-track-context
-          (eca-chat--track-context-at-point-schedule)
-          (with-current-buffer opened-buffer
-            (eca-chat--track-context-at-point))))
-      (unless (eca--session-chat session)
-        (setf (eca--session-chat session) (current-buffer)))
-      (if (window-live-p (get-buffer-window (buffer-name)))
-          (eca-chat--select-window)
-        (eca-chat--pop-window)))))
+  (unless (buffer-live-p (eca-chat--get-buffer session))
+    (eca-chat--create-buffer session))
+  (eca-chat--with-current-buffer (eca-chat--get-buffer session)
+    (unless (derived-mode-p 'eca-chat-mode)
+      (eca-chat-mode)
+      (eca-chat--track-cursor-position-schedule)
+      (when eca-chat-auto-add-cursor
+        (eca-chat--add-context (list :type "cursor")))
+      (when eca-chat-auto-add-repomap
+        (eca-chat--add-context (list :type "repoMap"))))
+    (unless (eca--session-chat session)
+      (setf (eca--session-chat session) (current-buffer)))
+    (if (window-live-p (get-buffer-window (buffer-name)))
+        (eca-chat--select-window)
+      (eca-chat--pop-window)))
+  (eca-chat--track-cursor))
 
 (defun eca-chat-exit (session)
   "Exit the ECA chat for SESSION."
@@ -1801,8 +1830,7 @@ Consider the defun at point unless a region is selected."
     (eca-chat--with-current-buffer (eca-chat--get-buffer (eca-session))
       (eca-chat--add-context (list :type "file"
                                    :path path
-                                   :linesRange (list :start start :end end)))
-      (setq eca-chat--track-context nil))))
+                                   :linesRange (list :start start :end end))))))
 
 ;;;###autoload
 (defun eca-chat-add-file-context (&optional arg)
@@ -1816,7 +1844,6 @@ if ARG is current prefix, ask for file, otherwise add current file."
     (eca-chat--with-current-buffer (eca-chat--get-buffer (eca-session))
       (eca-chat--add-context (list :type "file"
                                    :path path))
-      (setq eca-chat--track-context nil)
       (eca-chat-open (eca-session)))))
 
 ;;;###autoload
@@ -1831,7 +1858,6 @@ if ARG is current prefix, ask for file, otherwise add current file."
     (eca-chat--with-current-buffer (eca-chat--get-buffer (eca-session))
       (eca-chat--remove-context (list :type "file"
                                       :path path))
-      (setq eca-chat--track-context nil)
       (eca-chat-open (eca-session)))))
 
 ;;;###autoload
