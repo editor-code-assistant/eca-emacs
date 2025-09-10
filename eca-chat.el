@@ -1003,6 +1003,7 @@ If FORCE? decide to OPEN? or not."
      ("file" (f-filename (plist-get context :path)))
      ("directory" (f-filename (plist-get context :path)))
      ("repoMap" "repoMap")
+     ("cursor" "cursor")
      ("mcpResource" (concat (plist-get context :server) ":" (plist-get context :name)))
      (_ (concat "Unknown - " (plist-get context :type))))
    'eca-chat-completion-item context))
