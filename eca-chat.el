@@ -35,9 +35,9 @@
 Can be `'left', `'right', `'top', or `'bottom'.  This setting will only
 be used when `eca-chat-use-side-window' is non-nil."
   :type '(choice (const :tag "Left" left)
-          (const :tag "Right" right)
-          (const :tag "Top" top)
-          (const :tag "Bottom" bottom))
+                 (const :tag "Right" right)
+                 (const :tag "Top" top)
+                 (const :tag "Bottom" bottom))
   :group 'eca)
 
 (defcustom eca-chat-window-width 0.40
@@ -143,14 +143,7 @@ Must be a valid model supported by server, check `eca-chat-select-model`."
   :group 'eca)
 
 (defcustom eca-chat-diff-tool 'ediff
-  "Select the method for displaying file-change diffs in ECA chat.
-
-Possible values are:
-• ediff — Open an interactive side-by-side comparison using Ediff.
-• smerge — Present changes in merge-conflict format with Smerge mode.
-• text — Show the raw unified diff as plain text in a separate buffer.
-
-Defaults to ‘ediff’ for an interactive visual diff experience."
+  "Select the method for displaying file-change diffs in ECA chat."
   :type '(choice (const :tag "Side-by-side Ediff" ediff)
                  (const :tag "Merge-style Smerge" smerge)
                  (const :tag "Plain text diff" text))
@@ -177,6 +170,11 @@ Defaults to ‘ediff’ for an interactive visual diff experience."
 (defface eca-chat-tool-call-cancel-face
   '((t (:inherit error :underline t :weight bold)))
   "Face for the cancel tool call action."
+  :group 'eca)
+
+(defface eca-chat-diff-view-face
+  '((t (:foreground "dodger blue" :underline t :weight bold)))
+  "Face for the diff view button."
   :group 'eca)
 
 (defface eca-chat-context-unlinked-face
@@ -912,34 +910,154 @@ If FORCE? decide to OPEN? or not."
 
 
 (defun eca-chat--show-diff-text (path diff)
-  "Show DIFF for file at PATH as plain unified diff text."
+  "Show DIFF for file at PATH as plain unified diff text.
+Adds \\='q\\=' to quit."
   (with-current-buffer (get-buffer-create (format "*eca-diff:%s*" path))
     (let ((inhibit-read-only t))
       (erase-buffer)
       (insert diff)
       (diff-mode)
-      (goto-char (point-min)))
+      (goto-char (point-min))
+      ;; Add a local 'q' binding to kill this buffer quickly
+      (let ((map (make-sparse-keymap)))
+        (set-keymap-parent map (current-local-map))
+        (define-key map (kbd "q") (lambda () (interactive) (kill-buffer (current-buffer))))
+        (use-local-map map)))
     (pop-to-buffer (current-buffer))))
 
 (defun eca-chat--show-diff-ediff (path diff)
-  "Show DIFF for file at PATH using Ediff side-by-side."
+  "Show DIFF for file at PATH using Ediff side-by-side.
+Cleanly manages frame and buffers."
   (let* ((parsed    (eca-chat--parse-unified-diff diff))
          (orig      (plist-get parsed :original))
          (new       (plist-get parsed :new))
          (buf-orig  (generate-new-buffer (format "%s<orig>" path)))
-         (buf-new   (generate-new-buffer (format "%s<new>" path))))
+         (buf-new   (generate-new-buffer (format "%s<new>" path)))
+         (created-frame nil)
+         (cleanup-function nil)
+         (startup-function nil)
+         (frame-deleted-fn nil)
+         (ediff-buffers-before nil)
+         (session-ediff-buffers nil))
     (with-current-buffer buf-orig
       (erase-buffer) (insert orig) (set-buffer-modified-p nil))
     (with-current-buffer buf-new
       (erase-buffer) (insert new) (set-buffer-modified-p nil))
-    (ediff-buffers buf-orig buf-new)))
+
+    ;; Capture existing Ediff buffers before we start
+    (setq ediff-buffers-before
+          (seq-filter (lambda (buf)
+                        (string-match-p "\\*\\(ediff-\\|Ediff Control\\)" (buffer-name buf)))
+                      (buffer-list)))
+
+    ;; Define cleanup function
+    (setq cleanup-function
+          (lambda ()
+            ;; Clean up temporary buffers
+            (when (buffer-live-p buf-orig)
+              (kill-buffer buf-orig))
+            (when (buffer-live-p buf-new)
+              (kill-buffer buf-new))
+            ;; Clean up our specific Ediff session buffers
+            (dolist (buf session-ediff-buffers)
+              (when (and buf (buffer-live-p buf))
+                (kill-buffer buf)))
+            ;; Delete frame if we created it
+            (when (and created-frame (frame-live-p created-frame))
+              (delete-frame created-frame))
+            ;; Remove this hook function after use
+            (remove-hook 'ediff-quit-hook cleanup-function)
+            (when frame-deleted-fn
+              (remove-hook 'delete-frame-functions frame-deleted-fn))))
+
+    ;; Define startup function that captures the session's internal buffers
+    (setq startup-function
+          (lambda ()
+            ;; Capture new Ediff buffers created for this session only
+            (let ((ediff-buffers-after
+                   (seq-filter (lambda (buf)
+                                 (string-match-p "\\*\\(ediff-\\|Ediff Control\\)" (buffer-name buf)))
+                               (buffer-list))))
+              ;; Only track buffers that are new AND not the persistent registry
+              (setq session-ediff-buffers
+                    (seq-filter (lambda (buf)
+                                  (and (not (member buf ediff-buffers-before))
+                                       (not (string-match-p "\\*Ediff Registry\\*" (buffer-name buf)))))
+                                ediff-buffers-after)))
+            ;; Navigate to first difference if any exist
+            (condition-case _err
+                (progn
+                  ;; Set to start from beginning
+                  (setq ediff-current-difference -1)
+                  ;; Move to first difference
+                  (ediff-next-difference))
+              (error nil))  ; Ignore if no differences
+            ;; Remove this hook function after use
+            (remove-hook 'ediff-after-setup-windows-hook startup-function)))
+
+    ;; Add hooks for this ediff session
+    (add-hook 'ediff-quit-hook cleanup-function)
+    (add-hook 'ediff-after-setup-windows-hook startup-function)
+
+    ;; Ensure ediff runs in a regular window context, not from a side window
+    ;; This prevents both "Cannot make side window the only window" and
+    ;; "Cannot split side window or parent of side window" errors
+    (let ((regular-window (cl-find-if-not
+                           (lambda (w)
+                             (or (window-parameter w 'window-side)
+                                 (window-parameter (window-parent w) 'window-side)))
+                           (window-list))))
+      (if regular-window
+          ;; Use existing regular window
+          (with-selected-window regular-window
+            (condition-case _err
+                (ediff-buffers buf-orig buf-new)
+              (error
+               ;; Fallback: create new frame if window operations fail
+               (setq created-frame (make-frame '((fullscreen . maximized))))
+               ;; If the user manually deletes the frame, also kill the temp buffers
+               (setq frame-deleted-fn
+                     (lambda (frame)
+                       (when (eq frame created-frame)
+                         (when (buffer-live-p buf-orig) (kill-buffer buf-orig))
+                         (when (buffer-live-p buf-new) (kill-buffer buf-new))
+                         ;; Clean up our specific Ediff session buffers
+                         (dolist (buf session-ediff-buffers)
+                           (when (and buf (buffer-live-p buf))
+                             (kill-buffer buf)))
+                         (remove-hook 'delete-frame-functions frame-deleted-fn))))
+               (add-hook 'delete-frame-functions frame-deleted-fn)
+               (select-frame created-frame)
+               (ediff-buffers buf-orig buf-new))))
+        ;; No regular window exists - create a new frame for ediff
+        (setq created-frame (make-frame '((fullscreen . maximized))))
+        (setq frame-deleted-fn
+              (lambda (frame)
+                (when (eq frame created-frame)
+                  (when (buffer-live-p buf-orig) (kill-buffer buf-orig))
+                  (when (buffer-live-p buf-new) (kill-buffer buf-new))
+                  ;; Clean up our specific Ediff session buffers
+                  (dolist (buf session-ediff-buffers)
+                    (when (and buf (buffer-live-p buf))
+                      (kill-buffer buf)))
+                  (remove-hook 'delete-frame-functions frame-deleted-fn))))
+        (add-hook 'delete-frame-functions frame-deleted-fn)
+        (select-frame created-frame)
+        (ediff-buffers buf-orig buf-new)))))
 
 (defun eca-chat--show-diff-smerge (path diff)
-  "Show DIFF for file at PATH using Smerge hunk-by-hunk review."
+  "Show DIFF for file at PATH using Smerge in a dedicated new frame.
+Also enables diff-mode for syntax highlighting and ensures both the created
+frame and the temporary buffer are cleaned up.  Adds a local q binding to quit."
   (let* ((parsed  (eca-chat--parse-unified-diff diff))
          (orig    (plist-get parsed :original))
          (new     (plist-get parsed :new))
-         (buf     (get-buffer-create (format "*eca-smerge:%s*" path))))
+         ;; Always create a fresh buffer to avoid reusing an existing display
+         (buf     (generate-new-buffer (format "*eca-smerge:%s*" path)))
+         (created-frame nil)
+         (cleanup-fn nil)
+         (smerge-change-fn nil)
+         (frame-deleted-fn nil))
     (with-current-buffer buf
       (let ((inhibit-read-only t))
         (erase-buffer)
@@ -948,11 +1066,57 @@ If FORCE? decide to OPEN? or not."
                         "\n=======\n"
                         new
                         "\n>>>>>>> New\n"))
+        ;; Major mode: diff-mode for highlighting
+        (diff-mode)
+        ;; Minor mode: smerge for conflict navigation/resolution
         (smerge-mode 1)
+        ;; Position at first conflict and refine
         (goto-char (point-min))
         (when (smerge-find-conflict)
-          (smerge-refine))))
-    (pop-to-buffer buf)))
+          (smerge-refine))
+        ;; Add a local 'q' binding to kill this buffer quickly
+        (let ((map (make-sparse-keymap)))
+          (set-keymap-parent map (current-local-map))
+          (define-key map (kbd "q") (lambda () (interactive) (kill-buffer (current-buffer))))
+          (use-local-map map))
+        ;; Define cleanup that deletes the created frame and detaches hooks
+        (setq cleanup-fn
+              (lambda ()
+                ;; Remove frame hook FIRST to prevent recursion when deleting frame
+                (when frame-deleted-fn
+                  (remove-hook 'delete-frame-functions frame-deleted-fn)
+                  (setq frame-deleted-fn nil))
+                (when (and created-frame (frame-live-p created-frame))
+                  (delete-frame created-frame))
+                (remove-hook 'kill-buffer-hook cleanup-fn t)
+                (remove-hook 'smerge-mode-hook smerge-change-fn t)
+                (when (buffer-live-p buf)
+                  (kill-buffer buf))))
+        ;; If user disables smerge-mode, also delete the frame
+        (setq smerge-change-fn
+              (lambda ()
+                (unless smerge-mode
+                  (funcall cleanup-fn))))
+        (add-hook 'kill-buffer-hook cleanup-fn nil t)
+        (add-hook 'smerge-mode-hook smerge-change-fn nil t)))
+    ;; Always open in a new maximized frame and show the buffer there explicitly
+    (setq created-frame (make-frame '((fullscreen . maximized))))
+    ;; If the user manually deletes the frame, also kill the temp buffer
+    (setq frame-deleted-fn
+          (lambda (frame)
+            (when (eq frame created-frame)
+              ;; Remove hook FIRST to prevent recursion
+              (remove-hook 'delete-frame-functions frame-deleted-fn)
+              (when (buffer-live-p buf)
+                (kill-buffer buf)))))
+    (add-hook 'delete-frame-functions frame-deleted-fn)
+    (with-selected-frame created-frame
+      (let ((win (selected-window)))
+        (set-window-parameter win 'no-other-window t)
+        (set-window-parameter win 'no-delete-other-windows t)
+        (set-window-buffer win buf)
+        (set-window-dedicated-p win t)
+        (select-window win)))))
 
 (defun eca-chat--show-diff (path diff)
   "Dispatch diff view based on `eca-chat-diff-tool`."
@@ -970,7 +1134,7 @@ If FORCE? decide to OPEN? or not."
 (defun eca-chat--context-presentable-path (filename)
   "Return the presentable string for FILENAME."
   (or (when (-first (lambda (root) (f-ancestor-of? root filename))
-                        (eca--session-workspace-folders (eca-session)))
+                    (eca--session-workspace-folders (eca-session)))
         (f-filename filename))
       filename))
 
@@ -1249,8 +1413,8 @@ string."
        (cond
         ((eq action 'metadata)
          '(metadata (category . eca-capf)
-           (display-sort-function . identity)
-           (cycle-sort-function . identity)))
+                    (display-sort-function . identity)
+                    (cycle-sort-function . identity)))
         ((eq (car-safe action) 'boundaries) nil)
         (t
          (complete-with-action action (funcall candidates-fn) probe pred))))
@@ -1370,13 +1534,33 @@ string."
                                                            :params (list :chatId eca-chat--id
                                                                          :toolCallId id)))))))
                 (details      (plist-get content :details)))
-           (eca-chat--update-expandable-content
-            id
-            (concat (propertize summary 'font-lock-face 'eca-chat-mcp-tool-call-label-face)
-                    " " approvalText)
-            (eca-chat--content-table
-             `(("Tool" . ,name)
-               ("Arguments" . ,(plist-get content :arguments)))))))
+           (if (and (stringp (plist-get details :type))
+                    (string= "fileChange" (plist-get details :type)))
+               (let* ((path (plist-get details :path))
+                      (diff (plist-get details :diff))
+                      (view-btn
+                       (concat " "
+                               (eca-buttonize
+                                (propertize "view_diff" 'font-lock-face 'eca-chat-diff-view-face)
+                                `(lambda ()
+                                   (interactive)
+                                   (eca-chat--show-diff ,path ,diff))))))
+                 (eca-chat--update-expandable-content
+                  id
+                  (concat (propertize summary 'font-lock-face 'eca-chat-mcp-tool-call-label-face)
+                          " "
+                          (eca-chat--file-change-details-label details)
+                          approvalText
+                          view-btn)
+                  (concat "Tool: `" name "`\n"
+                          (eca-chat--file-change-diff path diff roots))))
+             (eca-chat--update-expandable-content
+              id
+              (concat (propertize summary 'font-lock-face 'eca-chat-mcp-tool-call-label-face)
+                      " " approvalText)
+              (eca-chat--content-table
+               `(("Tool" . ,name)
+                 ("Arguments" . ,(plist-get content :arguments))))))))
 
         ("toolCallRunning"
          (let* ((id      (plist-get content :id))
@@ -1392,7 +1576,7 @@ string."
                       (view-btn
                        (concat " "
                                (eca-buttonize
-                                (propertize "[View Diff]" 'font-lock-face 'link)
+                                (propertize "view_diff" 'font-lock-face 'eca-chat-diff-view-face)
                                 `(lambda ()
                                    (interactive)
                                    (eca-chat--show-diff ,path ,diff))))))
@@ -1427,12 +1611,21 @@ string."
                                eca-chat-mcp-tool-call-success-symbol)))
            (if (and (stringp (plist-get details :type))
                     (string= "fileChange" (plist-get details :type)))
-               (let ((path (plist-get details :path))
-                     (diff (plist-get details :diff)))
+               (let* ((path (plist-get details :path))
+                      (diff (plist-get details :diff))
+                      (view-btn
+                       (concat " "
+                               (eca-buttonize
+                                (propertize "view_diff" 'font-lock-face 'eca-chat-diff-view-face)
+                                `(lambda ()
+                                   (interactive)
+                                   (eca-chat--show-diff ,path ,diff))))))
                  (eca-chat--update-expandable-content
                   id
                   (concat (propertize summary 'font-lock-face 'eca-chat-mcp-tool-call-label-face)
-                          " " status)
+                          " " status
+                          (eca-chat--file-change-details-label details)
+                          view-btn)
                   (concat "Tool: `" name "`\n"
                           (eca-chat--file-change-diff path diff roots))))
              (eca-chat--update-expandable-content
