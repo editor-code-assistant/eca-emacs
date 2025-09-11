@@ -762,6 +762,23 @@ Add a overlay before with OVERLAY-KEY = OVERLAY-VALUE if passed."
   (-first (-lambda (ov) (string= id (overlay-get ov 'eca-chat--expandable-content-id)))
           (overlays-in (point-min) (point-max))))
 
+(defun eca-chat--propertize-only-first-word (str &rest properties)
+  "Return a new string propertizing PROPERTIES to the first word of STR.
+If STR is empty or PROPERTIES is nil, return STR unchanged. Existing
+text properties on STR are preserved; only the first word gets the
+additional PROPERTIES. The first word is the substring up to the first
+space, tab, or newline."
+  (if (or (string-empty-p str) (null properties))
+      str
+    (let* ((split-pos (or (string-match "[ \t\n]" str)
+                          (length str)))
+           (first (substring str 0 split-pos))
+           (rest (substring str split-pos)))
+      ;; Preserve existing properties on `first` (copied by `substring`)
+      ;; and add/override with the provided PROPERTIES only for the first word.
+      (add-text-properties 0 (length first) properties first)
+      (concat first rest))))
+
 (defun eca-chat--add-expandable-content (id label content)
   "Add LABEL to the chat current position for ID as a interactive text.
 When expanded, shows CONTENT.
@@ -774,13 +791,13 @@ Applies LABEL-FACE to label and CONTENT-FACE to content."
       (let ((ov-label (make-overlay (point) (point) (current-buffer))))
         (overlay-put ov-label 'eca-chat--expandable-content-id id)
         (overlay-put ov-label 'eca-chat--expandable-content-toggle nil)
-        (insert (propertize label
+        (insert (propertize (eca-chat--propertize-only-first-word label
+                                                                  'line-prefix (unless (string-empty-p content)
+                                                                                 eca-chat-expandable-block-open-symbol))
                             'keymap (let ((km (make-sparse-keymap)))
                                       (define-key km (kbd "<mouse-1>") (lambda () (eca-chat--expandable-content-toggle id)))
                                       (define-key km (kbd "<tab>") (lambda () (eca-chat--expandable-content-toggle id)))
                                       km)
-                            'line-prefix (unless (string-empty-p content)
-                                           eca-chat-expandable-block-open-symbol)
                             'help-echo "mouse-1 / tab / RET: expand/collapse"))
         (insert "\n")
         (let* ((start-point (point))
@@ -805,11 +822,11 @@ Applies LABEL-FACE to label and CONTENT-FACE to content."
         ;; Refresh the label line (cheap even when appending)
         (goto-char (overlay-start ov-label))
         (delete-region (point) (1- (overlay-start ov-content)))
-        (insert (propertize label
-                            'line-prefix (unless (string-empty-p new-content)
-                                           (if open?
-                                               eca-chat-expandable-block-close-symbol
-                                             eca-chat-expandable-block-open-symbol))
+        (insert (propertize (eca-chat--propertize-only-first-word label
+                                                                  'line-prefix (unless (string-empty-p new-content)
+                                                                                 (if open?
+                                                                                     eca-chat-expandable-block-close-symbol
+                                                                                   eca-chat-expandable-block-open-symbol)))
                             'help-echo "mouse-1 / RET / tab: expand/collapse"))
         (when open?
           (if append-content?
@@ -1294,9 +1311,9 @@ string."
                               (summary (plist-get content :summary))
                               (approvalText (when manual?
                                               (concat
-                                               " "
                                                (eca-buttonize
-                                                (propertize "reject" 'font-lock-face 'eca-chat-tool-call-cancel-face)
+                                                (propertize "reject" 'font-lock-face 'eca-chat-tool-call-cancel-face
+                                                            'line-prefix (make-string (1+ (length eca-chat-expandable-block-open-symbol)) ?\s))
                                                 (lambda () (eca-api-notify session
                                                                            :method "chat/toolCallReject"
                                                                            :params (list :chatId eca-chat--id :toolCallId id))))
@@ -1313,6 +1330,7 @@ string."
                                       " "
                                       (eca-chat--file-change-details-label details)
                                       eca-chat-mcp-tool-call-loading-symbol
+                                      "\n"
                                       approvalText)
                               (concat
                                "Tool: `" name "`\n"
@@ -1326,6 +1344,7 @@ string."
                                                 'font-lock-face 'eca-chat-mcp-tool-call-label-face)
                                     " "
                                     eca-chat-mcp-tool-call-loading-symbol
+                                    "\n"
                                     approvalText)
                             (eca-chat--content-table `(("Tool" . ,name)
                                                        ("Arguments" . ,args)))))))
