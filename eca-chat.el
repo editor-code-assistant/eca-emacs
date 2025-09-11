@@ -777,6 +777,23 @@ Add a overlay before with OVERLAY-KEY = OVERLAY-VALUE if passed."
   (-first (-lambda (ov) (string= id (overlay-get ov 'eca-chat--expandable-content-id)))
           (overlays-in (point-min) (point-max))))
 
+(defun eca-chat--propertize-only-first-word (str &rest properties)
+  "Return a new string propertizing PROPERTIES to the first word of STR.
+If STR is empty or PROPERTIES is nil, return STR unchanged. Existing
+text properties on STR are preserved; only the first word gets the
+additional PROPERTIES. The first word is the substring up to the first
+space, tab, or newline."
+  (if (or (string-empty-p str) (null properties))
+      str
+    (let* ((split-pos (or (string-match "[ \t\n]" str)
+                          (length str)))
+           (first (substring str 0 split-pos))
+           (rest (substring str split-pos)))
+      ;; Preserve existing properties on `first` (copied by `substring`)
+      ;; and add/override with the provided PROPERTIES only for the first word.
+      (add-text-properties 0 (length first) properties first)
+      (concat first rest))))
+
 (defun eca-chat--add-expandable-content (id label content)
   "Add LABEL to the chat current position for ID as a interactive text.
 When expanded, shows CONTENT.
@@ -789,13 +806,13 @@ Applies LABEL-FACE to label and CONTENT-FACE to content."
       (let ((ov-label (make-overlay (point) (point) (current-buffer))))
         (overlay-put ov-label 'eca-chat--expandable-content-id id)
         (overlay-put ov-label 'eca-chat--expandable-content-toggle nil)
-        (insert (propertize label
+        (insert (propertize (eca-chat--propertize-only-first-word label
+                                                                  'line-prefix (unless (string-empty-p content)
+                                                                                 eca-chat-expandable-block-open-symbol))
                             'keymap (let ((km (make-sparse-keymap)))
                                       (define-key km (kbd "<mouse-1>") (lambda () (eca-chat--expandable-content-toggle id)))
                                       (define-key km (kbd "<tab>") (lambda () (eca-chat--expandable-content-toggle id)))
                                       km)
-                            'line-prefix (unless (string-empty-p content)
-                                           eca-chat-expandable-block-open-symbol)
                             'help-echo "mouse-1 / tab / RET: expand/collapse"))
         (insert "\n")
         (let* ((start-point (point))
@@ -820,11 +837,11 @@ Applies LABEL-FACE to label and CONTENT-FACE to content."
         ;; Refresh the label line (cheap even when appending)
         (goto-char (overlay-start ov-label))
         (delete-region (point) (1- (overlay-start ov-content)))
-        (insert (propertize label
-                            'line-prefix (unless (string-empty-p new-content)
-                                           (if open?
-                                               eca-chat-expandable-block-close-symbol
-                                             eca-chat-expandable-block-open-symbol))
+        (insert (propertize (eca-chat--propertize-only-first-word label
+                                                                  'line-prefix (unless (string-empty-p new-content)
+                                                                                 (if open?
+                                                                                     eca-chat-expandable-block-close-symbol
+                                                                                   eca-chat-expandable-block-open-symbol)))
                             'help-echo "mouse-1 / RET / tab: expand/collapse"))
         (when open?
           (if append-content?
@@ -938,197 +955,186 @@ Adds \\='q\\=' to quit."
     (pop-to-buffer (current-buffer))))
 
 (defun eca-chat--show-diff-ediff (path diff)
-  "Show DIFF for file at PATH using Ediff side-by-side.
-Cleanly manages frame and buffers."
+  "Show DIFF for file at PATH using Ediff side-by-side in windows.
+Uses window configuration management instead of creating frames.
+
+If the current window is a side window, temporarily clear side-window
+protections so Ediff can split windows freely. The original window
+configuration is restored when Ediff quits via the cleanup hook."
   (let* ((parsed    (eca-chat--parse-unified-diff diff))
          (orig      (plist-get parsed :original))
          (new       (plist-get parsed :new))
-         (buf-orig  (generate-new-buffer (format "%s<orig>" path)))
-         (buf-new   (generate-new-buffer (format "%s<new>" path)))
-         (created-frame nil)
-         (cleanup-function nil)
-         (startup-function nil)
-         (frame-deleted-fn nil)
-         (ediff-buffers-before nil)
-         (session-ediff-buffers nil))
-    (with-current-buffer buf-orig
-      (erase-buffer) (insert orig) (set-buffer-modified-p nil))
-    (with-current-buffer buf-new
-      (erase-buffer) (insert new) (set-buffer-modified-p nil))
-
-    ;; Capture existing Ediff buffers before we start
-    (setq ediff-buffers-before
-          (seq-filter (lambda (buf)
-                        (string-match-p "\\*\\(ediff-\\|Ediff Control\\)" (buffer-name buf)))
+         (buf-orig  (generate-new-buffer (format "*eca-diff-orig:%s*" path)))
+         (buf-new   (generate-new-buffer (format "*eca-diff-new:%s*" path)))
+         (cwc       (current-window-configuration))
+         (orig-selected (selected-window))
+         (ediff-buffers-before
+          (seq-filter (lambda (b)
+                        (string-match-p "\\*\\(ediff-\\|Ediff Control\\)" (buffer-name b)))
                       (buffer-list)))
+         (session-ediff-buffers nil)
+         (cleanup-fn nil)
+         (after-setup-fn nil))
+    ;; Fill temporary buffers
+    (with-current-buffer buf-orig
+      (let ((inhibit-read-only t))
+        (erase-buffer)
+        (insert orig)
+        (set-buffer-modified-p nil)))
+    (with-current-buffer buf-new
+      (let ((inhibit-read-only t))
+        (erase-buffer)
+        (insert new)
+        (set-buffer-modified-p nil)))
 
-    ;; Define cleanup function
-    (setq cleanup-function
-          (lambda ()
-            ;; Clean up temporary buffers
-            (when (buffer-live-p buf-orig)
-              (kill-buffer buf-orig))
-            (when (buffer-live-p buf-new)
-              (kill-buffer buf-new))
-            ;; Clean up our specific Ediff session buffers
-            (dolist (buf session-ediff-buffers)
-              (when (and buf (buffer-live-p buf))
-                (kill-buffer buf)))
-            ;; Delete frame if we created it
-            (when (and created-frame (frame-live-p created-frame))
-              (delete-frame created-frame))
-            ;; Remove this hook function after use
-            (remove-hook 'ediff-quit-hook cleanup-function)
-            (when frame-deleted-fn
-              (remove-hook 'delete-frame-functions frame-deleted-fn))))
+    ;; Temporarily relax side-window protections in the current frame so
+    ;; Ediff can split windows. The original configuration will be
+    ;; restored by `cleanup-fn' (which calls `set-window-configuration').
+    (let ((frame (selected-frame)))
+      (dolist (w (seq-filter (lambda (w)
+                               (and (eq (window-frame w) frame)
+                                    (or (window-parameter w 'no-delete-other-windows)
+                                        (window-parameter w 'window-side))))
+                             (window-list)))
+        (when (window-live-p w)
+          (set-window-parameter w 'no-delete-other-windows nil)
+          (set-window-parameter w 'window-side nil))))
 
-    ;; Define startup function that captures the session's internal buffers
-    (setq startup-function
+    ;; Ensure Ediff has a single full window to manage (it will split it).
+    (unless (one-window-p t)
+      (delete-other-windows))
+
+    ;; Cleanup: restore windows and kill temp/session buffers
+    (setq cleanup-fn
           (lambda ()
-            ;; Capture new Ediff buffers created for this session only
+            ;; Restore window configuration saved at the beginning
+            (when (window-configuration-p cwc)
+              (set-window-configuration cwc))
+            ;; Ensure focus returns to the original window if still live
+            (when (window-live-p orig-selected)
+              (select-window orig-selected))
+            (when (buffer-live-p buf-orig) (kill-buffer buf-orig))
+            (when (buffer-live-p buf-new) (kill-buffer buf-new))
+            (dolist (b session-ediff-buffers)
+              (when (and b (buffer-live-p b))
+                (kill-buffer b)))
+            (remove-hook 'ediff-quit-hook cleanup-fn)))
+
+    ;; After-setup hook: capture ediff buffers and move to first diff
+    (setq after-setup-fn
+          (lambda ()
             (let ((ediff-buffers-after
-                   (seq-filter (lambda (buf)
-                                 (string-match-p "\\*\\(ediff-\\|Ediff Control\\)" (buffer-name buf)))
+                   (seq-filter (lambda (b)
+                                 (string-match-p "\\*\\(ediff-\\|Ediff Control\\)" (buffer-name b)))
                                (buffer-list))))
-              ;; Only track buffers that are new AND not the persistent registry
               (setq session-ediff-buffers
-                    (seq-filter (lambda (buf)
-                                  (and (not (member buf ediff-buffers-before))
-                                       (not (string-match-p "\\*Ediff Registry\\*" (buffer-name buf)))))
+                    (seq-filter (lambda (b)
+                                  (and (not (member b ediff-buffers-before))
+                                       (not (string-match-p "\*Ediff Registry\*" (buffer-name b)))))
                                 ediff-buffers-after)))
-            ;; Navigate to first difference if any exist
             (condition-case _err
                 (progn
-                  ;; Set to start from beginning
                   (setq ediff-current-difference -1)
-                  ;; Move to first difference
                   (ediff-next-difference))
-              (error nil))  ; Ignore if no differences
-            ;; Remove this hook function after use
-            (remove-hook 'ediff-after-setup-windows-hook startup-function)))
+              (error nil))
+            (remove-hook 'ediff-after-setup-windows-hook after-setup-fn)))
 
-    ;; Add hooks for this ediff session
-    (add-hook 'ediff-quit-hook cleanup-function)
-    (add-hook 'ediff-after-setup-windows-hook startup-function)
+    (add-hook 'ediff-quit-hook cleanup-fn)
+    (add-hook 'ediff-after-setup-windows-hook after-setup-fn)
 
-    ;; Ensure ediff runs in a regular window context, not from a side window
-    ;; This prevents both "Cannot make side window the only window" and
-    ;; "Cannot split side window or parent of side window" errors
-    (let ((regular-window (cl-find-if-not
-                           (lambda (w)
-                             (or (window-parameter w 'window-side)
-                                 (window-parameter (window-parent w) 'window-side)))
-                           (window-list))))
-      (if regular-window
-          ;; Use existing regular window
-          (with-selected-window regular-window
-            (condition-case _err
-                (ediff-buffers buf-orig buf-new)
-              (error
-               ;; Fallback: create new frame if window operations fail
-               (setq created-frame (make-frame '((fullscreen . maximized))))
-               ;; If the user manually deletes the frame, also kill the temp buffers
-               (setq frame-deleted-fn
-                     (lambda (frame)
-                       (when (eq frame created-frame)
-                         (when (buffer-live-p buf-orig) (kill-buffer buf-orig))
-                         (when (buffer-live-p buf-new) (kill-buffer buf-new))
-                         ;; Clean up our specific Ediff session buffers
-                         (dolist (buf session-ediff-buffers)
-                           (when (and buf (buffer-live-p buf))
-                             (kill-buffer buf)))
-                         (remove-hook 'delete-frame-functions frame-deleted-fn))))
-               (add-hook 'delete-frame-functions frame-deleted-fn)
-               (select-frame created-frame)
-               (ediff-buffers buf-orig buf-new))))
-        ;; No regular window exists - create a new frame for ediff
-        (setq created-frame (make-frame '((fullscreen . maximized))))
-        (setq frame-deleted-fn
-              (lambda (frame)
-                (when (eq frame created-frame)
-                  (when (buffer-live-p buf-orig) (kill-buffer buf-orig))
-                  (when (buffer-live-p buf-new) (kill-buffer buf-new))
-                  ;; Clean up our specific Ediff session buffers
-                  (dolist (buf session-ediff-buffers)
-                    (when (and buf (buffer-live-p buf))
-                      (kill-buffer buf)))
-                  (remove-hook 'delete-frame-functions frame-deleted-fn))))
-        (add-hook 'delete-frame-functions frame-deleted-fn)
-        (select-frame created-frame)
-        (ediff-buffers buf-orig buf-new)))))
+    ;; Start Ediff in the prepared window environment. Ediff will manage
+    ;; splits from here on. On error, restore original windows/config.
+    (condition-case err
+        (ediff-buffers buf-orig buf-new)
+      (error
+       ;; On error remove hooks and kill temps, and restore windows
+       (remove-hook 'ediff-quit-hook cleanup-fn)
+       (remove-hook 'ediff-after-setup-windows-hook after-setup-fn)
+       (when (window-configuration-p cwc)
+         (set-window-configuration cwc))
+       (when (buffer-live-p buf-orig) (kill-buffer buf-orig))
+       (when (buffer-live-p buf-new) (kill-buffer buf-new))
+       (message "eca-chat: error starting ediff: %s" err)))))
 
 (defun eca-chat--show-diff-smerge (path diff)
-  "Show DIFF for file at PATH using Smerge in a dedicated new frame.
-Also enables diff-mode for syntax highlighting and ensures both the created
-frame and the temporary buffer are cleaned up.  Adds a local q binding to quit."
-  (let* ((parsed  (eca-chat--parse-unified-diff diff))
-         (orig    (plist-get parsed :original))
-         (new     (plist-get parsed :new))
-         ;; Always create a fresh buffer to avoid reusing an existing display
-         (buf     (generate-new-buffer (format "*eca-smerge:%s*" path)))
-         (created-frame nil)
-         (cleanup-fn nil)
-         (smerge-change-fn nil)
-         (frame-deleted-fn nil))
+  "Show DIFF for file at PATH using Smerge in a dedicated window.
+Uses regular window management instead of creating frames.
+
+If the current window is a side window, temporarily clear side-window
+protections so `delete-other-windows' can succeed. The original window
+configuration is restored when the smerge buffer is killed."
+  (let* ((parsed (eca-chat--parse-unified-diff diff))
+         (orig   (plist-get parsed :original))
+         (new    (plist-get parsed :new))
+         (buf    (generate-new-buffer (format "*eca-smerge:%s*" path)))
+         (cwc    (current-window-configuration))
+         (orig-selected (selected-window))
+         (frame  (selected-frame))
+         (cleanup-running nil)
+         cleanup-fn
+         window-config-hook)
+
+    ;; Fill buffer with conflict markers
     (with-current-buffer buf
       (let ((inhibit-read-only t))
         (erase-buffer)
-        (insert (concat "<<<<<<< Original\n"
-                        orig
-                        "\n=======\n"
-                        new
-                        "\n>>>>>>> New\n"))
-        ;; Major mode: diff-mode for highlighting
+        (insert (concat "<<<<<<< Original\n" orig "\n=======\n" new "\n>>>>>>> New\n"))
         (diff-mode)
-        ;; Minor mode: smerge for conflict navigation/resolution
         (smerge-mode 1)
-        ;; Position at first conflict and refine
-        (goto-char (point-min))
-        (when (smerge-find-conflict)
-          (smerge-refine))
-        ;; Add a local 'q' binding to kill this buffer quickly
-        (let ((map (make-sparse-keymap)))
-          (set-keymap-parent map (current-local-map))
-          (define-key map (kbd "q") (lambda () (interactive) (kill-buffer (current-buffer))))
-          (use-local-map map))
-        ;; Define cleanup that deletes the created frame and detaches hooks
-        (setq cleanup-fn
-              (lambda ()
-                ;; Remove frame hook FIRST to prevent recursion when deleting frame
-                (when frame-deleted-fn
-                  (remove-hook 'delete-frame-functions frame-deleted-fn)
-                  (setq frame-deleted-fn nil))
-                (when (and created-frame (frame-live-p created-frame))
-                  (delete-frame created-frame))
-                (remove-hook 'kill-buffer-hook cleanup-fn t)
-                (remove-hook 'smerge-mode-hook smerge-change-fn t)
-                (when (buffer-live-p buf)
-                  (kill-buffer buf))))
-        ;; If user disables smerge-mode, also delete the frame
-        (setq smerge-change-fn
-              (lambda ()
-                (unless smerge-mode
-                  (funcall cleanup-fn))))
-        (add-hook 'kill-buffer-hook cleanup-fn nil t)
-        (add-hook 'smerge-mode-hook smerge-change-fn nil t)))
-    ;; Always open in a new maximized frame and show the buffer there explicitly
-    (setq created-frame (make-frame '((fullscreen . maximized))))
-    ;; If the user manually deletes the frame, also kill the temp buffer
-    (setq frame-deleted-fn
-          (lambda (frame)
-            (when (eq frame created-frame)
-              ;; Remove hook FIRST to prevent recursion
-              (remove-hook 'delete-frame-functions frame-deleted-fn)
+        (goto-char (point-min))))
+
+    ;; Define cleanup that restores window configuration and kills the buffer
+    (setq cleanup-fn
+          (lambda ()
+            (unless cleanup-running
+              (setq cleanup-running t)
+              (when (window-configuration-p cwc)
+                (ignore-errors (set-window-configuration cwc)))
+              (when (window-live-p orig-selected)
+                (select-window orig-selected))
+              (when (buffer-live-p buf)
+                (with-current-buffer buf
+                  (remove-hook 'kill-buffer-hook cleanup-fn t)))
+              (when (functionp window-config-hook)
+                (remove-hook 'window-configuration-change-hook window-config-hook))
               (when (buffer-live-p buf)
                 (kill-buffer buf)))))
-    (add-hook 'delete-frame-functions frame-deleted-fn)
-    (with-selected-frame created-frame
-      (let ((win (selected-window)))
-        (set-window-parameter win 'no-other-window t)
-        (set-window-parameter win 'no-delete-other-windows t)
-        (set-window-buffer win buf)
-        (set-window-dedicated-p win t)
-        (select-window win)))))
+
+    ;; If buffer is no longer visible, run cleanup
+    (setq window-config-hook
+          (lambda ()
+            (unless (get-buffer-window buf t)
+              (funcall cleanup-fn))))
+    (add-hook 'window-configuration-change-hook window-config-hook)
+
+    ;; Add local keymap and kill hook to the smerge buffer
+    (with-current-buffer buf
+      (let ((map (make-sparse-keymap)))
+        (set-keymap-parent map (current-local-map))
+        (define-key map (kbd "q") (lambda () (interactive) (funcall cleanup-fn)))
+        (use-local-map map))
+      (add-hook 'kill-buffer-hook cleanup-fn nil t))
+
+    ;; Temporarily relax side-window protections in the current frame so
+    ;; `delete-other-windows' can succeed. The original window
+    ;; configuration is restored by `cleanup-fn' (which calls `set-window-configuration').
+    (dolist (w (seq-filter (lambda (w)
+                             (and (eq (window-frame w) frame)
+                                  (or (window-parameter w 'no-delete-other-windows)
+                                      (window-parameter w 'window-side))))
+                           (window-list)))
+      (when (window-live-p w)
+        (set-window-parameter w 'no-delete-other-windows nil)
+        (set-window-parameter w 'window-side nil)))
+    ;; Present the buffer full-frame
+    (when (window-live-p (frame-root-window frame))
+      (select-window (frame-root-window frame)))
+    (unless (one-window-p t)
+      (delete-other-windows))
+    (switch-to-buffer buf)
+
+    ;; Return nil explicitly
+    nil))
 
 (defun eca-chat--show-diff (path diff)
   "Dispatch diff view based on `eca-chat-diff-tool`."
@@ -1481,19 +1487,18 @@ string."
              ("user"
               (eca-chat--add-text-content
                (propertize text
-                           'font-lock-face   'eca-chat-user-messages-face
-                           'line-prefix      (propertize eca-chat-prompt-prefix
-                                                         'font-lock-face 'eca-chat-user-messages-face)
-                           'line-spacing     10)
-               'eca-chat--user-message-id
-               eca-chat--last-request-id)
+                           'font-lock-face 'eca-chat-user-messages-face
+                           'line-prefix (propertize eca-chat-prompt-prefix
+                                                    'font-lock-face 'eca-chat-user-messages-face)
+                           'line-spacing 10)
+               'eca-chat--user-message-id eca-chat--last-request-id)
               (eca-chat--mark-header)
               (font-lock-ensure))
              ("system"
               (eca-chat--add-text-content
                (propertize text
                            'font-lock-face 'eca-chat-system-messages-face
-                           'line-height   20)))
+                           'line-height 20)))
              (_
               (eca-chat--add-text-content text)))))
 
@@ -1506,46 +1511,46 @@ string."
                   "\n\n")))
 
         ("reasonStarted"
-         (let ((id    (plist-get content :id))
-               (label (propertize "Thinking..."
-                                  'font-lock-face 'eca-chat-reason-label-face)))
+         (let ((id (plist-get content :id))
+               (label (propertize "Thinking..." 'font-lock-face 'eca-chat-reason-label-face)))
            (eca-chat--add-expandable-content id label "")))
+
         ("reasonText"
-         (let ((id    (plist-get content :id))
-               (label (propertize "Thinking..."
-                                  'font-lock-face 'eca-chat-reason-label-face))
-               (text  (plist-get content :text)))
+         (let ((id (plist-get content :id))
+               (label (propertize "Thinking..." 'font-lock-face 'eca-chat-reason-label-face))
+               (text (plist-get content :text)))
            (eca-chat--update-expandable-content id label text t)))
+
         ("reasonFinished"
-         (let* ((id    (plist-get content :id))
-                (base  (propertize "Thought"
-                                   'font-lock-face 'eca-chat-reason-label-face))
-                (time  (when-let ((ms (plist-get content :totalTimeMs)))
-                         (concat " " (eca-chat--time->presentable-time ms))))
+         (let* ((id (plist-get content :id))
+                (base (propertize "Thought" 'font-lock-face 'eca-chat-reason-label-face))
+                (time (when-let ((ms (plist-get content :totalTimeMs)))
+                        (concat " " (eca-chat--time->presentable-time ms))))
                 (label (concat base time)))
            (eca-chat--update-expandable-content id label "" t)))
 
         ("toolCallPrepare"
-         (let* ((id          (plist-get content :id))
-                (summary     (or (plist-get content :summary)
-                                 (format "Preparing tool: %s" (plist-get content :name))))
-                (argsText    (plist-get content :argumentsText))
-                (label       (concat (propertize summary
-                                                 'font-lock-face 'eca-chat-mcp-tool-call-label-face)
-                                     " " eca-chat-mcp-tool-call-loading-symbol)))
+         (let* ((id (plist-get content :id))
+                (name (plist-get content :name))
+                (argsText (plist-get content :argumentsText))
+                (summary (or (plist-get content :summary)
+                             (format "Preparing tool: %s" name)))
+                (label (concat (propertize summary
+                                           'font-lock-face 'eca-chat-mcp-tool-call-label-face)
+                               " " eca-chat-mcp-tool-call-loading-symbol)))
            (if (eca-chat--get-expandable-content id)
                (eca-chat--update-expandable-content id label argsText t)
              (eca-chat--add-expandable-content id label
                                                (eca-chat--content-table
-                                                `(("Tool" . ,(plist-get content :name))
+                                                `(("Tool" . ,name)
                                                   ("Arguments" . ,argsText)))))))
 
         ("toolCallRun"
-         (let* ((id           (plist-get content :id))
-                (name         (plist-get content :name))
-                (summary      (or (plist-get content :summary)
-                                  (format "Calling tool: %s" name)))
-                (manual?      (plist-get content :manualApproval))
+         (let* ((id (plist-get content :id))
+                (name (plist-get content :name))
+                (summary (or (plist-get content :summary)
+                             (format "Calling tool: %s" name)))
+                (manual? (plist-get content :manualApproval))
                 (approvalText (when manual?
                                 (concat " "
                                         (eca-buttonize
@@ -1563,7 +1568,7 @@ string."
                                                            :method "chat/toolCallApprove"
                                                            :params (list :chatId eca-chat--id
                                                                          :toolCallId id)))))))
-                (details      (plist-get content :details)))
+                (details (plist-get content :details)))
            (if (and (stringp (plist-get details :type))
                     (string= "fileChange" (plist-get details :type)))
                (let* ((path (plist-get details :path))
@@ -1593,12 +1598,12 @@ string."
                  ("Arguments" . ,(plist-get content :arguments))))))))
 
         ("toolCallRunning"
-         (let* ((id      (plist-get content :id))
-                (name    (plist-get content :name))
+         (let* ((id (plist-get content :id))
+                (name (plist-get content :name))
                 (summary (or (plist-get content :summary)
                              (format "Running tool: %s" name)))
                 (details (plist-get content :details))
-                (status  eca-chat-mcp-tool-call-loading-symbol))
+                (status eca-chat-mcp-tool-call-loading-symbol))
            (if (and (stringp (plist-get details :type))
                     (string= "fileChange" (plist-get details :type)))
                (let* ((path (plist-get details :path))
@@ -1626,19 +1631,20 @@ string."
               (eca-chat--content-table
                `(("Tool" . ,name)
                  ("Arguments" . ,(plist-get content :arguments))))))))
+
         ("toolCalled"
-         (let* ((id           (plist-get content :id))
-                (name         (plist-get content :name))
-                (summary      (or (plist-get content :summary)
-                                  (format "Called tool: %s" name)))
-                (outputs      (plist-get content :outputs))
-                (output-text  (if outputs
-                                  (mapconcat (lambda (o) (or (plist-get o :text) "")) outputs "\n")
-                                ""))
-                (details      (plist-get content :details))
-                (status      (if (plist-get content :error)
-                                 eca-chat-mcp-tool-call-error-symbol
-                               eca-chat-mcp-tool-call-success-symbol)))
+         (let* ((id (plist-get content :id))
+                (name (plist-get content :name))
+                (summary (or (plist-get content :summary)
+                             (format "Called tool: %s" name)))
+                (outputs (plist-get content :outputs))
+                (output-text (if outputs
+                                 (mapconcat (lambda (o) (or (plist-get o :text) "")) outputs "\n")
+                               ""))
+                (details (plist-get content :details))
+                (status (if (plist-get content :error)
+                            eca-chat-mcp-tool-call-error-symbol
+                          eca-chat-mcp-tool-call-success-symbol)))
            (if (and (stringp (plist-get details :type))
                     (string= "fileChange" (plist-get details :type)))
                (let* ((path (plist-get details :path))
