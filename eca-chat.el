@@ -974,7 +974,8 @@ configuration is restored when Ediff quits via the cleanup hook."
                       (buffer-list)))
          (session-ediff-buffers nil)
          (cleanup-fn nil)
-         (after-setup-fn nil))
+         (after-setup-fn nil)
+         (chat-buf (current-buffer)))
     ;; Fill temporary buffers
     (with-current-buffer buf-orig
       (let ((inhibit-read-only t))
@@ -1013,6 +1014,12 @@ configuration is restored when Ediff quits via the cleanup hook."
             ;; Ensure focus returns to the original window if still live
             (when (window-live-p orig-selected)
               (select-window orig-selected))
+            ;; If the chat buffer exists and is not currently shown in a
+            ;; side window, re-open it using the side-window display helper.
+            (when (and (buffer-live-p chat-buf)
+                       (or (not (get-buffer-window chat-buf t))
+                           (not (window-parameter (get-buffer-window chat-buf t) 'window-side))))
+              (ignore-errors (eca-chat--display-buffer chat-buf)))
             (when (buffer-live-p buf-orig) (kill-buffer buf-orig))
             (when (buffer-live-p buf-new) (kill-buffer buf-new))
             (dolist (b session-ediff-buffers)
@@ -1052,6 +1059,11 @@ configuration is restored when Ediff quits via the cleanup hook."
        (remove-hook 'ediff-after-setup-windows-hook after-setup-fn)
        (when (window-configuration-p cwc)
          (set-window-configuration cwc))
+       ;; Try to ensure chat gets its side-window back on error too
+       (when (and (buffer-live-p chat-buf)
+                  (or (not (get-buffer-window chat-buf t))
+                      (not (window-parameter (get-buffer-window chat-buf t) 'window-side))))
+         (ignore-errors (eca-chat--display-buffer chat-buf)))
        (when (buffer-live-p buf-orig) (kill-buffer buf-orig))
        (when (buffer-live-p buf-new) (kill-buffer buf-new))
        (message "eca-chat: error starting ediff: %s" err)))))
