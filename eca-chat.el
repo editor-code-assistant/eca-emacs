@@ -1482,6 +1482,34 @@ string."
                `(("Tool"   . ,name)
                  ("Output" . ,output-text)))))))
 
+        ("toolCallRejected"
+         (let* ((name (plist-get content :name))
+                (origin (plist-get content :origin))
+                (args (plist-get content :arguments))
+                (details (plist-get content :details))
+                (summary (plist-get content :summary))
+                (id (plist-get content :id)))
+           (if (string= "fileChange" (plist-get details :type))
+               (eca-chat--update-expandable-content
+                id
+                (concat (propertize summary 'font-lock-face 'eca-chat-mcp-tool-call-label-face)
+                        " "
+                        (eca-chat--file-change-details-label details)
+                        eca-chat-mcp-tool-call-error-symbol)
+                (concat
+                 "Tool: `" name "`\n"
+                 (eca-chat--file-change-diff (plist-get details :path) (plist-get details :diff) roots)))
+             (eca-chat--update-expandable-content
+              id
+              (concat (propertize (format "Rejected %s tool: %s"
+                                          (if (string= "mcp" origin) "MCP" "ECA")
+                                          name)
+                                  'font-lock-face 'eca-chat-mcp-tool-call-label-face)
+                      " "
+                      eca-chat-mcp-tool-call-error-symbol)
+              (eca-chat--content-table `(("Tool" . ,name)
+                                         ("Arguments" . ,args)))))))
+
         ("progress"
          (pcase (plist-get content :state)
            ("running"
