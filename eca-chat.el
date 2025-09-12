@@ -1552,9 +1552,10 @@ string."
                              (format "Calling tool: %s" name)))
                 (manual? (plist-get content :manualApproval))
                 (approvalText (when manual?
-                                (concat " "
-                                        (eca-buttonize
-                                         (propertize "reject" 'font-lock-face 'eca-chat-tool-call-cancel-face)
+                                (concat (eca-buttonize
+                                         (propertize "reject"
+                                                     'line-prefix (make-string (1+ (length eca-chat-expandable-block-open-symbol)) ?\s)
+                                                     'font-lock-face 'eca-chat-tool-call-cancel-face)
                                          (lambda ()
                                            (eca-api-notify session
                                                            :method "chat/toolCallReject"
@@ -1573,26 +1574,27 @@ string."
                     (string= "fileChange" (plist-get details :type)))
                (let* ((path (plist-get details :path))
                       (diff (plist-get details :diff))
-                      (view-btn
-                       (concat " "
-                               (eca-buttonize
-                                (propertize "view_diff" 'font-lock-face 'eca-chat-diff-view-face)
-                                `(lambda ()
-                                   (interactive)
-                                   (eca-chat--show-diff ,path ,diff))))))
+                      (view-btn (eca-buttonize
+                                 (propertize "view_diff" 'font-lock-face 'eca-chat-diff-view-face)
+                                 `(lambda ()
+                                    (interactive)
+                                    (eca-chat--show-diff ,path ,diff)))))
                  (eca-chat--update-expandable-content
                   id
                   (concat (propertize summary 'font-lock-face 'eca-chat-mcp-tool-call-label-face)
                           " "
                           (eca-chat--file-change-details-label details)
-                          approvalText
-                          view-btn)
+                          eca-chat-mcp-tool-call-loading-symbol
+                          "\n"
+                          approvalText " " view-btn)
                   (concat "Tool: `" name "`\n"
                           (eca-chat--file-change-diff path diff roots))))
              (eca-chat--update-expandable-content
               id
               (concat (propertize summary 'font-lock-face 'eca-chat-mcp-tool-call-label-face)
-                      " " approvalText)
+                      " " eca-chat-mcp-tool-call-loading-symbol
+                      "\n"
+                      approvalText)
               (eca-chat--content-table
                `(("Tool" . ,name)
                  ("Arguments" . ,(plist-get content :arguments))))))))
