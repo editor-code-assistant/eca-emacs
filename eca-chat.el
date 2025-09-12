@@ -959,7 +959,8 @@ Adds \\='q\\=' to quit."
 Uses window configuration management instead of creating frames.
 If the current window is a side window, temporarily clear side-window
 protections so Ediff can split windows freely. The original window
-configuration is restored when Ediff quits via the cleanup hook."
+configuration is restored when Ediff quits via the cleanup hook.
+Enhanced with Doom Emacs compatibility."
   (let* ((parsed        (eca-chat--parse-unified-diff diff))
          (orig          (plist-get parsed :original))
          (new           (plist-get parsed :new))
@@ -968,8 +969,15 @@ configuration is restored when Ediff quits via the cleanup hook."
          (buf-new       (generate-new-buffer (format "*eca-diff-new:%s*"
                                                      path)))
          (chat-buf      (current-buffer))
-         (cwc           (current-window-configuration))
+         ;; Doom-specific: Check if we're in a popup context
+         (doom-popup-p  (and (boundp '+popup-buffer-mode)
+                             +popup-buffer-mode))
+         (in-doom-p     (featurep 'doom))
+         ;; Don't save window config if in Doom popup - causes conflicts
+         (cwc           (unless doom-popup-p
+                          (current-window-configuration)))
          (orig-selected (selected-window))
+         (orig-buffer   (current-buffer))
          (ediff-buffers-before
           (seq-filter (lambda (b)
                         (string-match-p "\\*\\(ediff-\\|Ediff Control\\)"
@@ -978,6 +986,15 @@ configuration is restored when Ediff quits via the cleanup hook."
          (session-ediff-buffers nil)
          cleanup-fn
          after-setup-fn)
+
+    ;; Doom-specific: Set popup rules to prevent interference
+    (when in-doom-p
+      (when (fboundp 'set-popup-rule!)
+        ;; Prevent ECA diff buffers from being managed by Doom's popup
+        system
+        (set-popup-rule! "^\\*eca-diff-" :ignore t)
+        (set-popup-rule! "^\\*Ediff Control Panel" :ignore t)))
+
     ;; Fill temporary buffers
     (with-current-buffer buf-orig
       (let ((inhibit-read-only t))
@@ -989,58 +1006,105 @@ configuration is restored when Ediff quits via the cleanup hook."
         (erase-buffer)
         (insert new)
         (set-buffer-modified-p nil)))
-    ;; Temporarily relax side-window protections so Ediff can split
-    (let ((frame (selected-frame)))
-      (dolist (w (seq-filter (lambda (w)
-                               (and (eq (window-frame w) frame)
-                                    (or (window-parameter w
-                                                          'no-delete-other-windows)
-                                        (window-parameter w
-                                                          'window-side))))
-                             (window-list)))
-        (when (window-live-p w)
-          (set-window-parameter w 'no-delete-other-windows nil)
-          (set-window-parameter w 'window-side nil))))
-    ;; Ensure Ediff has a single full window to manage
-    (unless (one-window-p t)
-      (delete-other-windows))
-    ;; Cleanup: restore windows and kill temp/session buffers
+
+    ;; Only manipulate windows if not in Doom popup context
+    (unless doom-popup-p
+      ;; Temporarily relax side-window protections so Ediff can split
+      (let ((frame (selected-frame)))
+        (dolist (w (seq-filter (lambda (w)
+                                 (and (eq (window-frame w) frame)
+                                      (or (window-parameter w
+
+                                                            'no-delete-other-windows)
+                                          (window-parameter w
+
+                                                            'window-side))))
+                               (window-list)))
+          (when (window-live-p w)
+            (set-window-parameter w 'no-delete-other-windows nil)
+            (set-window-parameter w 'window-side nil))))
+      ;; Ensure Ediff has a single full window to manage
+      (unless (one-window-p t)
+        (delete-other-windows)))
+
+    ;; Enhanced cleanup with Doom compatibility
     (setq cleanup-fn
           (lambda ()
-            ;; Restore window configuration
-            (when (window-configuration-p cwc)
-              (set-window-configuration cwc))
-            ;; Return focus to original window
-            (when (window-live-p orig-selected)
-              (select-window orig-selected))
-            ;; Re-display chat buffer in side window if needed
-            (when (and (buffer-live-p chat-buf)
-                       (or (not (get-buffer-window chat-buf t))
-                           (not (window-parameter (get-buffer-window
-                                                   chat-buf t) 'window-side))))
-              (ignore-errors (eca-chat--display-buffer chat-buf)))
-            ;; Kill temp buffers
+            ;; Kill temp buffers first to avoid conflicts
             (when (buffer-live-p buf-orig) (kill-buffer buf-orig))
             (when (buffer-live-p buf-new)  (kill-buffer buf-new))
             ;; Kill any additional Ediff-generated buffers
             (dolist (b session-ediff-buffers)
               (when (and b (buffer-live-p b))
                 (kill-buffer b)))
+
+            ;; Doom-aware window restoration
+            (cond
+             ;; If we were in a Doom popup, use Doom's restoration
+             (doom-popup-p
+              (cond
+               ((and (fboundp '+popup/restore) (buffer-live-p
+                                                orig-buffer))
+                (+popup/restore))
+               ((buffer-live-p orig-buffer)
+                (switch-to-buffer orig-buffer))))
+
+             ;; Standard window config restoration with Doom-compatible delay
+             (cwc
+              ;; Use longer delay for Doom compatibility
+              (run-with-timer (if in-doom-p 0.3 0.1) nil
+                              (lambda ()
+                                (condition-case err
+                                    (progn
+                                      (set-window-configuration cwc)
+                                      (when (window-live-p orig-selected)
+                                        (select-window orig-selected))
+                                      ;; Re-display chat buffer in side window if needed
+                                      (when (and (buffer-live-p chat-buf)
+                                                 (or (not (get-buffer-window chat-buf
+                                                                             t))
+                                                     (not (window-parameter
+                                                           (get-buffer-window chat-buf
+                                                                              t)
+                                                           'window-side))))
+                                        (ignore-errors (eca-chat--display-buffer
+                                                        chat-buf))))
+                                  (error
+                                   (message "ECA: Could not restore window config: %s"
+                                            err)
+                                   ;; Fallback: ensure chat buffer is visible
+                                   (when (buffer-live-p chat-buf)
+                                     (ignore-errors (eca-chat--display-buffer
+                                                     chat-buf))))))))
+
+             ;; Fallback for cases without saved config
+             (t
+              (when (and (buffer-live-p chat-buf)
+                         (or (not (get-buffer-window chat-buf t))
+                             (not (window-parameter
+                                   (get-buffer-window chat-buf t)
+                                   'window-side))))
+                (ignore-errors (eca-chat--display-buffer chat-buf)))))
+
             (remove-hook 'ediff-quit-hook cleanup-fn)))
+
     ;; After-setup hook: capture ediff buffers and move to first diff
     (setq after-setup-fn
           (lambda ()
             (let ((ediff-buffers-after
                    (seq-filter (lambda (b)
                                  (string-match-p "\\*\\(ediff-\\|Ediff
-Control\\)" (buffer-name b)))
+Control\\)"
+                                                 (buffer-name b)))
                                (buffer-list))))
               (setq session-ediff-buffers
                     (seq-filter (lambda (b)
                                   (and (not (member b
                                                     ediff-buffers-before))
                                        (not (string-match-p "*Ediff
-Registry*" (buffer-name b)))))
+Registry*"
+                                                            (buffer-name
+                                                             b)))))
                                 ediff-buffers-after)))
             (condition-case _err
                 (progn
@@ -1048,9 +1112,11 @@ Registry*" (buffer-name b)))))
                   (ediff-next-difference))
               (error nil))
             (remove-hook 'ediff-after-setup-windows-hook after-setup-fn)))
+
     ;; Install hooks
     (add-hook 'ediff-quit-hook cleanup-fn)
     (add-hook 'ediff-after-setup-windows-hook after-setup-fn)
+
     ;; Start Ediff with error handling
     (condition-case err
         (ediff-buffers buf-orig buf-new)
@@ -1058,14 +1124,22 @@ Registry*" (buffer-name b)))))
        ;; On error, remove hooks and restore windows
        (remove-hook 'ediff-quit-hook cleanup-fn)
        (remove-hook 'ediff-after-setup-windows-hook after-setup-fn)
-       (when (window-configuration-p cwc)
-         (set-window-configuration cwc))
+
+       ;; Doom-aware error recovery
+       (cond
+        (cwc (set-window-configuration cwc))
+        (doom-popup-p
+         (when (buffer-live-p orig-buffer)
+           (switch-to-buffer orig-buffer))))
+
        ;; Re-display chat buffer on error
        (when (and (buffer-live-p chat-buf)
                   (or (not (get-buffer-window chat-buf t))
                       (not (window-parameter (get-buffer-window chat-buf
-                                                                t) 'window-side))))
+                                                                t)
+                                             'window-side))))
          (ignore-errors (eca-chat--display-buffer chat-buf)))
+
        ;; Kill temp buffers
        (when (buffer-live-p buf-orig) (kill-buffer buf-orig))
        (when (buffer-live-p buf-new)  (kill-buffer buf-new))
