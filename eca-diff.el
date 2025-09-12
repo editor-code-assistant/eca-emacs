@@ -13,7 +13,7 @@
 ;;
 ;;; Code:
 
-(require 'f nil t)
+(require 'f)
 (require 'ediff)
 (require 'smerge-mode)
 (require 'seq)
