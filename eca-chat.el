@@ -14,8 +14,6 @@
 (require 'f)
 (require 'markdown-mode)
 (require 'compat)
-(require 'ediff)
-(require 'smerge-mode)
 
 (require 'eca-util)
 (require 'eca-api)
