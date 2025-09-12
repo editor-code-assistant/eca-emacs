@@ -147,6 +147,22 @@ Must be a valid model supported by server, check `eca-chat-select-model`."
                  (const :tag "Merge-style Smerge" smerge))
   :group 'eca)
 
+(defcustom eca-chat-tool-prepare-throttle 'smart
+  "Throttle strategy for handling `toolCallPrepare` events.
+Possible values: `all` or `smart` (default)."
+  :type '(choice (const :tag "Process all updates" all)
+                 (const :tag "Smart throttle" smart))
+  :group 'eca)
+
+(defcustom eca-chat-tool-prepare-update-interval 5
+  "When `smart`, process every Nth `toolCallPrepare` update.
+Must be a positive integer."
+  :type 'integer
+  :group 'eca)
+
+(defvar-local eca-chat--tool-prepare-counters (make-hash-table :test 'equal)
+  "Buffer-local hash table mapping toolCall ID to seen `toolCallPrepare` counts.")
+
 
 ;; Faces
 
@@ -1345,13 +1361,28 @@ string."
                              (format "Preparing tool: %s" name)))
                 (label (concat (propertize summary
                                            'font-lock-face 'eca-chat-mcp-tool-call-label-face)
-                               " " eca-chat-mcp-tool-call-loading-symbol)))
-           (if (eca-chat--get-expandable-content id)
-               (eca-chat--update-expandable-content id label argsText t)
-             (eca-chat--add-expandable-content id label
-                                               (eca-chat--content-table
-                                                `(("Tool" . ,name)
-                                                  ("Arguments" . ,argsText)))))))
+                               " " eca-chat-mcp-tool-call-loading-symbol))
+                (current-count (gethash id eca-chat--tool-prepare-counters 0))
+                (should-process
+                 (pcase eca-chat-tool-prepare-throttle
+                   ('all t)
+                   ('smart
+                    (or (= current-count 0)
+                        (and (integerp eca-chat-tool-prepare-update-interval)
+                             (> eca-chat-tool-prepare-update-interval 0)
+                             (= (mod current-count eca-chat-tool-prepare-update-interval) 0))))
+                   (_ t))))
+           ;; update counter and only perform the expensive UI updates when
+           ;; `should-process' is true. This reduces churn for high-frequency
+           ;; streaming `toolCallPrepare' events.
+           (puthash id (1+ current-count) eca-chat--tool-prepare-counters)
+           (when should-process
+             (if (eca-chat--get-expandable-content id)
+                 (eca-chat--update-expandable-content id label argsText t)
+               (eca-chat--add-expandable-content id label
+                                                 (eca-chat--content-table
+                                                  `(("Tool" . ,name)
+                                                    ("Arguments" . ,argsText))))))))
 
         ("toolCallRun"
          (let* ((id (plist-get content :id))
@@ -1442,45 +1473,47 @@ string."
                `(("Tool" . ,name)
                  ("Arguments" . ,(plist-get content :arguments))))))))
 
-        ("toolCalled"
-         (let* ((id (plist-get content :id))
-                (name (plist-get content :name))
-                (summary (or (plist-get content :summary)
-                             (format "Called tool: %s" name)))
-                (outputs (plist-get content :outputs))
-                (output-text (if outputs
+         ("toolCalled"
+          (let* ((id (plist-get content :id))
+                 (name (plist-get content :name))
+                 (summary (or (plist-get content :summary)
+                              (format "Called tool: %s" name)))
+                 (outputs (plist-get content :outputs))
+                 (output-text (if outputs
                                  (mapconcat (lambda (o) (or (plist-get o :text) "")) outputs "\n")
                                ""))
-                (details (plist-get content :details))
-                (status (if (plist-get content :error)
-                            eca-chat-mcp-tool-call-error-symbol
-                          eca-chat-mcp-tool-call-success-symbol)))
-           (if (and (stringp (plist-get details :type))
-                    (string= "fileChange" (plist-get details :type)))
-               (let* ((path (plist-get details :path))
-                      (diff (plist-get details :diff))
-                      (view-btn
-                       (concat " "
-                               (eca-buttonize
-                                (propertize "view_diff" 'font-lock-face 'eca-chat-diff-view-face)
-                                `(lambda ()
-                                   (interactive)
-                                   (eca-chat--show-diff ,path ,diff))))))
-                 (eca-chat--update-expandable-content
-                  id
-                  (concat (propertize summary 'font-lock-face 'eca-chat-mcp-tool-call-label-face)
-                          " " status
-                          (eca-chat--file-change-details-label details)
-                          view-btn)
-                  (concat "Tool: `" name "`\n"
-                          (eca-chat--file-change-diff path diff roots))))
-             (eca-chat--update-expandable-content
-              id
-              (concat (propertize summary 'font-lock-face 'eca-chat-mcp-tool-call-label-face)
-                      " " status)
-              (eca-chat--content-table
-               `(("Tool"   . ,name)
-                 ("Output" . ,output-text)))))))
+                 (details (plist-get content :details))
+                 (status (if (plist-get content :error)
+                             eca-chat-mcp-tool-call-error-symbol
+                           eca-chat-mcp-tool-call-success-symbol)))
+            ;; Cleanup counters for this tool-call id to avoid unbounded growth
+            (remhash id eca-chat--tool-prepare-counters)
+            (if (and (stringp (plist-get details :type))
+                     (string= "fileChange" (plist-get details :type)))
+                (let* ((path (plist-get details :path))
+                       (diff (plist-get details :diff))
+                       (view-btn
+                        (concat " "
+                                (eca-buttonize
+                                 (propertize "view_diff" 'font-lock-face 'eca-chat-diff-view-face)
+                                 `(lambda ()
+                                    (interactive)
+                                    (eca-chat--show-diff ,path ,diff))))))
+                  (eca-chat--update-expandable-content
+                   id
+                   (concat (propertize summary 'font-lock-face 'eca-chat-mcp-tool-call-label-face)
+                           " " status
+                           (eca-chat--file-change-details-label details)
+                           view-btn)
+                   (concat "Tool: `" name "`\n"
+                           (eca-chat--file-change-diff path diff roots))))
+              (eca-chat--update-expandable-content
+               id
+               (concat (propertize summary 'font-lock-face 'eca-chat-mcp-tool-call-label-face)
+                       " " status)
+               (eca-chat--content-table
+                `(("Tool"   . ,name)
+                  ("Output" . ,output-text)))))))
 
         ("progress"
          (pcase (plist-get content :state)
@@ -1591,6 +1624,8 @@ string."
     (setq-local eca-chat--session-cost nil)
     (setq-local eca-chat--empty t)
     (setq-local eca-chat--track-context t)
+    ;; Reset per-buffer tool prepare counters to avoid leaking across sessions
+    (setq-local eca-chat--tool-prepare-counters (make-hash-table :test 'equal))
     (eca-chat--clear (eca-session))))
 
 ;;;###autoload
