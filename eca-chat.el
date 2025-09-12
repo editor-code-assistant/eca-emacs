@@ -955,121 +955,121 @@ Adds \\='q\\=' to quit."
     (pop-to-buffer (current-buffer))))
 
 (defun eca-chat--show-diff-ediff (path diff)
-   "Show DIFF for file at PATH using Ediff side-by-side in windows.
+  "Show DIFF for file at PATH using Ediff side-by-side in windows.
 Uses window configuration management instead of creating frames.
 If the current window is a side window, temporarily clear side-window
 protections so Ediff can split windows freely. The original window
 configuration is restored when Ediff quits via the cleanup hook."
-   (let* ((parsed        (eca-chat--parse-unified-diff diff))
-          (orig          (plist-get parsed :original))
-          (new           (plist-get parsed :new))
-          (buf-orig      (generate-new-buffer (format "*eca-diff-orig:%s*"
-path)))
-          (buf-new       (generate-new-buffer (format "*eca-diff-new:%s*"
-path)))
-          (chat-buf      (current-buffer))
-          (cwc           (current-window-configuration))
-          (orig-selected (selected-window))
-          (ediff-buffers-before
-           (seq-filter (lambda (b)
-                         (string-match-p "\\*\\(ediff-\\|Ediff Control\\)"
-(buffer-name b)))
-                       (buffer-list)))
-          (session-ediff-buffers nil)
-          cleanup-fn
-          after-setup-fn)
-     ;; Fill temporary buffers
-     (with-current-buffer buf-orig
-       (let ((inhibit-read-only t))
-         (erase-buffer)
-         (insert orig)
-         (set-buffer-modified-p nil)))
-     (with-current-buffer buf-new
-       (let ((inhibit-read-only t))
-         (erase-buffer)
-         (insert new)
-         (set-buffer-modified-p nil)))
-     ;; Temporarily relax side-window protections so Ediff can split
-     (let ((frame (selected-frame)))
-       (dolist (w (seq-filter (lambda (w)
-                                (and (eq (window-frame w) frame)
-                                     (or (window-parameter w
-'no-delete-other-windows)
-                                         (window-parameter w
-'window-side))))
-                              (window-list)))
-         (when (window-live-p w)
-           (set-window-parameter w 'no-delete-other-windows nil)
-           (set-window-parameter w 'window-side nil))))
-     ;; Ensure Ediff has a single full window to manage
-     (unless (one-window-p t)
-       (delete-other-windows))
-     ;; Cleanup: restore windows and kill temp/session buffers
-     (setq cleanup-fn
-           (lambda ()
-             ;; Restore window configuration
-             (when (window-configuration-p cwc)
-               (set-window-configuration cwc))
-             ;; Return focus to original window
-             (when (window-live-p orig-selected)
-               (select-window orig-selected))
-             ;; Re-display chat buffer in side window if needed
-             (when (and (buffer-live-p chat-buf)
-                        (or (not (get-buffer-window chat-buf t))
-                            (not (window-parameter (get-buffer-window
-chat-buf t) 'window-side))))
-               (ignore-errors (eca-chat--display-buffer chat-buf)))
-             ;; Kill temp buffers
-             (when (buffer-live-p buf-orig) (kill-buffer buf-orig))
-             (when (buffer-live-p buf-new)  (kill-buffer buf-new))
-             ;; Kill any additional Ediff-generated buffers
-             (dolist (b session-ediff-buffers)
-               (when (and b (buffer-live-p b))
-                 (kill-buffer b)))
-             (remove-hook 'ediff-quit-hook cleanup-fn)))
-     ;; After-setup hook: capture ediff buffers and move to first diff
-     (setq after-setup-fn
-           (lambda ()
-             (let ((ediff-buffers-after
-                    (seq-filter (lambda (b)
-                                  (string-match-p "\\*\\(ediff-\\|Ediff
+  (let* ((parsed        (eca-chat--parse-unified-diff diff))
+         (orig          (plist-get parsed :original))
+         (new           (plist-get parsed :new))
+         (buf-orig      (generate-new-buffer (format "*eca-diff-orig:%s*"
+                                                     path)))
+         (buf-new       (generate-new-buffer (format "*eca-diff-new:%s*"
+                                                     path)))
+         (chat-buf      (current-buffer))
+         (cwc           (current-window-configuration))
+         (orig-selected (selected-window))
+         (ediff-buffers-before
+          (seq-filter (lambda (b)
+                        (string-match-p "\\*\\(ediff-\\|Ediff Control\\)"
+                                        (buffer-name b)))
+                      (buffer-list)))
+         (session-ediff-buffers nil)
+         cleanup-fn
+         after-setup-fn)
+    ;; Fill temporary buffers
+    (with-current-buffer buf-orig
+      (let ((inhibit-read-only t))
+        (erase-buffer)
+        (insert orig)
+        (set-buffer-modified-p nil)))
+    (with-current-buffer buf-new
+      (let ((inhibit-read-only t))
+        (erase-buffer)
+        (insert new)
+        (set-buffer-modified-p nil)))
+    ;; Temporarily relax side-window protections so Ediff can split
+    (let ((frame (selected-frame)))
+      (dolist (w (seq-filter (lambda (w)
+                               (and (eq (window-frame w) frame)
+                                    (or (window-parameter w
+                                                          'no-delete-other-windows)
+                                        (window-parameter w
+                                                          'window-side))))
+                             (window-list)))
+        (when (window-live-p w)
+          (set-window-parameter w 'no-delete-other-windows nil)
+          (set-window-parameter w 'window-side nil))))
+    ;; Ensure Ediff has a single full window to manage
+    (unless (one-window-p t)
+      (delete-other-windows))
+    ;; Cleanup: restore windows and kill temp/session buffers
+    (setq cleanup-fn
+          (lambda ()
+            ;; Restore window configuration
+            (when (window-configuration-p cwc)
+              (set-window-configuration cwc))
+            ;; Return focus to original window
+            (when (window-live-p orig-selected)
+              (select-window orig-selected))
+            ;; Re-display chat buffer in side window if needed
+            (when (and (buffer-live-p chat-buf)
+                       (or (not (get-buffer-window chat-buf t))
+                           (not (window-parameter (get-buffer-window
+                                                   chat-buf t) 'window-side))))
+              (ignore-errors (eca-chat--display-buffer chat-buf)))
+            ;; Kill temp buffers
+            (when (buffer-live-p buf-orig) (kill-buffer buf-orig))
+            (when (buffer-live-p buf-new)  (kill-buffer buf-new))
+            ;; Kill any additional Ediff-generated buffers
+            (dolist (b session-ediff-buffers)
+              (when (and b (buffer-live-p b))
+                (kill-buffer b)))
+            (remove-hook 'ediff-quit-hook cleanup-fn)))
+    ;; After-setup hook: capture ediff buffers and move to first diff
+    (setq after-setup-fn
+          (lambda ()
+            (let ((ediff-buffers-after
+                   (seq-filter (lambda (b)
+                                 (string-match-p "\\*\\(ediff-\\|Ediff
 Control\\)" (buffer-name b)))
-                                (buffer-list))))
-               (setq session-ediff-buffers
-                     (seq-filter (lambda (b)
-                                   (and (not (member b
-ediff-buffers-before))
-                                        (not (string-match-p "*Ediff
+                               (buffer-list))))
+              (setq session-ediff-buffers
+                    (seq-filter (lambda (b)
+                                  (and (not (member b
+                                                    ediff-buffers-before))
+                                       (not (string-match-p "*Ediff
 Registry*" (buffer-name b)))))
-                                 ediff-buffers-after)))
-             (condition-case _err
-                 (progn
-                   (setq ediff-current-difference -1)
-                   (ediff-next-difference))
-               (error nil))
-             (remove-hook 'ediff-after-setup-windows-hook after-setup-fn)))
-     ;; Install hooks
-     (add-hook 'ediff-quit-hook cleanup-fn)
-     (add-hook 'ediff-after-setup-windows-hook after-setup-fn)
-     ;; Start Ediff with error handling
-     (condition-case err
-         (ediff-buffers buf-orig buf-new)
-       (error
-        ;; On error, remove hooks and restore windows
-        (remove-hook 'ediff-quit-hook cleanup-fn)
-        (remove-hook 'ediff-after-setup-windows-hook after-setup-fn)
-        (when (window-configuration-p cwc)
-          (set-window-configuration cwc))
-        ;; Re-display chat buffer on error
-        (when (and (buffer-live-p chat-buf)
-                   (or (not (get-buffer-window chat-buf t))
-                       (not (window-parameter (get-buffer-window chat-buf
-t) 'window-side))))
-          (ignore-errors (eca-chat--display-buffer chat-buf)))
-        ;; Kill temp buffers
-        (when (buffer-live-p buf-orig) (kill-buffer buf-orig))
-        (when (buffer-live-p buf-new)  (kill-buffer buf-new))
-        (message "eca-chat: error starting ediff: %s" err)))))
+                                ediff-buffers-after)))
+            (condition-case _err
+                (progn
+                  (setq ediff-current-difference -1)
+                  (ediff-next-difference))
+              (error nil))
+            (remove-hook 'ediff-after-setup-windows-hook after-setup-fn)))
+    ;; Install hooks
+    (add-hook 'ediff-quit-hook cleanup-fn)
+    (add-hook 'ediff-after-setup-windows-hook after-setup-fn)
+    ;; Start Ediff with error handling
+    (condition-case err
+        (ediff-buffers buf-orig buf-new)
+      (error
+       ;; On error, remove hooks and restore windows
+       (remove-hook 'ediff-quit-hook cleanup-fn)
+       (remove-hook 'ediff-after-setup-windows-hook after-setup-fn)
+       (when (window-configuration-p cwc)
+         (set-window-configuration cwc))
+       ;; Re-display chat buffer on error
+       (when (and (buffer-live-p chat-buf)
+                  (or (not (get-buffer-window chat-buf t))
+                      (not (window-parameter (get-buffer-window chat-buf
+                                                                t) 'window-side))))
+         (ignore-errors (eca-chat--display-buffer chat-buf)))
+       ;; Kill temp buffers
+       (when (buffer-live-p buf-orig) (kill-buffer buf-orig))
+       (when (buffer-live-p buf-new)  (kill-buffer buf-new))
+       (message "eca-chat: error starting ediff: %s" err)))))
 
 (defun eca-chat--show-diff-smerge (path diff)
   "Show DIFF for file at PATH using Smerge in a dedicated window.
