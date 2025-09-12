@@ -14,6 +14,8 @@
 (require 'f)
 (require 'markdown-mode)
 (require 'compat)
+(require 'ediff)
+(require 'smerge-mode)
 
 (require 'eca-util)
 (require 'eca-api)
@@ -33,9 +35,9 @@
 Can be `'left', `'right', `'top', or `'bottom'.  This setting will only
 be used when `eca-chat-use-side-window' is non-nil."
   :type '(choice (const :tag "Left" left)
-          (const :tag "Right" right)
-          (const :tag "Top" top)
-          (const :tag "Bottom" bottom))
+                 (const :tag "Right" right)
+                 (const :tag "Top" top)
+                 (const :tag "Bottom" bottom))
   :group 'eca)
 
 (defcustom eca-chat-window-width 0.40
@@ -140,6 +142,14 @@ Must be a valid model supported by server, check `eca-chat-select-model`."
            (const :tag "Last message cost" :last-mesage-cost)))
   :group 'eca)
 
+(defcustom eca-chat-diff-tool 'ediff
+  "Select the method for displaying file-change diffs in ECA chat."
+  :type '(choice (const :tag "Side-by-side Ediff" ediff)
+                 (const :tag "Merge-style Smerge" smerge)
+                 (const :tag "Plain text diff" text))
+  :group 'eca)
+
+
 ;; Faces
 
 (defface eca-chat-prompt-prefix-face
@@ -160,6 +170,11 @@ Must be a valid model supported by server, check `eca-chat-select-model`."
 (defface eca-chat-tool-call-cancel-face
   '((t (:inherit error :underline t :weight bold)))
   "Face for the cancel tool call action."
+  :group 'eca)
+
+(defface eca-chat-diff-view-face
+  '((t (:foreground "dodger blue" :underline t :weight bold)))
+  "Face for the diff view button."
   :group 'eca)
 
 (defface eca-chat-context-unlinked-face
@@ -907,6 +922,227 @@ If FORCE? decide to OPEN? or not."
           (propertize (concat  "-" (number-to-string (plist-get details :linesRemoved))) 'font-lock-face 'error)
           " "))
 
+(defun eca-chat--parse-unified-diff (diff-text)
+  "Parse DIFF-TEXT and return a plist with :original and :new strings."
+  (let ((orig '()) (new '()) in-hunk)
+    (dolist (l (split-string diff-text "\n"))
+      (cond
+       ((string-match "^@@.*@@$" l) (setq in-hunk t))
+       ((and in-hunk (string-prefix-p " " l))
+        (push (substring l 1) orig) (push (substring l 1) new))
+       ((and in-hunk (string-prefix-p "-" l))
+        (push (substring l 1) orig))
+       ((and in-hunk (string-prefix-p "+" l))
+        (push (substring l 1) new))))
+    (list :original (string-join (nreverse orig) "\n")
+          :new      (string-join (nreverse new) "\n"))))
+
+
+(defun eca-chat--show-diff-text (path diff)
+  "Show DIFF for file at PATH as plain unified diff text.
+Adds \\='q\\=' to quit."
+  (with-current-buffer (get-buffer-create (format "*eca-diff:%s*" path))
+    (let ((inhibit-read-only t))
+      (erase-buffer)
+      (insert diff)
+      (diff-mode)
+      (goto-char (point-min))
+      ;; Add a local 'q' binding to kill this buffer quickly
+      (let ((map (make-sparse-keymap)))
+        (set-keymap-parent map (current-local-map))
+        (define-key map (kbd "q") (lambda () (interactive) (kill-buffer (current-buffer))))
+        (use-local-map map)))
+    (pop-to-buffer (current-buffer))))
+
+(defun eca-chat--show-diff-ediff (path diff)
+  "Show DIFF for file at PATH using Ediff side-by-side in windows.
+Uses window configuration management instead of creating frames.
+
+If the current window is a side window, temporarily clear side-window
+protections so Ediff can split windows freely. The original window
+configuration is restored when Ediff quits via the cleanup hook."
+  (let* ((parsed    (eca-chat--parse-unified-diff diff))
+         (orig      (plist-get parsed :original))
+         (new       (plist-get parsed :new))
+         (buf-orig  (generate-new-buffer (format "*eca-diff-orig:%s*" path)))
+         (buf-new   (generate-new-buffer (format "*eca-diff-new:%s*" path)))
+         (cwc       (current-window-configuration))
+         (orig-selected (selected-window))
+         (ediff-buffers-before
+          (seq-filter (lambda (b)
+                        (string-match-p "\\*\\(ediff-\\|Ediff Control\\)" (buffer-name b)))
+                      (buffer-list)))
+         (session-ediff-buffers nil)
+         (cleanup-fn nil)
+         (after-setup-fn nil))
+    ;; Fill temporary buffers
+    (with-current-buffer buf-orig
+      (let ((inhibit-read-only t))
+        (erase-buffer)
+        (insert orig)
+        (set-buffer-modified-p nil)))
+    (with-current-buffer buf-new
+      (let ((inhibit-read-only t))
+        (erase-buffer)
+        (insert new)
+        (set-buffer-modified-p nil)))
+
+    ;; Temporarily relax side-window protections in the current frame so
+    ;; Ediff can split windows. The original configuration will be
+    ;; restored by `cleanup-fn' (which calls `set-window-configuration').
+    (let ((frame (selected-frame)))
+      (dolist (w (seq-filter (lambda (w)
+                               (and (eq (window-frame w) frame)
+                                    (or (window-parameter w 'no-delete-other-windows)
+                                        (window-parameter w 'window-side))))
+                             (window-list)))
+        (when (window-live-p w)
+          (set-window-parameter w 'no-delete-other-windows nil)
+          (set-window-parameter w 'window-side nil))))
+
+    ;; Ensure Ediff has a single full window to manage (it will split it).
+    (unless (one-window-p t)
+      (delete-other-windows))
+
+    ;; Cleanup: restore windows and kill temp/session buffers
+    (setq cleanup-fn
+          (lambda ()
+            ;; Restore window configuration saved at the beginning
+            (when (window-configuration-p cwc)
+              (set-window-configuration cwc))
+            ;; Ensure focus returns to the original window if still live
+            (when (window-live-p orig-selected)
+              (select-window orig-selected))
+            (when (buffer-live-p buf-orig) (kill-buffer buf-orig))
+            (when (buffer-live-p buf-new) (kill-buffer buf-new))
+            (dolist (b session-ediff-buffers)
+              (when (and b (buffer-live-p b))
+                (kill-buffer b)))
+            (remove-hook 'ediff-quit-hook cleanup-fn)))
+
+    ;; After-setup hook: capture ediff buffers and move to first diff
+    (setq after-setup-fn
+          (lambda ()
+            (let ((ediff-buffers-after
+                   (seq-filter (lambda (b)
+                                 (string-match-p "\\*\\(ediff-\\|Ediff Control\\)" (buffer-name b)))
+                               (buffer-list))))
+              (setq session-ediff-buffers
+                    (seq-filter (lambda (b)
+                                  (and (not (member b ediff-buffers-before))
+                                       (not (string-match-p "\*Ediff Registry\*" (buffer-name b)))))
+                                ediff-buffers-after)))
+            (condition-case _err
+                (progn
+                  (setq ediff-current-difference -1)
+                  (ediff-next-difference))
+              (error nil))
+            (remove-hook 'ediff-after-setup-windows-hook after-setup-fn)))
+
+    (add-hook 'ediff-quit-hook cleanup-fn)
+    (add-hook 'ediff-after-setup-windows-hook after-setup-fn)
+
+    ;; Start Ediff in the prepared window environment. Ediff will manage
+    ;; splits from here on. On error, restore original windows/config.
+    (condition-case err
+        (ediff-buffers buf-orig buf-new)
+      (error
+       ;; On error remove hooks and kill temps, and restore windows
+       (remove-hook 'ediff-quit-hook cleanup-fn)
+       (remove-hook 'ediff-after-setup-windows-hook after-setup-fn)
+       (when (window-configuration-p cwc)
+         (set-window-configuration cwc))
+       (when (buffer-live-p buf-orig) (kill-buffer buf-orig))
+       (when (buffer-live-p buf-new) (kill-buffer buf-new))
+       (message "eca-chat: error starting ediff: %s" err)))))
+
+(defun eca-chat--show-diff-smerge (path diff)
+  "Show DIFF for file at PATH using Smerge in a dedicated window.
+Uses regular window management instead of creating frames.
+
+If the current window is a side window, temporarily clear side-window
+protections so `delete-other-windows' can succeed. The original window
+configuration is restored when the smerge buffer is killed."
+  (let* ((parsed (eca-chat--parse-unified-diff diff))
+         (orig   (plist-get parsed :original))
+         (new    (plist-get parsed :new))
+         (buf    (generate-new-buffer (format "*eca-smerge:%s*" path)))
+         (cwc    (current-window-configuration))
+         (orig-selected (selected-window))
+         (frame  (selected-frame))
+         (cleanup-running nil)
+         cleanup-fn
+         window-config-hook)
+
+    ;; Fill buffer with conflict markers
+    (with-current-buffer buf
+      (let ((inhibit-read-only t))
+        (erase-buffer)
+        (insert (concat "<<<<<<< Original\n" orig "\n=======\n" new "\n>>>>>>> New\n"))
+        (diff-mode)
+        (smerge-mode 1)
+        (goto-char (point-min))))
+
+    ;; Define cleanup that restores window configuration and kills the buffer
+    (setq cleanup-fn
+          (lambda ()
+            (unless cleanup-running
+              (setq cleanup-running t)
+              (when (window-configuration-p cwc)
+                (ignore-errors (set-window-configuration cwc)))
+              (when (window-live-p orig-selected)
+                (select-window orig-selected))
+              (when (buffer-live-p buf)
+                (with-current-buffer buf
+                  (remove-hook 'kill-buffer-hook cleanup-fn t)))
+              (when (functionp window-config-hook)
+                (remove-hook 'window-configuration-change-hook window-config-hook))
+              (when (buffer-live-p buf)
+                (kill-buffer buf)))))
+
+    ;; If buffer is no longer visible, run cleanup
+    (setq window-config-hook
+          (lambda ()
+            (unless (get-buffer-window buf t)
+              (funcall cleanup-fn))))
+    (add-hook 'window-configuration-change-hook window-config-hook)
+
+    ;; Add local keymap and kill hook to the smerge buffer
+    (with-current-buffer buf
+      (let ((map (make-sparse-keymap)))
+        (set-keymap-parent map (current-local-map))
+        (define-key map (kbd "q") (lambda () (interactive) (funcall cleanup-fn)))
+        (use-local-map map))
+      (add-hook 'kill-buffer-hook cleanup-fn nil t))
+
+    ;; Temporarily relax side-window protections in the current frame so
+    ;; `delete-other-windows' can succeed. The original window
+    ;; configuration is restored by `cleanup-fn' (which calls `set-window-configuration').
+    (dolist (w (seq-filter (lambda (w)
+                             (and (eq (window-frame w) frame)
+                                  (or (window-parameter w 'no-delete-other-windows)
+                                      (window-parameter w 'window-side))))
+                           (window-list)))
+      (when (window-live-p w)
+        (set-window-parameter w 'no-delete-other-windows nil)
+        (set-window-parameter w 'window-side nil)))
+    ;; Present the buffer full-frame
+    (when (window-live-p (frame-root-window frame))
+      (select-window (frame-root-window frame)))
+    (unless (one-window-p t)
+      (delete-other-windows))
+    (switch-to-buffer buf)
+
+    ;; Return nil explicitly
+    nil))
+
+(defun eca-chat--show-diff (path diff)
+  "Dispatch DIFF view based on `eca-chat-diff-tool` for PATH."
+  (pcase eca-chat-diff-tool
+    ('ediff (eca-chat--show-diff-ediff path diff))
+    ('smerge (eca-chat--show-diff-smerge path diff))
+    (_      (eca-chat--show-diff-text path diff))))
+
 (defun eca-chat--relativize-filename-for-workspace-root (filename roots)
   "Relativize the FILENAME if a workspace root is found for ROOTS."
   (or (-some->> (-first (lambda (root) (f-ancestor-of? root filename)) roots)
@@ -916,7 +1152,7 @@ If FORCE? decide to OPEN? or not."
 (defun eca-chat--context-presentable-path (filename)
   "Return the presentable string for FILENAME."
   (or (when (-first (lambda (root) (f-ancestor-of? root filename))
-                        (eca--session-workspace-folders (eca-session)))
+                    (eca--session-workspace-folders (eca-session)))
         (f-filename filename))
       filename))
 
@@ -1213,8 +1449,8 @@ string."
        (cond
         ((eq action 'metadata)
          '(metadata (category . eca-capf)
-           (display-sort-function . identity)
-           (cycle-sort-function . identity)))
+                    (display-sort-function . identity)
+                    (cycle-sort-function . identity)))
         ((eq (car-safe action) 'boundaries) nil)
         (t
          (complete-with-action action (funcall candidates-fn) probe pred))))
@@ -1244,225 +1480,222 @@ string."
     (eca-chat--with-current-buffer (eca-chat--get-buffer session)
       (setq-local eca-chat--empty nil)
       (pcase (plist-get content :type)
-        ("text" (when-let* ((text (plist-get content :text)))
-                  (pcase role
-                    ("user" (progn
-                              (eca-chat--add-text-content
-                               (propertize text
-                                           'font-lock-face 'eca-chat-user-messages-face
-                                           'line-prefix (propertize eca-chat-prompt-prefix 'font-lock-face 'eca-chat-user-messages-face)
-                                           'line-spacing 10)
-                               'eca-chat--user-message-id eca-chat--last-request-id)
-                              (eca-chat--mark-header)
-                              (font-lock-ensure)))
-                    ("system" (progn
-                                (eca-chat--add-text-content
-                                 (propertize text
-                                             'line-height 20
-                                             'font-lock-face 'eca-chat-system-messages-face))))
-                    (_ (eca-chat--add-text-content text)))))
-        ("url" (eca-chat--add-header
-                (concat
-                 "🌐 "
-                 (eca-buttonize
-                  (plist-get content :title)
-                  (lambda() (browse-url (plist-get content :url))))
-                 "\n\n")))
-        ("reasonStarted" (let ((id (plist-get content :id))
-                               (label (propertize "Thinking..." 'font-lock-face 'eca-chat-reason-label-face)))
-                           (eca-chat--add-expandable-content id label "")))
-        ("reasonText" (let ((text (plist-get content :text))
-                            (id (plist-get content :id))
-                            (label (propertize "Thinking..." 'font-lock-face 'eca-chat-reason-label-face)))
-                        (eca-chat--update-expandable-content id label text t)))
-        ("reasonFinished" (let* ((id (plist-get content :id))
-                                 (base-label (propertize "Thought" 'font-lock-face 'eca-chat-reason-label-face))
-                                 (total-time-ms (-some-> (plist-get content :totalTimeMs)
-                                                  (eca-chat--time->presentable-time)))
-                                 (label (if total-time-ms
-                                            (concat base-label " " total-time-ms)
-                                          base-label)))
-                            (eca-chat--update-expandable-content id label "" t)))
-        ("toolCallPrepare" (let* ((name (plist-get content :name))
-                                  (origin (plist-get content :origin))
-                                  (argsText (plist-get content :argumentsText))
-                                  (id (plist-get content :id))
-                                  (summary (plist-get content :summary))
-                                  (label (concat (propertize (or summary
-                                                                 (format "Preparing %s tool call: %s"
-                                                                         (if (string= "mcp" origin) "MCP" "ECA")
-                                                                         name))
-                                                             'font-lock-face 'eca-chat-mcp-tool-call-label-face)
-                                                 " "
-                                                 eca-chat-mcp-tool-call-loading-symbol)))
-                             (if (eca-chat--get-expandable-content id)
-                                 (eca-chat--update-expandable-content id label argsText t)
-                               (eca-chat--add-expandable-content id
-                                                                 label
-                                                                 (eca-chat--content-table
-                                                                  `(("Tool" . ,name)
-                                                                    ("Arguments" . ,argsText)))))))
-        ("toolCallRun" (let* ((name (plist-get content :name))
-                              (origin (plist-get content :origin))
-                              (args (plist-get content :arguments))
-                              (id (plist-get content :id))
-                              (manual? (plist-get content :manualApproval))
-                              (details (plist-get content :details))
-                              (summary (plist-get content :summary))
-                              (approvalText (when manual?
-                                              (concat
-                                               (eca-buttonize
-                                                (propertize "reject" 'font-lock-face 'eca-chat-tool-call-cancel-face
-                                                            'line-prefix (make-string (1+ (length eca-chat-expandable-block-open-symbol)) ?\s))
-                                                (lambda () (eca-api-notify session
-                                                                           :method "chat/toolCallReject"
-                                                                           :params (list :chatId eca-chat--id :toolCallId id))))
-                                               " "
-                                               (eca-buttonize
-                                                (propertize "accept" 'font-lock-face 'eca-chat-tool-call-run-face)
-                                                (lambda () (eca-api-notify session
-                                                                           :method "chat/toolCallApprove"
-                                                                           :params (list :chatId eca-chat--id :toolCallId id))))))))
-                         (if (string= "fileChange" (plist-get details :type))
-                             (eca-chat--update-expandable-content
-                              id
-                              (concat (propertize summary 'font-lock-face 'eca-chat-mcp-tool-call-label-face)
-                                      " "
-                                      (eca-chat--file-change-details-label details)
-                                      eca-chat-mcp-tool-call-loading-symbol
-                                      "\n"
-                                      approvalText)
-                              (concat
-                               "Tool: `" name "`\n"
-                               (eca-chat--file-change-diff (plist-get details :path) (plist-get details :diff) roots)))
-                           (eca-chat--update-expandable-content
-                            id
-                            (concat (propertize (or summary
-                                                    (format "Calling %s tool: %s"
-                                                            (if (string= "mcp" origin) "MCP" "ECA")
-                                                            name))
-                                                'font-lock-face 'eca-chat-mcp-tool-call-label-face)
-                                    " "
-                                    eca-chat-mcp-tool-call-loading-symbol
-                                    "\n"
-                                    approvalText)
-                            (eca-chat--content-table `(("Tool" . ,name)
-                                                       ("Arguments" . ,args)))))))
-        ("toolCallRunning" (let* ((name (plist-get content :name))
-                                  (origin (plist-get content :origin))
-                                  (args (plist-get content :arguments))
-                                  (id (plist-get content :id))
-                                  (details (plist-get content :details))
-                                  (summary (plist-get content :summary)))
-                             (if (string= "fileChange" (plist-get details :type))
-                                 (eca-chat--update-expandable-content
-                                  id
-                                  (concat (propertize summary 'font-lock-face 'eca-chat-mcp-tool-call-label-face)
-                                          " "
-                                          (eca-chat--file-change-details-label details)
-                                          eca-chat-mcp-tool-call-loading-symbol)
-                                  (concat
-                                   "Tool: `" name "`\n"
-                                   (eca-chat--file-change-diff (plist-get details :path) (plist-get details :diff) roots)))
-                               (eca-chat--update-expandable-content
-                                id
-                                (concat (propertize (or summary
-                                                        (format "Calling %s tool: %s"
-                                                                (if (string= "mcp" origin) "MCP" "ECA")
-                                                                name))
-                                                    'font-lock-face 'eca-chat-mcp-tool-call-label-face)
+
+        ("text"
+         (when-let* ((text (plist-get content :text)))
+           (pcase role
+             ("user"
+              (eca-chat--add-text-content
+               (propertize text
+                           'font-lock-face 'eca-chat-user-messages-face
+                           'line-prefix (propertize eca-chat-prompt-prefix
+                                                    'font-lock-face 'eca-chat-user-messages-face)
+                           'line-spacing 10)
+               'eca-chat--user-message-id eca-chat--last-request-id)
+              (eca-chat--mark-header)
+              (font-lock-ensure))
+             ("system"
+              (eca-chat--add-text-content
+               (propertize text
+                           'font-lock-face 'eca-chat-system-messages-face
+                           'line-height 20)))
+             (_
+              (eca-chat--add-text-content text)))))
+
+        ("url"
+         (eca-chat--add-header
+          (concat "🌐 "
+                  (eca-buttonize
+                   (plist-get content :title)
+                   (lambda () (browse-url (plist-get content :url))))
+                  "\n\n")))
+
+        ("reasonStarted"
+         (let ((id (plist-get content :id))
+               (label (propertize "Thinking..." 'font-lock-face 'eca-chat-reason-label-face)))
+           (eca-chat--add-expandable-content id label "")))
+
+        ("reasonText"
+         (let ((id (plist-get content :id))
+               (label (propertize "Thinking..." 'font-lock-face 'eca-chat-reason-label-face))
+               (text (plist-get content :text)))
+           (eca-chat--update-expandable-content id label text t)))
+
+        ("reasonFinished"
+         (let* ((id (plist-get content :id))
+                (base (propertize "Thought" 'font-lock-face 'eca-chat-reason-label-face))
+                (time (when-let ((ms (plist-get content :totalTimeMs)))
+                        (concat " " (eca-chat--time->presentable-time ms))))
+                (label (concat base time)))
+           (eca-chat--update-expandable-content id label "" t)))
+
+        ("toolCallPrepare"
+         (let* ((id (plist-get content :id))
+                (name (plist-get content :name))
+                (argsText (plist-get content :argumentsText))
+                (summary (or (plist-get content :summary)
+                             (format "Preparing tool: %s" name)))
+                (label (concat (propertize summary
+                                           'font-lock-face 'eca-chat-mcp-tool-call-label-face)
+                               " " eca-chat-mcp-tool-call-loading-symbol)))
+           (if (eca-chat--get-expandable-content id)
+               (eca-chat--update-expandable-content id label argsText t)
+             (eca-chat--add-expandable-content id label
+                                               (eca-chat--content-table
+                                                `(("Tool" . ,name)
+                                                  ("Arguments" . ,argsText)))))))
+
+        ("toolCallRun"
+         (let* ((id (plist-get content :id))
+                (name (plist-get content :name))
+                (summary (or (plist-get content :summary)
+                             (format "Calling tool: %s" name)))
+                (manual? (plist-get content :manualApproval))
+                (approvalText (when manual?
+                                (concat " "
+                                        (eca-buttonize
+                                         (propertize "reject" 'font-lock-face 'eca-chat-tool-call-cancel-face)
+                                         (lambda ()
+                                           (eca-api-notify session
+                                                           :method "chat/toolCallReject"
+                                                           :params (list :chatId eca-chat--id
+                                                                         :toolCallId id))))
                                         " "
-                                        eca-chat-mcp-tool-call-loading-symbol)
-                                (eca-chat--content-table `(("Tool" . ,name)
-                                                           ("Arguments" . ,args)))))))
-        ("toolCallRejected" (let* ((name (plist-get content :name))
-                                   (origin (plist-get content :origin))
-                                   (args (plist-get content :arguments))
-                                   (details (plist-get content :details))
-                                   (summary (plist-get content :summary))
-                                   (id (plist-get content :id)))
-                              (if (string= "fileChange" (plist-get details :type))
-                                  (eca-chat--update-expandable-content
-                                   id
-                                   (concat (propertize summary 'font-lock-face 'eca-chat-mcp-tool-call-label-face)
-                                           " "
-                                           (eca-chat--file-change-details-label details)
-                                           eca-chat-mcp-tool-call-error-symbol)
-                                   (concat
-                                    "Tool: `" name "`\n"
-                                    (eca-chat--file-change-diff (plist-get details :path) (plist-get details :diff) roots)))
-                                (eca-chat--update-expandable-content
-                                 id
-                                 (concat (propertize (format "Rejected %s tool: %s"
-                                                             (if (string= "mcp" origin) "MCP" "ECA")
-                                                             name)
-                                                     'font-lock-face 'eca-chat-mcp-tool-call-label-face)
-                                         " "
-                                         eca-chat-mcp-tool-call-error-symbol)
-                                 (eca-chat--content-table `(("Tool" . ,name)
-                                                            ("Arguments" . ,args)))))))
-        ("toolCalled" (let* ((id (plist-get content :id))
-                             (name (plist-get content :name))
-                             (origin (plist-get content :origin))
-                             (args (plist-get content :arguments))
-                             (outputs (append (plist-get content :outputs) nil))
-                             (total-time-ms-str (or (-some->> (plist-get content :totalTimeMs)
-                                                      (eca-chat--time->presentable-time)
-                                                      (concat " "))
-                                                    ""))
-                             (summary (or (plist-get content :summary)
-                                          (format "Called %s tool: %s"
-                                                  (if (string= "mcp" origin) "MCP" "ECA")
-                                                  name)))
-                             (error? (plist-get content :error))
-                             (output-contents (-reduce-from (lambda (txt output) (concat txt "\n" (plist-get output :text)))
-                                                            ""
-                                                            outputs))
-                             (output-contents (if (string-blank-p output-contents)
-                                                  "Empty"
-                                                output-contents))
-                             (details (plist-get content :details))
-                             (status-icon (if error?
-                                              eca-chat-mcp-tool-call-error-symbol
-                                            eca-chat-mcp-tool-call-success-symbol)))
-                        (if (string= "fileChange" (plist-get details :type))
-                            (eca-chat--update-expandable-content
-                             id
-                             (concat (propertize summary 'font-lock-face 'eca-chat-mcp-tool-call-label-face)
-                                     " "
-                                     (eca-chat--file-change-details-label details)
-                                     status-icon
-                                     total-time-ms-str)
-                             (concat
-                              "Tool: `" name "`\n"
-                              (eca-chat--file-change-diff (plist-get details :path) (plist-get details :diff) roots)))
-                          (eca-chat--update-expandable-content
-                           id
-                           (concat (propertize summary 'font-lock-face 'eca-chat-mcp-tool-call-label-face)
-                                   " "
-                                   status-icon
-                                   total-time-ms-str)
-                           (eca-chat--content-table `(("Tool" . ,name)
-                                                      ("Arguments" . ,args)
-                                                      ("Output" . ,output-contents)))))))
-        ("progress" (pcase (plist-get content :state)
-                      ("running" (progn
-                                   (unless eca-chat--spinner-timer
-                                     (eca-chat--spinner-start session))
-                                   (setq-local eca-chat--progress-text (propertize (plist-get content :text) 'font-lock-face 'eca-chat-system-messages-face))))
-                      ("finished" (progn
-                                    (eca-chat--spinner-stop)
-                                    (eca-chat--add-text-content (propertize "\n" 'line-spacing 10))
-                                    (eca-chat--set-chat-loading session nil)
-                                    (setq-local eca-chat--progress-text "")))))
-        ("usage" (progn
-                   (setq-local eca-chat--message-input-tokens (plist-get content :messageInputTokens))
-                   (setq-local eca-chat--message-output-tokens (plist-get content :messageOutputTokens))
-                   (setq-local eca-chat--session-tokens (plist-get content :sessionTokens))
-                   (setq-local eca-chat--session-limit-context (plist-get (plist-get content :limit) :context))
-                   (setq-local eca-chat--session-limit-output (plist-get (plist-get content :limit) :output))
-                   (setq-local eca-chat--message-cost (plist-get content :messageCost))
-                   (setq-local eca-chat--session-cost (plist-get content :sessionCost))))))))
+                                        (eca-buttonize
+                                         (propertize "accept" 'font-lock-face 'eca-chat-tool-call-run-face)
+                                         (lambda ()
+                                           (eca-api-notify session
+                                                           :method "chat/toolCallApprove"
+                                                           :params (list :chatId eca-chat--id
+                                                                         :toolCallId id)))))))
+                (details (plist-get content :details)))
+           (if (and (stringp (plist-get details :type))
+                    (string= "fileChange" (plist-get details :type)))
+               (let* ((path (plist-get details :path))
+                      (diff (plist-get details :diff))
+                      (view-btn
+                       (concat " "
+                               (eca-buttonize
+                                (propertize "view_diff" 'font-lock-face 'eca-chat-diff-view-face)
+                                `(lambda ()
+                                   (interactive)
+                                   (eca-chat--show-diff ,path ,diff))))))
+                 (eca-chat--update-expandable-content
+                  id
+                  (concat (propertize summary 'font-lock-face 'eca-chat-mcp-tool-call-label-face)
+                          " "
+                          (eca-chat--file-change-details-label details)
+                          approvalText
+                          view-btn)
+                  (concat "Tool: `" name "`\n"
+                          (eca-chat--file-change-diff path diff roots))))
+             (eca-chat--update-expandable-content
+              id
+              (concat (propertize summary 'font-lock-face 'eca-chat-mcp-tool-call-label-face)
+                      " " approvalText)
+              (eca-chat--content-table
+               `(("Tool" . ,name)
+                 ("Arguments" . ,(plist-get content :arguments))))))))
+
+        ("toolCallRunning"
+         (let* ((id (plist-get content :id))
+                (name (plist-get content :name))
+                (summary (or (plist-get content :summary)
+                             (format "Running tool: %s" name)))
+                (details (plist-get content :details))
+                (status eca-chat-mcp-tool-call-loading-symbol))
+           (if (and (stringp (plist-get details :type))
+                    (string= "fileChange" (plist-get details :type)))
+               (let* ((path (plist-get details :path))
+                      (diff (plist-get details :diff))
+                      (view-btn
+                       (concat " "
+                               (eca-buttonize
+                                (propertize "view_diff" 'font-lock-face 'eca-chat-diff-view-face)
+                                `(lambda ()
+                                   (interactive)
+                                   (eca-chat--show-diff ,path ,diff))))))
+                 (eca-chat--update-expandable-content
+                  id
+                  (concat (propertize summary 'font-lock-face 'eca-chat-mcp-tool-call-label-face)
+                          " "
+                          (eca-chat--file-change-details-label details)
+                          status
+                          view-btn)
+                  (concat "Tool: `" name "`\n"
+                          (eca-chat--file-change-diff path diff roots))))
+             (eca-chat--update-expandable-content
+              id
+              (concat (propertize summary 'font-lock-face 'eca-chat-mcp-tool-call-label-face)
+                      " " status)
+              (eca-chat--content-table
+               `(("Tool" . ,name)
+                 ("Arguments" . ,(plist-get content :arguments))))))))
+
+        ("toolCalled"
+         (let* ((id (plist-get content :id))
+                (name (plist-get content :name))
+                (summary (or (plist-get content :summary)
+                             (format "Called tool: %s" name)))
+                (outputs (plist-get content :outputs))
+                (output-text (if outputs
+                                 (mapconcat (lambda (o) (or (plist-get o :text) "")) outputs "\n")
+                               ""))
+                (details (plist-get content :details))
+                (status (if (plist-get content :error)
+                            eca-chat-mcp-tool-call-error-symbol
+                          eca-chat-mcp-tool-call-success-symbol)))
+           (if (and (stringp (plist-get details :type))
+                    (string= "fileChange" (plist-get details :type)))
+               (let* ((path (plist-get details :path))
+                      (diff (plist-get details :diff))
+                      (view-btn
+                       (concat " "
+                               (eca-buttonize
+                                (propertize "view_diff" 'font-lock-face 'eca-chat-diff-view-face)
+                                `(lambda ()
+                                   (interactive)
+                                   (eca-chat--show-diff ,path ,diff))))))
+                 (eca-chat--update-expandable-content
+                  id
+                  (concat (propertize summary 'font-lock-face 'eca-chat-mcp-tool-call-label-face)
+                          " " status
+                          (eca-chat--file-change-details-label details)
+                          view-btn)
+                  (concat "Tool: `" name "`\n"
+                          (eca-chat--file-change-diff path diff roots))))
+             (eca-chat--update-expandable-content
+              id
+              (concat (propertize summary 'font-lock-face 'eca-chat-mcp-tool-call-label-face)
+                      " " status)
+              (eca-chat--content-table
+               `(("Tool"   . ,name)
+                 ("Output" . ,output-text)))))))
+
+        ("progress"
+         (pcase (plist-get content :state)
+           ("running"
+            (unless eca-chat--spinner-timer
+              (eca-chat--spinner-start session))
+            (setq-local eca-chat--progress-text
+                        (propertize (plist-get content :text)
+                                    'font-lock-face 'eca-chat-system-messages-face)))
+           ("finished"
+            (eca-chat--spinner-stop)
+            (eca-chat--add-text-content "\n")
+            (eca-chat--set-chat-loading session nil)
+            (setq-local eca-chat--progress-text ""))))
+
+        ("usage"
+         (setq-local eca-chat--message-input-tokens  (plist-get content :messageInputTokens))
+         (setq-local eca-chat--message-output-tokens (plist-get content :messageOutputTokens))
+         (setq-local eca-chat--session-tokens        (plist-get content :sessionTokens))
+         (setq-local eca-chat--session-limit-context (plist-get (plist-get content :limit) :context))
+         (setq-local eca-chat--session-limit-output  (plist-get (plist-get content :limit) :output))
+         (setq-local eca-chat--message-cost          (plist-get content :messageCost))
+         (setq-local eca-chat--session-cost          (plist-get content :sessionCost)))
+
+        (_ nil)))))
 
 (defun eca-chat--handle-mcp-server-updated (session _server)
   "Handle mcp SERVER updated for SESSION."

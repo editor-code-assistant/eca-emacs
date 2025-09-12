@@ -64,6 +64,7 @@ M-x package-install eca
 - `eca-chat-window-side`: customize the chat window side.
 - `eca-chat-window-width`: customize the chat window width.
 - `eca-chat-window-height`: customize the chat window height.
+- `eca-chat-diff-tool`: customize viewing diffs, defaults to ediff.
 
 
 ### Keybindings
