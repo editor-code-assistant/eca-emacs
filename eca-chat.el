@@ -146,8 +146,7 @@ Must be a valid model supported by server, check `eca-chat-select-model`."
 (defcustom eca-chat-diff-tool 'ediff
   "Select the method for displaying file-change diffs in ECA chat."
   :type '(choice (const :tag "Side-by-side Ediff" ediff)
-                 (const :tag "Merge-style Smerge" smerge)
-                 (const :tag "Plain text diff" text))
+                 (const :tag "Merge-style Smerge" smerge))
   :group 'eca)
 
 
@@ -1727,7 +1726,6 @@ if ARG is current prefix, ask for file, otherwise add current file."
 
 DIFF-TEXT is the unified diff string to parse and returns the parsed
 plist produced by `eca-diff-parse-unified-diff'."
-  (require 'eca-diff)
   (eca-diff-parse-unified-diff diff-text))
 
 
@@ -1736,7 +1734,6 @@ plist produced by `eca-diff-parse-unified-diff'."
 
 PATH is the file path being shown and DIFF is the unified diff text
 that will be displayed in the created `*eca-diff:PATH*' buffer."
-  (require 'eca-diff)
   (eca-diff-show-text path diff))
 
 
@@ -1746,7 +1743,6 @@ that will be displayed in the created `*eca-diff:PATH*' buffer."
 PATH is the file path being shown and DIFF is the unified diff text.
 This wrapper passes the current buffer as CHAT-BUF so `eca-diff' can
 restore the chat display after Ediff quits."
-  (require 'eca-diff)
   (eca-diff-show-ediff path diff (current-buffer) (lambda (b) (ignore-errors (eca-chat--display-buffer b)))))
 
 
@@ -1756,7 +1752,6 @@ restore the chat display after Ediff quits."
 PATH is the file path being shown and DIFF is the unified diff text.
 This wrapper passes the current buffer as CHAT-BUF so `eca-diff' can
 restore the chat display after smerge quits."
-  (require 'eca-diff)
   (eca-diff-show-smerge path diff (current-buffer) (lambda (b) (ignore-errors (eca-chat--display-buffer b)))))
 
 
@@ -1764,8 +1759,7 @@ restore the chat display after smerge quits."
   "Dispatch DIFF view based on `eca-chat-diff-tool` for PATH."
   (pcase eca-chat-diff-tool
     ('ediff (eca-chat--show-diff-ediff path diff))
-    ('smerge (eca-chat--show-diff-smerge path diff))
-    (_      (eca-chat--show-diff-text path diff))))
+    ('smerge (eca-chat--show-diff-smerge path diff))))
 
 (provide 'eca-chat)
 ;;; eca-chat.el ends here
