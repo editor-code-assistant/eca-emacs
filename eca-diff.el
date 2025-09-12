@@ -1,5 +1,9 @@
 ;;; eca-diff.el --- Diff helpers for ECA -*- lexical-binding: t; -*-
 ;;
+;; Utilities to show unified diffs via text, ediff or smerge.
+;; This file is extracted from eca-chat.el to keep diff rendering
+;; logic isolated and reusable.
+;;
 ;;; Commentary:
 ;;
 ;; Diff helpers for ECA: functions to parse and
@@ -9,7 +13,7 @@
 ;;
 ;;; Code:
 
-(require 'f)
+(require 'f nil t)
 (require 'ediff)
 (require 'smerge-mode)
 (require 'seq)
@@ -32,23 +36,6 @@ This mirrors the original parser used by the chat UI."
     (list :original (string-join (nreverse orig) "\n")
           :new      (string-join (nreverse new) "\n"))))
 
-(defun eca-diff-show-text (path diff)
-  "Show DIFF for file at PATH as plain unified diff text.
-Creates a buffer `*eca-diff:PATH*' with `diff-mode'.  A local `q' key
-is installed to quit the buffer quickly."
-  (with-current-buffer (get-buffer-create (format "*eca-diff:%s*" path))
-    (let ((inhibit-read-only t))
-      (erase-buffer)
-      (insert diff)
-      (diff-mode)
-      (goto-char (point-min))
-      ;; Add a local 'q' binding to kill this buffer quickly
-      (let ((map (make-sparse-keymap)))
-        (set-keymap-parent map (current-local-map))
-        (define-key map (kbd "q") (lambda () (interactive) (kill-buffer (current-buffer))))
-        (use-local-map map))))
-  (pop-to-buffer (current-buffer)))
-
 (defun eca-diff--default-redisplay-fn (chat-buf)
   "Default redisplay function used when a chat RE-DISPLAY-FN is not provided.
 Shows CHAT-BUF using `display-buffer' if it's still alive."
@@ -59,7 +46,7 @@ Shows CHAT-BUF using `display-buffer' if it's still alive."
   "Show DIFF for file at PATH using Ediff side-by-side in windows.
 If CHAT-BUF is provided it will be used to attempt to re-display the
 chat buffer after Ediff quits.  If REDISPLAY-FN is provided it will be
-called with CHAT-BUF to perform that re-display (default: `display-buffer').
+called with CHAT-BUF to perform that re-display (default: display-buffer).
 ROOTS may be passed for path relativization if desired.
 
 This function tries to be Doom-compatible when Emacs runs Doom popup
@@ -305,17 +292,6 @@ to re-show the chat window when the smerge buffer is killed."
     ;; Return nil explicitly
     nil))
 
-(defun eca-diff-show (path diff &optional tool chat-buf redisplay-fn &rest _)
-  "Public entry point to show a unified DIFF for PATH.
-Optional TOOL is a symbol `ediff, `smerge or `text to override the default.
-If CHAT-BUF is provided REDISPLAY-FN will be called with CHAT-BUF to attempt
-re-showing the originating chat buffer after the diff viewer quits.
-ROOTS is forwarded where useful for path relativization."
-  (let ((tool (or tool 'ediff)))
-    (pcase tool
-      ('ediff (eca-diff-show-ediff path diff chat-buf redisplay-fn))
-      ('smerge (eca-diff-show-smerge path diff chat-buf redisplay-fn))
-      (_      (eca-diff-show-text path diff)))))
 
 (provide 'eca-diff)
 ;;; eca-diff.el ends here
