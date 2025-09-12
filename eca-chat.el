@@ -1137,7 +1137,7 @@ configuration is restored when the smerge buffer is killed."
     nil))
 
 (defun eca-chat--show-diff (path diff)
-  "Dispatch diff view based on `eca-chat-diff-tool` for PATH."
+  "Dispatch DIFF view based on `eca-chat-diff-tool` for PATH."
   (pcase eca-chat-diff-tool
     ('ediff (eca-chat--show-diff-ediff path diff))
     ('smerge (eca-chat--show-diff-smerge path diff))
