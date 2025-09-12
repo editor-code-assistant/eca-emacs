@@ -1097,6 +1097,37 @@ of (LINE . CHARACTER) representing the current selection or cursor position."
 (declare-function evil-delete-backward-word "evil" ())
 (declare-function evil-delete-back-to-indentation "evil" ())
 
+(defun eca-chat--parse-unified-diff (diff-text)
+  "Compatibility wrapper that delegates to `eca-diff-parse-unified-diff'.
+
+DIFF-TEXT is the unified diff string to parse and returns the parsed
+plist produced by `eca-diff-parse-unified-diff'."
+  (eca-diff-parse-unified-diff diff-text))
+
+(defun eca-chat--show-diff-ediff (path diff)
+  "Compatibility wrapper delegating to `eca-diff-show-ediff'.
+
+PATH is the file path being shown and DIFF is the unified diff text.
+This wrapper passes the current buffer as CHAT-BUF so `eca-diff' can
+restore the chat display after Ediff quits."
+  (eca-diff-show-ediff path diff (current-buffer) (lambda (b) (ignore-errors (eca-chat--display-buffer b)))))
+
+
+(defun eca-chat--show-diff-smerge (path diff)
+  "Compatibility wrapper delegating to `eca-diff-show-smerge'.
+
+PATH is the file path being shown and DIFF is the unified diff text.
+This wrapper passes the current buffer as CHAT-BUF so `eca-diff' can
+restore the chat display after smerge quits."
+  (eca-diff-show-smerge path diff (current-buffer) (lambda (b) (ignore-errors (eca-chat--display-buffer b)))))
+
+
+(defun eca-chat--show-diff (path diff)
+  "Dispatch DIFF view based on `eca-chat-diff-tool` for PATH."
+  (pcase eca-chat-diff-tool
+    ('ediff (eca-chat--show-diff-ediff path diff))
+    ('smerge (eca-chat--show-diff-smerge path diff))))
+
 ;; Public
 
 (define-derived-mode eca-chat-mode markdown-mode "eca-chat"
@@ -1720,46 +1751,6 @@ if ARG is current prefix, ask for file, otherwise add current file."
         (while (not (equal ?\r (read-char)))
           (sit-for 0.5))
         (whisper-run)))))
-
-(defun eca-chat--parse-unified-diff (diff-text)
-  "Compatibility wrapper that delegates to `eca-diff-parse-unified-diff'.
-
-DIFF-TEXT is the unified diff string to parse and returns the parsed
-plist produced by `eca-diff-parse-unified-diff'."
-  (eca-diff-parse-unified-diff diff-text))
-
-
-(defun eca-chat--show-diff-text (path diff)
-  "Compatibility wrapper that delegates to `eca-diff-show-text'.
-
-PATH is the file path being shown and DIFF is the unified diff text
-that will be displayed in the created `*eca-diff:PATH*' buffer."
-  (eca-diff-show-text path diff))
-
-
-(defun eca-chat--show-diff-ediff (path diff)
-  "Compatibility wrapper delegating to `eca-diff-show-ediff'.
-
-PATH is the file path being shown and DIFF is the unified diff text.
-This wrapper passes the current buffer as CHAT-BUF so `eca-diff' can
-restore the chat display after Ediff quits."
-  (eca-diff-show-ediff path diff (current-buffer) (lambda (b) (ignore-errors (eca-chat--display-buffer b)))))
-
-
-(defun eca-chat--show-diff-smerge (path diff)
-  "Compatibility wrapper delegating to `eca-diff-show-smerge'.
-
-PATH is the file path being shown and DIFF is the unified diff text.
-This wrapper passes the current buffer as CHAT-BUF so `eca-diff' can
-restore the chat display after smerge quits."
-  (eca-diff-show-smerge path diff (current-buffer) (lambda (b) (ignore-errors (eca-chat--display-buffer b)))))
-
-
-(defun eca-chat--show-diff (path diff)
-  "Dispatch DIFF view based on `eca-chat-diff-tool` for PATH."
-  (pcase eca-chat-diff-tool
-    ('ediff (eca-chat--show-diff-ediff path diff))
-    ('smerge (eca-chat--show-diff-smerge path diff))))
 
 (provide 'eca-chat)
 ;;; eca-chat.el ends here
