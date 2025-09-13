@@ -917,8 +917,7 @@ If FORCE? decide to OPEN? or not."
           " "
           (propertize (concat  "+" (number-to-string (plist-get details :linesAdded))) 'font-lock-face 'success)
           " "
-          (propertize (concat  "-" (number-to-string (plist-get details :linesRemoved))) 'font-lock-face 'error)
-          " "))
+          (propertize (concat  "-" (number-to-string (plist-get details :linesRemoved))) 'font-lock-face 'error)))
 
 (defun eca-chat--relativize-filename-for-workspace-root (filename roots)
   "Relativize the FILENAME if a workspace root is found for ROOTS."
@@ -1284,7 +1283,8 @@ string."
   "Handle the content received notification with PARAMS for SESSION."
   (let* ((role (plist-get params :role))
          (content (plist-get params :content))
-         (roots (eca--session-workspace-folders session)))
+         (roots (eca--session-workspace-folders session))
+         (tool-call-next-line-spacing (make-string (1+ (length eca-chat-expandable-block-open-symbol)) ?\s)))
     (eca-chat--with-current-buffer (eca-chat--get-buffer session)
       (setq-local eca-chat--empty nil)
       (pcase (plist-get content :type)
@@ -1359,10 +1359,11 @@ string."
                 (summary (or (plist-get content :summary)
                              (format "Calling tool: %s" name)))
                 (manual? (plist-get content :manualApproval))
+                (status eca-chat-mcp-tool-call-loading-symbol)
                 (approvalText (when manual?
                                 (concat (eca-buttonize
                                          (propertize "reject"
-                                                     'line-prefix (make-string (1+ (length eca-chat-expandable-block-open-symbol)) ?\s)
+                                                     'line-prefix tool-call-next-line-spacing
                                                      'font-lock-face 'eca-chat-tool-call-cancel-face)
                                          (lambda ()
                                            (eca-api-notify session
@@ -1392,7 +1393,8 @@ string."
                   (concat (propertize summary 'font-lock-face 'eca-chat-mcp-tool-call-label-face)
                           " "
                           (eca-chat--file-change-details-label details)
-                          eca-chat-mcp-tool-call-loading-symbol
+                          " "
+                          status
                           "\n"
                           approvalText " " view-btn)
                   (concat "Tool: `" name "`\n"
@@ -1400,7 +1402,7 @@ string."
              (eca-chat--update-expandable-content
               id
               (concat (propertize summary 'font-lock-face 'eca-chat-mcp-tool-call-label-face)
-                      " " eca-chat-mcp-tool-call-loading-symbol
+                      " " status
                       "\n"
                       approvalText)
               (eca-chat--content-table
@@ -1419,19 +1421,20 @@ string."
                (let* ((path (plist-get details :path))
                       (diff (plist-get details :diff))
                       (view-btn
-                       (concat " "
-                               (eca-buttonize
-                                (propertize "view_diff" 'font-lock-face 'eca-chat-diff-view-face)
-                                `(lambda ()
-                                   (interactive)
-                                   (eca-chat--show-diff ,path ,diff))))))
+                       (eca-buttonize
+                        (propertize "view_diff" 'font-lock-face 'eca-chat-diff-view-face)
+                        `(lambda ()
+                           (interactive)
+                           (eca-chat--show-diff ,path ,diff)))))
                  (eca-chat--update-expandable-content
                   id
                   (concat (propertize summary 'font-lock-face 'eca-chat-mcp-tool-call-label-face)
                           " "
                           (eca-chat--file-change-details-label details)
+                          " "
                           status
-                          view-btn)
+                          "\n"
+                          (propertize view-btn 'line-prefix tool-call-next-line-spacing))
                   (concat "Tool: `" name "`\n"
                           (eca-chat--file-change-diff path diff roots))))
              (eca-chat--update-expandable-content
@@ -1460,18 +1463,19 @@ string."
                (let* ((path (plist-get details :path))
                       (diff (plist-get details :diff))
                       (view-btn
-                       (concat " "
-                               (eca-buttonize
-                                (propertize "view_diff" 'font-lock-face 'eca-chat-diff-view-face)
-                                `(lambda ()
-                                   (interactive)
-                                   (eca-chat--show-diff ,path ,diff))))))
+                       (eca-buttonize
+                        (propertize "view_diff" 'font-lock-face 'eca-chat-diff-view-face)
+                        `(lambda ()
+                           (interactive)
+                           (eca-chat--show-diff ,path ,diff)))))
                  (eca-chat--update-expandable-content
                   id
                   (concat (propertize summary 'font-lock-face 'eca-chat-mcp-tool-call-label-face)
+                          " " (eca-chat--file-change-details-label details)
                           " " status
-                          (eca-chat--file-change-details-label details)
-                          view-btn)
+                          "\n"
+                          (propertize view-btn 'line-prefix tool-call-next-line-spacing))
+
                   (concat "Tool: `" name "`\n"
                           (eca-chat--file-change-diff path diff roots))))
              (eca-chat--update-expandable-content
