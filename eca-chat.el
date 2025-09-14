@@ -138,7 +138,7 @@ Must be a valid model supported by server, check `eca-chat-select-model`."
            (const :tag "Total session cost" :session-cost)
            (const :tag "The context limit" :context-limit)
            (const :tag "The output limit" :output-limit)
-           (const :tag "Last message cost" :last-mesage-cost)))
+           (const :tag "Last message cost" :last-message-cost)))
   :group 'eca)
 
 (defcustom eca-chat-diff-tool 'ediff
