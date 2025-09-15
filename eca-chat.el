@@ -319,6 +319,7 @@ Must be a positive integer."
 (defvar-local eca-chat--session-limit-output nil)
 (defvar-local eca-chat--empty t)
 (defvar-local eca-chat--cursor-context nil)
+(defvar-local eca-chat--tool-call-pending-approval-accept-point-by-id nil)
 
 ;; Timer used to debounce post-command driven context updates
 (defvar eca-chat--cursor-context-timer nil)
@@ -343,6 +344,8 @@ Must be a positive integer."
     (define-key map (kbd "C-c C-t") #'eca-chat-talk)
     (define-key map (kbd "C-c C-b") #'eca-chat-select-behavior)
     (define-key map (kbd "C-c C-m") #'eca-chat-select-model)
+    (define-key map (kbd "C-c C-a") #'eca-chat-tool-call-accept-next)
+    (define-key map (kbd "C-c C-r") #'eca-chat-tool-call-reject-next)
     (define-key map (kbd "C-c .") #'eca-transient-menu)
     (define-key map (kbd "C-c C-,") (lambda () (interactive) (eca-mcp-details)))
     (define-key map (kbd "C-c C-<up>") #'eca-chat-go-to-prev-user-message)
@@ -1407,6 +1410,7 @@ string."
                 (approvalText (when manual?
                                 (concat (eca-buttonize
                                          (propertize "reject"
+                                                     'eca-tool-call-pending-approval-reject t
                                                      'line-prefix tool-call-next-line-spacing
                                                      'font-lock-face 'eca-chat-tool-call-cancel-face)
                                          (lambda ()
@@ -1416,13 +1420,17 @@ string."
                                                                          :toolCallId id))))
                                         " "
                                         (eca-buttonize
-                                         (propertize "accept" 'font-lock-face 'eca-chat-tool-call-run-face)
+                                         (propertize "accept"
+                                                     'eca-tool-call-pending-approval-accept t
+                                                     'font-lock-face 'eca-chat-tool-call-run-face)
                                          (lambda ()
                                            (eca-api-notify session
                                                            :method "chat/toolCallApprove"
                                                            :params (list :chatId eca-chat--id
                                                                          :toolCallId id)))))))
                 (details (plist-get content :details)))
+           (when manual?
+             (eca-assoc eca-chat--tool-call-pending-approval-accept-point-by-id id (point)))
            (if (and (stringp (plist-get details :type))
                     (string= "fileChange" (plist-get details :type)))
                (let* ((path (plist-get details :path))
@@ -1646,6 +1654,26 @@ string."
     (error (eca-error "The eca-chat-custom-model variable is already set: %s" eca-chat-custom-model)))
   (when-let* ((model (completing-read "Select a model:" (append (eca--session-models (eca-session)) nil) nil t)))
     (setf (eca--session-chat-selected-model (eca-session)) model)))
+
+;;;###autoload
+(defun eca-chat-tool-call-accept-next ()
+  "Search the next pending approval tool call after cursor and approve it."
+  (interactive)
+  (eca-assert-session-running (eca-session))
+  (eca-chat--with-current-buffer (eca-chat--get-buffer (eca-session))
+    (save-excursion
+      (text-property-search-forward 'eca-tool-call-pending-approval-accept t)
+      (call-interactively #'eca-chat--key-pressed-return))))
+
+;;;###autoload
+(defun eca-chat-tool-call-reject-next ()
+  "Search the next pending approval tool call after cursor and reject it."
+  (interactive)
+  (eca-assert-session-running (eca-session))
+  (eca-chat--with-current-buffer (eca-chat--get-buffer (eca-session))
+    (save-excursion
+      (text-property-search-forward 'eca-tool-call-pending-approval-reject t)
+      (call-interactively #'eca-chat--key-pressed-return))))
 
 ;;;###autoload
 (defun eca-chat-select-behavior ()

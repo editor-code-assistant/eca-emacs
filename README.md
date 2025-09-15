@@ -80,6 +80,8 @@ You can access __transient___ menu with commonly commands via `M-x eca-transient
 | Chat: Select behavior           | <kbd>C-c</kbd> <kbd>C-b</kbd>      |
 | Chat: Select model              | <kbd>C-c</kbd> <kbd>C-m</kbd>      |
 | Chat: Go to MCP details         | <kbd>C-c</kbd> <kbd>C-,</kbd>      |
+| Chat: Accept next tool call     | <kbd>C-c</kbd> <kbd>C-a</kbd>      |
+| Chat: Reject next tool call     | <kbd>C-c</kbd> <kbd>C-r</kbd>      |
 | Chat: prev prompt history       | <kbd>C-&uarr;</kbd>                |
 | Chat: next prompt history       | <kbd>C-&darr;</kbd>                |
 | Chat: go to prev block          | <kbd>C-c</kbd> <kbd>&uarr;</kbd>   |
