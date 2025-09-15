@@ -1123,13 +1123,6 @@ of (LINE . CHARACTER) representing the current selection or cursor position."
 (declare-function evil-delete-backward-word "evil" ())
 (declare-function evil-delete-back-to-indentation "evil" ())
 
-(defun eca-chat--detect-final-tool-call-prepare-p (args-text)
-  "Heuristic to detect if it's the final toolCallPrepare message for ARGS-TEXT."
-  (and (stringp args-text)
-       (or (string-suffix-p "}" args-text)
-           (string-suffix-p "}\"" args-text)
-           (string-match-p "\\s*}\\s*$" args-text))))
-
 (defun eca-chat--parse-unified-diff (diff-text)
   "Compatibility wrapper that delegates to `eca-diff-parse-unified-diff'.
 
@@ -1380,9 +1373,6 @@ string."
                                              (should-update-ui-p
                                               (pcase eca-chat-tool-call-prepare-throttle
                                                 ('all t)
-                                                ('none nil)
-                                                ('first-last (or (= current-count 0)
-                                                                 (eca-chat--detect-final-tool-call-prepare-p argsText)))
                                                 ('smart (or (= current-count 0)
                                                             (= (mod current-count eca-chat-tool-call-prepare-update-interval) 0))))))
                                         ;; Always cache the metadata and content
