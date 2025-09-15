@@ -1437,8 +1437,7 @@ string."
                   (concat (propertize summary 'font-lock-face 'eca-chat-mcp-tool-call-label-face)
                           " "
                           (eca-chat--file-change-details-label details)
-                          " "
-                          status
+                          " " status
                           "\n"
                           approvalText " " view-btn)
                   (concat "Tool: `" name "`\n"
@@ -1478,8 +1477,7 @@ string."
                   (concat (propertize summary 'font-lock-face 'eca-chat-mcp-tool-call-label-face)
                           " "
                           (eca-chat--file-change-details-label details)
-                          " "
-                          status
+                          " " status
                           "\n"
                           (propertize view-btn 'line-prefix tool-call-next-line-spacing))
                   (concat "Tool: `" name "`\n"
@@ -1540,6 +1538,7 @@ string."
                 (args (plist-get content :arguments))
                 (details (plist-get content :details))
                 (summary (plist-get content :summary))
+                (status eca-chat-mcp-tool-call-error-symbol)
                 (id (plist-get content :id)))
            ;; Cleanup counters for this tool-call id
            (remhash id eca-chat--tool-call-prepare-counters)
@@ -1551,7 +1550,7 @@ string."
                 (concat (propertize summary 'font-lock-face 'eca-chat-mcp-tool-call-label-face)
                         " "
                         (eca-chat--file-change-details-label details)
-                        eca-chat-mcp-tool-call-error-symbol)
+                        " " status)
                 (concat
                  "Tool: `" name "`\n"
                  (eca-chat--file-change-diff (plist-get details :path) (plist-get details :diff) roots)))
