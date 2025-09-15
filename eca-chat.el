@@ -262,6 +262,11 @@ Must be a positive integer."
   "Face for file paths in chat."
   :group 'eca)
 
+(defface eca-chat--tool-call-table-key-face
+  '((t :height 0.9 :inherit font-lock-comment-face))
+  "Face for the MCP tool call table keys in chat."
+  :group 'eca)
+
 (defface eca-chat--tool-call-argument-key-face
   '()
   "Face for the MCP tool calls's argument key in chat."
@@ -917,18 +922,19 @@ If FORCE? decide to OPEN? or not."
   "Return a string in table format for KEY-VALS."
   (-reduce-from
    (-lambda (a (k . v))
-     (concat a "\n" k ": \n"
+     (concat a "\n" (propertize (concat k ":") 'font-lock-face 'eca-chat--tool-call-table-key-face) " "
              (if (listp v)
-                 (string-join (-map-indexed
-                               (lambda (i item)
-                                 (if (cl-evenp i)
-                                     (propertize (concat (substring (symbol-name item) 1) ": ")
-                                                 'font-lock-face 'eca-chat--tool-call-argument-key-face)
-                                   (propertize (concat (prin1-to-string item) "\n")
-                                               'font-lock-face 'eca-chat--tool-call-argument-value-face)))
-                               v)
-                              "")
-               v)))
+                 (concat "\n"
+                         (string-join (-map-indexed
+                                       (lambda (i item)
+                                         (if (cl-evenp i)
+                                             (propertize (concat "  " (substring (symbol-name item) 1) ": ")
+                                                         'font-lock-face 'eca-chat--tool-call-argument-key-face)
+                                           (propertize (concat (prin1-to-string item) "\n")
+                                                       'font-lock-face 'eca-chat--tool-call-argument-value-face)))
+                                       v)
+                                      ""))
+               (s-trim-left v))))
    ""
    key-vals))
 
@@ -1399,7 +1405,7 @@ string."
         ("toolCallRun"
          (let* ((id (plist-get content :id))
                 (cached-metadata (gethash id eca-chat--tool-call-prepare-metadata-cache))
-                (cached-args (gethash id eca-chat--tool-call-prepare-content-cache ""))
+                (args (plist-get content :arguments))
                 (name (or (plist-get content :name)
                           (plist-get cached-metadata :name)))
                 (summary (or (plist-get content :summary)
@@ -1458,7 +1464,7 @@ string."
                       approvalText)
               (eca-chat--content-table
                `(("Tool" . ,name)
-                 ("Arguments" . ,cached-args)))))))
+                 ("Arguments" . ,args)))))))
         ("toolCallRunning"
          (let* ((id (plist-get content :id))
                 (cached-metadata (gethash id eca-chat--tool-call-prepare-metadata-cache))
@@ -1502,6 +1508,7 @@ string."
                 (name (plist-get content :name))
                 (summary (or (plist-get content :summary)
                              (format "Called tool: %s" name)))
+                (args (plist-get content :arguments))
                 (outputs (plist-get content :outputs))
                 (output-text (if outputs
                                  (mapconcat (lambda (o) (or (plist-get o :text) "")) outputs "\n")
@@ -1539,10 +1546,10 @@ string."
                       " " status)
               (eca-chat--content-table
                `(("Tool"   . ,name)
+                 ("Arguments" . ,args)
                  ("Output" . ,output-text)))))))
         ("toolCallRejected"
          (let* ((name (plist-get content :name))
-                (origin (plist-get content :origin))
                 (args (plist-get content :arguments))
                 (details (plist-get content :details))
                 (summary (plist-get content :summary))
@@ -1564,9 +1571,7 @@ string."
                  (eca-chat--file-change-diff (plist-get details :path) (plist-get details :diff) roots)))
              (eca-chat--update-expandable-content
               id
-              (concat (propertize (format "Rejected %s tool: %s"
-                                          (if (string= "mcp" origin) "MCP" "ECA")
-                                          name)
+              (concat (propertize (format "Rejected tool: %s" name)
                                   'font-lock-face 'eca-chat-mcp-tool-call-label-face)
                       " "
                       eca-chat-mcp-tool-call-error-symbol)
