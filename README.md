@@ -216,6 +216,6 @@ Submit (Enter/Return): Disables Flyspell just before sending your prompt or prog
 
 Typing: Re-enables Flyspell on any character insertion (self-insert-command), giving you real-time spell checking while composing.
 
-## Contributing
+## Contributing 💙
 
 Contributions are very welcome, please open a issue for discussion or pull request.
