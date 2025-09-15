@@ -140,6 +140,44 @@ Install and configure `exec-path-from-shell` to import your shell environment in
     (exec-path-from-shell-initialize)))
 ```
 
+##### Flyspell Performance in ECA Chat
+
+see - this [comment](https://github.com/editor-code-assistant/eca-emacs/pull/42#issuecomment-3292134511)
+
+If Flyspell is causing slowdowns during LLM streaming, you can enable spell-checking only while typing and disable it on submit by adding this to your personal Emacs config:
+
+
+``` emacs-lisp
+
+(defun my/eca-chat-flyspell-setup ()
+  "Enable Flyspell during typing and disable on submit in `eca-chat-mode`."
+  (when (derived-mode-p 'eca-chat-mode)
+    ;; Disable Flyspell when submitting prompts
+    (add-hook 'pre-command-hook
+              (lambda ()
+                (when (and (memq this-command '(eca-chat--key-pressed-return
+                                                eca-chat-send-prompt-at-chat))
+                           flyspell-mode)
+                  (flyspell-mode -1)))
+              nil t)
+    ;; Re-enable Flyspell when typing
+    (add-hook 'pre-command-hook
+              (lambda ()
+                (when (and (eq this-command 'self-insert-command)
+                           (not flyspell-mode))
+                  (flyspell-mode 1)))
+              nil t)))
+
+(add-hook 'eca-chat-mode-hook #'my/eca-chat-flyspell-setup)
+```
+
+How it works:
+
+Submit (Enter/Return): Disables Flyspell just before sending your prompt or programmatic send, preventing spell-checking overhead during streaming.
+
+Typing: Re-enables Flyspell on any character insertion (self-insert-command), giving you real-time spell checking while composing.
+
+
 ### ECA Server Connection Issues
 
 #### Problem: ECA server fails to start or connect
