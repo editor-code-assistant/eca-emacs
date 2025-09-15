@@ -66,7 +66,6 @@ M-x package-install eca
 - `eca-chat-window-height`: customize the chat window height.
 - `eca-chat-diff-tool`: customize viewing diffs, defaults to ediff.
 
-
 ### Keybindings
 
 You can access __transient___ menu with commonly commands via `M-x eca-transient-menu` or by pressing `C-c .` in eca's windows.
@@ -117,7 +116,45 @@ Calling `M-x eca` with prefix `C-u` will ask for what workspaces to start the pr
 
 Check before the [server troubleshooting](https://eca.dev/troubleshooting/).
 
-##### Solution: Use exec-path-from-shell
+### Debugging Steps
+
+1. **Verify environment**: Check what environment variables are available to Emacs:
+   ```elisp
+   M-x eval-expression RET process-environment RET
+   ```
+
+2. **Test ECA manually**: Try running ECA from terminal to verify it works:
+   ```bash
+   eca --help
+   ```
+4. **Reset ECA**: Clear the workspace and restart:
+   ```
+   M-x eca-chat-reset
+   M-x eca  ; Start fresh
+   ```
+
+### ECA Server Connection Issues
+
+#### Problem: ECA server fails to start or connect
+
+1. **Check ECA installation**: Verify ECA is available on your PATH or set `eca-custom-command`:
+   ```elisp
+   (setq eca-custom-command "/path/to/your/eca/binary")
+   ```
+
+2. **Enable debug logging**: Add extra arguments for debugging:
+   ```elisp
+   (setq eca-extra-args '("--verbose" "--log-level" "debug"))
+   ```
+
+3. **Check environment variables**: Test if your API keys are available in Emacs:
+   ```elisp
+   M-x eval-expression RET (getenv "ANTHROPIC_API_KEY") RET
+   ```
+
+### Env vars not available
+
+#### Solution: Use exec-path-from-shell
 
 Install and configure `exec-path-from-shell` to import your shell environment into Emacs:
 
@@ -140,7 +177,9 @@ Install and configure `exec-path-from-shell` to import your shell environment in
     (exec-path-from-shell-initialize)))
 ```
 
-##### Flyspell Performance in ECA Chat
+### Performance
+
+#### Flyspell Performance in ECA Chat
 
 see - this [comment](https://github.com/editor-code-assistant/eca-emacs/pull/42#issuecomment-3292134511)
 
@@ -176,43 +215,6 @@ How it works:
 Submit (Enter/Return): Disables Flyspell just before sending your prompt or programmatic send, preventing spell-checking overhead during streaming.
 
 Typing: Re-enables Flyspell on any character insertion (self-insert-command), giving you real-time spell checking while composing.
-
-
-### ECA Server Connection Issues
-
-#### Problem: ECA server fails to start or connect
-
-1. **Check ECA installation**: Verify ECA is available on your PATH or set `eca-custom-command`:
-   ```elisp
-   (setq eca-custom-command "/path/to/your/eca/binary")
-   ```
-
-2. **Enable debug logging**: Add extra arguments for debugging:
-   ```elisp
-   (setq eca-extra-args '("--verbose" "--log-level" "debug"))
-   ```
-
-3. **Check environment variables**: Test if your API keys are available in Emacs:
-   ```elisp
-   M-x eval-expression RET (getenv "ANTHROPIC_API_KEY") RET
-   ```
-
-### Debugging Steps
-
-1. **Verify environment**: Check what environment variables are available to Emacs:
-   ```elisp
-   M-x eval-expression RET process-environment RET
-   ```
-
-2. **Test ECA manually**: Try running ECA from terminal to verify it works:
-   ```bash
-   eca --help
-   ```
-4. **Reset ECA**: Clear the workspace and restart:
-   ```
-   M-x eca-chat-reset
-   M-x eca  ; Start fresh
-   ```
 
 ## Contributing
 
