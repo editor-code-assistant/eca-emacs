@@ -1124,7 +1124,7 @@ of (LINE . CHARACTER) representing the current selection or cursor position."
 (declare-function evil-delete-back-to-indentation "evil" ())
 
 (defun eca-chat--detect-final-tool-call-prepare-p (args-text)
-  "Heuristic to detect if this is the final toolCallPrepare message."
+  "Heuristic to detect if it's the final toolCallPrepare message for ARGS-TEXT."
   (and (stringp args-text)
        (or (string-suffix-p "}" args-text)
            (string-suffix-p "}\"" args-text)
