@@ -147,26 +147,26 @@ Must be a valid model supported by server, check `eca-chat-select-model`."
                  (const :tag "Merge-style Smerge" smerge))
   :group 'eca)
 
-(defcustom eca-chat-tool-prepare-throttle 'smart
+(defcustom eca-chat-tool-call-prepare-throttle 'smart
   "Throttle strategy for handling `toolCallPrepare` events.
 Possible values: `all` or `smart` (default)."
   :type '(choice (const :tag "Process all updates" all)
                  (const :tag "Smart throttle" smart))
   :group 'eca)
 
-(defcustom eca-chat-tool-prepare-update-interval 5
+(defcustom eca-chat-tool-call-prepare-update-interval 5
   "When `smart`, process every Nth `toolCallPrepare` update.
 Must be a positive integer."
   :type 'integer
   :group 'eca)
 
-(defvar-local eca-chat--tool-prepare-counters (make-hash-table :test 'equal)
+(defvar-local eca-chat--tool-call-prepare-counters (make-hash-table :test 'equal)
   "Hash table mapping toolCall ID to message count.")
 
-(defvar-local eca-chat--tool-prepare-content-cache (make-hash-table :test 'equal)
+(defvar-local eca-chat--tool-call-prepare-content-cache (make-hash-table :test 'equal)
   "Hash table mapping toolCall ID to accumulated argument text.")
 
-(defvar-local eca-chat--tool-prepare-metadata-cache (make-hash-table :test 'equal)
+(defvar-local eca-chat--tool-call-prepare-metadata-cache (make-hash-table :test 'equal)
   "Hash table mapping toolCall ID to tool metadata (name, summary, etc).")
 
 
@@ -1123,7 +1123,7 @@ of (LINE . CHARACTER) representing the current selection or cursor position."
 (declare-function evil-delete-backward-word "evil" ())
 (declare-function evil-delete-back-to-indentation "evil" ())
 
-(defun eca-chat--detect-final-tool-prepare-p (args-text)
+(defun eca-chat--detect-final-tool-call-prepare-p (args-text)
   "Heuristic to detect if this is the final toolCallPrepare message."
   (and (stringp args-text)
        (or (string-suffix-p "}" args-text)
@@ -1374,21 +1374,21 @@ string."
                                              (argsText (plist-get content :argumentsText))
                                              (summary (or (plist-get content :summary)
                                                           (format "Preparing tool: %s" name)))
-                                             (current-count (gethash id eca-chat--tool-prepare-counters 0))
-                                             (cached-content (gethash id eca-chat--tool-prepare-content-cache ""))
+                                             (current-count (gethash id eca-chat--tool-call-prepare-counters 0))
+                                             (cached-content (gethash id eca-chat--tool-call-prepare-content-cache ""))
                                              (new-content (concat cached-content argsText))
                                              (should-update-ui-p
-                                              (pcase eca-chat-tool-prepare-throttle
+                                              (pcase eca-chat-tool-call-prepare-throttle
                                                 ('all t)
                                                 ('none nil)
                                                 ('first-last (or (= current-count 0)
-                                                                 (eca-chat--detect-final-tool-prepare-p argsText)))
+                                                                 (eca-chat--detect-final-tool-call-prepare-p argsText)))
                                                 ('smart (or (= current-count 0)
-                                                            (= (mod current-count eca-chat-tool-prepare-update-interval) 0))))))
+                                                            (= (mod current-count eca-chat-tool-call-prepare-update-interval) 0))))))
                                         ;; Always cache the metadata and content
-                                        (puthash id (1+ current-count) eca-chat--tool-prepare-counters)
-                                        (puthash id new-content eca-chat--tool-prepare-content-cache)
-                                        (puthash id (list :name name :summary summary) eca-chat--tool-prepare-metadata-cache)
+                                        (puthash id (1+ current-count) eca-chat--tool-call-prepare-counters)
+                                        (puthash id new-content eca-chat--tool-call-prepare-content-cache)
+                                        (puthash id (list :name name :summary summary) eca-chat--tool-call-prepare-metadata-cache)
                                         ;; Only update UI when throttling permits
                                         (when should-update-ui-p
                                           (let ((label (concat (propertize summary 'font-lock-face 'eca-chat-mcp-tool-call-label-face)
@@ -1404,8 +1404,8 @@ string."
                                                   ("Arguments" . ,new-content)))))))))
                                      ("toolCallRun"
                                       (let* ((id (plist-get content :id))
-                                             (cached-metadata (gethash id eca-chat--tool-prepare-metadata-cache))
-                                             (cached-args (gethash id eca-chat--tool-prepare-content-cache ""))
+                                             (cached-metadata (gethash id eca-chat--tool-call-prepare-metadata-cache))
+                                             (cached-args (gethash id eca-chat--tool-call-prepare-content-cache ""))
                                              (name (or (plist-get content :name)
                                                        (plist-get cached-metadata :name)))
                                              (summary (or (plist-get content :summary)
@@ -1463,8 +1463,8 @@ string."
                                               ("Arguments" . ,cached-args)))))))
                                      ("toolCallRunning"
                                       (let* ((id (plist-get content :id))
-                                             (cached-metadata (gethash id eca-chat--tool-prepare-metadata-cache))
-                                             (cached-args (gethash id eca-chat--tool-prepare-content-cache ""))
+                                             (cached-metadata (gethash id eca-chat--tool-call-prepare-metadata-cache))
+                                             (cached-args (gethash id eca-chat--tool-call-prepare-content-cache ""))
                                              (name (or (plist-get content :name)
                                                        (plist-get cached-metadata :name)))
                                              (summary (or (plist-get content :summary)
@@ -1514,9 +1514,9 @@ string."
                                                          eca-chat-mcp-tool-call-error-symbol
                                                        eca-chat-mcp-tool-call-success-symbol)))
                                         ;; Cleanup counters for this tool-call id to avoid unbounded growth
-                                        (remhash id eca-chat--tool-prepare-counters)
-                                        (remhash id eca-chat--tool-prepare-content-cache)
-                                        (remhash id eca-chat--tool-prepare-metadata-cache)
+                                        (remhash id eca-chat--tool-call-prepare-counters)
+                                        (remhash id eca-chat--tool-call-prepare-content-cache)
+                                        (remhash id eca-chat--tool-call-prepare-metadata-cache)
                                         (if (and (stringp (plist-get details :type))
                                                  (string= "fileChange" (plist-get details :type)))
                                             (let* ((path (plist-get details :path))
@@ -1551,9 +1551,9 @@ string."
                                              (summary (plist-get content :summary))
                                              (id (plist-get content :id)))
                                         ;; Cleanup counters for this tool-call id
-                                        (remhash id eca-chat--tool-prepare-counters)
-                                        (remhash id eca-chat--tool-prepare-content-cache)
-                                        (remhash id eca-chat--tool-prepare-metadata-cache)
+                                        (remhash id eca-chat--tool-call-prepare-counters)
+                                        (remhash id eca-chat--tool-call-prepare-content-cache)
+                                        (remhash id eca-chat--tool-call-prepare-metadata-cache)
                                         (if (string= "fileChange" (plist-get details :type))
                                             (eca-chat--update-expandable-content
                                              id
@@ -1684,9 +1684,9 @@ string."
     (setq-local eca-chat--empty t)
     (setq-local eca-chat--track-context t)
     ;; Reset per-buffer tool prepare counters to avoid leaking across sessions
-    (setq-local eca-chat--tool-prepare-counters (make-hash-table :test 'equal))
-    (setq-local eca-chat--tool-prepare-content-cache (make-hash-table :test 'equal))
-    (setq-local eca-chat--tool-prepare-metadata-cache (make-hash-table :test 'equal))
+    (setq-local eca-chat--tool-call-prepare-counters (make-hash-table :test 'equal))
+    (setq-local eca-chat--tool-call-prepare-content-cache (make-hash-table :test 'equal))
+    (setq-local eca-chat--tool-call-prepare-metadata-cache (make-hash-table :test 'equal))
     (eca-chat--clear (eca-session))))
 
 ;;;###autoload
