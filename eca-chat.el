@@ -719,6 +719,13 @@ the prompt/context line."
                         'pointer 'hand
                         'keymap mcp-keymap)))))
 
+(defun eca-chat--number->friendly-number (n)
+  "Format N as `x.yk` for |N| >= 1000; otherwise show plain integer."
+  (let* ((k (/ (abs n) 1000.0))
+         (s (format "%.1f" k))
+         (s (if (string-match "\\.0\\'" s) (substring s 0 -2) s)))
+    (concat (if (< n 0) "-" "") s "k")))
+
 (defun eca-chat--mode-line-string ()
   "Update chat mode line."
   (let* ((usage-str
@@ -729,13 +736,13 @@ the prompt/context line."
                     eca-chat--session-cost)
             (-> (-map (lambda (segment)
                         (pcase segment
-                          (:message-input-tokens (number-to-string eca-chat--message-input-tokens))
-                          (:message-output-tokens (number-to-string eca-chat--message-output-tokens))
-                          (:session-tokens (number-to-string eca-chat--session-tokens))
+                          (:message-input-tokens (eca-chat--number->friendly-number eca-chat--message-input-tokens))
+                          (:message-output-tokens (eca-chat--number->friendly-number eca-chat--message-output-tokens))
+                          (:session-tokens (eca-chat--number->friendly-number eca-chat--session-tokens))
                           (:message-cost (concat "$" eca-chat--message-cost))
                           (:session-cost (concat "$" eca-chat--session-cost))
-                          (:context-limit (number-to-string eca-chat--session-limit-context))
-                          (:output-limit (number-to-string eca-chat--session-limit-output))
+                          (:context-limit (eca-chat--number->friendly-number eca-chat--session-limit-context))
+                          (:output-limit (eca-chat--number->friendly-number eca-chat--session-limit-output))
                           (_ (propertize segment 'font-lock-face 'eca-chat-usage-string-face))))
                       eca-chat-usage-string-format)
                 (string-join ""))))
