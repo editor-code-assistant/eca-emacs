@@ -222,6 +222,11 @@ Must be a positive integer."
   "Face for contexts of cursor type."
   :group 'eca)
 
+(defface eca-chat-title-face
+  '((t :height 0.9))
+  "Face for the chat title."
+  :group 'eca)
+
 (defface eca-chat-user-messages-face
   '((t :inherit font-lock-doc-face))
   "Face for the user sent messages in chat."
@@ -308,6 +313,7 @@ Must be a positive integer."
 (defvar-local eca-chat--history '())
 (defvar-local eca-chat--history-index -1)
 (defvar-local eca-chat--id nil)
+(defvar-local eca-chat--title "")
 (defvar-local eca-chat--last-request-id 0)
 (defvar-local eca-chat--context '())
 (defvar-local eca-chat--spinner-string "")
@@ -376,8 +382,8 @@ Must be a positive integer."
      (let ((inhibit-read-only t))
        ,@body)))
 
-(defun eca-chat--spinner-start (session)
-  "Start modeline spinner for SESSION."
+(defun eca-chat--spinner-start (session callback)
+  "Start modeline spinner for SESSION calling CALLBACK when updating."
   (setq eca-chat--spinner-timer
         (eca-chat--with-current-buffer
          (eca-chat--get-buffer session)
@@ -389,7 +395,7 @@ Must be a positive integer."
               (if (eq 3 (length eca-chat--spinner-string))
                   (setq eca-chat--spinner-string ".")
                 (setq eca-chat--spinner-string (concat eca-chat--spinner-string ".")))
-              (force-mode-line-update)))))))
+              (funcall callback)))))))
 
 (defun eca-chat--spinner-stop ()
   "Stop modeline spinner."
@@ -438,6 +444,10 @@ Must be a positive integer."
   "Insert the prompt and context string adding overlay metadatas."
   (let ((prompt-area-ov (make-overlay (line-beginning-position) (1+ (line-beginning-position)) (current-buffer))))
     (overlay-put prompt-area-ov 'eca-chat-prompt-area t))
+  (let ((progress-area-ov (make-overlay (line-beginning-position) (line-end-position) (current-buffer) nil t)))
+    (overlay-put progress-area-ov 'eca-chat-progress-area t)
+    (insert "\n")
+    (move-overlay progress-area-ov (overlay-start progress-area-ov) (1- (overlay-end progress-area-ov))))
   (let ((context-area-ov (make-overlay (line-beginning-position) (line-end-position) (current-buffer) nil t)))
     (overlay-put context-area-ov 'eca-chat-context-area t)
     (insert (propertize eca-chat-context-prefix 'font-lock-face 'eca-chat-context-unlinked-face))
@@ -544,6 +554,11 @@ Otherwise to a not loading state."
 (defun eca-chat--prompt-field-start-point ()
   "Return the metadata overlay for the prompt field start point."
   (overlay-start (eca-chat--prompt-field-ov)))
+
+(defun eca-chat--prompt-progress-field-ov ()
+  "Return the overlay for the progress field."
+  (-first (-lambda (ov) (eq t (overlay-get ov 'eca-chat-progress-area)))
+          (overlays-in (point-min) (point-max))))
 
 (defun eca-chat--prompt-context-field-ov ()
   "Return the overlay for the context field."
@@ -729,8 +744,7 @@ the prompt/context line."
     (concat
      (when eca-chat--closed
        (propertize "*Closed session*" 'font-lock-face 'eca-chat-system-messages-face))
-     eca-chat--progress-text
-     eca-chat--spinner-string
+     (propertize eca-chat--title 'font-lock-face 'eca-chat-title-face)
      fill-space
      usage-str)))
 
@@ -968,6 +982,18 @@ If FORCE? decide to OPEN? or not."
                     (eca--session-workspace-folders (eca-session)))
         (f-filename filename))
       filename))
+
+(defun eca-chat--refresh-progress (session)
+  "Refresh the progress TEXT for SESSION."
+  (eca-chat--with-current-buffer (eca-chat--get-buffer session)
+    (save-excursion
+      (-some-> (eca-chat--prompt-progress-field-ov)
+        (overlay-start)
+        (goto-char))
+      (delete-region (point) (line-end-position))
+      (insert (propertize eca-chat--progress-text
+                          'font-lock-face 'eca-chat-system-messages-face)
+              eca-chat--spinner-string))))
 
 (defun eca-chat--refresh-context ()
   "Refresh chat context."
@@ -1324,10 +1350,11 @@ string."
          (content (plist-get params :content))
          (roots (eca--session-workspace-folders session))
          (tool-call-next-line-spacing (make-string (1+ (length eca-chat-expandable-block-open-symbol)) ?\s)))
-    (eca-chat--with-current-buffer
-        (eca-chat--get-buffer session)
+    (eca-chat--with-current-buffer (eca-chat--get-buffer session)
       (setq-local eca-chat--empty nil)
       (pcase (plist-get content :type)
+        ("metadata"
+         (setq-local eca-chat--title (plist-get content :title)))
         ("text"
          (when-let* ((text (plist-get content :text)))
            (pcase role
@@ -1580,16 +1607,19 @@ string."
         ("progress"
          (pcase (plist-get content :state)
            ("running"
+            (setq-local eca-chat--progress-text (plist-get content :text))
             (unless eca-chat--spinner-timer
-              (eca-chat--spinner-start session))
-            (setq-local eca-chat--progress-text
-                        (propertize (plist-get content :text)
-                                    'font-lock-face 'eca-chat-system-messages-face)))
+              (eca-chat--spinner-start
+               session
+               (lambda ()
+                 (eca-chat--refresh-progress session))))
+            (eca-chat--refresh-progress session))
            ("finished"
+            (setq-local eca-chat--progress-text "")
             (eca-chat--spinner-stop)
             (eca-chat--add-text-content "\n")
             (eca-chat--set-chat-loading session nil)
-            (setq-local eca-chat--progress-text ""))))
+            (eca-chat--refresh-progress session))))
         ("usage"
          (setq-local eca-chat--message-input-tokens  (plist-get content :messageInputTokens))
          (setq-local eca-chat--message-output-tokens (plist-get content :messageOutputTokens))
@@ -1705,7 +1735,7 @@ string."
     (setq-local eca-chat--message-cost nil)
     (setq-local eca-chat--session-cost nil)
     (setq-local eca-chat--empty t)
-    (setq-local eca-chat--track-context t)
+    (setq-local eca-chat--title "")
     ;; Reset per-buffer tool prepare counters to avoid leaking across sessions
     (setq-local eca-chat--tool-call-prepare-counters (make-hash-table :test 'equal))
     (setq-local eca-chat--tool-call-prepare-content-cache (make-hash-table :test 'equal))
