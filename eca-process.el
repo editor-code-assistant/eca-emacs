@@ -80,6 +80,12 @@ If not provided, download and start eca automatically."
   :group 'eca
   :type 'string)
 
+(defcustom eca-min-gc-cons-threshold (* 100 1024 1024)
+  "Temporarily increase GC threshold during heavy message processing.
+If current `gc-cons-threshold` is lower use that on filter server messages.'"
+  :type 'integer
+  :group 'eca)
+
 (defun eca-process--buffer-name (session)
   "Return the process buffer name for SESSION."
   (format  "<eca:%s>" (eca--session-id session)))
@@ -235,7 +241,8 @@ https://github.com/emacs-lsp/lsp-mode/issues/4746#issuecomment-2957183423"
 
 (defun eca-process--filter (handle-msg _proc raw-output)
   "Process filter to parse eca's stdout RAW-OUTPUT delivering to HANDLE-MSG."
-  (let ((body-received 0)
+  (let ((gc-cons-threshold (max gc-cons-threshold eca-min-gc-cons-threshold))
+        (body-received 0)
         leftovers body-length body chunk)
     (setf chunk (if (s-blank? leftovers)
                     (encode-coding-string raw-output 'utf-8-unix t)

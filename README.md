@@ -64,7 +64,7 @@ M-x package-install eca
 - `eca-chat-window-side`: customize the chat window side.
 - `eca-chat-window-width`: customize the chat window width.
 - `eca-chat-window-height`: customize the chat window height.
-
+- `eca-chat-diff-tool`: customize viewing diffs, defaults to ediff.
 
 ### Keybindings
 
@@ -80,6 +80,8 @@ You can access __transient___ menu with commonly commands via `M-x eca-transient
 | Chat: Select behavior           | <kbd>C-c</kbd> <kbd>C-b</kbd>      |
 | Chat: Select model              | <kbd>C-c</kbd> <kbd>C-m</kbd>      |
 | Chat: Go to MCP details         | <kbd>C-c</kbd> <kbd>C-,</kbd>      |
+| Chat: Accept next tool call     | <kbd>C-c</kbd> <kbd>C-a</kbd>      |
+| Chat: Reject next tool call     | <kbd>C-c</kbd> <kbd>C-r</kbd>      |
 | Chat: prev prompt history       | <kbd>C-&uarr;</kbd>                |
 | Chat: next prompt history       | <kbd>C-&darr;</kbd>                |
 | Chat: go to prev block          | <kbd>C-c</kbd> <kbd>&uarr;</kbd>   |
@@ -116,7 +118,45 @@ Calling `M-x eca` with prefix `C-u` will ask for what workspaces to start the pr
 
 Check before the [server troubleshooting](https://eca.dev/troubleshooting/).
 
-##### Solution: Use exec-path-from-shell
+### Debugging Steps
+
+1. **Verify environment**: Check what environment variables are available to Emacs:
+   ```elisp
+   M-x eval-expression RET process-environment RET
+   ```
+
+2. **Test ECA manually**: Try running ECA from terminal to verify it works:
+   ```bash
+   eca --help
+   ```
+4. **Reset ECA**: Clear the workspace and restart:
+   ```
+   M-x eca-chat-reset
+   M-x eca  ; Start fresh
+   ```
+
+### ECA Server Connection Issues
+
+#### Problem: ECA server fails to start or connect
+
+1. **Check ECA installation**: Verify ECA is available on your PATH or set `eca-custom-command`:
+   ```elisp
+   (setq eca-custom-command "/path/to/your/eca/binary")
+   ```
+
+2. **Enable debug logging**: Add extra arguments for debugging:
+   ```elisp
+   (setq eca-extra-args '("--verbose" "--log-level" "debug"))
+   ```
+
+3. **Check environment variables**: Test if your API keys are available in Emacs:
+   ```elisp
+   M-x eval-expression RET (getenv "ANTHROPIC_API_KEY") RET
+   ```
+
+### Env vars not available
+
+#### Solution: Use exec-path-from-shell
 
 Install and configure `exec-path-from-shell` to import your shell environment into Emacs:
 
@@ -139,42 +179,45 @@ Install and configure `exec-path-from-shell` to import your shell environment in
     (exec-path-from-shell-initialize)))
 ```
 
-### ECA Server Connection Issues
+### Performance
 
-#### Problem: ECA server fails to start or connect
+#### Flyspell Performance in ECA Chat
 
-1. **Check ECA installation**: Verify ECA is available on your PATH or set `eca-custom-command`:
-   ```elisp
-   (setq eca-custom-command "/path/to/your/eca/binary")
-   ```
+see - this [comment](https://github.com/editor-code-assistant/eca-emacs/pull/42#issuecomment-3292134511)
 
-2. **Enable debug logging**: Add extra arguments for debugging:
-   ```elisp
-   (setq eca-extra-args '("--verbose" "--log-level" "debug"))
-   ```
+If Flyspell is causing slowdowns during LLM streaming, you can enable spell-checking only while typing and disable it on submit by adding this to your personal Emacs config:
 
-3. **Check environment variables**: Test if your API keys are available in Emacs:
-   ```elisp
-   M-x eval-expression RET (getenv "ANTHROPIC_API_KEY") RET
-   ```
 
-### Debugging Steps
+``` emacs-lisp
 
-1. **Verify environment**: Check what environment variables are available to Emacs:
-   ```elisp
-   M-x eval-expression RET process-environment RET
-   ```
+(defun my/eca-chat-flyspell-setup ()
+  "Enable Flyspell during typing and disable on submit in `eca-chat-mode`."
+  (when (derived-mode-p 'eca-chat-mode)
+    ;; Disable Flyspell when submitting prompts
+    (add-hook 'pre-command-hook
+              (lambda ()
+                (when (and (memq this-command '(eca-chat--key-pressed-return
+                                                eca-chat-send-prompt-at-chat))
+                           flyspell-mode)
+                  (flyspell-mode -1)))
+              nil t)
+    ;; Re-enable Flyspell when typing
+    (add-hook 'pre-command-hook
+              (lambda ()
+                (when (and (eq this-command 'self-insert-command)
+                           (not flyspell-mode))
+                  (flyspell-mode 1)))
+              nil t)))
 
-2. **Test ECA manually**: Try running ECA from terminal to verify it works:
-   ```bash
-   eca --help
-   ```
-4. **Reset ECA**: Clear the workspace and restart:
-   ```
-   M-x eca-chat-reset
-   M-x eca  ; Start fresh
-   ```
+(add-hook 'eca-chat-mode-hook #'my/eca-chat-flyspell-setup)
+```
 
-## Contributing
+How it works:
+
+Submit (Enter/Return): Disables Flyspell just before sending your prompt or programmatic send, preventing spell-checking overhead during streaming.
+
+Typing: Re-enables Flyspell on any character insertion (self-insert-command), giving you real-time spell checking while composing.
+
+## Contributing 💙
 
 Contributions are very welcome, please open a issue for discussion or pull request.
