@@ -355,6 +355,7 @@ Must be a positive integer."
     (define-key map (kbd "C-c C-t") #'eca-chat-talk)
     (define-key map (kbd "C-c C-b") #'eca-chat-select-behavior)
     (define-key map (kbd "C-c C-m") #'eca-chat-select-model)
+    (define-key map (kbd "C-c C-A") #'eca-chat-tool-call-accept-all)
     (define-key map (kbd "C-c C-a") #'eca-chat-tool-call-accept-next)
     (define-key map (kbd "C-c C-r") #'eca-chat-tool-call-reject-next)
     (define-key map (kbd "C-c .") #'eca-transient-menu)
@@ -1701,6 +1702,17 @@ string."
     (error (eca-error "The eca-chat-custom-model variable is already set: %s" eca-chat-custom-model)))
   (when-let* ((model (completing-read "Select a model:" (append (eca--session-models (eca-session)) nil) nil t)))
     (setf (eca--session-chat-selected-model (eca-session)) model)))
+
+;;;###autoload
+(defun eca-chat-tool-call-accept-all ()
+  "Accept all pending approval tool call in chat."
+  (interactive)
+  (eca-assert-session-running (eca-session))
+  (save-excursion
+    (eca-chat--with-current-buffer (eca-chat--get-buffer (eca-session))
+      (goto-char (point-min))
+      (text-property-search-forward 'eca-tool-call-pending-approval-accept t)
+      (call-interactively #'eca-chat--key-pressed-return))))
 
 ;;;###autoload
 (defun eca-chat-tool-call-accept-next ()
