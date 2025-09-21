@@ -575,6 +575,11 @@ Otherwise to a not loading state."
   (-some-> (eca-chat--prompt-area-ov)
     (overlay-start)))
 
+(defun eca-chat--new-context-start-point ()
+  "Return the metadata overlay for the new context area start point."
+  (-some-> (eca-chat--prompt-context-field-ov)
+    (overlay-start)))
+
 (defun eca-chat--key-pressed-deletion (side-effect-fn)
   "Apply SIDE-EFFECT-FN before point, unless at the prompt or context boundary.
 Checks if it's in a context, removing it if so.
@@ -675,7 +680,7 @@ the prompt/context line."
 (defun eca-chat--point-at-new-context-p ()
   "Return non-nil if point is at the context area."
   (and (eq (line-number-at-pos (point))
-           (line-number-at-pos (eca-chat--prompt-area-start-point)))
+           (line-number-at-pos (eca-chat--new-context-start-point)))
        (eolp)))
 
 (defun eca-chat--point-at-prompt-field-p ()
