@@ -1313,7 +1313,7 @@ string."
                                                                                              :query query
                                                                                              :contexts (vconcat eca-chat--context))))
                                                  (items (-map #'eca-chat--context-to-completion contexts)))
-                                           (setq-local eca-chat--context-completion-cache (make-hash-table :test 'equal))
+                                           (clrhash eca-chat--context-completion-cache)
                                            (puthash query items eca-chat--context-completion-cache)
                                            items))))
 
@@ -1326,7 +1326,7 @@ string."
                                                                                :params (list :chatId eca-chat--id
                                                                                              :query query)))
                                                  (items (-map #'eca-chat--command-to-completion commands)))
-                                           (setq-local eca-chat--command-completion-cache (make-hash-table :test 'equal))
+                                           (clrhash eca-chat--command-completion-cache)
                                            (puthash query items eca-chat--command-completion-cache)
                                            items))))
 
