@@ -1268,10 +1268,10 @@ restore the chat display after smerge quits."
   "Return the text typed after the last context prefix on the context line.
 For example: `@foo @bar @baz` => `baz`. If nothing is typed, returns an empty
 string."
-  (let ((prompt-area (eca-chat--prompt-area-start-point))
+  (let ((context-area (eca-chat--new-context-start-point))
         (prefix eca-chat-context-prefix))
     (save-excursion
-      (goto-char prompt-area)
+      (goto-char context-area)
       (end-of-line)
       (let* ((line-start (line-beginning-position))
              (line-end (point))
@@ -1306,14 +1306,12 @@ string."
                                   ('contexts
                                    (let ((query (eca-chat--context-find-typed-query)))
                                      (or (gethash query eca-chat--context-completion-cache)
-                                         (-let* (((&plist :contexts contexts) (progn
-                                                                                (message "--> requesting contexts %s" query)
-                                                                                (eca-api-request-while-no-input
-                                                                                 (eca-session)
-                                                                                 :method "chat/queryContext"
-                                                                                 :params (list :chatId eca-chat--id
-                                                                                               :query query
-                                                                                               :contexts (vconcat eca-chat--context)))))
+                                         (-let* (((&plist :contexts contexts) (eca-api-request-while-no-input
+                                                                               (eca-session)
+                                                                               :method "chat/queryContext"
+                                                                               :params (list :chatId eca-chat--id
+                                                                                             :query query
+                                                                                             :contexts (vconcat eca-chat--context))))
                                                  (items (-map #'eca-chat--context-to-completion contexts)))
                                            (setq-local eca-chat--context-completion-cache (make-hash-table :test 'equal))
                                            (puthash query items eca-chat--context-completion-cache)
