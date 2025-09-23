@@ -315,6 +315,8 @@ Must be a positive integer."
 (defvar-local eca-chat--id nil)
 (defvar-local eca-chat--title "")
 (defvar-local eca-chat--last-request-id 0)
+(defvar-local eca-chat--context-completion-cache nil)
+(defvar-local eca-chat--command-completion-cache nil)
 (defvar-local eca-chat--context '())
 (defvar-local eca-chat--spinner-string "")
 (defvar-local eca-chat--spinner-timer nil)
@@ -1302,21 +1304,33 @@ string."
                               (eca-api-while-no-input
                                 (pcase type
                                   ('contexts
-                                   (-let (((&plist :contexts contexts) (eca-api-request-while-no-input
-                                                                        (eca-session)
-                                                                        :method "chat/queryContext"
-                                                                        :params (list :chatId eca-chat--id
-                                                                                      :query (eca-chat--context-find-typed-query)
-                                                                                      :contexts (vconcat eca-chat--context)))))
-                                     (-map #'eca-chat--context-to-completion contexts)))
+                                   (let ((query (eca-chat--context-find-typed-query)))
+                                     (or (gethash query eca-chat--context-completion-cache)
+                                         (-let* (((&plist :contexts contexts) (progn
+                                                                                (message "--> requesting contexts %s" query)
+                                                                                (eca-api-request-while-no-input
+                                                                                 (eca-session)
+                                                                                 :method "chat/queryContext"
+                                                                                 :params (list :chatId eca-chat--id
+                                                                                               :query query
+                                                                                               :contexts (vconcat eca-chat--context)))))
+                                                 (items (-map #'eca-chat--context-to-completion contexts)))
+                                           (setq-local eca-chat--context-completion-cache (make-hash-table :test 'equal))
+                                           (puthash query items eca-chat--context-completion-cache)
+                                           items))))
 
                                   ('prompts
-                                   (-let (((&plist :commands commands) (eca-api-request-while-no-input
-                                                                        (eca-session)
-                                                                        :method "chat/queryCommands"
-                                                                        :params (list :chatId eca-chat--id
-                                                                                      :query (substring full-text 1)))))
-                                     (-map #'eca-chat--command-to-completion commands)))
+                                   (let ((query (substring full-text 1)))
+                                     (or (gethash query eca-chat--command-completion-cache)
+                                         (-let* (((&plist :commands commands) (eca-api-request-while-no-input
+                                                                               (eca-session)
+                                                                               :method "chat/queryCommands"
+                                                                               :params (list :chatId eca-chat--id
+                                                                                             :query query)))
+                                                 (items (-map #'eca-chat--command-to-completion commands)))
+                                           (setq-local eca-chat--command-completion-cache (make-hash-table :test 'equal))
+                                           (puthash query items eca-chat--command-completion-cache)
+                                           items))))
 
                                   (_ nil)))
                             (:interrupted nil)
@@ -1334,8 +1348,8 @@ string."
        (cond
         ((eq action 'metadata)
          '(metadata (category . eca-capf)
-                    (display-sort-function . identity)
-                    (cycle-sort-function . identity)))
+           (display-sort-function . identity)
+           (cycle-sort-function . identity)))
         ((eq (car-safe action) 'boundaries) nil)
         (t
          (complete-with-action action (funcall candidates-fn) probe pred))))
