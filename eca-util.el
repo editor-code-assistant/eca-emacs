@@ -15,6 +15,11 @@
 (require 'dash)
 (require 'transient)
 
+(defcustom eca-buttons-allow-mouse nil
+  "Whether to allow mouse clicks on ECA buttons."
+  :type 'boolean
+  :group 'eca)
+
 (defun eca-assoc (map key val)
   "Return a new MAP with KEY associated to flat plist VAL, replacing any existing."
   (cons (cons key val)
@@ -165,7 +170,8 @@
         (callback-int (lambda (&rest _)
                         (interactive)
                         (funcall callback))))
-    (define-key km (kbd "<mouse-1>") callback-int)
+    (when eca-buttons-allow-mouse
+      (define-key km (kbd "<mouse-1>") callback-int))
     (define-key km (kbd "<return>") callback-int)
     (define-key km (kbd "RET") callback-int)
     (propertize text
