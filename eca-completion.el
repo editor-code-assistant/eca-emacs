@@ -164,12 +164,12 @@ Incremented after each change.")
 
 (defun eca-completion--find-completion (&key on-success)
   "Find completion requesting server calling ON-SUCCESS for the response."
-  (let ((line (- (line-number-at-pos) eca-completion--line-bias))
-        (character (- (point) (line-beginning-position))))
+  (let ((line (+ (1- (line-number-at-pos)) eca-completion--line-bias))
+        (character (1+ (- (point) (line-beginning-position)))))
     (when-let ((session (eca-session)))
       (eca-api-request-async session
                              :method "completion/inline"
-                             :params (list :uri 1
+                             :params (list :doc-text (buffer-substring-no-properties (point-min) (point-max))
                                            :doc-version eca-completion--doc-version
                                            :position (list :line line :character character))
                              :success-callback (-lambda ((&plist :items items))
@@ -243,13 +243,14 @@ in `post-command-hook'."
           (let* ((p (point))
                  (goto-line! (lambda ()
                                (goto-char (point-min))
-                               (forward-line (1- (+ start-line eca-completion--line-bias)))))
+                               (forward-line (+ (1- start-line) eca-completion--line-bias))))
                  (start (progn
                           (funcall goto-line!)
+                          (message "--> %s" (point))
                           (forward-char start-char)
                           (let* ((cur-line (buffer-substring-no-properties (point) (line-end-position)))
                                  (common-prefix-len (length (eca-completion--string-common-prefix text cur-line))))
-                            ;; (setq text (substring text common-prefix-len))
+                            (setq text (substring text common-prefix-len))
                             (forward-char common-prefix-len)
                             (point))))
                  (end (progn
@@ -257,7 +258,8 @@ in `post-command-hook'."
                         (forward-char end-char)
                         (point))))
             (goto-char p)
-            (eca-completion--display-overlay-completion text id start end)))))))
+            ;;(eca-completion--display-overlay-completion text id start end)
+            ))))))
 
 ;; Public
 
