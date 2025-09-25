@@ -243,23 +243,21 @@ in `post-command-hook'."
           (let* ((p (point))
                  (goto-line! (lambda ()
                                (goto-char (point-min))
-                               (forward-line (+ (1- start-line) eca-completion--line-bias))))
+                               (forward-line (1- (+ (1- start-line) eca-completion--line-bias)))))
                  (start (progn
                           (funcall goto-line!)
-                          (message "--> %s" (point))
-                          (forward-char start-char)
-                          (let* ((cur-line (buffer-substring-no-properties (point) (line-end-position)))
+                          (forward-char (1- start-char))
+                          (let* ((cur-line (buffer-substring-no-properties (line-beginning-position) (line-end-position)))
                                  (common-prefix-len (length (eca-completion--string-common-prefix text cur-line))))
                             (setq text (substring text common-prefix-len))
                             (forward-char common-prefix-len)
                             (point))))
                  (end (progn
                         (funcall goto-line!)
-                        (forward-char end-char)
+                        (forward-char (1- end-char))
                         (point))))
             (goto-char p)
-            ;;(eca-completion--display-overlay-completion text id start end)
-            ))))))
+            (eca-completion--display-overlay-completion text id start end)))))))
 
 ;; Public
 
