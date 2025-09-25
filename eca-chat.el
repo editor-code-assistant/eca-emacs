@@ -1723,8 +1723,8 @@ string."
   (save-excursion
     (eca-chat--with-current-buffer (eca-chat--get-buffer (eca-session))
       (goto-char (point-min))
-      (text-property-search-forward 'eca-tool-call-pending-approval-accept t)
-      (call-interactively #'eca-chat--key-pressed-return))))
+      (when (text-property-search-forward 'eca-tool-call-pending-approval-accept t t)
+        (call-interactively #'eca-chat--key-pressed-return)))))
 
 ;;;###autoload
 (defun eca-chat-tool-call-accept-next ()
@@ -1733,8 +1733,8 @@ string."
   (eca-assert-session-running (eca-session))
   (eca-chat--with-current-buffer (eca-chat--get-buffer (eca-session))
     (save-excursion
-      (text-property-search-forward 'eca-tool-call-pending-approval-accept t)
-      (call-interactively #'eca-chat--key-pressed-return))))
+      (when (text-property-search-forward 'eca-tool-call-pending-approval-accept t t)
+        (call-interactively #'eca-chat--key-pressed-return)))))
 
 ;;;###autoload
 (defun eca-chat-tool-call-reject-next ()
@@ -1743,8 +1743,8 @@ string."
   (eca-assert-session-running (eca-session))
   (eca-chat--with-current-buffer (eca-chat--get-buffer (eca-session))
     (save-excursion
-      (text-property-search-forward 'eca-tool-call-pending-approval-reject t)
-      (call-interactively #'eca-chat--key-pressed-return))))
+      (when (text-property-search-forward 'eca-tool-call-pending-approval-reject t)
+        (call-interactively #'eca-chat--key-pressed-return)))))
 
 ;;;###autoload
 (defun eca-chat-select-behavior ()
