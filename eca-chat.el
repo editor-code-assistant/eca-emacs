@@ -63,7 +63,7 @@ ECA chat opens in a regular buffer that follows standard
   :type 'boolean
   :group 'eca)
 
-(defcustom eca-chat-auto-add-repomap t
+(defcustom eca-chat-auto-add-repomap nil
   "Whether to auto include repoMap context when opening eca."
   :type 'boolean
   :group 'eca)
