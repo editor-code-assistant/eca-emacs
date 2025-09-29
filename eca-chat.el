@@ -728,11 +728,20 @@ the prompt/context line."
                         'keymap mcp-keymap)))))
 
 (defun eca-chat--number->friendly-number (n)
-  "Format N as `x.yk` for |N| >= 1000; otherwise show plain integer."
-  (let* ((k (/ (abs n) 1000.0))
-         (s (format "%.1f" k))
-         (s (if (string-match "\\.0\\'" s) (substring s 0 -2) s)))
-    (concat (if (< n 0) "-" "") s "k")))
+  "Format N as `x.yM` for |N| >= 1M, `x.yK` for |N| >= 1K.
+Otherwise show plain integer."
+  (cond
+   ((>= (abs n) 1000000)
+    (let* ((m (/ (abs n) 1000000.0))
+           (s (format "%.1f" m))
+           (s (if (string-match "\\.0\\'" s) (substring s 0 -2) s)))
+      (concat (if (< n 0) "-" "") s "M")))
+   ((>= (abs n) 1000)
+    (let* ((k (/ (abs n) 1000.0))
+           (s (format "%.1f" k))
+           (s (if (string-match "\\.0\\'" s) (substring s 0 -2) s)))
+      (concat (if (< n 0) "-" "") s "K")))
+   (t (number-to-string n))))
 
 (defun eca-chat--mode-line-string ()
   "Update chat mode line."
