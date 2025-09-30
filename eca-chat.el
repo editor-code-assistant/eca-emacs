@@ -1112,6 +1112,22 @@ If FORCE? decide to OPEN? or not."
   (eca-chat--add-context (get-text-property 0 'eca-chat-completion-item item))
   (end-of-line))
 
+(defun eca-chat--completion-prompt-exit-function (item _status)
+  "Finish prompt completion for ITEM."
+  (-let* (((&plist :arguments arguments) (get-text-property 0 'eca-chat-completion-item item)))
+    (when (> (length arguments) 0)
+      (seq-doseq (arg arguments)
+        (-let (((&plist :name name :description description :required required) arg))
+          (insert " ")
+          (let ((arg-text (read-string (format "Arg: %s\nDescription: %s\nValue%s: "
+                                               name
+                                               description
+                                               (if required "" " (leave blank for default)")))))
+            (if (and arg-text (string-match-p " " arg-text))
+                (insert (format "\"%s\"" arg-text))
+              (insert arg-text)))))
+      (end-of-line))))
+
 (defun eca-chat--context-to-completion (context)
   "Convert CONTEXT to a completion item."
   (propertize
@@ -1344,6 +1360,7 @@ string."
                             (`,res res))))
          (exit-fn (pcase type
                     ('contexts #'eca-chat--completion-context-exit-function)
+                    ('prompts #'eca-chat--completion-prompt-exit-function)
                     (_ nil)))
          (annotation-fn (pcase type
                           ('contexts (-partial #'eca-chat--completion-context-annotate (eca--session-workspace-folders (eca-session))))
