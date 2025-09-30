@@ -1280,6 +1280,8 @@ restore the chat display after smerge quits."
         (when (fboundp 'company-mode)
           (setq-local company-backends '(company-capf)
                       company-minimum-prefix-length 0))
+        (when (fboundp 'corfu-mode)
+          (setq-local corfu-auto-prefix 0))
         (setq-local mode-line-format '(t (:eval (eca-chat--mode-line-string))))
         (force-mode-line-update)
         (run-hooks 'eca-chat-mode-hook)))))
