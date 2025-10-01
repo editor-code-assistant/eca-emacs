@@ -186,6 +186,11 @@ Must be a positive integer."
   "Face for the stop action when loading."
   :group 'eca)
 
+(defface eca-chat-tool-call-approval-content-face
+  `((t :height ,eca-chat-tool-call-approval-content-size))
+  "Face for the MCP tool calls approval content in chat."
+  :group 'eca)
+
 (defface eca-chat-tool-call-accept-face
   `((t (:inherit success :height ,eca-chat-tool-call-approval-content-size :underline t :weight bold)))
   "Face for the accept tool call action."
@@ -268,11 +273,6 @@ Must be a positive integer."
 
 (defface eca-chat-mcp-tool-call-label-face
   '((t :inherit font-lock-function-call-face))
-  "Face for the MCP tool calls in chat."
-  :group 'eca)
-
-(defface eca-chat-mcp-tool-call-content-face
-  '()
   "Face for the MCP tool calls in chat."
   :group 'eca)
 
@@ -375,7 +375,8 @@ Must be a positive integer."
     (define-key map (kbd "C-c C-b") #'eca-chat-select-behavior)
     (define-key map (kbd "C-c C-m") #'eca-chat-select-model)
     (define-key map (kbd "C-c C-a") #'eca-chat-tool-call-accept-all)
-    (define-key map (kbd "C-c C-A") #'eca-chat-tool-call-accept-next)
+    (define-key map (kbd "C-c C-S-a") #'eca-chat-tool-call-accept-next)
+    (define-key map (kbd "C-c C-s") #'eca-chat-tool-call-accept-all-and-remember)
     (define-key map (kbd "C-c C-r") #'eca-chat-tool-call-reject-next)
     (define-key map (kbd "C-c .") #'eca-transient-menu)
     (define-key map (kbd "C-c C-,") #'eca-mcp-details)
@@ -477,8 +478,8 @@ Must be a positive integer."
                                :method "chat/toolCallApprove"
                                :params (list :chatId eca-chat--id
                                              :toolCallId id))))
-            (propertize " " 'font-lock-face 'eca-chat-tool-call-content-face)
-            (propertize (funcall keybinding-for #'eca-chat-tool-call-accept-next)
+            (propertize " " 'font-lock-face 'eca-chat-tool-call-approval-content-face)
+            (propertize (funcall keybinding-for #'eca-chat-tool-call-accept-all)
                         'font-lock-face 'eca-chat-tool-call-keybinding-face)
             (propertize "\n" 'font-lock-face 'eca-chat-tool-call-spacing-face)
             (eca-buttonize
@@ -492,7 +493,7 @@ Must be a positive integer."
                                :params (list :chatId eca-chat--id
                                              :toolCallId id))))
             (propertize " and tell ECA what to do differently "
-                        'font-lock-face 'eca-chat-tool-call-content-face)
+                        'font-lock-face 'eca-chat-tool-call-approval-content-face)
             (propertize (funcall keybinding-for #'eca-chat-tool-call-reject-next)
                         'font-lock-face 'eca-chat-tool-call-keybinding-face))))
 
@@ -1793,6 +1794,17 @@ string."
     (eca-chat--with-current-buffer (eca-chat--get-buffer (eca-session))
       (goto-char (point-min))
       (when (text-property-search-forward 'eca-tool-call-pending-approval-accept t t)
+        (call-interactively #'eca-chat--key-pressed-return)))))
+
+;;;###autoload
+(defun eca-chat-tool-call-accept-all-and-remember ()
+  "Accept all pending approval tool call in chat and remember for session."
+  (interactive)
+  (eca-assert-session-running (eca-session))
+  (save-excursion
+    (eca-chat--with-current-buffer (eca-chat--get-buffer (eca-session))
+      (goto-char (point-min))
+      (when (text-property-search-forward 'eca-tool-call-pending-approval-accept-and-remember t t)
         (call-interactively #'eca-chat--key-pressed-return)))))
 
 ;;;###autoload
