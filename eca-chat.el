@@ -343,8 +343,6 @@ Must be a positive integer."
 
 (defvar eca-chat-mode-map
   (let ((map (make-sparse-keymap)))
-    (define-key map (kbd "<backspace>") (lambda () (interactive) (eca-chat--key-pressed-deletion (lambda () (delete-char -1)))))
-    (define-key map (kbd "DEL") (lambda () (interactive) (eca-chat--key-pressed-deletion (lambda () (delete-char -1)))))
     (define-key map (kbd "S-<return>") #'eca-chat--key-pressed-newline)
     (define-key map (kbd "C-<up>") #'eca-chat--key-pressed-previous-prompt-history)
     (define-key map (kbd "C-<down>") #'eca-chat--key-pressed-next-prompt-history)
@@ -361,7 +359,7 @@ Must be a positive integer."
     (define-key map (kbd "C-c C-A") #'eca-chat-tool-call-accept-next)
     (define-key map (kbd "C-c C-r") #'eca-chat-tool-call-reject-next)
     (define-key map (kbd "C-c .") #'eca-transient-menu)
-    (define-key map (kbd "C-c C-,") (lambda () (interactive) (eca-mcp-details)))
+    (define-key map (kbd "C-c C-,") #'eca-mcp-details)
     (define-key map (kbd "C-c C-<up>") #'eca-chat-go-to-prev-user-message)
     (define-key map (kbd "C-c C-<down>") #'eca-chat-go-to-next-user-message)
     (define-key map (kbd "C-c <up>") #'eca-chat-go-to-prev-expandable-block)
@@ -583,41 +581,44 @@ Otherwise to a not loading state."
   (-some-> (eca-chat--prompt-context-field-ov)
     (overlay-start)))
 
-(defun eca-chat--key-pressed-deletion (side-effect-fn)
-  "Apply SIDE-EFFECT-FN before point, unless at the prompt or context boundary.
+(defun eca-chat--key-pressed-deletion (side-effect-fn &rest args)
+  "Apply SIDE-EFFECT-FN with ARGS before point.
+Unless at the prompt field boundary.
 Checks if it's in a context, removing it if so.
 This is similar to actions like `backward-delete-char' but protects
 the prompt/context line."
-  (let* ((cur-ov (car (overlays-in (line-beginning-position) (point))))
-         (text (thing-at-point 'symbol))
-         (context-item (-some->> text
-                         (get-text-property 0 'eca-chat-context-item))))
-    (cond
-     ((and cur-ov
-           context-item)
-      (setq-local eca-chat--context (delete context-item eca-chat--context))
-      (eca-chat--refresh-context)
-      (end-of-line))
+  (if (derived-mode-p 'eca-chat-mode)
+      (let* ((cur-ov (car (overlays-in (line-beginning-position) (line-end-position))))
+             (text (thing-at-point 'symbol))
+             (context-item (-some->> text
+                             (get-text-property 0 'eca-chat-context-item))))
+        (cond
+         ((and cur-ov
+               context-item)
+          (setq-local eca-chat--context (delete context-item eca-chat--context))
+          (eca-chat--refresh-context)
+          (end-of-line))
 
-     ((and cur-ov
-           (<= (point) (overlay-start cur-ov)))
-      (ding))
+         ((and cur-ov
+               (<= (point) (overlay-start cur-ov)))
+          (ding))
 
-     ((and cur-ov
-           (overlay-get cur-ov 'eca-chat-context-area)
-           (and (string= " " (string (char-before (point))))
-                (not (eolp))))
-      ;; trying to remove a context space separator
-      )
+         ((and cur-ov
+               (overlay-get cur-ov 'eca-chat-context-area)
+               (and (string= " " (string (char-before (point))))
+                    (not (eolp))))
+          ;; trying to remove a context space separator
+          )
 
-     ((and cur-ov
-           (overlay-get cur-ov 'eca-chat-context-area)
-           (string= eca-chat-context-prefix (string (char-before (point)))))
-      (setq-local eca-chat--context (delete (car (last eca-chat--context)) eca-chat--context))
-      (eca-chat--refresh-context)
-      (end-of-line))
+         ((and cur-ov
+               (overlay-get cur-ov 'eca-chat-context-area)
+               (string= eca-chat-context-prefix (string (char-before (point)))))
+          (setq-local eca-chat--context (delete (car (last eca-chat--context)) eca-chat--context))
+          (eca-chat--refresh-context)
+          (end-of-line))
 
-     (t (funcall side-effect-fn)))))
+         (t (apply side-effect-fn args))))
+    (apply side-effect-fn args)))
 
 (defun eca-chat--refine-context (context)
   "Refine CONTEXT before sending in prompt."
@@ -1195,9 +1196,6 @@ of (LINE . CHARACTER) representing the current selection or cursor position."
           (run-with-idle-timer eca-chat-cursor-context-debounce t
                                #'eca-chat--track-cursor))))
 
-(declare-function evil-delete-backward-word "evil" ())
-(declare-function evil-delete-back-to-indentation "evil" ())
-
 (defun eca-chat--parse-unified-diff (diff-text)
   "Compatibility wrapper that delegates to `eca-diff-parse-unified-diff'.
 
@@ -1264,10 +1262,16 @@ restore the chat display after smerge quits."
                             'font-lock-face 'eca-chat-welcome-face))
         (eca-chat--insert-prompt-string)))
 
+    ;; TODO is there a better way to do that?
+    (advice-add 'delete-char :around #'eca-chat--key-pressed-deletion)
     (when (featurep 'evil)
-      (make-local-variable 'evil-insert-state-local-map)
-      (define-key evil-insert-state-local-map (kbd "C-w") (lambda () (interactive) (eca-chat--key-pressed-deletion (lambda () (evil-delete-backward-word)))))
-      (define-key evil-insert-state-local-map (kbd "C-u") (lambda () (interactive) (eca-chat--key-pressed-deletion (lambda () (evil-delete-back-to-indentation))))))
+      (advice-add 'evil-delete-backward-word :around #'eca-chat--key-pressed-deletion)
+      (advice-add 'evil-delete-back-to-indentation :around #'eca-chat--key-pressed-deletion)
+      (advice-add 'evil-delete-whole-line :around #'eca-chat--key-pressed-deletion)
+      (advice-add 'evil-delete-line :around #'eca-chat--key-pressed-deletion)
+      (advice-add 'evil-delete-char :around #'eca-chat--key-pressed-deletion)
+      (advice-add 'evil-delete :around #'eca-chat--key-pressed-deletion)
+      (advice-add 'evil-delete-backward-char :around #'eca-chat--key-pressed-deletion))
 
     (run-with-timer
      0.05
