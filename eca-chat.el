@@ -169,6 +169,10 @@ Must be a positive integer."
 (defvar-local eca-chat--tool-call-prepare-metadata-cache (make-hash-table :test 'equal)
   "Hash table mapping toolCall ID to tool metadata (name, summary, etc).")
 
+(defcustom eca-chat-tool-call-approval-content-size 0.9
+  "The size of font of tool call approval."
+  :type 'number
+  :group 'eca)
 
 ;; Faces
 
@@ -182,14 +186,29 @@ Must be a positive integer."
   "Face for the stop action when loading."
   :group 'eca)
 
-(defface eca-chat-tool-call-run-face
-  '((t (:inherit success :underline t :weight bold)))
-  "Face for the run tool call action."
+(defface eca-chat-tool-call-accept-face
+  `((t (:inherit success :height ,eca-chat-tool-call-approval-content-size :underline t :weight bold)))
+  "Face for the accept tool call action."
   :group 'eca)
 
-(defface eca-chat-tool-call-cancel-face
-  '((t (:inherit error :underline t :weight bold)))
+(defface eca-chat-tool-call-accept-and-remember-face
+  `((t (:inherit success :height ,eca-chat-tool-call-approval-content-size :underline t :weight bold)))
+  "Face for the accept and remember tool call action."
+  :group 'eca)
+
+(defface eca-chat-tool-call-reject-face
+  `((t (:inherit error :height ,eca-chat-tool-call-approval-content-size :underline t :weight bold)))
   "Face for the cancel tool call action."
+  :group 'eca)
+
+(defface eca-chat-tool-call-keybinding-face
+  `((t :inherit font-lock-comment-face :height ,eca-chat-tool-call-approval-content-size))
+  "Face for the tool call keybinding in chat."
+  :group 'eca)
+
+(defface eca-chat-tool-call-spacing-face
+  `((t :height ,eca-chat-tool-call-approval-content-size))
+  "Face for the tool call spacing in chat."
   :group 'eca)
 
 (defface eca-chat-diff-view-face
@@ -440,6 +459,42 @@ Must be a positive integer."
         (concat (funcall propertize-fn failed 'error (or (> running 0) (> starting 0)))
                 (funcall propertize-fn starting 'warning (> running 0))
                 (funcall propertize-fn running 'success))))))
+
+(defun eca-chat--build-tool-call-approval-str-content (session id spacing-line-prefix)
+  "Build the tool call approval string for SESSION, ID and SPACING-LINE-PREFIX."
+  (let ((keybinding-for (lambda (command)
+                          (concat "("
+                                  (key-description (car (where-is-internal command eca-chat-mode-map)))
+                                  ")"))))
+    (concat (propertize "\n" 'font-lock-face 'eca-chat-tool-call-spacing-face)
+            (eca-buttonize
+             (propertize "Accept"
+                         'eca-tool-call-pending-approval-accept t
+                         'line-prefix spacing-line-prefix
+                         'font-lock-face 'eca-chat-tool-call-accept-face)
+             (lambda ()
+               (eca-api-notify session
+                               :method "chat/toolCallApprove"
+                               :params (list :chatId eca-chat--id
+                                             :toolCallId id))))
+            (propertize " " 'font-lock-face 'eca-chat-tool-call-content-face)
+            (propertize (funcall keybinding-for #'eca-chat-tool-call-accept-next)
+                        'font-lock-face 'eca-chat-tool-call-keybinding-face)
+            (propertize "\n" 'font-lock-face 'eca-chat-tool-call-spacing-face)
+            (eca-buttonize
+             (propertize "Reject"
+                         'eca-tool-call-pending-approval-reject t
+                         'line-prefix spacing-line-prefix
+                         'font-lock-face 'eca-chat-tool-call-reject-face)
+             (lambda ()
+               (eca-api-notify session
+                               :method "chat/toolCallReject"
+                               :params (list :chatId eca-chat--id
+                                             :toolCallId id))))
+            (propertize " and tell ECA what to do differently "
+                        'font-lock-face 'eca-chat-tool-call-content-face)
+            (propertize (funcall keybinding-for #'eca-chat-tool-call-reject-next)
+                        'font-lock-face 'eca-chat-tool-call-keybinding-face))))
 
 (defun eca-chat--insert-prompt-string ()
   "Insert the prompt and context string adding overlay metadatas."
@@ -1497,27 +1552,8 @@ string."
                              (format "Calling tool: %s" name)))
                 (manual? (plist-get content :manualApproval))
                 (status eca-chat-mcp-tool-call-loading-symbol)
-                (approvalText (when manual?
-                                (concat (eca-buttonize
-                                         (propertize "reject"
-                                                     'eca-tool-call-pending-approval-reject t
-                                                     'line-prefix tool-call-next-line-spacing
-                                                     'font-lock-face 'eca-chat-tool-call-cancel-face)
-                                         (lambda ()
-                                           (eca-api-notify session
-                                                           :method "chat/toolCallReject"
-                                                           :params (list :chatId eca-chat--id
-                                                                         :toolCallId id))))
-                                        " "
-                                        (eca-buttonize
-                                         (propertize "accept"
-                                                     'eca-tool-call-pending-approval-accept t
-                                                     'font-lock-face 'eca-chat-tool-call-run-face)
-                                         (lambda ()
-                                           (eca-api-notify session
-                                                           :method "chat/toolCallApprove"
-                                                           :params (list :chatId eca-chat--id
-                                                                         :toolCallId id)))))))
+                (approval-text (when manual?
+                                (eca-chat--build-tool-call-approval-str-content session id tool-call-next-line-spacing)))
                 (details (plist-get content :details)))
            (when manual?
              (eca-assoc eca-chat--tool-call-pending-approval-accept-point-by-id id (point)))
@@ -1525,11 +1561,11 @@ string."
                     (string= "fileChange" (plist-get details :type)))
                (let* ((path (plist-get details :path))
                       (diff (plist-get details :diff))
-                      (view-btn (eca-buttonize
-                                 (propertize "view_diff" 'font-lock-face 'eca-chat-diff-view-face)
-                                 `(lambda ()
-                                    (interactive)
-                                    (eca-chat--show-diff ,path ,diff)))))
+                      (view-diff-btn (eca-buttonize
+                                      (propertize "view_diff" 'font-lock-face 'eca-chat-diff-view-face)
+                                      (lambda ()
+                                        (interactive)
+                                        (eca-chat--show-diff path diff)))))
                  (eca-chat--update-expandable-content
                   id
                   (concat (propertize summary 'font-lock-face 'eca-chat-mcp-tool-call-label-face)
@@ -1537,7 +1573,8 @@ string."
                           (eca-chat--file-change-details-label details)
                           " " status
                           "\n"
-                          approvalText " " view-btn)
+                          view-diff-btn
+                          approval-text)
                   (concat "Tool: `" name "`\n"
                           (eca-chat--file-change-diff path diff roots))))
              (eca-chat--update-expandable-content
@@ -1545,7 +1582,7 @@ string."
               (concat (propertize summary 'font-lock-face 'eca-chat-mcp-tool-call-label-face)
                       " " status
                       "\n"
-                      approvalText)
+                      approval-text)
               (eca-chat--content-table
                `(("Tool" . ,name)
                  ("Arguments" . ,args)))))))
@@ -1564,7 +1601,7 @@ string."
                     (string= "fileChange" (plist-get details :type)))
                (let* ((path (plist-get details :path))
                       (diff (plist-get details :diff))
-                      (view-btn
+                      (view-diff-btn
                        (eca-buttonize
                         (propertize "view_diff" 'font-lock-face 'eca-chat-diff-view-face)
                         `(lambda ()
@@ -1577,7 +1614,7 @@ string."
                           (eca-chat--file-change-details-label details)
                           " " status
                           "\n"
-                          (propertize view-btn 'line-prefix tool-call-next-line-spacing))
+                          (propertize view-diff-btn 'line-prefix tool-call-next-line-spacing))
                   (concat "Tool: `" name "`\n"
                           (eca-chat--file-change-diff path diff roots))))
              (eca-chat--update-expandable-content
@@ -1609,7 +1646,7 @@ string."
                     (string= "fileChange" (plist-get details :type)))
                (let* ((path (plist-get details :path))
                       (diff (plist-get details :diff))
-                      (view-btn
+                      (view-diff-btn
                        (eca-buttonize
                         (propertize "view_diff" 'font-lock-face 'eca-chat-diff-view-face)
                         `(lambda ()
@@ -1621,7 +1658,7 @@ string."
                           " " (eca-chat--file-change-details-label details)
                           " " status
                           "\n"
-                          (propertize view-btn 'line-prefix tool-call-next-line-spacing))
+                          (propertize view-diff-btn 'line-prefix tool-call-next-line-spacing))
                   (concat "Tool: `" name "`\n"
                           (eca-chat--file-change-diff path diff roots))))
              (eca-chat--update-expandable-content
