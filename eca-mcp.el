@@ -88,11 +88,13 @@
                   (if (or (string= "running" status)
                           (string= "starting" status))
                       (eca-buttonize
+                       eca-mcp-details-mode-map
                        (propertize "stop" 'font-lock-face 'eca-mcp-details-button-face)
                        (lambda () (eca-api-notify session
                                                   :method "mcp/stopServer"
                                                   :params (list :name name))))
                     (eca-buttonize
+                     eca-mcp-details-mode-map
                      (propertize "start" 'font-lock-face 'eca-mcp-details-button-face)
                      (lambda () (eca-api-notify session
                                                 :method "mcp/startServer"

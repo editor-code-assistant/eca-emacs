@@ -469,6 +469,7 @@ Must be a positive integer."
                                   ")"))))
     (concat (propertize "\n" 'font-lock-face 'eca-chat-tool-call-spacing-face)
             (eca-buttonize
+             eca-chat-mode-map
              (propertize "Accept"
                          'eca-tool-call-pending-approval-accept t
                          'line-prefix spacing-line-prefix
@@ -483,6 +484,7 @@ Must be a positive integer."
                         'font-lock-face 'eca-chat-tool-call-keybinding-face)
             (propertize "\n" 'font-lock-face 'eca-chat-tool-call-spacing-face)
             (eca-buttonize
+             eca-chat-mode-map
              (propertize "Reject"
                          'eca-tool-call-pending-approval-reject t
                          'line-prefix spacing-line-prefix
@@ -542,6 +544,7 @@ Otherwise to a not loading state."
     (setq-local buffer-read-only loading)
     (let ((prompt-field-ov (eca-chat--prompt-field-ov))
           (stop-text (eca-buttonize
+                      eca-chat-mode-map
                       (propertize "stop" 'font-lock-face 'eca-chat-prompt-stop-face)
                       (lambda () (eca-chat--stop-prompt session)))))
       (if eca-chat--chat-loading
@@ -1037,9 +1040,11 @@ If FORCE? decide to OPEN? or not."
   "Return a diff block for relative PATH from ROOTS with DIFF."
   (concat "\n"
           (if (f-exists? path)
-              (eca-buttonize (propertize (eca-chat--relativize-filename-for-workspace-root path roots)
-                                         'font-lock-face 'eca-chat-file-path-face)
-                             (lambda () (find-file-other-window path)))
+              (eca-buttonize
+               eca-chat-mode-map
+               (propertize (eca-chat--relativize-filename-for-workspace-root path roots)
+                           'font-lock-face 'eca-chat-file-path-face)
+               (lambda () (find-file-other-window path)))
             path) "\n"
           "```diff\n" diff "\n```"))
 
@@ -1492,6 +1497,7 @@ string."
          (eca-chat--add-header
           (concat "🌐 "
                   (eca-buttonize
+                   eca-chat-mode-map
                    (plist-get content :title)
                    (lambda () (browse-url (plist-get content :url))))
                   "\n\n")))
@@ -1563,6 +1569,7 @@ string."
                (let* ((path (plist-get details :path))
                       (diff (plist-get details :diff))
                       (view-diff-btn (eca-buttonize
+                                      eca-chat-mode-map
                                       (propertize "view_diff" 'font-lock-face 'eca-chat-diff-view-face)
                                       (lambda ()
                                         (interactive)
@@ -1604,6 +1611,7 @@ string."
                       (diff (plist-get details :diff))
                       (view-diff-btn
                        (eca-buttonize
+                        eca-chat-mode-map
                         (propertize "view_diff" 'font-lock-face 'eca-chat-diff-view-face)
                         `(lambda ()
                            (interactive)
@@ -1649,6 +1657,7 @@ string."
                       (diff (plist-get details :diff))
                       (view-diff-btn
                        (eca-buttonize
+                        eca-chat-mode-map
                         (propertize "view_diff" 'font-lock-face 'eca-chat-diff-view-face)
                         `(lambda ()
                            (interactive)

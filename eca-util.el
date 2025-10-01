@@ -164,9 +164,10 @@
   "Display eca error message with FORMAT with ARGS."
   (message "%s :: %s" (propertize "ECA" 'face 'error) (apply #'format format args)))
 
-(defun eca-buttonize (text callback)
-  "Create a actionable TEXT that call CALLBACK when actioned."
-  (let ((km (make-sparse-keymap))
+(defun eca-buttonize (base-map text callback)
+  "Create a actionable TEXT that call CALLBACK when actioned.
+Inheirits BASE-MAP."
+  (let ((km (make-composed-keymap (make-sparse-keymap) base-map))
         (callback-int (lambda (&rest _)
                         (interactive)
                         (funcall callback))))
