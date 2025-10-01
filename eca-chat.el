@@ -485,6 +485,23 @@ Must be a positive integer."
             (propertize "\n" 'font-lock-face 'eca-chat-tool-call-spacing-face)
             (eca-buttonize
              eca-chat-mode-map
+             (propertize "Accept and remember"
+                         'eca-tool-call-pending-approval-accept-and-remember t
+                         'line-prefix spacing-line-prefix
+                         'font-lock-face 'eca-chat-tool-call-accept-and-remember-face)
+             (lambda ()
+               (eca-api-notify session
+                               :method "chat/toolCallApprove"
+                               :params (list :chatId eca-chat--id
+                                             :save "session"
+                                             :toolCallId id))))
+            (propertize " for this session "
+                        'font-lock-face 'eca-chat-tool-call-approval-content-face)
+            (propertize (funcall keybinding-for #'eca-chat-tool-call-accept-all-and-remember)
+                        'font-lock-face 'eca-chat-tool-call-keybinding-face)
+            (propertize "\n" 'font-lock-face 'eca-chat-tool-call-spacing-face)
+            (eca-buttonize
+             eca-chat-mode-map
              (propertize "Reject"
                          'eca-tool-call-pending-approval-reject t
                          'line-prefix spacing-line-prefix
@@ -1071,15 +1088,16 @@ If FORCE? decide to OPEN? or not."
 
 (defun eca-chat--refresh-progress (session)
   "Refresh the progress TEXT for SESSION."
-  (eca-chat--with-current-buffer (eca-chat--get-buffer session)
-    (save-excursion
-      (-some-> (eca-chat--prompt-progress-field-ov)
-        (overlay-start)
-        (goto-char))
-      (delete-region (point) (line-end-position))
-      (insert (propertize eca-chat--progress-text
-                          'font-lock-face 'eca-chat-system-messages-face)
-              eca-chat--spinner-string))))
+  (when-let ((buffer (eca-chat--get-buffer session)))
+    (eca-chat--with-current-buffer buffer
+      (save-excursion
+        (-some-> (eca-chat--prompt-progress-field-ov)
+          (overlay-start)
+          (goto-char))
+        (delete-region (point) (line-end-position))
+        (insert (propertize eca-chat--progress-text
+                            'font-lock-face 'eca-chat-system-messages-face)
+                eca-chat--spinner-string)))))
 
 (defun eca-chat--refresh-context ()
   "Refresh chat context."
