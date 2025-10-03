@@ -1662,6 +1662,8 @@ string."
                                  (mapconcat (lambda (o) (or (plist-get o :text) "")) outputs "\n")
                                ""))
                 (details (plist-get content :details))
+                (time (when-let ((ms (plist-get content :totalTimeMs)))
+                        (concat " " (eca-chat--time->presentable-time ms))))
                 (status (if (plist-get content :error)
                             eca-chat-mcp-tool-call-error-symbol
                           eca-chat-mcp-tool-call-success-symbol)))
@@ -1684,7 +1686,7 @@ string."
                   id
                   (concat (propertize summary 'font-lock-face 'eca-chat-mcp-tool-call-label-face)
                           " " (eca-chat--file-change-details-label details)
-                          " " status
+                          " " status time
                           "\n"
                           (propertize view-diff-btn 'line-prefix tool-call-next-line-spacing))
                   (concat "Tool: `" name "`\n"
@@ -1692,7 +1694,7 @@ string."
              (eca-chat--update-expandable-content
               id
               (concat (propertize summary 'font-lock-face 'eca-chat-mcp-tool-call-label-face)
-                      " " status)
+                      " " status time)
               (eca-chat--content-table
                `(("Tool"   . ,name)
                  ("Arguments" . ,args)
