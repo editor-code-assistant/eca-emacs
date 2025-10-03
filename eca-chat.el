@@ -1125,7 +1125,25 @@ If FORCE? decide to OPEN? or not."
            ("mcpResource" (propertize (concat eca-chat-context-prefix (plist-get context :server) ":" (plist-get context :name))
                                       'eca-chat-context-item context
                                       'font-lock-face 'eca-chat-context-mcp-resource-face))
-           ("cursor" (propertize (concat eca-chat-context-prefix "cursor")
+           ("cursor" (propertize (concat eca-chat-context-prefix "cursor"
+                                         "("
+                                         (-some-> (plist-get eca-chat--cursor-context :path)
+                                           (f-filename))
+                                         ":"
+                                         (-some->>
+                                             (-> eca-chat--cursor-context
+                                                 (plist-get :position)
+                                                 (plist-get :start)
+                                                 (plist-get :line))
+                                           (funcall #'number-to-string))
+                                         ":"
+                                         (-some->>
+                                             (-> eca-chat--cursor-context
+                                                 (plist-get :position)
+                                                 (plist-get :start)
+                                                 (plist-get :character))
+                                           (funcall #'number-to-string))
+                                         ")")
                                  'eca-chat-context-item context
                                  'font-lock-face 'eca-chat-context-cursor-face))
            (_ (propertize (concat eca-chat-context-prefix "unkown:" type)
@@ -1263,10 +1281,11 @@ of (LINE . CHARACTER) representing the current selection or cursor position."
                     ((start-line . start-character) start)
                     ((end-line . end-character) end))
               (eca-chat--with-current-buffer buffer
-                                             (setq eca-chat--cursor-context
-                                                   (list :path path
-                                                         :position (list :start (list :line start-line :character start-character)
-                                                                         :end (list :line end-line :character end-character))))))))))))
+                (setq eca-chat--cursor-context
+                      (list :path path
+                            :position (list :start (list :line start-line :character start-character)
+                                            :end (list :line end-line :character end-character))))
+                (eca-chat--refresh-context)))))))))
 
 (defun eca-chat--track-cursor-position-schedule ()
   "Debounce `eca-chat--track-cursor' via an idle timer."
