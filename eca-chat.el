@@ -166,9 +166,6 @@ Must be a positive integer."
 (defvar-local eca-chat--tool-call-prepare-content-cache (make-hash-table :test 'equal)
   "Hash table mapping toolCall ID to accumulated argument text.")
 
-(defvar-local eca-chat--tool-call-prepare-metadata-cache (make-hash-table :test 'equal)
-  "Hash table mapping toolCall ID to tool metadata (name, summary, etc).")
-
 (defcustom eca-chat-tool-call-approval-content-size 0.9
   "The size of font of tool call approval."
   :type 'number
@@ -1557,6 +1554,7 @@ string."
         ("toolCallPrepare"
          (let* ((id (plist-get content :id))
                 (name (plist-get content :name))
+                (server (plist-get content :server))
                 (argsText (plist-get content :argumentsText))
                 (summary (or (plist-get content :summary)
                              (format "Preparing tool: %s" name)))
@@ -1571,7 +1569,6 @@ string."
            ;; Always cache the metadata and content
            (puthash id (1+ current-count) eca-chat--tool-call-prepare-counters)
            (puthash id new-content eca-chat--tool-call-prepare-content-cache)
-           (puthash id (list :name name :summary summary) eca-chat--tool-call-prepare-metadata-cache)
            ;; Only update UI when throttling permits
            (when should-update-ui-p
              (let ((label (concat (propertize summary 'font-lock-face 'eca-chat-mcp-tool-call-label-face)
@@ -1584,16 +1581,14 @@ string."
                   id label
                   (eca-chat--content-table
                    `(("Tool" . ,name)
+                     ("Server" . ,server)
                      ("Arguments" . ,new-content)))))))))
         ("toolCallRun"
          (let* ((id (plist-get content :id))
-                (cached-metadata (gethash id eca-chat--tool-call-prepare-metadata-cache))
                 (args (plist-get content :arguments))
-                (name (or (plist-get content :name)
-                          (plist-get cached-metadata :name)))
-                (summary (or (plist-get content :summary)
-                             (plist-get cached-metadata :summary)
-                             (format "Calling tool: %s" name)))
+                (name (plist-get content :name))
+                (server (plist-get content :server))
+                (summary (format "Calling tool: %s__%s" server name))
                 (manual? (plist-get content :manualApproval))
                 (status eca-chat-mcp-tool-call-loading-symbol)
                 (approval-text (when manual?
@@ -1630,16 +1625,15 @@ string."
                       approval-text)
               (eca-chat--content-table
                `(("Tool" . ,name)
+                 ("Server" . ,server)
                  ("Arguments" . ,args)))))))
         ("toolCallRunning"
          (let* ((id (plist-get content :id))
-                (cached-metadata (gethash id eca-chat--tool-call-prepare-metadata-cache))
                 (cached-args (gethash id eca-chat--tool-call-prepare-content-cache ""))
-                (name (or (plist-get content :name)
-                          (plist-get cached-metadata :name)))
+                (name (plist-get content :name))
+                (server (plist-get content :server))
                 (summary (or (plist-get content :summary)
-                             (plist-get cached-metadata :summary)
-                             (format "Running tool: %s" name)))
+                             (format "Running tool: %s__%s" server name)))
                 (details (plist-get content :details))
                 (status eca-chat-mcp-tool-call-loading-symbol))
            (if (and (stringp (plist-get details :type))
@@ -1669,12 +1663,14 @@ string."
                       " " status)
               (eca-chat--content-table
                `(("Tool" . ,name)
+                 ("Server" . ,server)
                  ("Arguments" . ,cached-args)))))))
         ("toolCalled"
          (let* ((id (plist-get content :id))
                 (name (plist-get content :name))
+                (server (plist-get content :server))
                 (summary (or (plist-get content :summary)
-                             (format "Called tool: %s" name)))
+                             (format "Called tool: %s__%s" server name)))
                 (args (plist-get content :arguments))
                 (outputs (plist-get content :outputs))
                 (output-text (if outputs
@@ -1689,7 +1685,6 @@ string."
            ;; Cleanup counters for this tool-call id to avoid unbounded growth
            (remhash id eca-chat--tool-call-prepare-counters)
            (remhash id eca-chat--tool-call-prepare-content-cache)
-           (remhash id eca-chat--tool-call-prepare-metadata-cache)
            (if (and (stringp (plist-get details :type))
                     (string= "fileChange" (plist-get details :type)))
                (let* ((path (plist-get details :path))
@@ -1716,10 +1711,12 @@ string."
                       " " status time)
               (eca-chat--content-table
                `(("Tool"   . ,name)
+                 ("Server" . ,server)
                  ("Arguments" . ,args)
                  ("Output" . ,output-text)))))))
         ("toolCallRejected"
          (let* ((name (plist-get content :name))
+                (server (plist-get content :server))
                 (args (plist-get content :arguments))
                 (details (plist-get content :details))
                 (summary (plist-get content :summary))
@@ -1728,7 +1725,6 @@ string."
            ;; Cleanup counters for this tool-call id
            (remhash id eca-chat--tool-call-prepare-counters)
            (remhash id eca-chat--tool-call-prepare-content-cache)
-           (remhash id eca-chat--tool-call-prepare-metadata-cache)
            (if (string= "fileChange" (plist-get details :type))
                (eca-chat--update-expandable-content
                 id
@@ -1741,11 +1737,12 @@ string."
                  (eca-chat--file-change-diff (plist-get details :path) (plist-get details :diff) roots)))
              (eca-chat--update-expandable-content
               id
-              (concat (propertize (format "Rejected tool: %s" name)
+              (concat (propertize (format "Rejected tool: %s__%s" server name)
                                   'font-lock-face 'eca-chat-mcp-tool-call-label-face)
                       " "
                       eca-chat-mcp-tool-call-error-symbol)
               (eca-chat--content-table `(("Tool" . ,name)
+                                         ("Server" . ,server)
                                          ("Arguments" . ,args)))))))
         ("progress"
          (pcase (plist-get content :state)
@@ -1904,7 +1901,6 @@ string."
     ;; Reset per-buffer tool prepare counters to avoid leaking across sessions
     (setq-local eca-chat--tool-call-prepare-counters (make-hash-table :test 'equal))
     (setq-local eca-chat--tool-call-prepare-content-cache (make-hash-table :test 'equal))
-    (setq-local eca-chat--tool-call-prepare-metadata-cache (make-hash-table :test 'equal))
     (eca-chat--clear (eca-session))))
 
 ;;;###autoload
