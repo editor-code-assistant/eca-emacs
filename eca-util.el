@@ -64,8 +64,10 @@
   ;; The eca <process>
   (process nil)
 
-  ;; the chat buffer
-  (chat nil)
+  ;; the chat buffers
+  (chats '())
+
+  (last-chat-buffer nil)
 
   ;; A list of workspace folders of this session
   (workspace-folders '())
@@ -186,6 +188,8 @@ Inheirits BASE-MAP."
   ()
   "ECA transient menu"
   [["Chat"
+    ("n" "New" eca-chat-new)
+    ("f" "New" eca-chat-select)
     ("c" "Clear" eca-chat-clear)
     ("r" "Reset" eca-chat-reset)
     ("t" "Talk" eca-chat-talk)
