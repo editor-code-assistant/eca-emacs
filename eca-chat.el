@@ -1912,10 +1912,12 @@ string."
 
 ;;;###autoload
 (defun eca-chat-go-to-next-user-message ()
-  "Go to the next user message from point."
+  "Go to the next user message from point.
+If there is no next user message, go to the chat prompt line."
   (interactive)
   (eca-assert-session-running (eca-session))
-  (eca-chat--go-to-overlay 'eca-chat--user-message-id (1+ (point)) (point-max) t))
+  (unless (eca-chat--go-to-overlay 'eca-chat--user-message-id (1+ (point)) (point-max) t)
+    (goto-char (eca-chat--prompt-field-start-point))))
 
 ;;;###autoload
 (defun eca-chat-go-to-prev-expandable-block ()
