@@ -215,8 +215,8 @@ https://github.com/emacs-lsp/lsp-mode/issues/4746#issuecomment-2957183423"
             :message "Could not fetch latest version of eca. Please check your internet connection and try again. You can also download eca manually and set the path via eca-custom-command variable"))
 
      ((and (f-exists? eca-server-install-path)
-           (string= (eca-process--get-latest-server-version)
-                    (eca-process--get-current-server-version)))
+           (not (string-version-lessp (eca-process--get-current-server-version)
+                                      (eca-process--get-latest-server-version))))
       (list :decision 'already-installed
             :command (list eca-server-install-path "server")))
 
