@@ -1612,7 +1612,8 @@ string."
                 (args (plist-get content :arguments))
                 (name (plist-get content :name))
                 (server (plist-get content :server))
-                (summary (format "Calling tool: %s__%s" server name))
+                (summary (or (plist-get content :summary)
+                             (format "Calling tool: %s__%s" server name)))
                 (manual? (plist-get content :manualApproval))
                 (status eca-chat-mcp-tool-call-loading-symbol)
                 (approval-text (when manual?
