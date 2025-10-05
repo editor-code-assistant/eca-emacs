@@ -390,8 +390,9 @@ Must be a positive integer."
 
 (defun eca-chat--get-last-buffer (session)
   "Get the eca chat buffer for SESSION."
-  (or (-some-> (eca--session-last-chat-buffer session)
-        (get-buffer))
+  (or (when-let (last-buff (eca--session-last-chat-buffer session))
+        (when (buffer-live-p last-buff)
+          last-buff))
       (get-buffer (eca-chat-new-buffer-name session))))
 
 (defun eca-chat--create-buffer (session)
@@ -1097,7 +1098,7 @@ If FORCE? decide to OPEN? or not."
 
 (defun eca-chat--refresh-progress (chat-buffer)
   "Refresh the progress TEXT for CHAT-BUFFER."
-  (when chat-buffer
+  (when (buffer-live-p chat-buffer)
     (eca-chat--with-current-buffer chat-buffer
       (save-excursion
         (-some-> (eca-chat--prompt-progress-field-ov)
