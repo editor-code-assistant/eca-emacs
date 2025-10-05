@@ -192,6 +192,7 @@ Inheirits BASE-MAP."
     ("f" "New" eca-chat-select)
     ("c" "Clear" eca-chat-clear)
     ("r" "Reset" eca-chat-reset)
+    ("R" "Rename" eca-chat-rename)
     ("t" "Talk" eca-chat-talk)
     ("m" "Select model" eca-chat-select-model)
     ("b" "Change behavior" eca-chat-select-behavior)

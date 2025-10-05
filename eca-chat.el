@@ -330,6 +330,7 @@ Must be a positive integer."
 (defvar-local eca-chat--history-index -1)
 (defvar-local eca-chat--id nil)
 (defvar-local eca-chat--title nil)
+(defvar-local eca-chat--custom-title nil)
 (defvar-local eca-chat--last-request-id 0)
 (defvar-local eca-chat--context-completion-cache (make-hash-table :test 'equal))
 (defvar-local eca-chat--command-completion-cache (make-hash-table :test 'equal))
@@ -378,6 +379,7 @@ Must be a positive integer."
     (define-key map (kbd "C-c C-S-a") #'eca-chat-tool-call-accept-next)
     (define-key map (kbd "C-c C-s") #'eca-chat-tool-call-accept-all-and-remember)
     (define-key map (kbd "C-c C-r") #'eca-chat-tool-call-reject-next)
+    (define-key map (kbd "C-c C-S-r") #'eca-chat-rename)
     (define-key map (kbd "C-c .") #'eca-transient-menu)
     (define-key map (kbd "C-c C-,") #'eca-mcp-details)
     (define-key map (kbd "C-c C-<up>") #'eca-chat-go-to-prev-user-message)
@@ -854,8 +856,11 @@ Otherwise show plain integer."
     (concat
      (when eca-chat--closed
        (propertize "*Closed session*" 'font-lock-face 'eca-chat-system-messages-face))
-     (when eca-chat--title
-       (propertize eca-chat--title 'font-lock-face 'eca-chat-title-face))
+     (cond
+      (eca-chat--custom-title
+       (propertize eca-chat--custom-title 'font-lock-face 'eca-chat-title-face))
+      (eca-chat--title
+       (propertize eca-chat--title 'font-lock-face 'eca-chat-title-face)))
      fill-space
      usage-str)))
 
@@ -1926,6 +1931,7 @@ string."
       (setq-local eca-chat--session-cost nil)
       (setq-local eca-chat--empty t)
       (setq-local eca-chat--title nil)
+      (setq-local eca-chat--custom-title nil)
       ;; Reset per-buffer tool prepare counters to avoid leaking across sessions
       (setq-local eca-chat--tool-call-prepare-counters (make-hash-table :test 'equal))
       (setq-local eca-chat--tool-call-prepare-content-cache (make-hash-table :test 'equal))
@@ -2065,14 +2071,18 @@ if ARG is current prefix, ask for file, otherwise add current file."
 (defun eca-chat-select ()
   "Select a chat."
   (interactive)
-  (let ((session (eca-session)))
+  (let ((session (eca-session))
+        (get-title-fn (lambda ()
+                        (or eca-chat--custom-title
+                            eca-chat--title
+                            eca-chat--id))))
     (eca-assert-session-running session)
     (let ((items (append
                   (sort
                    (-keep (lambda (buffer)
                             (when (buffer-live-p buffer)
                               (with-current-buffer buffer
-                                (when-let ((item (or eca-chat--title eca-chat--id)))
+                                (when-let ((item (funcall get-title-fn)))
                                   (propertize item
                                               'face (when eca-chat--chat-loading 'warning))))))
                           (eca-vals (eca--session-chats session)))
@@ -2089,12 +2099,20 @@ if ARG is current prefix, ask for file, otherwise add current file."
         (if-let (buffer (-first (lambda (buffer)
                                   (when (buffer-live-p buffer)
                                     (with-current-buffer buffer
-                                      (string= chosen-title (or eca-chat--title eca-chat--id)))))
+                                      (string= chosen-title (funcall get-title-fn)))))
                                 (eca-vals (eca--session-chats session))))
             (progn
               (setf (eca--session-last-chat-buffer session) buffer)
               (eca-chat-open session))
           (eca-chat-new))))))
+
+;;;###autoload
+(defun eca-chat-rename (new-name)
+  "Rename last visited chat to a custom NEW-NAME."
+  (interactive "sInform the new chat title: ")
+  (eca-assert-session-running (eca-session))
+  (with-current-buffer (eca-chat--get-last-buffer (eca-session))
+    (setq eca-chat--custom-title new-name)))
 
 ;;;###autoload
 (defun eca-chat-new ()
