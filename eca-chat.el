@@ -1660,7 +1660,7 @@ string."
                  ("Arguments" . ,args)))))))
         ("toolCallRunning"
          (let* ((id (plist-get content :id))
-                (cached-args (gethash id eca-chat--tool-call-prepare-content-cache ""))
+                (args (plist-get content :arguments))
                 (name (plist-get content :name))
                 (server (plist-get content :server))
                 (summary (or (plist-get content :summary)
@@ -1695,7 +1695,7 @@ string."
               (eca-chat--content-table
                `(("Tool" . ,name)
                  ("Server" . ,server)
-                 ("Arguments" . ,cached-args)))))))
+                 ("Arguments" . ,args)))))))
         ("toolCalled"
          (let* ((id (plist-get content :id))
                 (name (plist-get content :name))
