@@ -38,6 +38,12 @@
   "Return the plist values from MAP."
   (-map #'cdr map))
 
+(defun eca-plist-equal (plist1 plist2)
+  "Check if PLIST1 is equal to PLIST2."
+  (and (= (length plist1) (length plist2))
+       (cl-loop for (key val) on plist1 by #'cddr
+                always (equal val (plist-get plist2 key)))))
+
 (defun eca-find-root-for-buffer ()
   "Get the project root using git falling back to file directory."
   (or (when (fboundp 'project-current)

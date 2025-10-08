@@ -1270,18 +1270,19 @@ If FORCE? decide to OPEN? or not."
   "Return the start and end positions for current point.
 Returns a cons cell (START . END) where START and END are cons cells
 of (LINE . CHARACTER) representing the current selection or cursor position."
-  (let* ((start-pos (if (use-region-p) (region-beginning) (point)))
-         (end-pos (if (use-region-p) (region-end) (point)))
-         (start-line (line-number-at-pos start-pos))
-         (start-char (save-excursion
-                       (goto-char start-pos)
-                       (current-column)))
-         (end-line (line-number-at-pos end-pos))
-         (end-char (save-excursion
-                     (goto-char end-pos)
-                     (current-column))))
-    (cons (cons start-line start-char)
-          (cons end-line end-char))))
+  (save-excursion
+    (let* ((start-pos (if (use-region-p) (region-beginning) (point)))
+           (end-pos (if (use-region-p) (region-end) (point)))
+           (start-line (line-number-at-pos start-pos))
+           (start-char (progn
+                         (goto-char start-pos)
+                         (current-column)))
+           (end-line (line-number-at-pos end-pos))
+           (end-char (progn
+                       (goto-char end-pos)
+                       (current-column))))
+      (cons (cons start-line start-char)
+            (cons end-line end-char)))))
 
 (defun eca-chat--get-last-visited-buffer ()
   "Return the last visited buffer which has a filename."
@@ -1306,11 +1307,12 @@ of (LINE . CHARACTER) representing the current selection or cursor position."
                           ((start-line . start-character) start)
                           ((end-line . end-character) end))
                     (eca-chat--with-current-buffer chat-buffer
-                      (setq eca-chat--cursor-context
-                            (list :path path
-                                  :position (list :start (list :line start-line :character start-character)
-                                                  :end (list :line end-line :character end-character))))
-                      (eca-chat--refresh-context))))))))))))
+                      (let ((new-context (list :path path
+                                               :position (list :start (list :line start-line :character start-character)
+                                                               :end (list :line end-line :character end-character)))))
+                        (when (not (eca-plist-equal eca-chat--cursor-context new-context))
+                          (setq eca-chat--cursor-context new-context)
+                          (eca-chat--refresh-context))))))))))))))
 
 (defun eca-chat--track-cursor-position-schedule ()
   "Debounce `eca-chat--track-cursor' via an idle timer."
