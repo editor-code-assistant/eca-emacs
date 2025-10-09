@@ -1389,6 +1389,7 @@ restore the chat display after smerge quits."
 
     ;; TODO is there a better way to do that?
     (advice-add 'delete-char :around #'eca-chat--key-pressed-deletion)
+    (advice-add 'backward-kill-word :around #'eca-chat--key-pressed-deletion)
     (when (featurep 'evil)
       (advice-add 'evil-delete-backward-word :around #'eca-chat--key-pressed-deletion)
       (advice-add 'evil-delete-back-to-indentation :around #'eca-chat--key-pressed-deletion)
