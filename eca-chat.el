@@ -123,8 +123,8 @@ ECA chat opens in a regular buffer that follows standard
   :type 'boolean
   :group 'eca)
 
-(defcustom eca-chat-shrink-approved-tools t
-  "Whether to auto shrink tool calls after approved."
+(defcustom eca-chat-shrink-called-tools t
+  "Whether to auto shrink tool calls after called."
   :type 'boolean
   :group 'eca)
 
@@ -1758,7 +1758,7 @@ string."
                  ("Server" . ,server)
                  ("Arguments" . ,args)
                  ("Output" . ,output-text)))))
-           (when eca-chat-shrink-approved-tools
+           (when eca-chat-shrink-called-tools
              (eca-chat--expandable-content-toggle id t t))))
         ("toolCallRejected"
          (let* ((name (plist-get content :name))
