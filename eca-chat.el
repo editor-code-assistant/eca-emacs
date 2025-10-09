@@ -123,6 +123,11 @@ ECA chat opens in a regular buffer that follows standard
   :type 'boolean
   :group 'eca)
 
+(defcustom eca-chat-shrink-approved-tools t
+  "Whether to auto shrink tool calls after approved."
+  :type 'boolean
+  :group 'eca)
+
 (defcustom eca-chat-custom-model nil
   "Which model to use during chat, nil means use server's default.
 Must be a valid model supported by server, check `eca-chat-select-model`."
@@ -1665,9 +1670,7 @@ string."
                  ("Server" . ,server)
                  ("Arguments" . ,args)))))
            (when (and eca-chat-expand-pending-approval-tools manual?)
-             (point-max)
-             (eca-chat-go-to-prev-expandable-block)
-             (eca-chat-toggle-expandable-block t))))
+             (eca-chat--expandable-content-toggle id t nil))))
         ("toolCallRunning"
          (let* ((id (plist-get content :id))
                 (args (plist-get content :arguments))
@@ -1754,7 +1757,9 @@ string."
                `(("Tool"   . ,name)
                  ("Server" . ,server)
                  ("Arguments" . ,args)
-                 ("Output" . ,output-text)))))))
+                 ("Output" . ,output-text)))))
+           (when eca-chat-shrink-approved-tools
+             (eca-chat--expandable-content-toggle id t t))))
         ("toolCallRejected"
          (let* ((name (plist-get content :name))
                 (server (plist-get content :server))
