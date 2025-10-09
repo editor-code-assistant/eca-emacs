@@ -1230,10 +1230,18 @@ If FORCE? decide to CLOSE? or not."
             ") "
             (truncate-string-to-width description (* 100 eca-chat-window-width)))))
 
-(defun eca-chat--completion-context-exit-function (item _status)
+(defun eca-chat--completion-context-from-new-context-exit-function (item _status)
   "Add to context the selected ITEM."
   (eca-chat--add-context (get-text-property 0 'eca-chat-completion-item item))
   (end-of-line))
+
+(defun eca-chat--completion-context-from-prompt-exit-function (item _status)
+  "Add to context the selected ITEM.
+Add text property to prompt text to match context."
+  (eca-chat--add-context (get-text-property 0 'eca-chat-completion-item item))
+  (put-text-property (1- (- (point) (length item))) (point) 'font-lock-face (get-text-property 0 'face item))
+  (end-of-line)
+  (insert " "))
 
 (defun eca-chat--completion-prompt-exit-function (item _status)
   "Finish prompt completion for ITEM."
@@ -1253,15 +1261,23 @@ If FORCE? decide to CLOSE? or not."
 
 (defun eca-chat--context-to-completion (context)
   "Convert CONTEXT to a completion item."
-  (propertize
-   (pcase (plist-get context :type)
-     ("file" (f-filename (plist-get context :path)))
-     ("directory" (f-filename (plist-get context :path)))
-     ("repoMap" "repoMap")
-     ("cursor" "cursor")
-     ("mcpResource" (concat (plist-get context :server) ":" (plist-get context :name)))
-     (_ (concat "Unknown - " (plist-get context :type))))
-   'eca-chat-completion-item context))
+  (let ((raw-label (pcase (plist-get context :type)
+                     ("file" (f-filename (plist-get context :path)))
+                     ("directory" (f-filename (plist-get context :path)))
+                     ("repoMap" "repoMap")
+                     ("cursor" "cursor")
+                     ("mcpResource" (concat (plist-get context :server) ":" (plist-get context :name)))
+                     (_ (concat "Unknown - " (plist-get context :type)))))
+        (face (pcase (plist-get context :type)
+                ("file" 'eca-chat-context-file-face)
+                ("directory" 'eca-chat-context-file-face)
+                ("repoMap" 'eca-chat-context-repo-map-face)
+                ("cursor" 'eca-chat-context-cursor-face)
+                ("mcpResource" 'eca-chat-context-mcp-resource-face)
+                (_ nil))))
+    (propertize raw-label
+                'eca-chat-completion-item context
+                'face face)))
 
 (defun eca-chat--command-to-completion (command)
   "Convert COMMAND to a completion item."
@@ -1453,7 +1469,11 @@ string."
          (type (cond
                 ;; completing contexts
                 ((eca-chat--point-at-new-context-p)
-                 'contexts)
+                 'contexts-from-new-context)
+
+                ((when-let (last-word (car (last (string-split full-text "[\s]"))))
+                   (string-match-p "^@" last-word))
+                 'contexts-from-prompt)
 
                 ;; completing commands with `/`
                 ((and (eca-chat--point-at-prompt-field-p)
@@ -1470,9 +1490,10 @@ string."
                           (eca-api-catch 'input
                               (eca-api-while-no-input
                                 (pcase type
-                                  ('contexts
+                                  ((or 'contexts-from-prompt
+                                       'contexts-from-new-context)
                                    (let ((query (eca-chat--context-find-typed-query)))
-                                     (or (gethash query eca-chat--context-completion-cache)
+                                     (or ;(gethash query eca-chat--context-completion-cache)
                                          (-let* (((&plist :contexts contexts) (eca-api-request-while-no-input
                                                                                (eca-session)
                                                                                :method "chat/queryContext"
@@ -1501,11 +1522,13 @@ string."
                             (:interrupted nil)
                             (`,res res))))
          (exit-fn (pcase type
-                    ('contexts #'eca-chat--completion-context-exit-function)
+                    ('contexts-from-new-context #'eca-chat--completion-context-from-new-context-exit-function)
+                    ('contexts-from-prompt #'eca-chat--completion-context-from-prompt-exit-function)
                     ('prompts #'eca-chat--completion-prompt-exit-function)
                     (_ nil)))
          (annotation-fn (pcase type
-                          ('contexts (-partial #'eca-chat--completion-context-annotate (eca--session-workspace-folders (eca-session))))
+                          ((or 'contexts-from-prompt
+                               'contexts-from-new-context) (-partial #'eca-chat--completion-context-annotate (eca--session-workspace-folders (eca-session))))
                           ('prompts #'eca-chat--completion-prompts-annotate))))
     (list
      bounds-start
