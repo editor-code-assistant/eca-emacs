@@ -185,7 +185,11 @@ system (it ignores those popup rules for the generated ediff buffers)."
 
     ;; Start Ediff with error handling
     (condition-case err
-        (ediff-buffers buf-orig buf-new)
+	(let ((ediff-window-setup-function
+	       (if (daemonp)
+		   'ediff-setup-windows-plain
+		 ediff-window-setup-function)))
+        (ediff-buffers buf-orig buf-new))
       (error
        ;; On error, remove hooks and restore windows
        (remove-hook 'ediff-quit-hook cleanup-fn)
