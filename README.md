@@ -47,6 +47,8 @@ M-x package-install eca
 
 ## Tips
 
+Not all, but most relevant functions and variables:
+
 ### Functions
 
 - `eca-chat-add-context-at-point`: Add the current function or selected lines to chat as context.

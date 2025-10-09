@@ -118,6 +118,11 @@ ECA chat opens in a regular buffer that follows standard
   :type 'string
   :group 'eca)
 
+(defcustom eca-chat-expand-pending-approval-tools t
+  "Whether to auto expand tool calls when pending approval."
+  :type 'boolean
+  :group 'eca)
+
 (defcustom eca-chat-custom-model nil
   "Which model to use during chat, nil means use server's default.
 Must be a valid model supported by server, check `eca-chat-select-model`."
@@ -349,7 +354,6 @@ Must be a positive integer."
 (defvar-local eca-chat--session-limit-output nil)
 (defvar-local eca-chat--empty t)
 (defvar-local eca-chat--cursor-context nil)
-(defvar-local eca-chat--tool-call-pending-approval-accept-point-by-id nil)
 
 ;; Timer used to debounce post-command driven context updates
 (defvar eca-chat--cursor-context-timer nil)
@@ -622,21 +626,6 @@ Otherwise to a not loading state."
   (when (>= (point) (eca-chat--prompt-field-start-point))
     (insert "\n")))
 
-(defun eca-chat--key-pressed-tab ()
-  "Expand tool call if point is at expandable content, or use default behavior."
-  (interactive)
-  (cond
-   ;; expandable toggle
-   ((eca-chat--expandable-content-at-point)
-    (eca-chat--expandable-content-toggle (overlay-get (eca-chat--expandable-content-at-point) 'eca-chat--expandable-content-id)))
-
-   ;; context completion
-   ((and (eca-chat--prompt-context-field-ov)
-         (eolp))
-    (completion-at-point))
-
-   (t t)))
-
 (defun eca-chat--prompt-field-ov ()
   "Return the overlay for the prompt field."
   (-first (-lambda (ov) (eq t (overlay-get ov 'eca-chat-prompt-field)))
@@ -767,6 +756,22 @@ the prompt/context line."
          (eca-chat--expandable-content-toggle (overlay-get ov 'eca-chat--expandable-content-id))))
 
       (t nil)))))
+
+(defun eca-chat--key-pressed-tab ()
+  "Expand tool call if point is at expandable content, or use default behavior."
+  (interactive)
+  (cond
+   ;; expandable toggle
+   ((eca-chat--expandable-content-at-point)
+    (eca-chat--allow-write
+     (eca-chat--expandable-content-toggle (overlay-get (eca-chat--expandable-content-at-point) 'eca-chat--expandable-content-id))))
+
+   ;; context completion
+   ((and (eca-chat--prompt-context-field-ov)
+         (eolp))
+    (completion-at-point))
+
+   (t t)))
 
 (defun eca-chat--point-at-new-context-p ()
   "Return non-nil if point is at the context area."
@@ -1019,20 +1024,20 @@ Applies LABEL-FACE to label and CONTENT-FACE to content."
               (goto-char (overlay-start ov-content))
               (insert new-content))))))))
 
-(defun eca-chat--expandable-content-toggle (id &optional force? open?)
+(defun eca-chat--expandable-content-toggle (id &optional force? close?)
   "Toggle the expandable-content of ID.
-If FORCE? decide to OPEN? or not."
+If FORCE? decide to CLOSE? or not."
   (when-let* ((ov-label (-first (-lambda (ov) (string= id (overlay-get ov 'eca-chat--expandable-content-id)))
                                 (overlays-in (point-min) (point-max)))))
     (let* ((ov-content (overlay-get ov-label 'eca-chat--expandable-content-ov-content))
            (content (overlay-get ov-content 'eca-chat--expandable-content-content))
            (empty-content? (string-empty-p content))
-           (open? (if force?
-                      open?
+           (close? (if force?
+                      close?
                     (overlay-get ov-label 'eca-chat--expandable-content-toggle))))
       (save-excursion
         (goto-char (overlay-start ov-label))
-        (if (or open? empty-content?)
+        (if (or close? empty-content?)
             (progn
               (put-text-property (point) (line-end-position)
                                  'line-prefix (unless empty-content?
@@ -1046,7 +1051,7 @@ If FORCE? decide to OPEN? or not."
             (goto-char (overlay-start ov-content))
             (insert content "\n")
             (overlay-put ov-label 'eca-chat--expandable-content-toggle t))))
-      open?)))
+      close?)))
 
 (defun eca-chat--content-table (key-vals)
   "Return a string in table format for KEY-VALS."
@@ -1628,8 +1633,6 @@ string."
                 (approval-text (when manual?
                                  (eca-chat--build-tool-call-approval-str-content session id tool-call-next-line-spacing)))
                 (details (plist-get content :details)))
-           (when manual?
-             (eca-assoc eca-chat--tool-call-pending-approval-accept-point-by-id id (point)))
            (if (and (stringp (plist-get details :type))
                     (string= "fileChange" (plist-get details :type)))
                (let* ((path (plist-get details :path))
@@ -1660,7 +1663,11 @@ string."
               (eca-chat--content-table
                `(("Tool" . ,name)
                  ("Server" . ,server)
-                 ("Arguments" . ,args)))))))
+                 ("Arguments" . ,args)))))
+           (when (and eca-chat-expand-pending-approval-tools manual?)
+             (point-max)
+             (eca-chat-go-to-prev-expandable-block)
+             (eca-chat-toggle-expandable-block t))))
         ("toolCallRunning"
          (let* ((id (plist-get content :id))
                 (args (plist-get content :arguments))
@@ -1971,15 +1978,16 @@ If there is no next user message, go to the chat prompt line."
   (eca-chat--go-to-overlay 'eca-chat--expandable-content-id (1+ (point)) (point-max) t))
 
 ;;;###autoload
-(defun eca-chat-toggle-expandable-block ()
-  "Toggle current expandable block at point."
+(defun eca-chat-toggle-expandable-block (&optional force-open?)
+  "Toggle current expandable block at point.
+Just open if FORCE-OPEN? is non-nil."
   (interactive)
   (eca-assert-session-running (eca-session))
   (eca-chat--with-current-buffer (eca-chat--get-last-buffer (eca-session))
     (unless (eca-chat--expandable-content-at-point)
       (eca-chat-go-to-prev-expandable-block))
     (when-let ((ov (eca-chat--expandable-content-at-point)))
-      (eca-chat--expandable-content-toggle (overlay-get ov 'eca-chat--expandable-content-id)))))
+      (eca-chat--expandable-content-toggle (overlay-get ov 'eca-chat--expandable-content-id) (when force-open? t) (not force-open?)))))
 
 ;;;###autoload
 (defun eca-chat-add-context-at-point ()
