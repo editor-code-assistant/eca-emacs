@@ -2025,7 +2025,7 @@ Just open if FORCE-OPEN? is non-nil."
 (defun eca-chat-add-context ()
   "Add context to chat in a DWIM manner.
 
-- If a region selected, at file with lines range selected.
+- If a region selected, add file with lines range selected.
 - If in Dired, add the marked files/dirs or current file/dir at point.
 - If in Treemacs, add selected file/dir.
 - Else add current file."
