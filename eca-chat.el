@@ -2017,6 +2017,48 @@ Just open if FORCE-OPEN? is non-nil."
     (when-let ((ov (eca-chat--expandable-content-at-point)))
       (eca-chat--expandable-content-toggle (overlay-get ov 'eca-chat--expandable-content-id) (when force-open? t) (not force-open?)))))
 
+(declare-function dired-get-marked-files "dired")
+(declare-function treemacs-node-at-point "treemacs")
+(declare-function treemacs-button-get "treemacs")
+
+;;;###autoload
+(defun eca-chat-add-context ()
+  "Add context to chat in a DWIM manner.
+
+- If a region selected, at file with lines range selected.
+- If in Dired, add the marked files/dirs or current file/dir at point.
+- If in Treemacs, add selected file/dir.
+- Else add current file."
+  (interactive)
+  (eca-assert-session-running (eca-session))
+  (let* ((contexts (cond
+                    ((and (buffer-file-name)
+                          (use-region-p))
+                     (-let (((start . end) `(,(line-number-at-pos (region-beginning)) . ,(line-number-at-pos (region-end)))))
+                       (list
+                        (list :type "file"
+                              :path (buffer-file-name)
+                              :linesRange (list :start start :end end)))))
+
+                    ((derived-mode-p 'dired-mode)
+                     (--map (list :type (if (f-dir? it) "directory" "file")
+                                  :path it)
+                            (dired-get-marked-files)))
+
+                    ((derived-mode-p 'treemacs-mode)
+                     (when-let (path (-some-> (treemacs-node-at-point)
+                                       (treemacs-button-get :path)))
+                       (list
+                        (list :type (if (f-dir? path) "directory" "file")
+                              :path path))))
+
+                    ((buffer-file-name)
+                     (list
+                      (list :type "file" :path (buffer-file-name)))))))
+    (eca-chat--with-current-buffer (eca-chat--get-last-buffer (eca-session))
+      (seq-doseq (context contexts)
+        (eca-chat--add-context context)))))
+
 ;;;###autoload
 (defun eca-chat-add-context-at-point ()
   "Add file content with range at point to chat as context.
@@ -2029,9 +2071,9 @@ Consider the defun at point unless a region is selected."
                             `(,(line-number-at-pos s) . ,(line-number-at-pos e)))))
          (path (buffer-file-name)))
     (eca-chat--with-current-buffer (eca-chat--get-last-buffer (eca-session))
-     (eca-chat--add-context (list :type "file"
-                                  :path path
-                                  :linesRange (list :start start :end end))))))
+      (eca-chat--add-context (list :type "file"
+                                   :path path
+                                   :linesRange (list :start start :end end))))))
 
 ;;;###autoload
 (defun eca-chat-add-file-context (&optional arg)

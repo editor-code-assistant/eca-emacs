@@ -51,8 +51,7 @@ Not all, but most relevant functions and variables:
 
 ### Functions
 
-- `eca-chat-add-context-at-point`: Add the current function or selected lines to chat as context.
-- `eca-chat-add-file-context`: Add the current file to chat as context.
+- `eca-chat-add-context`: Add file/dirs to context checking multiple modes and region.
 - `eca-chat-tool-call-accept-all`: Acceppt all pending tool calls in chat.
 - `eca-chat-tool-call-accept-next`: Acceppt next pending tool call in chat.
 - `eca-chat-tool-call-reject-next`: Reject next pending tool call in chat.
