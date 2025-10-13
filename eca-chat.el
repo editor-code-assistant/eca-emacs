@@ -1707,7 +1707,7 @@ string."
                       (diff (plist-get details :diff))
                       (view-diff-btn (eca-buttonize
                                       eca-chat-mode-map
-                                      (propertize "view_diff" 'font-lock-face 'eca-chat-diff-view-face)
+                                      (propertize "view diff" 'font-lock-face 'eca-chat-diff-view-face)
                                       (lambda ()
                                         (interactive)
                                         (eca-chat--show-diff path diff)))))
@@ -1718,7 +1718,7 @@ string."
                           (eca-chat--file-change-details-label details)
                           " " status
                           "\n"
-                          view-diff-btn
+                          (propertize view-diff-btn 'line-prefix tool-call-next-line-spacing)
                           approval-text)
                   (concat "Tool: `" name "`\n"
                           (eca-chat--file-change-diff path diff roots))))
@@ -1750,10 +1750,10 @@ string."
                       (view-diff-btn
                        (eca-buttonize
                         eca-chat-mode-map
-                        (propertize "view_diff" 'font-lock-face 'eca-chat-diff-view-face)
-                        `(lambda ()
-                           (interactive)
-                           (eca-chat--show-diff ,path ,diff)))))
+                        (propertize "view diff" 'font-lock-face 'eca-chat-diff-view-face)
+                        (lambda ()
+                          (interactive)
+                          (eca-chat--show-diff path diff)))))
                  (eca-chat--update-expandable-content
                   id
                   (concat (propertize summary 'font-lock-face 'eca-chat-mcp-tool-call-label-face)
@@ -1799,10 +1799,10 @@ string."
                       (view-diff-btn
                        (eca-buttonize
                         eca-chat-mode-map
-                        (propertize "view_diff" 'font-lock-face 'eca-chat-diff-view-face)
-                        `(lambda ()
-                           (interactive)
-                           (eca-chat--show-diff ,path ,diff)))))
+                        (propertize "view diff" 'font-lock-face 'eca-chat-diff-view-face)
+                        (lambda ()
+                          (interactive)
+                          (eca-chat--show-diff path diff)))))
                  (eca-chat--update-expandable-content
                   id
                   (concat (propertize summary 'font-lock-face 'eca-chat-mcp-tool-call-label-face)
