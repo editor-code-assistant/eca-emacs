@@ -680,23 +680,25 @@ the prompt/context line."
   (if (derived-mode-p 'eca-chat-mode)
       (let* ((cur-ov (car (overlays-in (line-beginning-position) (line-end-position))))
              (text (thing-at-point 'symbol))
+             (in-prompt? (eca-chat--point-at-prompt-field-p))
              (context-item (-some->> text
                              (get-text-property 0 'eca-chat-context-item)))
-             (context-str-length (-some->> text
-                                   (get-text-property 0 'eca-chat-context-item-str-length))))
+             (item-str-length (-some->> text
+                                (get-text-property 0 'eca-chat-item-str-length))))
         (cond
          ((and cur-ov
-               context-item)
+               context-item
+               (not in-prompt?))
           (setq-local eca-chat--context (delete context-item eca-chat--context))
-          (if (eca-chat--point-at-prompt-field-p)
-              (progn
-                ;; go to next char with no property eca-chat-context-item
-                (while (and (not (eolp))
-                            (get-text-property (point) 'eca-chat-context-item))
-                  (forward-char 1))
-                (delete-region (- (point) context-str-length) (point)))
-            (end-of-line))
           (eca-chat--refresh-context))
+
+         ((and cur-ov
+               item-str-length
+               in-prompt?)
+          (while (and (not (eolp))
+                      (get-text-property (point) 'eca-chat-item-str-length))
+            (forward-char 1))
+          (delete-region (- (point) item-str-length) (point)))
 
          ((and cur-ov
                (<= (point) (overlay-start cur-ov)))
@@ -728,25 +730,17 @@ the prompt/context line."
     (_ context)))
 
 (defun eca-chat--expand-contexts-in-prompt (prompt)
-  "If PROMPT contain any @context in text, expand for more details.
-Checks for text property `eca-chat-context-item' to identify context mentions
-and replaces them with their full path representation."
+  "If PROMPT contain any @context or #file in text, expand it.
+Checks for text property `eca-chat-expanded-item-str' to
+identify context mentions and replaces them with their
+full path representation."
   (let ((result "")
         (pos 0))
     (while (< pos (length prompt))
-      (let* ((next-change (next-single-property-change pos 'eca-chat-context-item prompt (length prompt)))
-             (context (get-text-property pos 'eca-chat-context-item prompt)))
-        (if context
-            ;; Found a context mention - expand it
-            (let ((expanded (pcase (plist-get context :type)
-                              ("file" (concat "@" (plist-get context :path)))
-                              ("directory" (concat "@" (plist-get context :path)))
-                              ("repoMap" "@repoMap")
-                              ("cursor" "@cursor")
-                              ("mcpResource" (concat "@" (plist-get context :server) ":" (plist-get context :name)))
-                              (_ (substring prompt pos next-change)))))
-              (setq result (concat result expanded)))
-          ;; No context property - copy the text as-is
+      (let* ((next-change (next-single-property-change pos 'eca-chat-expanded-item-str prompt (length prompt)))
+             (expanded-str (get-text-property pos 'eca-chat-expanded-item-str prompt)))
+        (if expanded-str
+            (setq result (concat result expanded-str))
           (setq result (concat result (substring prompt pos next-change))))
         (setq pos next-change)))
     result))
@@ -1173,12 +1167,16 @@ If STATIC? return strs with no dynamic values."
                                          (eca-chat--context-presentable-path (plist-get context :path))
                                          (-when-let ((&plist :start start :end end) (plist-get context :linesRange))
                                            (format " (%d-%d)" start end)))
+                                 'eca-chat-expanded-item-str (concat eca-chat-context-prefix (plist-get context :path))
                                  'font-lock-face 'eca-chat-context-file-face))
              ("directory" (propertize (concat eca-chat-context-prefix (eca-chat--context-presentable-path (plist-get context :path)))
+                                      'eca-chat-expanded-item-str (concat eca-chat-context-prefix (plist-get context :path))
                                       'font-lock-face 'eca-chat-context-file-face))
              ("repoMap" (propertize (concat eca-chat-context-prefix "repoMap")
+                                    'eca-chat-expanded-item-str (concat eca-chat-context-prefix "repoMap")
                                     'font-lock-face 'eca-chat-context-repo-map-face))
              ("mcpResource" (propertize (concat eca-chat-context-prefix (plist-get context :server) ":" (plist-get context :name))
+                                        'eca-chat-expanded-item-str (concat eca-chat-context-prefix (plist-get context :server) ":" (plist-get context :name))
                                         'font-lock-face 'eca-chat-context-mcp-resource-face))
              ("cursor" (propertize (if static?
                                        (concat eca-chat-context-prefix "cursor")
@@ -1201,10 +1199,11 @@ If STATIC? return strs with no dynamic values."
                                                      (plist-get :character))
                                                (funcall #'number-to-string))
                                              ")"))
+                                   'eca-chat-expanded-item-str (concat eca-chat-context-prefix "cursor")
                                    'font-lock-face 'eca-chat-context-cursor-face))
              (_ (concat eca-chat-context-prefix "unkown:" type)))))
     (propertize context-str
-                'eca-chat-context-item-str-length (length context-str)
+                'eca-chat-item-str-length (length context-str)
                 'eca-chat-context-item context)))
 
 (defun eca-chat--refresh-context ()
@@ -1295,12 +1294,14 @@ Add text property to prompt text to match context."
 
 (defun eca-chat--completion-file-from-prompt-exit-function (item _status)
   "Add to files the selected ITEM."
-  (let ((file (get-text-property 0 'eca-chat-completion-item item))
-        (start-pos (1- (- (point) (length item))))
-        (end-pos (point)))
+  (let* ((file (get-text-property 0 'eca-chat-completion-item item))
+         (start-pos (1- (- (point) (length item))))
+         (end-pos (point))
+         (item-str (concat eca-chat-file-prefix (eca-chat--context-presentable-path (plist-get file :path)))))
     (delete-region start-pos end-pos)
-    (insert (propertize (concat eca-chat-file-prefix (eca-chat--context-presentable-path (plist-get file :path)))
-                        'eca-chat-file-item file
+    (insert (propertize item-str
+                        'eca-chat-item-str-length (length item-str)
+                        'eca-chat-expanded-item-str (concat eca-chat-file-prefix (plist-get file :path))
                         'font-lock-face 'eca-chat-context-file-face)))
   (insert " "))
 
@@ -1514,12 +1515,11 @@ restore the chat display after smerge quits."
 
   (goto-char (point-max)))
 
-(defun eca-chat--find-typed-query (char)
-  "Return the text typed after the last context prefix on the context line.
+(defun eca-chat--find-typed-query (prefix)
+  "Return the text typed after the last item after PREFIX.
 For example: `@foo @bar @baz` => `baz`. If nothing is typed, returns an empty
 string."
-  (let ((context-area (eca-chat--new-context-start-point))
-        (prefix eca-chat-context-prefix))
+  (let ((context-area (eca-chat--new-context-start-point)))
     (save-excursion
       (goto-char context-area)
       (end-of-line)
@@ -2055,6 +2055,8 @@ string."
       (setq-local eca-chat--session-cost nil)
       (setq-local eca-chat--empty t)
       (setq-local eca-chat--title nil)
+      (clrhash eca-chat--context-completion-cache)
+      (clrhash eca-chat--file-completion-cache)
       (setq-local eca-chat--custom-title nil)
       ;; Reset per-buffer tool prepare counters to avoid leaking across sessions
       (setq-local eca-chat--tool-call-prepare-counters (make-hash-table :test 'equal))
