@@ -189,7 +189,7 @@ https://github.com/emacs-lsp/lsp-mode/issues/4746#issuecomment-2957183423"
              (eca-info "Downloading eca server from %s to %s..."  url download-path)
              (eca--download-file url download-path)
              (eca-info "Downloaded eca, unzipping it...")
-             (unless eca-unzip-script
+             (unless (and eca-unzip-script (funcall eca-unzip-script))
                (error "Unable to find `unzip' or `powershell' on the path, please customize `eca-unzip-script'"))
              (shell-command (format (funcall eca-unzip-script) download-path (f-parent store-path)))
              (f-write-text version 'utf-8 eca-server-version-file-path)
