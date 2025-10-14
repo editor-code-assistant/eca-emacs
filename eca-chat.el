@@ -1203,6 +1203,7 @@ If STATIC? return strs with no dynamic values."
                                    'font-lock-face 'eca-chat-context-cursor-face))
              (_ (concat eca-chat-context-prefix "unkown:" type)))))
     (propertize context-str
+                'eca-chat-item-type 'context
                 'eca-chat-item-str-length (length context-str)
                 'eca-chat-context-item context)))
 
@@ -1302,6 +1303,7 @@ Add text property to prompt text to match context."
          (item-str (concat eca-chat-file-prefix (eca-chat--context-presentable-path (plist-get file :path)))))
     (delete-region start-pos end-pos)
     (insert (propertize item-str
+                        'eca-chat-item-type 'file
                         'eca-chat-item-str-length (length item-str)
                         'eca-chat-expanded-item-str (concat eca-chat-file-prefix (plist-get file :path))
                         'font-lock-face 'eca-chat-context-file-face)))
@@ -1448,6 +1450,22 @@ restore the chat display after smerge quits."
     ('ediff (eca-chat--show-diff-ediff path diff))
     ('smerge (eca-chat--show-diff-smerge path diff))))
 
+(defun eca-chat--find-typed-query (prefix)
+  "Return the text typed after the last item after PREFIX (@ or #).
+For example: `@foo @bar @baz` => `baz`. If nothing is typed, returns an empty
+string."
+  (when (eca-chat--point-at-new-context-p)
+    (save-excursion
+      (goto-char (eca-chat--new-context-start-point))
+      (end-of-line)))
+  (save-excursion
+    (let* ((start (line-beginning-position))
+           (end (point))
+           (last-prefix-pos (search-backward prefix start t)))
+      (if last-prefix-pos
+          (string-trim (buffer-substring-no-properties (+ last-prefix-pos (length prefix)) end))
+        ""))))
+
 ;; Public
 
 (define-derived-mode eca-chat-mode markdown-mode "eca-chat"
@@ -1495,6 +1513,9 @@ restore the chat display after smerge quits."
       (advice-add 'evil-delete :around #'eca-chat--key-pressed-deletion)
       (advice-add 'evil-delete-backward-char :around #'eca-chat--key-pressed-deletion))
 
+    (add-hook 'eldoc-documentation-functions #'eca-chat-eldoc-function nil t)
+    (eldoc-mode 1)
+
     (let ((chat-buffer (current-buffer)))
       (run-with-timer
        0.05
@@ -1517,21 +1538,17 @@ restore the chat display after smerge quits."
 
   (goto-char (point-max)))
 
-(defun eca-chat--find-typed-query (prefix)
-  "Return the text typed after the last item after PREFIX (@ or #).
-For example: `@foo @bar @baz` => `baz`. If nothing is typed, returns an empty
-string."
-  (when (eca-chat--point-at-new-context-p)
-    (save-excursion
-      (goto-char (eca-chat--new-context-start-point))
-      (end-of-line)))
-  (save-excursion
-    (let* ((start (line-beginning-position))
-           (end (point))
-           (last-prefix-pos (search-backward prefix start t)))
-      (if last-prefix-pos
-          (string-trim (buffer-substring-no-properties (+ last-prefix-pos (length prefix)) end))
-        ""))))
+(defun eca-chat-eldoc-function (cb &rest _ignored)
+  "Eldoc function to show details of context and prompt in eldoc.
+Calls CB with the resulting message."
+  (when-let ((item-type (get-text-property (point) 'eca-chat-item-type)))
+    (when-let ((item-str (get-text-property (point) 'eca-chat-expanded-item-str)))
+      (when-let ((face (get-text-property (point) 'font-lock-face)))
+        (funcall cb (format "%s: %s"
+                            (pcase item-type
+                              ('context "Context")
+                              ('file "File"))
+                            (propertize item-str 'face face)))))))
 
 (defun eca-chat-completion-at-point ()
   "Complete at point in the chat."
