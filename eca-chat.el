@@ -1516,19 +1516,20 @@ restore the chat display after smerge quits."
   (goto-char (point-max)))
 
 (defun eca-chat--find-typed-query (prefix)
-  "Return the text typed after the last item after PREFIX.
+  "Return the text typed after the last item after PREFIX (@ or #).
 For example: `@foo @bar @baz` => `baz`. If nothing is typed, returns an empty
 string."
-  (let ((context-area (eca-chat--new-context-start-point)))
+  (when (eca-chat--point-at-new-context-p)
     (save-excursion
-      (goto-char context-area)
-      (end-of-line)
-      (let* ((line-start (line-beginning-position))
-             (line-end (point))
-             (last-prefix-pos (search-backward prefix line-start t)))
-        (if last-prefix-pos
-            (string-trim (buffer-substring-no-properties (+ last-prefix-pos (length prefix)) line-end))
-          "")))))
+      (goto-char (eca-chat--new-context-start-point))
+      (end-of-line)))
+  (save-excursion
+    (let* ((start (line-beginning-position))
+           (end (point))
+           (last-prefix-pos (search-backward prefix start t)))
+      (if last-prefix-pos
+          (string-trim (buffer-substring-no-properties (+ last-prefix-pos (length prefix)) end))
+        ""))))
 
 (defun eca-chat-completion-at-point ()
   "Complete at point in the chat."
