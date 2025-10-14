@@ -1286,7 +1286,8 @@ If STATIC? return strs with no dynamic values."
   "Add to context the selected ITEM.
 Add text property to prompt text to match context."
   (let ((context (get-text-property 0 'eca-chat-completion-item item)))
-    (let ((start-pos (1- (- (point) (length item))))
+    (let ((start-pos (save-excursion
+                      (search-backward eca-chat-context-prefix (line-beginning-position) t)))
           (end-pos (point)))
       (delete-region start-pos end-pos)
       (insert (eca-chat--context->str context 'static))))
@@ -1295,7 +1296,8 @@ Add text property to prompt text to match context."
 (defun eca-chat--completion-file-from-prompt-exit-function (item _status)
   "Add to files the selected ITEM."
   (let* ((file (get-text-property 0 'eca-chat-completion-item item))
-         (start-pos (1- (- (point) (length item))))
+         (start-pos (save-excursion
+                      (search-backward eca-chat-file-prefix (line-beginning-position) t)))
          (end-pos (point))
          (item-str (concat eca-chat-file-prefix (eca-chat--context-presentable-path (plist-get file :path)))))
     (delete-region start-pos end-pos)
