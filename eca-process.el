@@ -66,6 +66,9 @@ If not provided, download and start eca automatically."
 (defconst eca-ext-unzip-script "bash -c 'mkdir -p %2$s && unzip -qq -o %1$s -d %2$s'"
   "Unzip script to unzip file.")
 
+(defconst eca-ext-ark-script "bash -c 'mkdir -p %2$s && ark -b -o %2$s %1$s'"
+  "Ark script to unzip file.")
+
 (defcustom eca-unzip-script (lambda ()
                               (cond ((and (eq system-type 'windows-nt)
                                           (executable-find "pwsh"))
@@ -75,6 +78,7 @@ If not provided, download and start eca automatically."
                                      eca-ext-powershell-script)
                                     ((executable-find "unzip") eca-ext-unzip-script)
                                     ((executable-find "pwsh") eca-ext-pwsh-script)
+                                    ((executable-find "ark") eca-ext-ark-script)
                                     (t nil)))
   "The script to unzip downloaded eca server."
   :group 'eca
