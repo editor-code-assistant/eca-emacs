@@ -729,18 +729,20 @@ the prompt/context line."
                   (plist-put :position (plist-get eca-chat--cursor-context :position))))
     (_ context)))
 
-(defun eca-chat--expand-contexts-in-prompt (prompt)
-  "If PROMPT contain any @context or #file in text, expand it.
-Checks for text property `eca-chat-expanded-item-str' to
-identify context mentions and replaces them with their
-full path representation."
+(defun eca-chat--normalize-prompt (prompt)
+  "Normalize PROMPT before sending to server.
+- If any expandable (@context or #file) is found, expand it.
+- Removes # from #files."
   (let ((result "")
         (pos 0))
     (while (< pos (length prompt))
       (let* ((next-change (next-single-property-change pos 'eca-chat-expanded-item-str prompt (length prompt)))
-             (expanded-str (get-text-property pos 'eca-chat-expanded-item-str prompt)))
+             (expanded-str (get-text-property pos 'eca-chat-expanded-item-str prompt))
+             (item-type (get-text-property pos 'eca-chat-item-type prompt)))
         (if expanded-str
-            (setq result (concat result expanded-str))
+            (setq result (concat result (if (eq 'file item-type)
+                                            (substring expanded-str 1)
+                                          expanded-str)))
           (setq result (concat result (substring prompt pos next-change))))
         (setq pos next-change)))
     result))
@@ -758,7 +760,7 @@ full path representation."
     (eca-api-request-async
      session
      :method "chat/prompt"
-     :params (list :message (eca-chat--expand-contexts-in-prompt prompt)
+     :params (list :message (eca-chat--normalize-prompt prompt)
                    :request-id (cl-incf eca-chat--last-request-id)
                    :chatId eca-chat--id
                    :model (eca-chat--model session)
