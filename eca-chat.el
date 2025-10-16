@@ -274,8 +274,13 @@ Must be a positive integer."
   :group 'eca)
 
 (defface eca-chat-reason-label-face
-  '((t :inherit font-lock-comment-face :underline t))
+  '((t :inherit font-lock-comment-face))
   "Face for the reason messages in chat."
+  :group 'eca)
+
+(defface eca-chat-hook-label-face
+  '((t :inherit font-lock-keyword-face))
+  "Face for the hook messages in chat."
   :group 'eca)
 
 (defface eca-chat-time-face
@@ -1729,6 +1734,23 @@ Calls CB with the resulting message."
                         (concat " " (eca-chat--time->presentable-time ms))))
                 (label (concat base time)))
            (eca-chat--update-expandable-content id label "" t)))
+        ("hookActionStarted"
+         (let* ((id (plist-get content :id))
+                (name (plist-get content :name))
+                (label (propertize (format "Running hook '%s'..." name) 'font-lock-face 'eca-chat-hook-label-face)))
+           (eca-chat--add-expandable-content id label "")))
+        ("hookActionFinished"
+         (let* ((id (plist-get content :id))
+                (name (plist-get content :name))
+                (status (number-to-string (plist-get content :status)))
+                (output (plist-get content :output))
+                (error (plist-get content :error))
+                (label (propertize (format "Executed hook '%s'" name) 'font-lock-face 'eca-chat-hook-label-face)))
+           (eca-chat--update-expandable-content id label (eca-chat--content-table
+                                                          `(("Name" . ,name)
+                                                            ("Status" . ,status)
+                                                            ("Output" . ,output)
+                                                            ("Error" . ,error))))))
         ("toolCallPrepare"
          (let* ((id (plist-get content :id))
                 (name (plist-get content :name))
