@@ -1113,6 +1113,16 @@ If FORCE? decide to CLOSE? or not."
    ""
    key-vals))
 
+(defun eca-chat--relativize-filename-for-workspace-root (filename roots &optional hide-filename?)
+  "Relativize the FILENAME if a workspace root is found for ROOTS.
+Show parent upwards if HIDE-FILENAME? is non nil."
+  (let ((relative-path (or (-some->> (-first (lambda (root) (f-ancestor-of? root filename)) roots)
+                             (f-relative filename))
+                           filename)))
+    (if hide-filename?
+        (f-parent relative-path)
+      relative-path)))
+
 (defun eca-chat--file-change-diff (path diff roots)
   "Return a diff block for relative PATH from ROOTS with DIFF."
   (concat "\n"
@@ -1132,12 +1142,6 @@ If FORCE? decide to CLOSE? or not."
           (propertize (concat  "+" (number-to-string (plist-get details :linesAdded))) 'font-lock-face 'success)
           " "
           (propertize (concat  "-" (number-to-string (plist-get details :linesRemoved))) 'font-lock-face 'error)))
-
-(defun eca-chat--relativize-filename-for-workspace-root (filename roots)
-  "Relativize the FILENAME if a workspace root is found for ROOTS."
-  (or (-some->> (-first (lambda (root) (f-ancestor-of? root filename)) roots)
-        (f-relative filename))
-      filename))
 
 (defun eca-chat--context-presentable-path (filename)
   "Return the presentable string for FILENAME."
@@ -1261,8 +1265,8 @@ If STATIC? return strs with no dynamic values."
   "Annonate ITEM-LABEL detail for ROOTS."
   (-let (((&plist :type type :path path :description description) (get-text-property 0 'eca-chat-completion-item item-label)))
     (pcase type
-      ("file" (eca-chat--relativize-filename-for-workspace-root path roots))
-      ("directory" (eca-chat--relativize-filename-for-workspace-root path roots))
+      ("file" (eca-chat--relativize-filename-for-workspace-root path roots 'hide-filename))
+      ("directory" (eca-chat--relativize-filename-for-workspace-root path roots 'hide-filename))
       ("repoMap" "Summary view of workspaces files")
       ("cursor" "Current cursor file + position")
       ("mcpResource" description)
@@ -1271,7 +1275,7 @@ If STATIC? return strs with no dynamic values."
 (defun eca-chat--completion-file-annotate (roots item-label)
   "Annonate ITEM-LABEL detail for ROOTS."
   (-let (((&plist :path path) (get-text-property 0 'eca-chat-completion-item item-label)))
-    (eca-chat--relativize-filename-for-workspace-root path roots)))
+    (eca-chat--relativize-filename-for-workspace-root path roots 'hide-filename)))
 
 (defun eca-chat--completion-prompts-annotate (item-label)
   "Annonate prompt ITEM-LABEL."
