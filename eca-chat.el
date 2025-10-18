@@ -691,12 +691,14 @@ the prompt/context line."
              (item-str-length (-some->> text
                                 (get-text-property 0 'eca-chat-item-str-length))))
         (cond
+         ;; expandable item in context area
          ((and cur-ov
                context-item
                (not in-prompt?))
           (setq-local eca-chat--context (delete context-item eca-chat--context))
           (eca-chat--refresh-context))
 
+         ;; expandable item in prompt
          ((and cur-ov
                item-str-length
                in-prompt?)
@@ -705,17 +707,21 @@ the prompt/context line."
             (forward-char 1))
           (delete-region (- (point) item-str-length) (point)))
 
+         ;; start of the prompt
          ((and cur-ov
-               (<= (point) (overlay-start cur-ov)))
+               (or (<= (point) (overlay-start cur-ov))
+                   (and (eq 'backward-kill-word this-command)
+                        (string-blank-p (buffer-substring-no-properties (line-beginning-position) (point))))))
           (ding))
 
+          ;; in context area trying to remove a context space separator
          ((and cur-ov
                (overlay-get cur-ov 'eca-chat-context-area)
                (and (string= " " (string (char-before (point))))
                     (not (eolp))))
-          ;; trying to remove a context space separator
           )
 
+         ;; in context area removing a context
          ((and cur-ov
                (overlay-get cur-ov 'eca-chat-context-area)
                (string= eca-chat-context-prefix (string (char-before (point)))))
