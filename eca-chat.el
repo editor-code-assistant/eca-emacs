@@ -1389,13 +1389,13 @@ of (LINE . CHARACTER) representing the current selection or cursor position."
     (let* ((start-pos (if (use-region-p) (region-beginning) (point)))
            (end-pos (if (use-region-p) (region-end) (point)))
            (start-line (line-number-at-pos start-pos))
-           (start-char (progn
-                         (goto-char start-pos)
-                         (current-column)))
+           (start-char (1+ (progn
+                              (goto-char start-pos)
+                              (current-column))))
            (end-line (line-number-at-pos end-pos))
-           (end-char (progn
-                       (goto-char end-pos)
-                       (current-column))))
+           (end-char (1+ (progn
+                           (goto-char end-pos)
+                           (current-column)))))
       (cons (cons start-line start-char)
             (cons end-line end-char)))))
 
