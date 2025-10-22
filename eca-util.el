@@ -213,9 +213,9 @@ Inheirits BASE-MAP."
     ("E" "Show stderr (logs)" eca-show-stderr)]
 
    ["Context"
-    ("f" "Add current file" eca-chat-add-file-context)
-    ("d" "Drop current file" eca-chat-drop-file-context)
-    ("s" "Add current selection" eca-chat-add-context-at-point)]
+    ("s" "Add to system prompt" eca-chat-add-context-to-system-prompt)
+    ("u" "Add to user prompt" eca-chat-add-context-to-user-prompt)
+    ("d" "Drop from system prompt" eca-chat-drop-context-from-system-prompt)]
 
    ["Server"
     ("R" "Restart" eca-restart)
