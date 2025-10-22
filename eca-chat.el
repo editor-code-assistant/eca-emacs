@@ -1289,11 +1289,13 @@ If STATIC? return strs with no dynamic values."
     (eca-chat--relativize-filename-for-workspace-root path roots 'hide-filename)))
 
 (defun eca-chat--completion-prompts-annotate (item-label)
-  "Annonate prompt ITEM-LABEL."
-  (-let (((&plist :description description :arguments args) (get-text-property 0 'eca-chat-completion-item item-label)))
+  "Annotate prompt ITEM-LABEL."
+  (-let (((&plist :description description :arguments args) 
+          (get-text-property 0 'eca-chat-completion-item item-label)))
     (concat "(" (string-join (--map (plist-get it :name) args) ", ")
             ") "
-            (truncate-string-to-width description (* 100 eca-chat-window-width)))))
+            (when description
+              (truncate-string-to-width description (* 100 eca-chat-window-width))))))
 
 (defun eca-chat--completion-context-from-new-context-exit-function (item _status)
   "Add to context the selected ITEM."
