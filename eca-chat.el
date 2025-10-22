@@ -93,8 +93,8 @@ ECA chat opens in a regular buffer that follows standard
   :type 'string
   :group 'eca)
 
-(defcustom eca-chat-file-prefix "#"
-  "The file prefix string used in eca chat buffer."
+(defcustom eca-chat-filepath-prefix "#"
+  "The filepath prefix string used in eca chat buffer."
   :type 'string
   :group 'eca)
 
@@ -751,7 +751,7 @@ the prompt/context line."
              (expanded-str (get-text-property pos 'eca-chat-expanded-item-str prompt))
              (item-type (get-text-property pos 'eca-chat-item-type prompt)))
         (if expanded-str
-            (setq result (concat result (if (eq 'file item-type)
+            (setq result (concat result (if (eq 'filepath item-type)
                                             (substring expanded-str 1)
                                           expanded-str)))
           (setq result (concat result (substring prompt pos next-change))))
@@ -1183,8 +1183,10 @@ If STATIC? return strs with no dynamic values."
              ("file" (propertize (concat eca-chat-context-prefix
                                          (eca-chat--context-presentable-path (plist-get context :path))
                                          (-when-let ((&plist :start start :end end) (plist-get context :linesRange))
-                                           (format " (%d-%d)" start end)))
-                                 'eca-chat-expanded-item-str (concat eca-chat-context-prefix (plist-get context :path))
+                                           (format "(%d-%d)" start end)))
+                                 'eca-chat-expanded-item-str (concat eca-chat-context-prefix (plist-get context :path)
+                                                                     (-when-let ((&plist :start start :end end) (plist-get context :linesRange))
+                                                                       (format ":L%d-L%d" start end)))
                                  'font-lock-face 'eca-chat-context-file-face))
              ("directory" (propertize (concat eca-chat-context-prefix (eca-chat--context-presentable-path (plist-get context :path)))
                                       'eca-chat-expanded-item-str (concat eca-chat-context-prefix (plist-get context :path))
@@ -1201,7 +1203,7 @@ If STATIC? return strs with no dynamic values."
                                              "("
                                              (-some-> (plist-get eca-chat--cursor-context :path)
                                                (f-filename))
-                                             ":"
+                                             " "
                                              (-some->>
                                                  (-> eca-chat--cursor-context
                                                      (plist-get :position)
@@ -1223,6 +1225,21 @@ If STATIC? return strs with no dynamic values."
                 'eca-chat-item-type 'context
                 'eca-chat-item-str-length (length context-str)
                 'eca-chat-context-item context)))
+
+(defun eca-chat--filepath->str (filepath lines-range)
+  "Convert FILEPATH and LINES-RANGE to a presentable str in buffer."
+  (let* ((item-str (concat eca-chat-filepath-prefix
+                           (eca-chat--context-presentable-path filepath)
+                           (-when-let ((&plist :start start :end end) lines-range)
+                             (format "(%d-%d)" start end)))))
+    (propertize item-str
+                'eca-chat-item-type 'filepath
+                'eca-chat-item-str-length (length item-str)
+                'eca-chat-expanded-item-str (concat eca-chat-filepath-prefix
+                                                    filepath
+                                                    (-when-let ((&plist :start start :end end) lines-range)
+                                                      (format ":L%d-L%d" start end)))
+                'font-lock-face 'eca-chat-context-file-face)))
 
 (defun eca-chat--refresh-context ()
   "Refresh chat context."
@@ -1317,15 +1334,10 @@ Add text property to prompt text to match context."
   "Add to files the selected ITEM."
   (let* ((file (get-text-property 0 'eca-chat-completion-item item))
          (start-pos (save-excursion
-                      (search-backward eca-chat-file-prefix (line-beginning-position) t)))
-         (end-pos (point))
-         (item-str (concat eca-chat-file-prefix (eca-chat--context-presentable-path (plist-get file :path)))))
+                      (search-backward eca-chat-filepath-prefix (line-beginning-position) t)))
+         (end-pos (point)))
     (delete-region start-pos end-pos)
-    (insert (propertize item-str
-                        'eca-chat-item-type 'file
-                        'eca-chat-item-str-length (length item-str)
-                        'eca-chat-expanded-item-str (concat eca-chat-file-prefix (plist-get file :path))
-                        'font-lock-face 'eca-chat-context-file-face)))
+    (insert (eca-chat--filepath->str (plist-get file :path) nil)))
   (insert " "))
 
 (defun eca-chat--completion-prompt-exit-function (item _status)
@@ -1485,6 +1497,46 @@ string."
           (string-trim (buffer-substring-no-properties (+ last-prefix-pos (length prefix)) end))
         ""))))
 
+(declare-function dired-get-marked-files "dired")
+(declare-function treemacs-node-at-point "treemacs")
+(declare-function treemacs-button-get "treemacs")
+
+(defun eca-chat--get-contexts-dwim ()
+  "Get contexts in a DWIM manner."
+  (cond
+   ((and (buffer-file-name)
+         (use-region-p))
+    (-let (((start . end) `(,(line-number-at-pos (region-beginning)) . ,(line-number-at-pos (region-end)))))
+      (list
+       (list :type "file"
+             :path (buffer-file-name)
+             :linesRange (list :start start :end end)))))
+
+   ((derived-mode-p 'dired-mode)
+    (--map (list :type (if (f-dir? it) "directory" "file")
+                 :path it)
+           (dired-get-marked-files)))
+
+   ((derived-mode-p 'treemacs-mode)
+    (when-let (path (-some-> (treemacs-node-at-point)
+                      (treemacs-button-get :path)))
+      (list
+       (list :type (if (f-dir? path) "directory" "file")
+             :path path))))
+
+   ((buffer-file-name)
+    (list
+     (list :type "file" :path (buffer-file-name))))))
+
+(defun eca-chat--insert-prompt (text)
+  "Insert TEXT to latest chat prompt point."
+  (save-excursion
+    (goto-char (eca-chat--prompt-field-start-point))
+    (goto-char (line-end-position))
+    (when (= (line-beginning-position) (line-end-position))
+      (insert " "))
+    (insert text)))
+
 ;; Public
 
 (define-derived-mode eca-chat-mode markdown-mode "eca-chat"
@@ -1566,7 +1618,7 @@ Calls CB with the resulting message."
         (funcall cb (format "%s: %s"
                             (pcase item-type
                               ('context "Context")
-                              ('file "File"))
+                              ('filepath "Filepath"))
                             (propertize item-str 'face face)))))))
 
 (defun eca-chat-completion-at-point ()
@@ -1582,7 +1634,7 @@ Calls CB with the resulting message."
                  'contexts-from-prompt)
 
                 ((when-let (last-word (car (last (string-split full-text "[\s]"))))
-                   (string-match-p (concat "^" eca-chat-file-prefix) last-word))
+                   (string-match-p (concat "^" eca-chat-filepath-prefix) last-word))
                  'files-from-prompt)
 
                 ;; completing commands with `/`
@@ -1616,7 +1668,7 @@ Calls CB with the resulting message."
                                            items))))
 
                                   ('files-from-prompt
-                                   (let ((query (eca-chat--find-typed-query eca-chat-file-prefix)))
+                                   (let ((query (eca-chat--find-typed-query eca-chat-filepath-prefix)))
                                      (or (gethash query eca-chat--file-completion-cache)
                                          (-let* (((&plist :files files) (eca-api-request-while-no-input
                                                                          (eca-session)
@@ -2161,13 +2213,9 @@ Just open if FORCE-OPEN? is non-nil."
     (when-let ((ov (eca-chat--expandable-content-at-point)))
       (eca-chat--expandable-content-toggle (overlay-get ov 'eca-chat--expandable-content-id) (when force-open? t) (not force-open?)))))
 
-(declare-function dired-get-marked-files "dired")
-(declare-function treemacs-node-at-point "treemacs")
-(declare-function treemacs-button-get "treemacs")
-
 ;;;###autoload
-(defun eca-chat-add-context ()
-  "Add context to chat in a DWIM manner.
+(defun eca-chat-add-context-to-system-prompt ()
+  "Add context to system prompt in chat in a DWIM manner.
 
 - If a region selected, add file with lines range selected.
 - If in Dired, add the marked files/dirs or current file/dir at point.
@@ -2175,68 +2223,51 @@ Just open if FORCE-OPEN? is non-nil."
 - Else add current file."
   (interactive)
   (eca-assert-session-running (eca-session))
-  (let* ((contexts (cond
-                    ((and (buffer-file-name)
-                          (use-region-p))
-                     (-let (((start . end) `(,(line-number-at-pos (region-beginning)) . ,(line-number-at-pos (region-end)))))
-                       (list
-                        (list :type "file"
-                              :path (buffer-file-name)
-                              :linesRange (list :start start :end end)))))
-
-                    ((derived-mode-p 'dired-mode)
-                     (--map (list :type (if (f-dir? it) "directory" "file")
-                                  :path it)
-                            (dired-get-marked-files)))
-
-                    ((derived-mode-p 'treemacs-mode)
-                     (when-let (path (-some-> (treemacs-node-at-point)
-                                       (treemacs-button-get :path)))
-                       (list
-                        (list :type (if (f-dir? path) "directory" "file")
-                              :path path))))
-
-                    ((buffer-file-name)
-                     (list
-                      (list :type "file" :path (buffer-file-name)))))))
+  (let* ((contexts (eca-chat--get-contexts-dwim)))
     (eca-chat--with-current-buffer (eca-chat--get-last-buffer (eca-session))
       (seq-doseq (context contexts)
         (eca-chat--add-context context)))))
 
 ;;;###autoload
-(defun eca-chat-add-context-at-point ()
-  "Add file content with range at point to chat as context.
-Consider the defun at point unless a region is selected."
+(defun eca-chat-add-context-to-user-prompt ()
+  "Add context to user prompt in chat in a DWIM manner.
+
+- If a region selected, add file with lines range selected.
+- If in Dired, add the marked files/dirs or current file/dir at point.
+- If in Treemacs, add selected file/dir.
+- Else add current file."
   (interactive)
   (eca-assert-session-running (eca-session))
-  (-let (((start . end) (if (use-region-p)
-                            `(,(line-number-at-pos (region-beginning)) . ,(line-number-at-pos (region-end)))
-                          (-let (((s . e) (bounds-of-thing-at-point 'defun)))
-                            `(,(line-number-at-pos s) . ,(line-number-at-pos e)))))
-         (path (buffer-file-name)))
+  (let* ((contexts (eca-chat--get-contexts-dwim)))
     (eca-chat--with-current-buffer (eca-chat--get-last-buffer (eca-session))
-      (eca-chat--add-context (list :type "file"
-                                   :path path
-                                   :linesRange (list :start start :end end))))))
+      (seq-doseq (context contexts)
+        (eca-chat--insert-prompt (concat (eca-chat--context->str context 'static)
+                                         " ")))
+      (eca-chat--select-window)
+      (goto-char (line-end-position)))))
 
 ;;;###autoload
-(defun eca-chat-add-file-context (&optional arg)
-  "Add full file to chat as context.
-if ARG is current prefix, ask for file, otherwise add current file."
-  (interactive "P")
+(defun eca-chat-add-filepath-to-user-prompt ()
+  "Add filepath to user prompt in chat in a DWIM manner.
+
+- If a region selected, add filepath with lines range selected.
+- If in Dired, add the marked files/dirs / current file/dir paths at point.
+- If in Treemacs, add selected file/dir path.
+- Else add current filepath."
+  (interactive)
   (eca-assert-session-running (eca-session))
-  (-let ((path (if (equal arg '(4))
-                   (read-file-name "Select the file to add to context: " (eca-find-root-for-buffer))
-                 (buffer-file-name))))
+  (let* ((contexts (eca-chat--get-contexts-dwim)))
     (eca-chat--with-current-buffer (eca-chat--get-last-buffer (eca-session))
-     (eca-chat--add-context (list :type "file"
-                                  :path path))
-     (eca-chat-open (eca-session)))))
+      (seq-doseq (context contexts)
+        (eca-chat--insert-prompt (concat (eca-chat--filepath->str (plist-get context :path) (plist-get context :linesRange))
+                                         " ")))
+      (eca-chat--select-window)
+      (goto-char (line-end-position)))))
 
 ;;;###autoload
-(defun eca-chat-drop-file-context (&optional arg)
-  "Drop file from chat as context.
-if ARG is current prefix, ask for file, otherwise add current file."
+(defun eca-chat-drop-context-from-system-prompt (&optional arg)
+  "Drop context from system prompt in chat if found.
+if ARG is current prefix, ask for file, otherwise drop current file."
   (interactive "P")
   (eca-assert-session-running (eca-session))
   (-let ((path (if (equal arg '(4))
