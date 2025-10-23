@@ -1539,12 +1539,13 @@ string."
 
 ;; Public
 
-(define-derived-mode eca-chat-mode markdown-mode "eca-chat"
+(define-derived-mode eca-chat-mode gfm-view-mode  "eca-chat"
   "Major mode for ECA chat sessions.
 \\{eca-chat-mode-map}"
   :group 'eca
   (visual-line-mode)
   (hl-line-mode -1)
+  (read-only-mode -1)
   (setq-local eca-chat--history '())
   (setq-local eca-chat--history-index -1)
   (buffer-disable-undo)
