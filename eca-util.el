@@ -20,6 +20,11 @@
   :type 'boolean
   :group 'eca)
 
+(defcustom eca-find-root-for-buffer-function #'eca-find-root-for-buffer
+  "Function for getting the ECA's session root."
+  :type 'function
+  :group 'eca)
+
 (defun eca-assoc (map key val)
   "Return a new MAP with KEY associated to flat plist VAL, replacing any existing."
   (cons (cons key val)
@@ -107,7 +112,7 @@
 (defun eca-session ()
   "Return the session related to root of current buffer otherwise nil."
   (or (eca-get eca--sessions eca--session-id-cache)
-      (let* ((root (eca-find-root-for-buffer))
+      (let* ((root (funcall eca-find-root-for-buffer-function))
              (session (-first (lambda (session)
                                 (--first (string= it root)
                                          (eca--session-workspace-folders session)))

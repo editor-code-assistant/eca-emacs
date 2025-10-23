@@ -147,7 +147,7 @@
 
 (defun eca--discover-workspaces ()
   "Ask user for workspaces."
-  (let ((root (eca-find-root-for-buffer))
+  (let ((root (funcall eca-find-root-for-buffer-function))
         (add-workspace? "yes")
         (workspaces '()))
     (while (string= "yes" add-workspace?)
@@ -185,7 +185,7 @@ When ARG is current prefix, ask for workspace roots to use."
   (interactive "P")
   (let* ((workspaces (if (equal arg '(4))
                          (eca--discover-workspaces)
-                       (list (eca-find-root-for-buffer))))
+                       (list (funcall eca-find-root-for-buffer-function))))
          (session (or (eca-session)
                       (eca-create-session workspaces))))
     (pcase (eca--session-status session)
