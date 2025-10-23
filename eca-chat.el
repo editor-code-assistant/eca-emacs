@@ -2271,7 +2271,7 @@ if ARG is current prefix, ask for file, otherwise drop current file."
   (interactive "P")
   (eca-assert-session-running (eca-session))
   (-let ((path (if (equal arg '(4))
-                   (read-file-name "Select the file to drop from context: " (eca-find-root-for-buffer))
+                   (read-file-name "Select the file to drop from context: " (funcall eca-find-root-for-buffer-function))
                  (buffer-file-name))))
     (eca-chat--with-current-buffer (eca-chat--get-last-buffer (eca-session))
       (eca-chat--remove-context (list :type "file"
