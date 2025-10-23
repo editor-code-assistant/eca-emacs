@@ -20,6 +20,11 @@
   :type 'boolean
   :group 'eca)
 
+(defcustom eca-find-root-for-buffer-function #'eca-find-root-for-buffer
+  "Function for getting the ECA's session root."
+  :type 'function
+  :group 'eca)
+
 (defun eca-assoc (map key val)
   "Return a new MAP with KEY associated to flat plist VAL, replacing any existing."
   (cons (cons key val)
@@ -37,6 +42,12 @@
 (defun eca-vals (map)
   "Return the plist values from MAP."
   (-map #'cdr map))
+
+(defun eca-plist-equal (plist1 plist2)
+  "Check if PLIST1 is equal to PLIST2."
+  (and (= (length plist1) (length plist2))
+       (cl-loop for (key val) on plist1 by #'cddr
+                always (equal val (plist-get plist2 key)))))
 
 (defun eca-find-root-for-buffer ()
   "Get the project root using git falling back to file directory."
@@ -64,8 +75,10 @@
   ;; The eca <process>
   (process nil)
 
-  ;; the chat buffer
-  (chat nil)
+  ;; the chat buffers
+  (chats '())
+
+  (last-chat-buffer nil)
 
   ;; A list of workspace folders of this session
   (workspace-folders '())
@@ -99,7 +112,7 @@
 (defun eca-session ()
   "Return the session related to root of current buffer otherwise nil."
   (or (eca-get eca--sessions eca--session-id-cache)
-      (let* ((root (eca-find-root-for-buffer))
+      (let* ((root (funcall eca-find-root-for-buffer-function))
              (session (-first (lambda (session)
                                 (--first (string= it root)
                                          (eca--session-workspace-folders session)))
@@ -164,9 +177,10 @@
   "Display eca error message with FORMAT with ARGS."
   (message "%s :: %s" (propertize "ECA" 'face 'error) (apply #'format format args)))
 
-(defun eca-buttonize (text callback)
-  "Create a actionable TEXT that call CALLBACK when actioned."
-  (let ((km (make-sparse-keymap))
+(defun eca-buttonize (base-map text callback)
+  "Create a actionable TEXT that call CALLBACK when actioned.
+Inheirits BASE-MAP."
+  (let ((km (make-composed-keymap (make-sparse-keymap) base-map))
         (callback-int (lambda (&rest _)
                         (interactive)
                         (funcall callback))))
@@ -185,13 +199,18 @@
   ()
   "ECA transient menu"
   [["Chat"
+    ("n" "New" eca-chat-new)
+    ("f" "New" eca-chat-select)
     ("c" "Clear" eca-chat-clear)
     ("r" "Reset" eca-chat-reset)
+    ("R" "Rename" eca-chat-rename)
     ("t" "Talk" eca-chat-talk)
     ("m" "Select model" eca-chat-select-model)
     ("b" "Change behavior" eca-chat-select-behavior)
     ("o" "Open/close chat window" eca-chat-toggle-window)
-    ("a" "Accept next pending tool call" eca-chat-tool-call-accept-next)]
+    ("a" "Accept all pending tool calls" eca-chat-tool-call-accept-all)
+    ("s" "Accept all pending tool calls and remember" eca-chat-tool-call-accept-all-and-remember)
+    ("A" "Accept next pending tool call" eca-chat-tool-call-accept-next)]
 
    ["Navigation"
     ("C" "Chat" eca)
@@ -199,9 +218,9 @@
     ("E" "Show stderr (logs)" eca-show-stderr)]
 
    ["Context"
-    ("f" "Add current file" eca-chat-add-file-context)
-    ("d" "Drop current file" eca-chat-drop-file-context)
-    ("s" "Add current selection" eca-chat-add-context-at-point)]
+    ("s" "Add to system prompt" eca-chat-add-context-to-system-prompt)
+    ("u" "Add to user prompt" eca-chat-add-context-to-user-prompt)
+    ("d" "Drop from system prompt" eca-chat-drop-context-from-system-prompt)]
 
    ["Server"
     ("R" "Restart" eca-restart)

@@ -66,6 +66,9 @@ If not provided, download and start eca automatically."
 (defconst eca-ext-unzip-script "bash -c 'mkdir -p %2$s && unzip -qq -o %1$s -d %2$s'"
   "Unzip script to unzip file.")
 
+(defconst eca-ext-ark-script "bash -c 'mkdir -p %2$s && ark -b -o %2$s %1$s'"
+  "Ark script to unzip file.")
+
 (defcustom eca-unzip-script (lambda ()
                               (cond ((and (eq system-type 'windows-nt)
                                           (executable-find "pwsh"))
@@ -75,6 +78,7 @@ If not provided, download and start eca automatically."
                                      eca-ext-powershell-script)
                                     ((executable-find "unzip") eca-ext-unzip-script)
                                     ((executable-find "pwsh") eca-ext-pwsh-script)
+                                    ((executable-find "ark") eca-ext-ark-script)
                                     (t nil)))
   "The script to unzip downloaded eca server."
   :group 'eca
@@ -189,7 +193,7 @@ https://github.com/emacs-lsp/lsp-mode/issues/4746#issuecomment-2957183423"
              (eca-info "Downloading eca server from %s to %s..."  url download-path)
              (eca--download-file url download-path)
              (eca-info "Downloaded eca, unzipping it...")
-             (unless eca-unzip-script
+             (unless (and eca-unzip-script (funcall eca-unzip-script))
                (error "Unable to find `unzip' or `powershell' on the path, please customize `eca-unzip-script'"))
              (shell-command (format (funcall eca-unzip-script) download-path (f-parent store-path)))
              (f-write-text version 'utf-8 eca-server-version-file-path)
@@ -215,8 +219,8 @@ https://github.com/emacs-lsp/lsp-mode/issues/4746#issuecomment-2957183423"
             :message "Could not fetch latest version of eca. Please check your internet connection and try again. You can also download eca manually and set the path via eca-custom-command variable"))
 
      ((and (f-exists? eca-server-install-path)
-           (string= (eca-process--get-latest-server-version)
-                    (eca-process--get-current-server-version)))
+           (not (string-version-lessp (eca-process--get-current-server-version)
+                                      (eca-process--get-latest-server-version))))
       (list :decision 'already-installed
             :command (list eca-server-install-path "server")))
 

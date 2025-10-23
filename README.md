@@ -47,14 +47,19 @@ M-x package-install eca
 
 ## Tips
 
+Not all, but most relevant functions and variables:
+
 ### Functions
 
-- `eca-chat-add-context-at-point`: Add the current function or selected lines to chat as context.
-- `eca-chat-add-file-context`: Add the current file to chat as context.
-- `eca-keep-all-suggested-changes`: Accept planned edit changes on file.
-- `eca-discard-all-suggested-changes`: Reject planned edit changes on file.
+- `eca-chat-add-context-to-system-prompt`: Add file/dirs to system prompt checking multiple modes with range support.
+- `eca-chat-add-context-to-user-prompt`: Add file/dirs to user prompt checking multiple modes with range support.
+- `eca-chat-add-filepath-to-user-prompt`: Add filepath mention only to user prompt checking multiple modes with range support.
+- `eca-chat-tool-call-accept-all`: Acceppt all pending tool calls in chat.
+- `eca-chat-tool-call-accept-next`: Acceppt next pending tool call in chat.
+- `eca-chat-tool-call-reject-next`: Reject next pending tool call in chat.
 - `eca-chat-send-prompt`: In case you wanna send prompts programatically in elisp.
 - `eca-chat-toggle-window`: toggle chat window.
+- `eca-open-global-config`: Open ECA global config file.
 
 ### Variables
 

@@ -148,7 +148,7 @@
 
 (defun eca--discover-workspaces ()
   "Ask user for workspaces."
-  (let ((root (eca-find-root-for-buffer))
+  (let ((root (funcall eca-find-root-for-buffer-function))
         (add-workspace? "yes")
         (workspaces '()))
     (while (string= "yes" add-workspace?)
@@ -186,7 +186,7 @@ When ARG is current prefix, ask for workspace roots to use."
   (interactive "P")
   (let* ((workspaces (if (equal arg '(4))
                          (eca--discover-workspaces)
-                       (list (eca-find-root-for-buffer))))
+                       (list (funcall eca-find-root-for-buffer-function))))
          (session (or (eca-session)
                       (eca-create-session workspaces))))
     (pcase (eca--session-status session)
@@ -226,24 +226,19 @@ When ARG is current prefix, ask for workspace roots to use."
   (eca-info "Workspaces: %s" (eca--session-workspace-folders (eca-session))))
 
 ;;;###autoload
-(defun eca-keep-all-suggested-changes ()
-  "Keep all of the ECA file change suggestion."
+(defun eca-open-global-config ()
+  "Open global ECA config file.
+If the file does not exist, create the directory if needed and open a new
+buffer visiting that path with `{}` pre-filled."
   (interactive)
-  (save-excursion
-    (goto-char (point-min))
-    (ignore-errors (funcall #'smerge-keep-lower))
-    (while (ignore-errors (not (smerge-next)))
-      (funcall #'smerge-keep-lower))))
-
-;;;###autoload
-(defun eca-discard-all-suggested-changes ()
-  "Discard all of the ECA file change suggestion."
-  (interactive)
-  (save-excursion
-    (goto-char (point-min))
-    (ignore-errors (funcall #'smerge-keep-upper))
-    (while (ignore-errors (not (smerge-next)))
-      (funcall #'smerge-keep-upper))))
+  (let* ((file (if-let (xdg (getenv "XDG_CONFIG_HOME"))
+                   (f-join xdg "eca" "config.json")
+                 (f-join (f-expand "~") ".config" "eca" "config.json")))
+         (dir (file-name-directory file)))
+    (make-directory dir t)
+    (find-file file)
+    (when (= (buffer-size) 0)
+      (insert "{}\n"))))
 
 (provide 'eca)
 ;;; eca.el ends here
