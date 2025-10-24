@@ -156,7 +156,7 @@ Must be a valid model supported by server, check `eca-chat-select-model`."
            (const :tag "Last message cost" :last-message-cost)))
   :group 'eca)
 
-(defcustom eca-chat-diff-tool 'ediff
+(defcustom eca-chat-diff-tool 'smerge
   "Select the method for displaying file-change diffs in ECA chat."
   :type '(choice (const :tag "Side-by-side Ediff" ediff)
                  (const :tag "Merge-style Smerge" smerge))
@@ -381,6 +381,7 @@ Must be a positive integer."
 
 (defvar eca-chat-mode-map
   (let ((map (make-sparse-keymap)))
+    (set-keymap-parent map markdown-mode-map)
     (define-key map (kbd "S-<return>") #'eca-chat--key-pressed-newline)
     (define-key map (kbd "C-<up>") #'eca-chat--key-pressed-previous-prompt-history)
     (define-key map (kbd "C-<down>") #'eca-chat--key-pressed-next-prompt-history)
@@ -560,6 +561,7 @@ Must be a positive integer."
   "Insert the prompt and context string adding overlay metadatas."
   (let ((prompt-area-ov (make-overlay (line-beginning-position) (1+ (line-beginning-position)) (current-buffer))))
     (overlay-put prompt-area-ov 'eca-chat-prompt-area t))
+  (insert "---\n")
   (let ((progress-area-ov (make-overlay (line-beginning-position) (line-end-position) (current-buffer) nil t)))
     (overlay-put progress-area-ov 'eca-chat-progress-area t)
     (insert "\n")
@@ -1543,6 +1545,7 @@ string."
   "Major mode for ECA chat sessions.
 \\{eca-chat-mode-map}"
   :group 'eca
+  ;; force use markdown-mode-map instead of gfm-view-mode-map 
   (visual-line-mode)
   (hl-line-mode -1)
   (read-only-mode -1)
