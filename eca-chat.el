@@ -381,6 +381,7 @@ Must be a positive integer."
 
 (defvar eca-chat-mode-map
   (let ((map (make-sparse-keymap)))
+    (set-keymap-parent map markdown-mode-map)
     (define-key map (kbd "S-<return>") #'eca-chat--key-pressed-newline)
     (define-key map (kbd "C-<up>") #'eca-chat--key-pressed-previous-prompt-history)
     (define-key map (kbd "C-<down>") #'eca-chat--key-pressed-next-prompt-history)
@@ -1543,9 +1544,7 @@ string."
   "Major mode for ECA chat sessions.
 \\{eca-chat-mode-map}"
   :group 'eca
-  ;; force use markdown-mode-map instead of gfm-view-mode-map
-  (use-local-map markdown-mode-map)
-  (use-local-map eca-chat-mode-map)
+  ;; force use markdown-mode-map instead of gfm-view-mode-map 
   (visual-line-mode)
   (hl-line-mode -1)
   (read-only-mode -1)
