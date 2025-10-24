@@ -156,7 +156,7 @@ Must be a valid model supported by server, check `eca-chat-select-model`."
            (const :tag "Last message cost" :last-message-cost)))
   :group 'eca)
 
-(defcustom eca-chat-diff-tool 'ediff
+(defcustom eca-chat-diff-tool 'smerge
   "Select the method for displaying file-change diffs in ECA chat."
   :type '(choice (const :tag "Side-by-side Ediff" ediff)
                  (const :tag "Merge-style Smerge" smerge))
