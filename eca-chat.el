@@ -1541,11 +1541,10 @@ string."
 
 ;; Public
 
-(define-derived-mode eca-chat-mode gfm-view-mode  "eca-chat"
+(define-derived-mode eca-chat-mode gfm-mode "eca-chat"
   "Major mode for ECA chat sessions.
 \\{eca-chat-mode-map}"
   :group 'eca
-  ;; force use markdown-mode-map instead of gfm-view-mode-map 
   (visual-line-mode)
   (hl-line-mode -1)
   (read-only-mode -1)
