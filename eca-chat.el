@@ -1543,6 +1543,9 @@ string."
   "Major mode for ECA chat sessions.
 \\{eca-chat-mode-map}"
   :group 'eca
+  ;; force use markdown-mode-map instead of gfm-view-mode-map
+  (use-local-map markdown-mode-map)
+  (use-local-map eca-chat-mode-map)
   (visual-line-mode)
   (hl-line-mode -1)
   (read-only-mode -1)
