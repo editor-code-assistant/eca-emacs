@@ -561,7 +561,7 @@ Must be a positive integer."
   "Insert the prompt and context string adding overlay metadatas."
   (let ((prompt-area-ov (make-overlay (line-beginning-position) (1+ (line-beginning-position)) (current-buffer))))
     (overlay-put prompt-area-ov 'eca-chat-prompt-area t))
-  (insert "---\n")
+  (insert "\n---\n")
   (let ((progress-area-ov (make-overlay (line-beginning-position) (line-end-position) (current-buffer) nil t)))
     (overlay-put progress-area-ov 'eca-chat-progress-area t)
     (insert "\n")
