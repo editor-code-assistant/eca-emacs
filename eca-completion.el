@@ -179,7 +179,7 @@ Incremented after each change.")
   "Complete in BUFFER."
   (when (and (buffer-live-p buffer)
              (equal (current-buffer) buffer)
-             eca-completion-mode)
+             (derived-mode-p 'eca-completion-mode))
     (eca-complete)))
 
 (defun eca-completion--self-insert (command)
