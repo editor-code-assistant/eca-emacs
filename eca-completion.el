@@ -162,8 +162,9 @@ Incremented after each change.")
         (insert text))
       t)))
 
-(defun eca-completion--find-completion (&key on-success)
-  "Find completion requesting server calling ON-SUCCESS for the response."
+(cl-defun eca-completion--find-completion (&key on-success on-error)
+  "Find completion requesting server calling ON-SUCCESS for the response.
+Call ON-ERROR when error."
   (let ((line (+ (1- (line-number-at-pos)) eca-completion--line-bias))
         (character (1+ (- (point) (line-beginning-position)))))
     (when-let ((session (eca-session)))
@@ -172,8 +173,10 @@ Incremented after each change.")
                              :params (list :doc-text (buffer-substring-no-properties (point-min) (point-max))
                                            :doc-version eca-completion--doc-version
                                            :position (list :line line :character character))
-                             :success-callback (-lambda ((&plist :items items))
-                                                 (funcall on-success items))))))
+                             :success-callback (-lambda ((&plist :items items :error error))
+                                                 (if error
+                                                     (funcall on-error error)
+                                                   (funcall on-success items)))))))
 
 (defun eca-completion--post-command-debounce (buffer)
   "Complete in BUFFER."
@@ -283,13 +286,21 @@ in `post-command-hook'."
 
   (let ((called-interactively (called-interactively-p 'interactive)))
     (eca-completion--find-completion
-     :on-succeess
+     :on-success
      (lambda (items)
        (let ((item (if (seq-empty-p items) nil (seq-elt items 0))))
          (if item
              (eca-completion--show-completion item)
            (when called-interactively
-             (eca-warn "No completion is available."))))))))
+             (eca-warn "No completion is available.")))))
+     :on-error
+     (lambda (error)
+       (let ((type (plist-get error :type))
+             (msg (plist-get error :message)))
+         (pcase type
+           ("error" (eca-error msg))
+           ("warning" (eca-warn msg))
+           ("info" (eca-info msg))))))))
 
 (provide 'eca-completion)
 ;;; eca-completion.el ends here
