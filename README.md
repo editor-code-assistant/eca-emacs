@@ -17,8 +17,8 @@ For more details about ECA, check [ECA server](https://github.com/editor-code-as
 
 ### Optional
 
-- Custom `eca` server binary, it's automatically downloaded if `eca-custom-command` is `nil`
-  - Place it on your `$PATH` or customize `eca-custom-command`
+- Custom `eca` server binary
+  - Server is already automatically downloaded for UX reasons unless you set `eca-custom-command`
 - [whisper.el](https://github.com/natrys/whisper.el/blob/master/whisper.el) for Speech-to-Text support (optional)
 
 ## Installation
@@ -97,6 +97,10 @@ You can access __transient___ menu with commonly commands via `M-x eca-transient
 | MCP: Go to chat                 | <kbd>C-c</kbd> <kbd>C-,</kbd>      |
 
 ## Advanced Usage
+
+### Code completion
+
+Enable `eca-completion-mode` and call `eca-complete`.
 
 ### Speech-to-Text support (Talk)
 
