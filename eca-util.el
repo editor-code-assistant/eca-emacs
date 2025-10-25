@@ -200,11 +200,13 @@ Inheirits BASE-MAP."
   "ECA transient menu"
   [["Chat"
     ("n" "New" eca-chat-new)
-    ("f" "New" eca-chat-select)
+    ("f" "Select" eca-chat-select)
     ("c" "Clear" eca-chat-clear)
     ("r" "Reset" eca-chat-reset)
     ("R" "Rename" eca-chat-rename)
     ("t" "Talk" eca-chat-talk)
+    ("p" "Repeat prompt" eca-chat-repeat-prompt)
+    ("C" "Clear prompt" eca-chat-clear-prompt)
     ("m" "Select model" eca-chat-select-model)
     ("b" "Change behavior" eca-chat-select-behavior)
     ("o" "Open/close chat window" eca-chat-toggle-window)
@@ -213,7 +215,8 @@ Inheirits BASE-MAP."
     ("A" "Accept next pending tool call" eca-chat-tool-call-accept-next)]
 
    ["Navigation"
-    ("C" "Chat" eca)
+    ("h" "Message history" eca-chat-timeline)
+    ("c" "Chat" eca)
     ("M" "MCP details" eca-mcp-details)
     ("E" "Show stderr (logs)" eca-show-stderr)]
 

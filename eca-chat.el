@@ -401,6 +401,9 @@ Must be a positive integer."
     (define-key map (kbd "C-c C-m") #'eca-chat-select-model)
     (define-key map (kbd "C-c C-n") #'eca-chat-new)
     (define-key map (kbd "C-c C-f") #'eca-chat-select)
+    (define-key map (kbd "C-c C-p") #'eca-chat-repeat-prompt)
+    (define-key map (kbd "C-c C-d") #'eca-chat-clear-prompt)
+    (define-key map (kbd "C-c C-h") #'eca-chat-timeline)
     (define-key map (kbd "C-c C-a") #'eca-chat-tool-call-accept-all)
     (define-key map (kbd "C-c C-S-a") #'eca-chat-tool-call-accept-next)
     (define-key map (kbd "C-c C-s") #'eca-chat-tool-call-accept-all-and-remember)
@@ -582,19 +585,19 @@ Must be a positive integer."
 
 (defun eca-chat--clear ()
   "Clear the chat for SESSION."
-   (erase-buffer)
-   (remove-overlays (point-min) (point-max))
-   (insert "\n")
-   (eca-chat--insert-prompt-string)
-   (eca-chat--refresh-context))
+  (erase-buffer)
+  (remove-overlays (point-min) (point-max))
+  (insert "\n")
+  (eca-chat--insert-prompt-string)
+  (eca-chat--refresh-context))
 
 (defun eca-chat--stop-prompt (session)
   "Stop the running chat prompt for SESSION."
   (when eca-chat--chat-loading
-     (eca-api-notify session
-                     :method "chat/promptStop"
-                     :params (list :chatId eca-chat--id))
-     (eca-chat--set-chat-loading session nil)))
+    (eca-api-notify session
+                    :method "chat/promptStop"
+                    :params (list :chatId eca-chat--id))
+    (eca-chat--set-chat-loading session nil)))
 
 (defun eca-chat--set-chat-loading (session loading)
   "Set the SESSION chat to a loading state if LOADING is non nil.
@@ -721,7 +724,7 @@ the prompt/context line."
                         (string-blank-p (buffer-substring-no-properties (line-beginning-position) (point))))))
           (ding))
 
-          ;; in context area trying to remove a context space separator
+         ;; in context area trying to remove a context space separator
          ((and cur-ov
                (overlay-get cur-ov 'eca-chat-context-area)
                (and (string= " " (string (char-before (point))))
@@ -991,7 +994,9 @@ Add a overlay before with OVERLAY-KEY = OVERLAY-VALUE if passed."
       (goto-char (1- (point)))
       (when overlay-key
         (let ((ov (make-overlay (point) (point) (current-buffer))))
-          (overlay-put ov overlay-key overlay-value)))
+          (overlay-put ov overlay-key overlay-value)
+          (when (eq overlay-key 'eca-chat--user-message-id)
+            (overlay-put ov 'eca-chat--timestamp (float-time)))))
       (insert text)
       (point))))
 
@@ -1092,8 +1097,8 @@ If FORCE? decide to CLOSE? or not."
            (content (overlay-get ov-content 'eca-chat--expandable-content-content))
            (empty-content? (string-empty-p content))
            (close? (if force?
-                      close?
-                    (overlay-get ov-label 'eca-chat--expandable-content-toggle))))
+                       close?
+                     (overlay-get ov-label 'eca-chat--expandable-content-toggle))))
       (save-excursion
         (goto-char (overlay-start ov-label))
         (if (or close? empty-content?)
@@ -1333,7 +1338,7 @@ If STATIC? return strs with no dynamic values."
 Add text property to prompt text to match context."
   (let ((context (get-text-property 0 'eca-chat-completion-item item)))
     (let ((start-pos (save-excursion
-                      (search-backward eca-chat-context-prefix (line-beginning-position) t)))
+                       (search-backward eca-chat-context-prefix (line-beginning-position) t)))
           (end-pos (point)))
       (delete-region start-pos end-pos)
       (insert (eca-chat--context->str context 'static))))
@@ -1399,10 +1404,10 @@ Add text property to prompt text to match context."
 (defun eca-chat--go-to-overlay (ov-key range-min range-max first?)
   "Go to overlay finding from RANGE-MIN to RANGE-MAX if matches OV-KEY."
   (eca-chat--with-current-buffer (eca-chat--get-last-buffer (eca-session))
-   (let ((get-fn (if first? #'-first #'-last)))
-     (when-let ((ov (funcall get-fn (-lambda (ov) (overlay-get ov ov-key))
-                             (overlays-in range-min range-max))))
-       (goto-char (overlay-start ov))))))
+    (let ((get-fn (if first? #'-first #'-last)))
+      (when-let ((ov (funcall get-fn (-lambda (ov) (overlay-get ov ov-key))
+                              (overlays-in range-min range-max))))
+        (goto-char (overlay-start ov))))))
 
 (defun eca-chat--cur-position ()
   "Return the start and end positions for current point.
@@ -1413,8 +1418,8 @@ of (LINE . CHARACTER) representing the current selection or cursor position."
            (end-pos (if (use-region-p) (region-end) (point)))
            (start-line (line-number-at-pos start-pos))
            (start-char (1+ (progn
-                              (goto-char start-pos)
-                              (current-column))))
+                             (goto-char start-pos)
+                             (current-column))))
            (end-line (line-number-at-pos end-pos))
            (end-char (1+ (progn
                            (goto-char end-pos)
@@ -1724,8 +1729,8 @@ Calls CB with the resulting message."
        (cond
         ((eq action 'metadata)
          '(metadata (category . eca-capf)
-           (display-sort-function . identity)
-           (cycle-sort-function . identity)))
+                    (display-sort-function . identity)
+                    (cycle-sort-function . identity)))
         ((eq (car-safe action) 'boundaries) nil)
         (t
          (complete-with-action action (funcall candidates-fn) probe pred))))
@@ -2054,38 +2059,38 @@ Calls CB with the resulting message."
   (unless (buffer-live-p (eca-chat--get-last-buffer session))
     (eca-chat--create-buffer session))
   (eca-chat--with-current-buffer (eca-chat--get-last-buffer session)
-   (unless (derived-mode-p 'eca-chat-mode)
-     (eca-chat-mode)
-     (eca-chat--track-cursor-position-schedule)
-     (when eca-chat-auto-add-cursor
-       (eca-chat--add-context (list :type "cursor")))
-     (when eca-chat-auto-add-repomap
-       (eca-chat--add-context (list :type "repoMap"))))
-   (unless (eq (current-buffer) (eca-get (eca--session-chats session) 'empty))
-     (setf (eca--session-chats session) (eca-assoc (eca--session-chats session) 'empty (current-buffer))))
-   (if (window-live-p (get-buffer-window (buffer-name)))
-       (eca-chat--select-window)
-     (eca-chat--pop-window))
-   (unless (eca--session-last-chat-buffer session)
-     (setf (eca--session-last-chat-buffer session) (current-buffer))))
+    (unless (derived-mode-p 'eca-chat-mode)
+      (eca-chat-mode)
+      (eca-chat--track-cursor-position-schedule)
+      (when eca-chat-auto-add-cursor
+        (eca-chat--add-context (list :type "cursor")))
+      (when eca-chat-auto-add-repomap
+        (eca-chat--add-context (list :type "repoMap"))))
+    (unless (eq (current-buffer) (eca-get (eca--session-chats session) 'empty))
+      (setf (eca--session-chats session) (eca-assoc (eca--session-chats session) 'empty (current-buffer))))
+    (if (window-live-p (get-buffer-window (buffer-name)))
+        (eca-chat--select-window)
+      (eca-chat--pop-window))
+    (unless (eca--session-last-chat-buffer session)
+      (setf (eca--session-last-chat-buffer session) (current-buffer))))
   (eca-chat--track-cursor))
 
 (defun eca-chat-exit (session)
   "Exit the ECA chat for SESSION."
   (when (buffer-live-p (eca-chat--get-last-buffer session))
     (eca-chat--with-current-buffer (eca-chat--get-last-buffer session)
-     (setq eca-chat--closed t)
-     (force-mode-line-update)
-     (goto-char (point-max))
-     (rename-buffer (concat (buffer-name) ":closed") t)
-     ;; Keep only the most recently closed chat buffer; kill older ones.
-     (let ((current (current-buffer)))
-       (dolist (b (buffer-list))
-         (when (and (not (eq b current))
-                    (string-match-p "^<eca-chat:.*>:closed$" (buffer-name b)))
-           (kill-buffer b))))
-     (when-let* ((window (get-buffer-window (eca-chat--get-last-buffer session))))
-       (quit-window nil window)))))
+      (setq eca-chat--closed t)
+      (force-mode-line-update)
+      (goto-char (point-max))
+      (rename-buffer (concat (buffer-name) ":closed") t)
+      ;; Keep only the most recently closed chat buffer; kill older ones.
+      (let ((current (current-buffer)))
+        (dolist (b (buffer-list))
+          (when (and (not (eq b current))
+                     (string-match-p "^<eca-chat:.*>:closed$" (buffer-name b)))
+            (kill-buffer b))))
+      (when-let* ((window (get-buffer-window (eca-chat--get-last-buffer session))))
+        (quit-window nil window)))))
 
 ;;;###autoload
 (defun eca-chat-clear ()
@@ -2403,7 +2408,7 @@ if ARG is current prefix, ask for file, otherwise drop current file."
     (eca-assert-session-running session)
     (eca-chat-open session)
     (eca-chat--with-current-buffer (eca-chat--get-last-buffer session)
-     (goto-char (point-max)))
+      (goto-char (point-max)))
     (let ((buffer (get-buffer-create "*whisper-stdout*")))
       (with-current-buffer buffer
         (erase-buffer)
@@ -2414,15 +2419,117 @@ if ARG is current prefix, ask for file, otherwise drop current file."
                                           (line-beginning-position)
                                           (line-end-position))))
                       (eca-chat--with-current-buffer (eca-chat--get-last-buffer session)
-                       (insert transcription)
-                       (newline)
-                       (eca-chat--key-pressed-return))))
+                        (insert transcription)
+                        (newline)
+                        (eca-chat--key-pressed-return))))
                   nil t)
         (whisper-run)
         (eca-info "Recording audio. Press RET when you are done.")
         (while (not (equal ?\r (read-char)))
           (sit-for 0.5))
         (whisper-run)))))
+
+(defun eca-chat--format-message-for-completion (msg)
+  "Format MSG for display in completion interface.
+If MSG has :timestamp, prepends [HH:MM] to the text."
+  (let ((timestamp (plist-get msg :timestamp))
+        (text (plist-get msg :text)))
+    (if timestamp
+        (format "[%s] %s" 
+                (format-time-string "%H:%M" timestamp)
+                text)
+      text)))
+
+(defun eca-chat--get-user-messages (&optional buffer)
+  "Extract all user messages from the chat BUFFER.
+If BUFFER is nil, use the last chat buffer from current session.
+Returns a list of plists, each containing:
+  :text      - the message text
+  :start     - start position in buffer
+  :end       - end position in buffer
+  :id        - message ID from overlay
+  :line      - line number of the message
+  :timestamp - timestamp when message was sent
+
+Messages are ordered from newest to oldest.
+Returns empty list if session is not running or buffer is not available."
+  (when-let* ((session (eca-session))
+              (chat-buffer (or buffer (eca-chat--get-last-buffer session)))
+              ((buffer-live-p chat-buffer)))
+    (with-current-buffer chat-buffer
+      (let ((messages '()))
+        (dolist (ov (overlays-in (point-min) (point-max)))
+          (when-let* ((msg-id (overlay-get ov 'eca-chat--user-message-id))
+                      (start (overlay-start ov))
+                      (end (save-excursion
+                             (goto-char start)
+                             (while (and (not (eobp))
+                                         (progn (forward-line 1)
+                                                (eq (get-text-property (point) 'font-lock-face)
+                                                    'eca-chat-user-messages-face))))
+                             (line-end-position 0)))
+                      (text (string-trim (buffer-substring-no-properties start end)))
+                      (timestamp (overlay-get ov 'eca-chat--timestamp)))
+            (unless (string-empty-p text)
+              (push (list :text text
+                          :start start
+                          :end end
+                          :id msg-id
+                          :timestamp timestamp
+                          :line (line-number-at-pos start))
+                    messages))))
+        messages))))
+
+(defun eca-chat--select-message-from-completion (prompt)
+  "Show completion with user messages using PROMPT.
+Returns selected message plist or nil if no messages or cancelled."
+  (when-let ((messages (eca-chat--get-user-messages)))
+    (let ((table (make-hash-table :test 'equal)))
+      (dolist (msg (reverse messages))
+        (puthash (eca-chat--format-message-for-completion msg) msg table))
+      (when-let ((choice (completing-read
+                         prompt
+                         (lambda (string pred action)
+                           (if (eq action 'metadata)
+                               `(metadata (display-sort-function . identity))
+                             (complete-with-action action (hash-table-keys table) string pred)))
+                         nil t)))
+        (gethash choice table)))))
+
+;;;###autoload
+(defun eca-chat-timeline ()
+  "Navigate to a user message via completion."
+  (interactive)
+  (if-let* ((selected-msg (eca-chat--select-message-from-completion "Timeline: "))
+            (pos (plist-get selected-msg :start))
+            (chat-buffer (eca-chat--get-last-buffer (eca-session))))
+      (progn
+        (eca-chat--display-buffer chat-buffer)
+        (with-current-buffer chat-buffer
+          (goto-char pos)
+          (recenter)))
+    (message "No user messages found")))
+
+;;;###autoload
+(defun eca-chat-clear-prompt ()
+  "Clear the prompt input field in chat."
+  (interactive)
+  (when-let ((chat-buffer (eca-chat--get-last-buffer (eca-session))))
+    (with-current-buffer chat-buffer
+      (eca-chat--set-prompt ""))))
+
+;;;###autoload
+(defun eca-chat-repeat-prompt ()
+  "Select a previous message and insert its text into the prompt."
+  (interactive)
+  (if-let* ((selected-msg (eca-chat--select-message-from-completion "Repeat prompt: "))
+            (text (plist-get selected-msg :text))
+            (chat-buffer (eca-chat--get-last-buffer (eca-session))))
+      (progn
+        (eca-chat--display-buffer chat-buffer)
+        (with-current-buffer chat-buffer
+          (eca-chat--set-prompt text)))
+    (message "No user messages found")))
 
 (provide 'eca-chat)
 ;;; eca-chat.el ends here
