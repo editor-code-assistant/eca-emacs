@@ -78,6 +78,11 @@ ECA chat opens in a regular buffer that follows standard
   :type 'number
   :group 'eca)
 
+(defcustom eca-chat-prompt-separator "\n---"
+  "The separator text between chat and prompt area."
+  :type 'string
+  :group 'eca)
+
 (defcustom eca-chat-prompt-prefix "> "
   "The prompt prefix string used in eca chat buffer."
   :type 'string
@@ -561,7 +566,7 @@ Must be a positive integer."
   "Insert the prompt and context string adding overlay metadatas."
   (let ((prompt-area-ov (make-overlay (line-beginning-position) (1+ (line-beginning-position)) (current-buffer))))
     (overlay-put prompt-area-ov 'eca-chat-prompt-area t))
-  (insert "\n---\n")
+  (insert eca-chat-prompt-separator)
   (let ((progress-area-ov (make-overlay (line-beginning-position) (line-end-position) (current-buffer) nil t)))
     (overlay-put progress-area-ov 'eca-chat-progress-area t)
     (insert "\n")
@@ -1169,11 +1174,12 @@ Show parent upwards if HIDE-FILENAME? is non nil."
   (when (buffer-live-p chat-buffer)
     (eca-chat--with-current-buffer chat-buffer
       (save-excursion
-        (-some-> (eca-chat--prompt-progress-field-ov)
-          (overlay-start)
-          (goto-char))
-        (delete-region (point) (line-end-position))
-        (insert (propertize eca-chat--progress-text
+        (let ((ov (eca-chat--prompt-progress-field-ov)))
+          (goto-char (overlay-start ov))
+          (delete-region (point) (overlay-end ov)))
+        (insert (propertize (if (string-empty-p eca-chat--progress-text)
+                                eca-chat-prompt-separator
+                                (concat eca-chat-prompt-separator "\n" eca-chat--progress-text))
                             'font-lock-face 'eca-chat-system-messages-face)
                 eca-chat--spinner-string)))))
 
@@ -1546,7 +1552,6 @@ string."
   "Major mode for ECA chat sessions.
 \\{eca-chat-mode-map}"
   :group 'eca
-  ;; force use markdown-mode-map instead of gfm-view-mode-map 
   (visual-line-mode)
   (hl-line-mode -1)
   (read-only-mode -1)
