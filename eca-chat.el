@@ -578,7 +578,9 @@ Must be a positive integer."
     (move-overlay context-area-ov (overlay-start context-area-ov) (1- (overlay-end context-area-ov))))
   (let ((prompt-field-ov (make-overlay (line-beginning-position) (1+ (line-beginning-position)) (current-buffer))))
     (overlay-put prompt-field-ov 'eca-chat-prompt-field t)
-    (overlay-put prompt-field-ov 'before-string (propertize eca-chat-prompt-prefix 'font-lock-face 'eca-chat-prompt-prefix-face))))
+    (overlay-put prompt-field-ov 'before-string (propertize eca-chat-prompt-prefix 'font-lock-face 'eca-chat-prompt-prefix-face)))
+  ;; Clear undo history so undo won't affect previous messages
+  (setq buffer-undo-list nil))
 
 (defun eca-chat--clear ()
   "Clear the chat for SESSION."
@@ -586,7 +588,9 @@ Must be a positive integer."
    (remove-overlays (point-min) (point-max))
    (insert "\n")
    (eca-chat--insert-prompt-string)
-   (eca-chat--refresh-context))
+   (eca-chat--refresh-context)
+   ;; Clear undo history after reset
+   (setq buffer-undo-list nil))
 
 (defun eca-chat--stop-prompt (session)
   "Stop the running chat prompt for SESSION."
@@ -617,13 +621,15 @@ Otherwise to a not loading state."
           (overlay-put prompt-field-ov 'before-string (propertize eca-chat-prompt-prefix 'font-lock-face 'eca-chat-prompt-prefix-face))
           (save-excursion
             (goto-char (overlay-start prompt-field-ov))
-            (delete-region (point) (+ (point) (length stop-text)))))))))
+            (delete-region (point) (+ (point) (length stop-text))))))
+      (setq buffer-undo-list nil))))
 
 (defun eca-chat--set-prompt (text)
   "Set the chat prompt to be TEXT."
   (-some-> (eca-chat--prompt-field-start-point) (goto-char))
   (delete-region (point) (point-max))
-  (insert text))
+  (insert text)
+  (setq buffer-undo-list nil))
 
 (defun eca-chat--cycle-history (n)
   "Cycle history by N."
@@ -980,7 +986,8 @@ If `eca-chat-focus-on-open' is non-nil, the window is selected."
   (when eca-chat--last-user-message-pos
     (save-excursion
       (goto-char eca-chat--last-user-message-pos)
-      (insert content))))
+      (insert content))
+    (setq buffer-undo-list nil)))
 
 (defun eca-chat--add-text-content (text &optional overlay-key overlay-value)
   "Add TEXT to the chat current position.
@@ -993,7 +1000,8 @@ Add a overlay before with OVERLAY-KEY = OVERLAY-VALUE if passed."
         (let ((ov (make-overlay (point) (point) (current-buffer))))
           (overlay-put ov overlay-key overlay-value)))
       (insert text)
-      (point))))
+      (point))
+    (setq buffer-undo-list nil)))
 
 (defun eca-chat--expandable-content-at-point ()
   "Return expandable content overlay at point, or nil if none."
@@ -1047,7 +1055,8 @@ Applies LABEL-FACE to label and CONTENT-FACE to content."
                (_ (insert "\n"))
                (ov-content (make-overlay start-point start-point (current-buffer) nil t)))
           (overlay-put ov-content 'eca-chat--expandable-content-content (propertize content 'line-prefix "   "))
-          (overlay-put ov-label 'eca-chat--expandable-content-ov-content ov-content))))))
+          (overlay-put ov-label 'eca-chat--expandable-content-ov-content ov-content))))
+    (setq buffer-undo-list nil)))
 
 (defun eca-chat--update-expandable-content (id label content &optional append-content?)
   "Update to LABEL and CONTENT the expandable content of id ID."
@@ -1544,7 +1553,8 @@ string."
     (goto-char (line-end-position))
     (when (= (line-beginning-position) (line-end-position))
       (insert " "))
-    (insert text)))
+    (insert text)
+    (setq buffer-undo-list nil)))
 
 ;; Public
 
@@ -1557,7 +1567,6 @@ string."
   (read-only-mode -1)
   (setq-local eca-chat--history '())
   (setq-local eca-chat--history-index -1)
-  (buffer-disable-undo)
 
   ;; Show diff blocks in markdown-mode with colors.
   (setq-local markdown-fontify-code-blocks-natively t)
