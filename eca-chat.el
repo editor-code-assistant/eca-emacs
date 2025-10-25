@@ -617,7 +617,7 @@ Otherwise to a not loading state."
 (defun eca-chat--set-prompt (text)
   "Set the chat prompt to be TEXT."
   (-some-> (eca-chat--prompt-field-start-point) (goto-char))
-  (delete-region (point) (line-end-position))
+  (delete-region (point) (point-max))
   (insert text))
 
 (defun eca-chat--cycle-history (n)
@@ -834,8 +834,9 @@ the prompt/context line."
 
 (defun eca-chat--point-at-prompt-field-p ()
   "Return non-nil if point is at the prompt field area."
-  (eq (line-number-at-pos (point))
-      (line-number-at-pos (eca-chat--prompt-field-start-point))))
+  (let ((prompt-start (eca-chat--prompt-field-start-point)))
+    (and prompt-start
+         (>= (point) prompt-start))))
 
 (defun eca-chat--header-line-string (session)
   "Update chat header line for SESSION."
