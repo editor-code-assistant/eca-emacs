@@ -176,7 +176,14 @@ Call ON-ERROR when error."
                              :success-callback (-lambda ((&plist :items items :error error))
                                                  (if error
                                                      (funcall on-error error)
-                                                   (funcall on-success items)))))))
+                                                   (funcall on-success items)))
+                             :error-callback (-lambda (error)
+                                               (let ((type (plist-get error :type))
+                                                     (msg (plist-get error :message)))
+                                                 (pcase type
+                                                   ("error" (eca-error msg))
+                                                   ("warning" (eca-warn msg))
+                                                   ("info" (eca-info msg)))))))))
 
 (defun eca-completion--post-command-debounce (buffer)
   "Complete in BUFFER."
@@ -279,6 +286,7 @@ in `post-command-hook'."
 (defun eca-complete ()
   "Complete at the current point."
   (interactive)
+  (eca-assert-session-running (eca-session))
   (setq eca-completion--last-doc-version eca-completion--doc-version)
 
   ;; TODO add cache
@@ -292,15 +300,7 @@ in `post-command-hook'."
          (if item
              (eca-completion--show-completion item)
            (when called-interactively
-             (eca-warn "No completion is available.")))))
-     :on-error
-     (lambda (error)
-       (let ((type (plist-get error :type))
-             (msg (plist-get error :message)))
-         (pcase type
-           ("error" (eca-error msg))
-           ("warning" (eca-warn msg))
-           ("info" (eca-info msg))))))))
+             (eca-warn "No completion is available."))))))))
 
 (provide 'eca-completion)
 ;;; eca-completion.el ends here
