@@ -444,7 +444,9 @@ Must be a positive integer."
 (defmacro eca-chat--allow-write (&rest body)
   "Execute BODY allowing write to buffer."
   `(let ((inhibit-read-only t))
-     ,@body))
+     (setq buffer-undo-list t)
+     ,@body
+     (setq buffer-undo-list nil)))
 
 (defmacro eca-chat--with-current-buffer (buffer &rest body)
   "Eval BODY inside chat BUFFER."
@@ -581,7 +583,8 @@ Must be a positive integer."
     (move-overlay context-area-ov (overlay-start context-area-ov) (1- (overlay-end context-area-ov))))
   (let ((prompt-field-ov (make-overlay (line-beginning-position) (1+ (line-beginning-position)) (current-buffer))))
     (overlay-put prompt-field-ov 'eca-chat-prompt-field t)
-    (overlay-put prompt-field-ov 'before-string (propertize eca-chat-prompt-prefix 'font-lock-face 'eca-chat-prompt-prefix-face))))
+    (overlay-put prompt-field-ov 'before-string (propertize eca-chat-prompt-prefix 'font-lock-face 'eca-chat-prompt-prefix-face)))
+  (setq buffer-undo-list t))
 
 (defun eca-chat--clear ()
   "Clear the chat for SESSION."
@@ -589,7 +592,8 @@ Must be a positive integer."
   (remove-overlays (point-min) (point-max))
   (insert "\n")
   (eca-chat--insert-prompt-string)
-  (eca-chat--refresh-context))
+  (eca-chat--refresh-context)
+  (setq buffer-undo-list nil))
 
 (defun eca-chat--stop-prompt (session)
   "Stop the running chat prompt for SESSION."
@@ -605,6 +609,7 @@ Otherwise to a not loading state."
   (unless (eq eca-chat--chat-loading loading)
     (setq-local eca-chat--chat-loading loading)
     (setq-local buffer-read-only loading)
+    (setq buffer-undo-list t)
     (let ((prompt-field-ov (eca-chat--prompt-field-ov))
           (stop-text (eca-buttonize
                       eca-chat-mode-map
@@ -620,7 +625,8 @@ Otherwise to a not loading state."
           (overlay-put prompt-field-ov 'before-string (propertize eca-chat-prompt-prefix 'font-lock-face 'eca-chat-prompt-prefix-face))
           (save-excursion
             (goto-char (overlay-start prompt-field-ov))
-            (delete-region (point) (+ (point) (length stop-text)))))))))
+            (delete-region (point) (+ (point) (length stop-text)))
+            (setq buffer-undo-list nil)))))))
 
 (defun eca-chat--set-prompt (text)
   "Set the chat prompt to be TEXT."
@@ -998,7 +1004,8 @@ Add a overlay before with OVERLAY-KEY = OVERLAY-VALUE if passed."
           (when (eq overlay-key 'eca-chat--user-message-id)
             (overlay-put ov 'eca-chat--timestamp (float-time)))))
       (insert text)
-      (point))))
+      (point))
+    (setq buffer-undo-list nil)))
 
 (defun eca-chat--expandable-content-at-point ()
   "Return expandable content overlay at point, or nil if none."
@@ -1258,6 +1265,7 @@ If STATIC? return strs with no dynamic values."
 (defun eca-chat--refresh-context ()
   "Refresh chat context."
   (save-excursion
+    (setq buffer-undo-list t)
     (-some-> (eca-chat--prompt-context-field-ov)
       (overlay-start)
       (goto-char))
@@ -1265,7 +1273,8 @@ If STATIC? return strs with no dynamic values."
     (seq-doseq (context eca-chat--context)
       (insert (eca-chat--context->str context))
       (insert " "))
-    (insert (propertize eca-chat-context-prefix 'font-lock-face 'eca-chat-context-unlinked-face))))
+    (insert (propertize eca-chat-context-prefix 'font-lock-face 'eca-chat-context-unlinked-face))
+    (setq buffer-undo-list nil)))
 
 (defconst eca-chat--kind->symbol
   '(("file" . file)
@@ -1562,7 +1571,7 @@ string."
   (read-only-mode -1)
   (setq-local eca-chat--history '())
   (setq-local eca-chat--history-index -1)
-  (buffer-disable-undo)
+  (setq buffer-undo-list t)
 
   ;; Show diff blocks in markdown-mode with colors.
   (setq-local markdown-fontify-code-blocks-natively t)
@@ -2036,7 +2045,8 @@ Calls CB with the resulting message."
             (eca-chat--spinner-stop)
             (eca-chat--add-text-content "\n")
             (eca-chat--set-chat-loading session nil)
-            (eca-chat--refresh-progress chat-buffer))))
+            (eca-chat--refresh-progress chat-buffer)
+            (setq buffer-undo-list nil))))
         ("usage"
          (setq-local eca-chat--message-input-tokens  (plist-get content :messageInputTokens))
          (setq-local eca-chat--message-output-tokens (plist-get content :messageOutputTokens))
