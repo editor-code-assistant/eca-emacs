@@ -34,9 +34,9 @@
 Can be `'left', `'right', `'top', or `'bottom'.  This setting will only
 be used when `eca-chat-use-side-window' is non-nil."
   :type '(choice (const :tag "Left" left)
-                 (const :tag "Right" right)
-                 (const :tag "Top" top)
-                 (const :tag "Bottom" bottom))
+          (const :tag "Right" right)
+          (const :tag "Top" top)
+          (const :tag "Bottom" bottom))
   :group 'eca)
 
 (defcustom eca-chat-window-width 0.40
@@ -164,14 +164,14 @@ Must be a valid model supported by server, check `eca-chat-select-model`."
 (defcustom eca-chat-diff-tool 'smerge
   "Select the method for displaying file-change diffs in ECA chat."
   :type '(choice (const :tag "Side-by-side Ediff" ediff)
-                 (const :tag "Merge-style Smerge" smerge))
+          (const :tag "Merge-style Smerge" smerge))
   :group 'eca)
 
 (defcustom eca-chat-tool-call-prepare-throttle 'smart
   "Throttle strategy for handling `toolCallPrepare` events.
 Possible values: `all` or `smart` (default)."
   :type '(choice (const :tag "Process all updates" all)
-                 (const :tag "Smart throttle" smart))
+          (const :tag "Smart throttle" smart))
   :group 'eca)
 
 (defcustom eca-chat-tool-call-prepare-update-interval 5
@@ -441,6 +441,11 @@ Must be a positive integer."
                   (eca-dissoc 'empty)))
         empty-chat-buffer)))
 
+(defun eca-chat--insert (&rest contents)
+  "Insert CONTENTS reseting undo-list to avoid buffer inconsistencies."
+  (apply #'insert contents)
+  (setq-local buffer-undo-list nil))
+
 (defmacro eca-chat--allow-write (&rest body)
   "Execute BODY allowing write to buffer."
   `(let ((inhibit-read-only t))
@@ -569,15 +574,15 @@ Must be a positive integer."
   "Insert the prompt and context string adding overlay metadatas."
   (let ((prompt-area-ov (make-overlay (line-beginning-position) (1+ (line-beginning-position)) (current-buffer))))
     (overlay-put prompt-area-ov 'eca-chat-prompt-area t))
-  (insert eca-chat-prompt-separator)
+  (eca-chat--insert eca-chat-prompt-separator)
   (let ((progress-area-ov (make-overlay (line-beginning-position) (line-end-position) (current-buffer) nil t)))
     (overlay-put progress-area-ov 'eca-chat-progress-area t)
-    (insert "\n")
+    (eca-chat--insert "\n")
     (move-overlay progress-area-ov (overlay-start progress-area-ov) (1- (overlay-end progress-area-ov))))
   (let ((context-area-ov (make-overlay (line-beginning-position) (line-end-position) (current-buffer) nil t)))
     (overlay-put context-area-ov 'eca-chat-context-area t)
-    (insert (propertize eca-chat-context-prefix 'font-lock-face 'eca-chat-context-unlinked-face))
-    (insert "\n")
+    (eca-chat--insert (propertize eca-chat-context-prefix 'font-lock-face 'eca-chat-context-unlinked-face))
+    (eca-chat--insert "\n")
     (move-overlay context-area-ov (overlay-start context-area-ov) (1- (overlay-end context-area-ov))))
   (let ((prompt-field-ov (make-overlay (line-beginning-position) (1+ (line-beginning-position)) (current-buffer))))
     (overlay-put prompt-field-ov 'eca-chat-prompt-field t)
@@ -587,7 +592,7 @@ Must be a positive integer."
   "Clear the chat for SESSION."
   (erase-buffer)
   (remove-overlays (point-min) (point-max))
-  (insert "\n")
+  (eca-chat--insert "\n")
   (eca-chat--insert-prompt-string)
   (eca-chat--refresh-context))
 
@@ -615,7 +620,7 @@ Otherwise to a not loading state."
             (overlay-put prompt-field-ov 'before-string (propertize eca-chat-prompt-prefix-loading 'font-lock-face 'default))
             (save-excursion
               (goto-char (overlay-start prompt-field-ov))
-              (insert stop-text)))
+              (eca-chat--insert stop-text)))
         (progn
           (overlay-put prompt-field-ov 'before-string (propertize eca-chat-prompt-prefix 'font-lock-face 'eca-chat-prompt-prefix-face))
           (save-excursion
@@ -626,7 +631,7 @@ Otherwise to a not loading state."
   "Set the chat prompt to be TEXT."
   (-some-> (eca-chat--prompt-field-start-point) (goto-char))
   (delete-region (point) (point-max))
-  (insert text))
+  (eca-chat--insert text))
 
 (defun eca-chat--cycle-history (n)
   "Cycle history by N."
@@ -650,7 +655,7 @@ Otherwise to a not loading state."
   "Insert a newline character at point."
   (interactive)
   (when (>= (point) (eca-chat--prompt-field-start-point))
-    (insert "\n")))
+    (eca-chat--insert "\n")))
 
 (defun eca-chat--prompt-field-ov ()
   "Return the overlay for the prompt field."
@@ -983,7 +988,7 @@ If `eca-chat-focus-on-open' is non-nil, the window is selected."
   (when eca-chat--last-user-message-pos
     (save-excursion
       (goto-char eca-chat--last-user-message-pos)
-      (insert content))))
+      (eca-chat--insert content))))
 
 (defun eca-chat--add-text-content (text &optional overlay-key overlay-value)
   "Add TEXT to the chat current position.
@@ -997,7 +1002,7 @@ Add a overlay before with OVERLAY-KEY = OVERLAY-VALUE if passed."
           (overlay-put ov overlay-key overlay-value)
           (when (eq overlay-key 'eca-chat--user-message-id)
             (overlay-put ov 'eca-chat--timestamp (float-time)))))
-      (insert text)
+      (eca-chat--insert text)
       (point))))
 
 (defun eca-chat--expandable-content-at-point ()
@@ -1035,21 +1040,21 @@ Applies LABEL-FACE to label and CONTENT-FACE to content."
     (let* ((context-start (eca-chat--prompt-area-start-point))
            (start-point (1- context-start)))
       (goto-char start-point)
-      (unless (bolp) (insert "\n"))
+      (unless (bolp) (eca-chat--insert "\n"))
       (let ((ov-label (make-overlay (point) (point) (current-buffer))))
         (overlay-put ov-label 'eca-chat--expandable-content-id id)
         (overlay-put ov-label 'eca-chat--expandable-content-toggle nil)
-        (insert (propertize (eca-chat--propertize-only-first-word label
-                                                                  'line-prefix (unless (string-empty-p content)
-                                                                                 eca-chat-expandable-block-open-symbol))
-                            'keymap (let ((km (make-sparse-keymap)))
-                                      (define-key km (kbd "<mouse-1>") (lambda () (eca-chat--expandable-content-toggle id)))
-                                      (define-key km (kbd "<tab>") (lambda () (eca-chat--expandable-content-toggle id)))
-                                      km)
-                            'help-echo "mouse-1 / tab / RET: expand/collapse"))
-        (insert "\n")
+        (eca-chat--insert (propertize (eca-chat--propertize-only-first-word label
+                                                                            'line-prefix (unless (string-empty-p content)
+                                                                                           eca-chat-expandable-block-open-symbol))
+                                      'keymap (let ((km (make-sparse-keymap)))
+                                                (define-key km (kbd "<mouse-1>") (lambda () (eca-chat--expandable-content-toggle id)))
+                                                (define-key km (kbd "<tab>") (lambda () (eca-chat--expandable-content-toggle id)))
+                                                km)
+                                      'help-echo "mouse-1 / tab / RET: expand/collapse"))
+        (eca-chat--insert "\n")
         (let* ((start-point (point))
-               (_ (insert "\n"))
+               (_ (eca-chat--insert "\n"))
                (ov-content (make-overlay start-point start-point (current-buffer) nil t)))
           (overlay-put ov-content 'eca-chat--expandable-content-content (propertize content 'line-prefix "   "))
           (overlay-put ov-label 'eca-chat--expandable-content-ov-content ov-content))))))
@@ -1070,23 +1075,23 @@ Applies LABEL-FACE to label and CONTENT-FACE to content."
         ;; Refresh the label line (cheap even when appending)
         (goto-char (overlay-start ov-label))
         (delete-region (point) (1- (overlay-start ov-content)))
-        (insert (propertize (eca-chat--propertize-only-first-word label
-                                                                  'line-prefix (unless (string-empty-p new-content)
-                                                                                 (if open?
-                                                                                     eca-chat-expandable-block-close-symbol
-                                                                                   eca-chat-expandable-block-open-symbol)))
-                            'help-echo "mouse-1 / RET / tab: expand/collapse"))
+        (eca-chat--insert (propertize (eca-chat--propertize-only-first-word label
+                                                                            'line-prefix (unless (string-empty-p new-content)
+                                                                                           (if open?
+                                                                                               eca-chat-expandable-block-close-symbol
+                                                                                             eca-chat-expandable-block-open-symbol)))
+                                      'help-echo "mouse-1 / RET / tab: expand/collapse"))
         (when open?
           (if append-content?
               ;; Fast path: just append the delta to the visible content
               (progn
                 (goto-char (overlay-end ov-content))
-                (insert delta))
+                (eca-chat--insert delta))
             ;; Replace the whole visible content
             (progn
               (delete-region (overlay-start ov-content) (overlay-end ov-content))
               (goto-char (overlay-start ov-content))
-              (insert new-content))))))))
+              (eca-chat--insert new-content))))))))
 
 (defun eca-chat--expandable-content-toggle (id &optional force? close?)
   "Toggle the expandable-content of ID.
@@ -1113,7 +1118,7 @@ If FORCE? decide to CLOSE? or not."
             (put-text-property (point) (line-end-position)
                                'line-prefix eca-chat-expandable-block-close-symbol)
             (goto-char (overlay-start ov-content))
-            (insert content "\n")
+            (eca-chat--insert content "\n")
             (overlay-put ov-label 'eca-chat--expandable-content-toggle t))))
       close?)))
 
@@ -1182,11 +1187,11 @@ Show parent upwards if HIDE-FILENAME? is non nil."
         (let ((ov (eca-chat--prompt-progress-field-ov)))
           (goto-char (overlay-start ov))
           (delete-region (point) (overlay-end ov)))
-        (insert (propertize (if (string-empty-p eca-chat--progress-text)
-                                eca-chat-prompt-separator
-                                (concat eca-chat-prompt-separator "\n" eca-chat--progress-text))
-                            'font-lock-face 'eca-chat-system-messages-face)
-                eca-chat--spinner-string)))))
+        (eca-chat--insert (propertize (if (string-empty-p eca-chat--progress-text)
+                                          eca-chat-prompt-separator
+                                        (concat eca-chat-prompt-separator "\n" eca-chat--progress-text))
+                                      'font-lock-face 'eca-chat-system-messages-face)
+                          eca-chat--spinner-string)))))
 
 (defun eca-chat--context->str (context &optional static?)
   "Convert CONTEXT to a presentable str in buffer.
@@ -1263,9 +1268,9 @@ If STATIC? return strs with no dynamic values."
       (goto-char))
     (delete-region (point) (line-end-position))
     (seq-doseq (context eca-chat--context)
-      (insert (eca-chat--context->str context))
-      (insert " "))
-    (insert (propertize eca-chat-context-prefix 'font-lock-face 'eca-chat-context-unlinked-face))))
+      (eca-chat--insert (eca-chat--context->str context))
+      (eca-chat--insert " "))
+    (eca-chat--insert (propertize eca-chat-context-prefix 'font-lock-face 'eca-chat-context-unlinked-face))))
 
 (defconst eca-chat--kind->symbol
   '(("file" . file)
@@ -1321,7 +1326,7 @@ If STATIC? return strs with no dynamic values."
 
 (defun eca-chat--completion-prompts-annotate (item-label)
   "Annotate prompt ITEM-LABEL."
-  (-let (((&plist :description description :arguments args) 
+  (-let (((&plist :description description :arguments args)
           (get-text-property 0 'eca-chat-completion-item item-label)))
     (concat "(" (string-join (--map (plist-get it :name) args) ", ")
             ") "
@@ -1341,8 +1346,8 @@ Add text property to prompt text to match context."
                        (search-backward eca-chat-context-prefix (line-beginning-position) t)))
           (end-pos (point)))
       (delete-region start-pos end-pos)
-      (insert (eca-chat--context->str context 'static))))
-  (insert " "))
+      (eca-chat--insert (eca-chat--context->str context 'static))))
+  (eca-chat--insert " "))
 
 (defun eca-chat--completion-file-from-prompt-exit-function (item _status)
   "Add to files the selected ITEM."
@@ -1351,8 +1356,8 @@ Add text property to prompt text to match context."
                       (search-backward eca-chat-filepath-prefix (line-beginning-position) t)))
          (end-pos (point)))
     (delete-region start-pos end-pos)
-    (insert (eca-chat--filepath->str (plist-get file :path) nil)))
-  (insert " "))
+    (eca-chat--insert (eca-chat--filepath->str (plist-get file :path) nil)))
+  (eca-chat--insert " "))
 
 (defun eca-chat--completion-prompt-exit-function (item _status)
   "Finish prompt completion for ITEM."
@@ -1360,14 +1365,14 @@ Add text property to prompt text to match context."
     (when (> (length arguments) 0)
       (seq-doseq (arg arguments)
         (-let (((&plist :name name :description description :required required) arg))
-          (insert " ")
+          (eca-chat--insert " ")
           (let ((arg-text (read-string (format "Arg: %s\nDescription: %s\nValue%s: "
                                                name
                                                description
                                                (if required "" " (leave blank for default)")))))
             (if (and arg-text (string-match-p " " arg-text))
-                (insert (format "\"%s\"" arg-text))
-              (insert arg-text)))))
+                (eca-chat--insert (format "\"%s\"" arg-text))
+              (eca-chat--insert arg-text)))))
       (end-of-line))))
 
 (defun eca-chat--context-to-completion (context)
@@ -1548,8 +1553,8 @@ string."
     (goto-char (eca-chat--prompt-field-start-point))
     (goto-char (line-end-position))
     (when (= (line-beginning-position) (line-end-position))
-      (insert " "))
-    (insert text)))
+      (eca-chat--insert " "))
+    (eca-chat--insert text)))
 
 ;; Public
 
@@ -1562,7 +1567,6 @@ string."
   (read-only-mode -1)
   (setq-local eca-chat--history '())
   (setq-local eca-chat--history-index -1)
-  (buffer-disable-undo)
 
   ;; Show diff blocks in markdown-mode with colors.
   (setq-local markdown-fontify-code-blocks-natively t)
@@ -1582,9 +1586,9 @@ string."
     (when (eq 0 (length (string-trim (buffer-string))))
       (save-excursion
         (goto-char (point-min))
-        (insert "\n")
-        (insert (propertize (eca--session-chat-welcome-message session)
-                            'font-lock-face 'eca-chat-welcome-face))
+        (eca-chat--insert "\n")
+        (eca-chat--insert (propertize (eca--session-chat-welcome-message session)
+                                      'font-lock-face 'eca-chat-welcome-face))
         (eca-chat--insert-prompt-string)))
 
     ;; TODO is there a better way to do that?
@@ -1729,8 +1733,8 @@ Calls CB with the resulting message."
        (cond
         ((eq action 'metadata)
          '(metadata (category . eca-capf)
-                    (display-sort-function . identity)
-                    (cycle-sort-function . identity)))
+           (display-sort-function . identity)
+           (cycle-sort-function . identity)))
         ((eq (car-safe action) 'boundaries) nil)
         (t
          (complete-with-action action (funcall candidates-fn) probe pred))))
@@ -2419,7 +2423,7 @@ if ARG is current prefix, ask for file, otherwise drop current file."
                                           (line-beginning-position)
                                           (line-end-position))))
                       (eca-chat--with-current-buffer (eca-chat--get-last-buffer session)
-                        (insert transcription)
+                        (eca-chat--insert transcription)
                         (newline)
                         (eca-chat--key-pressed-return))))
                   nil t)
@@ -2435,7 +2439,7 @@ If MSG has :timestamp, prepends [HH:MM] to the text."
   (let ((timestamp (plist-get msg :timestamp))
         (text (plist-get msg :text)))
     (if timestamp
-        (format "[%s] %s" 
+        (format "[%s] %s"
                 (format-time-string "%H:%M" timestamp)
                 text)
       text)))
@@ -2488,12 +2492,12 @@ Returns selected message plist or nil if no messages or cancelled."
       (dolist (msg (reverse messages))
         (puthash (eca-chat--format-message-for-completion msg) msg table))
       (when-let ((choice (completing-read
-                         prompt
-                         (lambda (string pred action)
-                           (if (eq action 'metadata)
-                               `(metadata (display-sort-function . identity))
-                             (complete-with-action action (hash-table-keys table) string pred)))
-                         nil t)))
+                          prompt
+                          (lambda (string pred action)
+                            (if (eq action 'metadata)
+                                `(metadata (display-sort-function . identity))
+                              (complete-with-action action (hash-table-keys table) string pred)))
+                          nil t)))
         (gethash choice table)))))
 
 ;;;###autoload
