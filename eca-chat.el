@@ -1138,7 +1138,7 @@ If FORCE? decide to CLOSE? or not."
                                                        'font-lock-face 'eca-chat--tool-call-argument-value-face)))
                                        v)
                                       ""))
-               (s-trim-left v))))
+               v)))
    ""
    key-vals))
 
@@ -1756,6 +1756,51 @@ Calls CB with the resulting message."
   (-some->> (plist-get chat-config :selectBehavior)
     (setf (eca--session-chat-selected-behavior session))))
 
+(defun eca-chat--tool-call-file-change-details
+  (content approval-text time status tool-call-next-line-spacing roots)
+  "Update tool call UI based showing file change details.
+CONTENT is the tool call content.
+Can include optional APPROVAL-TEXT and TIME.
+Append STATUS, TOOL-CALL-NEXT-LINE-SPACING and ROOTS"
+  (-let* (((&plist :name name :details details :id id :summary summary) content)
+          (path (plist-get details :path))
+          (diff (plist-get details :diff))
+          (view-diff-btn
+           (eca-buttonize
+            eca-chat-mode-map
+            (propertize "view diff" 'font-lock-face 'eca-chat-diff-view-face)
+            (lambda ()
+              (interactive)
+              (eca-chat--show-diff path diff)))))
+    (eca-chat--update-expandable-content
+     id
+     (concat (propertize summary 'font-lock-face 'eca-chat-mcp-tool-call-label-face)
+             " " (eca-chat--file-change-details-label details)
+             " " status time
+             "\n"
+             (propertize view-diff-btn 'line-prefix tool-call-next-line-spacing)
+             approval-text)
+     (concat "Tool: `" name "`\n"
+             (eca-chat--file-change-diff path diff roots)))))
+
+(defun eca-chat--tool-call-json-outputs-details (content time status)
+  "Update tool call UI for json output given CONTENT, TIME and STATUS."
+  (-let* (((&plist :name name :arguments arguments :server server :details details :id
+                   id :summary summary) content)
+          (jsons (plist-get details :jsons)))
+    (eca-chat--update-expandable-content
+     id
+     (concat (propertize summary 'font-lock-face 'eca-chat-mcp-tool-call-label-face)
+             " " status time)
+     (eca-chat--content-table
+      `(("Tool"   . ,name)
+        ("Server" . ,server)
+        ("Arguments" . ,arguments)
+        ("Json output" . ,(concat "\n"
+                                  "```javascript\n"
+                                  (string-join jsons "\n")
+                                  "\n```")))))))
+
 (defun eca-chat-content-received (session params)
   "Handle the content received notification with PARAMS for SESSION."
   (let* ((chat-id (plist-get params :chatId))
@@ -1835,7 +1880,7 @@ Calls CB with the resulting message."
                 (name (plist-get content :name))
                 (server (plist-get content :server))
                 (argsText (plist-get content :argumentsText))
-                (summary (or (plist-get content :summary)
+                (label (or (plist-get content :summary)
                              (format "Preparing tool: %s" name)))
                 (current-count (gethash id eca-chat--tool-call-prepare-counters 0))
                 (cached-content (gethash id eca-chat--tool-call-prepare-content-cache ""))
@@ -1850,7 +1895,7 @@ Calls CB with the resulting message."
            (puthash id new-content eca-chat--tool-call-prepare-content-cache)
            ;; Only update UI when throttling permits
            (when should-update-ui-p
-             (let ((label (concat (propertize summary 'font-lock-face 'eca-chat-mcp-tool-call-label-face)
+             (let ((label (concat (propertize label 'font-lock-face 'eca-chat-mcp-tool-call-label-face)
                                   " " eca-chat-mcp-tool-call-loading-symbol)))
                (if (eca-chat--get-expandable-content id)
                    ;; Update with accumulated content, not just this chunk
@@ -1867,44 +1912,25 @@ Calls CB with the resulting message."
                 (args (plist-get content :arguments))
                 (name (plist-get content :name))
                 (server (plist-get content :server))
-                (summary (or (plist-get content :summary)
+                (label (or (plist-get content :summary)
                              (format "Calling tool: %s__%s" server name)))
                 (manual? (plist-get content :manualApproval))
                 (status eca-chat-mcp-tool-call-loading-symbol)
                 (approval-text (when manual?
                                  (eca-chat--build-tool-call-approval-str-content session id tool-call-next-line-spacing)))
                 (details (plist-get content :details)))
-           (if (and (stringp (plist-get details :type))
-                    (string= "fileChange" (plist-get details :type)))
-               (let* ((path (plist-get details :path))
-                      (diff (plist-get details :diff))
-                      (view-diff-btn (eca-buttonize
-                                      eca-chat-mode-map
-                                      (propertize "view diff" 'font-lock-face 'eca-chat-diff-view-face)
-                                      (lambda ()
-                                        (interactive)
-                                        (eca-chat--show-diff path diff)))))
-                 (eca-chat--update-expandable-content
-                  id
-                  (concat (propertize summary 'font-lock-face 'eca-chat-mcp-tool-call-label-face)
-                          " "
-                          (eca-chat--file-change-details-label details)
-                          " " status
-                          "\n"
-                          (propertize view-diff-btn 'line-prefix tool-call-next-line-spacing)
-                          approval-text)
-                  (concat "Tool: `" name "`\n"
-                          (eca-chat--file-change-diff path diff roots))))
-             (eca-chat--update-expandable-content
-              id
-              (concat (propertize summary 'font-lock-face 'eca-chat-mcp-tool-call-label-face)
-                      " " status
-                      "\n"
-                      approval-text)
-              (eca-chat--content-table
-               `(("Tool" . ,name)
-                 ("Server" . ,server)
-                 ("Arguments" . ,args)))))
+           (pcase (plist-get details :type)
+             ("fileChange" (eca-chat--tool-call-file-change-details content approval-text nil status tool-call-next-line-spacing roots))
+             (_ (eca-chat--update-expandable-content
+                 id
+                 (concat (propertize label 'font-lock-face 'eca-chat-mcp-tool-call-label-face)
+                         " " status
+                         "\n"
+                         approval-text)
+                 (eca-chat--content-table
+                  `(("Tool" . ,name)
+                    ("Server" . ,server)
+                    ("Arguments" . ,args))))))
            (when (and eca-chat-expand-pending-approval-tools manual?)
              (eca-chat--expandable-content-toggle id t nil))))
         ("toolCallRunning"
@@ -1912,44 +1938,25 @@ Calls CB with the resulting message."
                 (args (plist-get content :arguments))
                 (name (plist-get content :name))
                 (server (plist-get content :server))
-                (summary (or (plist-get content :summary)
+                (label (or (plist-get content :summary)
                              (format "Running tool: %s__%s" server name)))
                 (details (plist-get content :details))
                 (status eca-chat-mcp-tool-call-loading-symbol))
-           (if (and (stringp (plist-get details :type))
-                    (string= "fileChange" (plist-get details :type)))
-               (let* ((path (plist-get details :path))
-                      (diff (plist-get details :diff))
-                      (view-diff-btn
-                       (eca-buttonize
-                        eca-chat-mode-map
-                        (propertize "view diff" 'font-lock-face 'eca-chat-diff-view-face)
-                        (lambda ()
-                          (interactive)
-                          (eca-chat--show-diff path diff)))))
-                 (eca-chat--update-expandable-content
-                  id
-                  (concat (propertize summary 'font-lock-face 'eca-chat-mcp-tool-call-label-face)
-                          " "
-                          (eca-chat--file-change-details-label details)
-                          " " status
-                          "\n"
-                          (propertize view-diff-btn 'line-prefix tool-call-next-line-spacing))
-                  (concat "Tool: `" name "`\n"
-                          (eca-chat--file-change-diff path diff roots))))
-             (eca-chat--update-expandable-content
-              id
-              (concat (propertize summary 'font-lock-face 'eca-chat-mcp-tool-call-label-face)
-                      " " status)
-              (eca-chat--content-table
-               `(("Tool" . ,name)
-                 ("Server" . ,server)
-                 ("Arguments" . ,args)))))))
+           (pcase (plist-get details :type)
+             ("fileChange" (eca-chat--tool-call-file-change-details content nil nil status tool-call-next-line-spacing roots))
+             (_ (eca-chat--update-expandable-content
+                 id
+                 (concat (propertize label 'font-lock-face 'eca-chat-mcp-tool-call-label-face)
+                         " " status)
+                 (eca-chat--content-table
+                  `(("Tool" . ,name)
+                    ("Server" . ,server)
+                    ("Arguments" . ,args))))))))
         ("toolCalled"
          (let* ((id (plist-get content :id))
                 (name (plist-get content :name))
                 (server (plist-get content :server))
-                (summary (or (plist-get content :summary)
+                (label (or (plist-get content :summary)
                              (format "Called tool: %s__%s" server name)))
                 (args (plist-get content :arguments))
                 (outputs (plist-get content :outputs))
@@ -1965,35 +1972,18 @@ Calls CB with the resulting message."
            ;; Cleanup counters for this tool-call id to avoid unbounded growth
            (remhash id eca-chat--tool-call-prepare-counters)
            (remhash id eca-chat--tool-call-prepare-content-cache)
-           (if (and (stringp (plist-get details :type))
-                    (string= "fileChange" (plist-get details :type)))
-               (let* ((path (plist-get details :path))
-                      (diff (plist-get details :diff))
-                      (view-diff-btn
-                       (eca-buttonize
-                        eca-chat-mode-map
-                        (propertize "view diff" 'font-lock-face 'eca-chat-diff-view-face)
-                        (lambda ()
-                          (interactive)
-                          (eca-chat--show-diff path diff)))))
-                 (eca-chat--update-expandable-content
-                  id
-                  (concat (propertize summary 'font-lock-face 'eca-chat-mcp-tool-call-label-face)
-                          " " (eca-chat--file-change-details-label details)
-                          " " status time
-                          "\n"
-                          (propertize view-diff-btn 'line-prefix tool-call-next-line-spacing))
-                  (concat "Tool: `" name "`\n"
-                          (eca-chat--file-change-diff path diff roots))))
-             (eca-chat--update-expandable-content
-              id
-              (concat (propertize summary 'font-lock-face 'eca-chat-mcp-tool-call-label-face)
-                      " " status time)
-              (eca-chat--content-table
-               `(("Tool"   . ,name)
-                 ("Server" . ,server)
-                 ("Arguments" . ,args)
-                 ("Output" . ,output-text)))))
+           (pcase (plist-get details :type)
+             ("fileChange" (eca-chat--tool-call-file-change-details content nil time status tool-call-next-line-spacing roots))
+             ("jsonOutputs" (eca-chat--tool-call-json-outputs-details content time status))
+             (_ (eca-chat--update-expandable-content
+                 id
+                 (concat (propertize label 'font-lock-face 'eca-chat-mcp-tool-call-label-face)
+                         " " status time)
+                 (eca-chat--content-table
+                  `(("Tool"   . ,name)
+                    ("Server" . ,server)
+                    ("Arguments" . ,args)
+                    ("Output" . ,output-text))))))
            (when eca-chat-shrink-called-tools
              (eca-chat--expandable-content-toggle id t t))))
         ("toolCallRejected"
@@ -2001,31 +1991,22 @@ Calls CB with the resulting message."
                 (server (plist-get content :server))
                 (args (plist-get content :arguments))
                 (details (plist-get content :details))
-                (summary (plist-get content :summary))
                 (status eca-chat-mcp-tool-call-error-symbol)
                 (id (plist-get content :id)))
            ;; Cleanup counters for this tool-call id
            (remhash id eca-chat--tool-call-prepare-counters)
            (remhash id eca-chat--tool-call-prepare-content-cache)
-           (if (string= "fileChange" (plist-get details :type))
-               (eca-chat--update-expandable-content
-                id
-                (concat (propertize summary 'font-lock-face 'eca-chat-mcp-tool-call-label-face)
-                        " "
-                        (eca-chat--file-change-details-label details)
-                        " " status)
-                (concat
-                 "Tool: `" name "`\n"
-                 (eca-chat--file-change-diff (plist-get details :path) (plist-get details :diff) roots)))
-             (eca-chat--update-expandable-content
-              id
-              (concat (propertize (format "Rejected tool: %s__%s" server name)
-                                  'font-lock-face 'eca-chat-mcp-tool-call-label-face)
-                      " "
-                      eca-chat-mcp-tool-call-error-symbol)
-              (eca-chat--content-table `(("Tool" . ,name)
-                                         ("Server" . ,server)
-                                         ("Arguments" . ,args)))))))
+           (pcase (plist-get details :type)
+             ("fileChange" (eca-chat--tool-call-file-change-details content nil nil status tool-call-next-line-spacing roots))
+             (_ (eca-chat--update-expandable-content
+                 id
+                 (concat (propertize (format "Rejected tool: %s__%s" server name)
+                                     'font-lock-face 'eca-chat-mcp-tool-call-label-face)
+                         " "
+                         eca-chat-mcp-tool-call-error-symbol)
+                 (eca-chat--content-table `(("Tool" . ,name)
+                                            ("Server" . ,server)
+                                            ("Arguments" . ,args))))))))
         ("progress"
          (pcase (plist-get content :state)
            ("running"
