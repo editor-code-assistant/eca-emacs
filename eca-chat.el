@@ -1757,12 +1757,13 @@ Calls CB with the resulting message."
     (setf (eca--session-chat-selected-behavior session))))
 
 (defun eca-chat--tool-call-file-change-details
-  (content approval-text time status tool-call-next-line-spacing roots)
+  (content label approval-text time status tool-call-next-line-spacing roots)
   "Update tool call UI based showing file change details.
+LABEL is the tool call label.
 CONTENT is the tool call content.
 Can include optional APPROVAL-TEXT and TIME.
 Append STATUS, TOOL-CALL-NEXT-LINE-SPACING and ROOTS"
-  (-let* (((&plist :name name :details details :id id :summary summary) content)
+  (-let* (((&plist :name name :details details :id id) content)
           (path (plist-get details :path))
           (diff (plist-get details :diff))
           (view-diff-btn
@@ -1774,7 +1775,7 @@ Append STATUS, TOOL-CALL-NEXT-LINE-SPACING and ROOTS"
               (eca-chat--show-diff path diff)))))
     (eca-chat--update-expandable-content
      id
-     (concat (propertize summary 'font-lock-face 'eca-chat-mcp-tool-call-label-face)
+     (concat (propertize label 'font-lock-face 'eca-chat-mcp-tool-call-label-face)
              " " (eca-chat--file-change-details-label details)
              " " status time
              "\n"
@@ -1881,7 +1882,7 @@ Append STATUS, TOOL-CALL-NEXT-LINE-SPACING and ROOTS"
                 (server (plist-get content :server))
                 (argsText (plist-get content :argumentsText))
                 (label (or (plist-get content :summary)
-                             (format "Preparing tool: %s" name)))
+                           (format "Preparing tool: %s__%s" server name)))
                 (current-count (gethash id eca-chat--tool-call-prepare-counters 0))
                 (cached-content (gethash id eca-chat--tool-call-prepare-content-cache ""))
                 (new-content (concat cached-content argsText))
@@ -1913,14 +1914,14 @@ Append STATUS, TOOL-CALL-NEXT-LINE-SPACING and ROOTS"
                 (name (plist-get content :name))
                 (server (plist-get content :server))
                 (label (or (plist-get content :summary)
-                             (format "Calling tool: %s__%s" server name)))
+                           (format "Calling tool: %s__%s" server name)))
                 (manual? (plist-get content :manualApproval))
                 (status eca-chat-mcp-tool-call-loading-symbol)
                 (approval-text (when manual?
                                  (eca-chat--build-tool-call-approval-str-content session id tool-call-next-line-spacing)))
                 (details (plist-get content :details)))
            (pcase (plist-get details :type)
-             ("fileChange" (eca-chat--tool-call-file-change-details content approval-text nil status tool-call-next-line-spacing roots))
+             ("fileChange" (eca-chat--tool-call-file-change-details content label approval-text nil status tool-call-next-line-spacing roots))
              (_ (eca-chat--update-expandable-content
                  id
                  (concat (propertize label 'font-lock-face 'eca-chat-mcp-tool-call-label-face)
@@ -1939,11 +1940,11 @@ Append STATUS, TOOL-CALL-NEXT-LINE-SPACING and ROOTS"
                 (name (plist-get content :name))
                 (server (plist-get content :server))
                 (label (or (plist-get content :summary)
-                             (format "Running tool: %s__%s" server name)))
+                           (format "Running tool: %s__%s" server name)))
                 (details (plist-get content :details))
                 (status eca-chat-mcp-tool-call-loading-symbol))
            (pcase (plist-get details :type)
-             ("fileChange" (eca-chat--tool-call-file-change-details content nil nil status tool-call-next-line-spacing roots))
+             ("fileChange" (eca-chat--tool-call-file-change-details content label nil nil status tool-call-next-line-spacing roots))
              (_ (eca-chat--update-expandable-content
                  id
                  (concat (propertize label 'font-lock-face 'eca-chat-mcp-tool-call-label-face)
@@ -1957,7 +1958,7 @@ Append STATUS, TOOL-CALL-NEXT-LINE-SPACING and ROOTS"
                 (name (plist-get content :name))
                 (server (plist-get content :server))
                 (label (or (plist-get content :summary)
-                             (format "Called tool: %s__%s" server name)))
+                           (format "Called tool: %s__%s" server name)))
                 (args (plist-get content :arguments))
                 (outputs (plist-get content :outputs))
                 (output-text (if outputs
@@ -1973,7 +1974,7 @@ Append STATUS, TOOL-CALL-NEXT-LINE-SPACING and ROOTS"
            (remhash id eca-chat--tool-call-prepare-counters)
            (remhash id eca-chat--tool-call-prepare-content-cache)
            (pcase (plist-get details :type)
-             ("fileChange" (eca-chat--tool-call-file-change-details content nil time status tool-call-next-line-spacing roots))
+             ("fileChange" (eca-chat--tool-call-file-change-details content label nil time status tool-call-next-line-spacing roots))
              ("jsonOutputs" (eca-chat--tool-call-json-outputs-details content time status))
              (_ (eca-chat--update-expandable-content
                  id
@@ -1997,7 +1998,7 @@ Append STATUS, TOOL-CALL-NEXT-LINE-SPACING and ROOTS"
            (remhash id eca-chat--tool-call-prepare-counters)
            (remhash id eca-chat--tool-call-prepare-content-cache)
            (pcase (plist-get details :type)
-             ("fileChange" (eca-chat--tool-call-file-change-details content nil nil status tool-call-next-line-spacing roots))
+             ("fileChange" (eca-chat--tool-call-file-change-details content label nil nil status tool-call-next-line-spacing roots))
              (_ (eca-chat--update-expandable-content
                  id
                  (concat (propertize (format "Rejected tool: %s__%s" server name)
