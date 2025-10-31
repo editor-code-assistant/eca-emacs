@@ -2279,6 +2279,13 @@ if ARG is current prefix, ask for file, otherwise drop current file."
       (eca-chat-open (eca-session)))))
 
 ;;;###autoload
+(defun eca-chat-stop-prompt ()
+  "Stop chat prompt."
+  (interactive)
+  (eca-assert-session-running (eca-session))
+  (eca-chat--stop-prompt (eca-session)))
+
+;;;###autoload
 (defun eca-chat-send-prompt (prompt)
   "Send PROMPT to current chat session."
   (interactive "sPrompt: ")
