@@ -59,6 +59,7 @@ Not all, but most relevant functions and variables:
 - `eca-chat-tool-call-reject-next`: Reject next pending tool call in chat.
 - `eca-chat-send-prompt`: In case you wanna send prompts programatically in elisp.
 - `eca-chat-toggle-window`: toggle chat window.
+- `eca-chat-timeline`: Show user prompt history as a timeline.
 - `eca-open-global-config`: Open ECA global config file.
 
 ### Variables
