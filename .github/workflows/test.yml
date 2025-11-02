@@ -35,6 +35,9 @@ jobs:
     - name: Run tests
       run: |
         eask install-deps
+
+        eask test buttercup
+
         eask package
         eask install
         eask compile
