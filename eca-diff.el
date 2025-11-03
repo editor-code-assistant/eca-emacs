@@ -51,7 +51,9 @@ ROOTS may be passed for path relativization if desired.
 
 This function tries to be Doom-compatible when Emacs runs Doom popup
 system (it ignores those popup rules for the generated ediff buffers)."
-  (let* ((parsed        (eca-diff-parse-unified-diff diff))
+  (let* (;; ediff expects `\n` line endings.
+         (diff (replace-regexp-in-string "\r\n" "\n" diff))
+         (parsed        (eca-diff-parse-unified-diff diff))
          (orig          (plist-get parsed :original))
          (new           (plist-get parsed :new))
          (buf-orig      (generate-new-buffer (format "*eca-diff-orig:%s*" path)))
