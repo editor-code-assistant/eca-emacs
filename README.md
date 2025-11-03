@@ -47,7 +47,7 @@ M-x package-install eca
 
 ## Tips
 
-Not all, but most relevant functions and variables:
+**Not all**, but most relevant functions and variables:
 
 ### Functions
 
@@ -61,6 +61,8 @@ Not all, but most relevant functions and variables:
 - `eca-chat-toggle-window`: toggle chat window.
 - `eca-chat-timeline`: Show user prompt history as a timeline.
 - `eca-open-global-config`: Open ECA global config file.
+- `eca-chat-new`: Starts a new chat for same session.
+- `eca-chat-select`: Select a chat from all running for same session.
 
 ### Variables
 
