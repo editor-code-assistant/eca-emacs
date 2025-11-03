@@ -397,7 +397,8 @@ Must be a positive integer."
     (define-key map (kbd "C-c C-k") #'eca-chat-reset)
     (define-key map (kbd "C-c C-l") #'eca-chat-clear)
     (define-key map (kbd "C-c C-t") #'eca-chat-talk)
-    (define-key map (kbd "C-c C-b") #'eca-chat-select-behavior)
+    (define-key map (kbd "C-c C-S-b") #'eca-chat-select-behavior)
+    (define-key map (kbd "C-c C-b") #'eca-chat-cycle-behavior)
     (define-key map (kbd "C-c C-m") #'eca-chat-select-model)
     (define-key map (kbd "C-c C-n") #'eca-chat-new)
     (define-key map (kbd "C-c C-f") #'eca-chat-select)
@@ -1743,21 +1744,21 @@ Calls CB with the resulting message."
      :annotation-function annotation-fn
      :exit-function exit-fn)))
 
-(defun eca-chat-config-updated (session chat-config)
-  "Update chat based on the CHAT-CONFIG for SESSION."
-  (-some->> (plist-get chat-config :welcomeMessage)
-    (setf (eca--session-chat-welcome-message session)))
-  (-some->> (plist-get chat-config :models)
-    (setf (eca--session-models session)))
-  (-some->> (plist-get chat-config :behaviors)
-    (setf (eca--session-chat-behaviors session)))
-  (-some->> (plist-get chat-config :selectModel)
-    (setf (eca--session-chat-selected-model session)))
-  (-some->> (plist-get chat-config :selectBehavior)
-    (setf (eca--session-chat-selected-behavior session))))
+(defun eca-chat--handle-mcp-server-updated (session _server)
+  "Handle mcp SERVER updated for SESSION."
+  ;; TODO do for all chats
+  (eca-chat--with-current-buffer (eca-chat--get-last-buffer session)
+    (force-mode-line-update)))
+
+(defun eca-chat--set-behavior (session new-behavior)
+  "Set new behavior to NEW-BEHAVIOR notifying server for SESSION."
+  (setf (eca--session-chat-selected-behavior session) new-behavior)
+  (eca-api-notify session
+                  :method "chat/selectedBehaviorChanged"
+                  :params (list :behavior new-behavior)))
 
 (defun eca-chat--tool-call-file-change-details
-  (content label approval-text time status tool-call-next-line-spacing roots)
+    (content label approval-text time status tool-call-next-line-spacing roots)
   "Update tool call UI based showing file change details.
 LABEL is the tool call label.
 CONTENT is the tool call content.
@@ -2033,11 +2034,18 @@ Append STATUS, TOOL-CALL-NEXT-LINE-SPACING and ROOTS"
          (setq-local eca-chat--session-cost          (plist-get content :sessionCost)))
         (_ nil)))))
 
-(defun eca-chat--handle-mcp-server-updated (session _server)
-  "Handle mcp SERVER updated for SESSION."
-  ;; TODO do for all chats
-  (eca-chat--with-current-buffer (eca-chat--get-last-buffer session)
-    (force-mode-line-update)))
+(defun eca-chat-config-updated (session chat-config)
+  "Update chat based on the CHAT-CONFIG for SESSION."
+  (-some->> (plist-get chat-config :welcomeMessage)
+    (setf (eca--session-chat-welcome-message session)))
+  (-some->> (plist-get chat-config :models)
+    (setf (eca--session-models session)))
+  (-some->> (plist-get chat-config :behaviors)
+    (setf (eca--session-chat-behaviors session)))
+  (-some->> (plist-get chat-config :selectModel)
+    (setf (eca--session-chat-selected-model session)))
+  (-some->> (plist-get chat-config :selectBehavior)
+    (setf (eca--session-chat-selected-behavior session))))
 
 (defun eca-chat-open (session)
   "Open or create dedicated eca chat window for SESSION."
@@ -2143,10 +2151,20 @@ Append STATUS, TOOL-CALL-NEXT-LINE-SPACING and ROOTS"
   (interactive)
   (eca-assert-session-running (eca-session))
   (when-let* ((behavior (completing-read "Select a behavior:" (append (eca--session-chat-behaviors (eca-session)) nil) nil t)))
-    (setf (eca--session-chat-selected-behavior (eca-session)) behavior)
-    (eca-api-notify (eca-session)
-                    :method "chat/selectedBehaviorChanged"
-                    :params (list :behavior behavior))))
+    (eca-chat--set-behavior (eca-session) behavior)))
+
+;;;###autoload
+(defun eca-chat-cycle-behavior ()
+  "Cycle between existing chat behaviors to use."
+  (interactive)
+  (eca-assert-session-running (eca-session))
+  (let* ((session (eca-session))
+         (current-behavior (eca--session-chat-selected-behavior session))
+         (all-behaviors (append (eca--session-chat-behaviors session) nil))
+         (current-behavior-index (seq-position all-behaviors current-behavior))
+         (next-behavior (or (nth (1+ current-behavior-index) all-behaviors)
+                            (nth 0 all-behaviors))))
+    (eca-chat--set-behavior session next-behavior)))
 
 ;;;###autoload
 (defun eca-chat-reset ()
