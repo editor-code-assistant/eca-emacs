@@ -29,6 +29,7 @@
 (require 'eca-mcp)
 (require 'eca-editor)
 (require 'eca-completion)
+(require 'eca-rewrite)
 
 (defgroup eca nil
   "ECA group."
@@ -88,6 +89,7 @@
     (pcase method
       ("config/updated" (eca-config-updated session params))
       ("chat/contentReceived" (eca-chat-content-received session params))
+      ("rewrite/contentReceived" (eca-rewrite-content-received session params))
       ("tool/serverUpdated" (eca--tool-server-updated session params))
       ("$/showMessage" (eca--handle-show-message params))
       (_ 'ignore))))
