@@ -71,6 +71,8 @@
 
 ;; Internal
 
+(declare-function diff-no-select "diff")
+
 (defvar eca-rewrite--last-prompt nil)
 (defvar eca-rewrite--id->buffer '())
 
@@ -262,25 +264,23 @@ MODEL is the model used."
 
 (defun eca-rewrite--ediff (ov)
   "Show diff between original text and rewrite overlay OV."
-  (let ((ov-buf (overlay-buffer ov))
-        (newbuf (eca-rewrite--clone-buffer-with-rewrite ov "*eca-rewrite-ediff*"))
-        (orig-win (current-window-configuration))
-        (hide-show-fn (lambda (&optional restore)
-                        (let ((disp (overlay-get ov 'display))
-                              (stored (overlay-get ov 'eca-rewrite--ediff)))
-                          (overlay-put ov 'face (and restore 'eca-rewrite-highlight-face))
-                          (overlay-put ov 'display (and restore stored))
-                          (overlay-put ov 'eca-rewrite--ediff (unless restore disp)))))
-        (on-quit-fn (lambda ()
-                      (when (window-configuration-p orig-win)
-                        (set-window-configuration orig-win))
-                      (funcall hide-show-fn t)
-                      (remove-hook 'ediff-quit-hook on-quit-fn))))
+  (letrec ((ov-buf (overlay-buffer ov))
+           (newbuf (eca-rewrite--clone-buffer-with-rewrite ov "*eca-rewrite-ediff*"))
+           (orig-win (current-window-configuration))
+           (hide-show-fn (lambda (&optional restore)
+                           (let ((disp (overlay-get ov 'display))
+                                 (stored (overlay-get ov 'eca-rewrite--ediff)))
+                             (overlay-put ov 'face (and restore 'eca-rewrite-highlight-face))
+                             (overlay-put ov 'display (and restore stored))
+                             (overlay-put ov 'eca-rewrite--ediff (unless restore disp)))))
+           (on-quit-fn (lambda ()
+                         (when (window-configuration-p orig-win)
+                           (set-window-configuration orig-win))
+                         (funcall hide-show-fn t)
+                         (remove-hook 'ediff-quit-hook on-quit-fn))))
     (funcall hide-show-fn)
     (add-hook 'ediff-quit-hook on-quit-fn t)
-    (let ((ediff-window-setup-function #'ediff-setup-windows-plain)
-          (ediff-split-window-function #'split-window-horizontally))
-      (ediff-buffers ov-buf newbuf))))
+    (ediff-buffers ov-buf newbuf)))
 
 (defun eca-rewrite--diff (ov)
   "Show diff between original text and rewrite overlay OV."
