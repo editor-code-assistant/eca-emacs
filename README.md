@@ -99,7 +99,13 @@ You can access __transient___ menu with commonly commands via `M-x eca-transient
 | Chat: toggle expandable content | <kbd>C-c</kbd> <kbd>Tab</kbd>      |
 | MCP: Go to chat                 | <kbd>C-c</kbd> <kbd>C-,</kbd>      |
 
-## Advanced Usage
+## Features
+
+Check detailed features [here](https://eca.dev/features/).
+
+### Rewrite
+
+Select a text and call `eca-rewrite`, after rewrite is finish, call any action on the overlay.
 
 ### Code completion
 
