@@ -258,7 +258,7 @@ MODEL is the model used."
          (diff-buf (diff-no-select ov-buf newbuf)))
     (with-current-buffer diff-buf
       (setq-local diff-jump-to-old-file t))
-    (display-buffer diff-buf))))
+    (display-buffer diff-buf)))
 
 (defun eca-rewrite--ediff (ov)
   "Show diff between original text and rewrite overlay OV."
