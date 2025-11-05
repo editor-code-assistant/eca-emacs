@@ -383,7 +383,7 @@ accepts, shows menu, or diffs according to `eca-rewrite-finished-action',
          (buffer (eca-rewrite--get-buffer id)))
     (when (buffer-live-p buffer)
       (with-current-buffer buffer
-        (let ((ov (eca-rewrite--overlay-from-id id)))
+        (when-let ((ov (eca-rewrite--overlay-from-id id)))
           (pcase (plist-get content :type)
             ("reasoning" (eca-rewrite--set-reasoning ov))
             ("text" (eca-rewrite--add-text ov (plist-get content :text)))
