@@ -45,13 +45,18 @@
   :type 'hook
   :group 'eca)
 
-(defface eca-rewrite-highlight-face
+(defface eca-rewrite-overlay-face
   '((((class color) (min-colors 88) (background dark))
      :background "#041117" :extend t)
     (((class color) (min-colors 88) (background light))
      :background "light goldenrod yellow" :extend t)
     (t :inherit secondary-selection))
   "Face to highlight pending rewrite regions."
+  :group 'eca)
+
+(defface eca-rewrite-overlay-hover-face
+  '((t (:inherit eca-rewrite-overlay-face :weight semi-bold)))
+  "Face used for rewrite overlay content when point is inside it."
   :group 'eca)
 
 (defface eca-rewrite-in-progress-prefix-face
@@ -78,6 +83,9 @@
 
 (defvar-local eca-rewrite--overlays nil
   "Active rewrite overlays in this buffer.")
+
+(defvar-local eca-rewrite--hovered-ov nil
+  "Currently hovered rewrite overlay (point inside), or nil.")
 
 (defvar-keymap eca-rewrite-actions-map
   :doc "Keymap for rewrite overlay actions."
@@ -121,6 +129,41 @@ LABEL is the base text prefix."
      (propertize " " 'display `(space :align-to (- right ,(1+ (length model-str)))))
      (propertize model-str 'face 'eca-rewrite-model-face))))
 
+(defun eca-rewrite--apply-display-face (ov face)
+  "Apply FACE to OV's display string, preserving syntax faces.
+If the overlay is currently hidden (no display), do nothing."
+  (when (and (overlay-get ov 'display)
+             (overlay-get ov 'eca-rewrite--display-base))
+    (let* ((base (overlay-get ov 'eca-rewrite--display-base))
+           (disp (copy-sequence base)))
+      (add-face-text-property 0 (length disp) face 'append disp)
+      (overlay-put ov 'display disp))))
+
+(defun eca-rewrite--apply-normal-face (ov)
+  "Restore normal highlight face to OV."
+  (if (overlay-get ov 'eca-rewrite--display-base)
+      (eca-rewrite--apply-display-face ov 'eca-rewrite-overlay-face)
+    (overlay-put ov 'face 'eca-rewrite-overlay-face)))
+
+(defun eca-rewrite--apply-hover-face (ov)
+  "Apply hover face to OV."
+  (if (overlay-get ov 'eca-rewrite--display-base)
+      (eca-rewrite--apply-display-face ov 'eca-rewrite-overlay-hover-face)
+    (overlay-put ov 'face 'eca-rewrite-overlay-hover-face)))
+
+(defun eca-rewrite--hover-update ()
+  "Update hover styling based on point location."
+  (let ((current-ov (eca-rewrite--overlay-at-point)))
+    (unless (eq current-ov eca-rewrite--hovered-ov)
+      ;; Remove hover face from previous overlay
+      (when (overlayp eca-rewrite--hovered-ov)
+        (eca-rewrite--apply-normal-face eca-rewrite--hovered-ov))
+      ;; Update hovered overlay reference
+      (setq eca-rewrite--hovered-ov current-ov)
+      ;; Apply hover face to the new overlay, if present
+      (when (overlayp current-ov)
+        (eca-rewrite--apply-hover-face current-ov)))))
+
 (defun eca-rewrite--setup-overlay (id start end text path prompt model)
   "Create an overlay for ID from START to END.
 TEXT is the original selected text
@@ -138,7 +181,7 @@ MODEL is the LLM model used."
     (overlay-put ov 'eca-rewrite--path path)
     (overlay-put ov 'eca-rewrite--prompt prompt)
     (overlay-put ov 'eca-rewrite--model model)
-    (overlay-put ov 'face 'eca-rewrite-highlight-face)
+    (overlay-put ov 'face 'eca-rewrite-overlay-face)
     (overlay-put ov 'priority 2000)
     (overlay-put ov 'keymap eca-rewrite-actions-map)
     (overlay-put ov 'help-echo "ECA rewrite")
@@ -146,6 +189,7 @@ MODEL is the LLM model used."
                                     ov
                                     (propertize "Requesting LLM..." 'face 'eca-rewrite-in-progress-prefix-face)))
     (push ov eca-rewrite--overlays)
+    (add-hook 'post-command-hook #'eca-rewrite--hover-update nil t)
     ov))
 
 (defun eca-rewrite--show-overlay-actions (ov)
@@ -173,7 +217,12 @@ overlay, remove it from the internal tracking list
 No confirmation is asked; a nil OVS is ignored. Returns nil."
   (dolist (ov (ensure-list ovs))
     (setq eca-rewrite--overlays (delq ov eca-rewrite--overlays))
-    (delete-overlay ov)))
+    (when (eq ov eca-rewrite--hovered-ov)
+      (setq eca-rewrite--hovered-ov nil))
+    (delete-overlay ov))
+  (when (null eca-rewrite--overlays)
+    (remove-hook 'post-command-hook #'eca-rewrite--hover-update t)
+    (setq eca-rewrite--hovered-ov nil)))
 
 (defun eca-rewrite--accept (ov)
   "Accept rewrite overlay OV."
@@ -367,7 +416,12 @@ so shorter rewrites don't leave leftover original text in the overlay."
         ;; Move the highlight to the display string so show-paren-mode
         ;; overlays on buffer text don't repaint the whole overlay.
         (let ((disp (copy-sequence propertized)))
-          (overlay-put ov 'display disp))))))
+          ;; Keep a base version (syntax faces only) to compose with our faces.
+          (overlay-put ov 'eca-rewrite--display-base disp)
+          ;; Initial (non-hover) display uses the normal highlight face.
+          (let ((initial (copy-sequence disp)))
+            (add-face-text-property 0 (length initial) 'eca-rewrite-overlay-face 'append initial)
+            (overlay-put ov 'display initial)))))))
 
 ;; Public
 
