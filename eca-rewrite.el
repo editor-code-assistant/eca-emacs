@@ -271,7 +271,7 @@ MODEL is the model used."
            (hide-show-fn (lambda (&optional restore)
                            (let ((disp (overlay-get ov 'display))
                                  (stored (overlay-get ov 'eca-rewrite--ediff)))
-                             (overlay-put ov 'face (and restore 'eca-rewrite-highlight-face))
+                             ;; Do not toggle overlay-level face; the highlight is carried by the display string.
                              (overlay-put ov 'display (and restore stored))
                              (overlay-put ov 'eca-rewrite--ediff (unless restore disp)))))
            (on-quit-fn (lambda ()
@@ -304,8 +304,7 @@ MODEL is the model used."
   (setq eca-rewrite--last-prompt prompt)
   (when ov (eca-rewrite--reject ov))
   (eca-rewrite--send session text path start end prompt)
-  (unless (get-char-property (point) 'eca-rewrite--id)
-    (when (= (point) (region-end)) (backward-char 1)))
+  (goto-char start)
   (deactivate-mark))
 
 (defun eca-rewrite--send (session text path start end prompt)
@@ -365,9 +364,10 @@ so shorter rewrites don't leave leftover original text in the overlay."
       (let ((plain (buffer-substring-no-properties (point-min) (point-max)))
             (propertized (buffer-substring (point-min) (point-max))))
         (overlay-put ov 'eca-rewrite--new-text plain)
-        ;; Display only the rewritten content; the overlay spans the entire
-        ;; original region, so any leftover original text is fully hidden.
-        (overlay-put ov 'display propertized)))))
+        ;; Move the highlight to the display string so show-paren-mode
+        ;; overlays on buffer text don't repaint the whole overlay.
+        (let ((disp (copy-sequence propertized)))
+          (overlay-put ov 'display disp))))))
 
 ;; Public
 
