@@ -133,6 +133,7 @@ MODEL is the LLM model used."
     (overlay-put ov 'eca-rewrite--id id)
     (overlay-put ov 'eca-rewrite--original-text text)
     (overlay-put ov 'eca-rewrite--new-text nil)
+    (overlay-put ov 'eca-rewrite--new-text-acc "")
     (overlay-put ov 'eca-rewrite--temp-buffer (generate-new-buffer "*eca-rewrite*"))
     (overlay-put ov 'eca-rewrite--path path)
     (overlay-put ov 'eca-rewrite--prompt prompt)
@@ -287,7 +288,7 @@ MODEL is the model used."
   (pcase eca-rewrite-diff-tool
     ('simple-diff (eca-rewrite--simple-diff ov))
     ('ediff (eca-rewrite--ediff ov))
-    (_ (user-error (format "Unknown diff tool for `eca-rewrite-diff-tool': %s" eca-rewrite-diff-tool)))))
+    (_ (user-error (concat "Unknown diff tool: " eca-rewrite-diff-tool)))))
 
 (defun eca-rewrite--retry (ov session)
   "Retry rewrite overlay OV for SESSION."
@@ -346,25 +347,27 @@ PATH is the optional file path."
 
 (defun eca-rewrite--add-text (ov text)
   "Add TEXT as the rewritten content to overlay OV.
-This updates the overlay's associated temporary buffer with the new text,
-sets overlay properties, and ensures display reflects the latest content."
-  (let ((ov-buf (overlay-buffer ov))
-        (temp-buf (overlay-get ov 'eca-rewrite--temp-buffer)))
+This replaces the overlay preview entirely with the accumulated new text,
+so shorter rewrites don't leave leftover original text in the overlay."
+  (let* ((ov-buf (overlay-buffer ov))
+         (temp-buf (overlay-get ov 'eca-rewrite--temp-buffer))
+         (mode (and ov-buf (buffer-local-value 'major-mode ov-buf)))
+         (acc (concat (overlay-get ov 'eca-rewrite--new-text-acc) text)))
+    (overlay-put ov 'eca-rewrite--new-text-acc acc)
     (with-current-buffer temp-buf
-      (let ((inhibit-modification-hooks nil)
-            (inhibit-read-only t))
-        (when (= 0 (buffer-size))
-          (buffer-disable-undo)
-          (insert-buffer-substring ov-buf (overlay-start ov) (overlay-end ov))
-          (delay-mode-hooks (funcall (buffer-local-value 'major-mode ov-buf)))
-          (add-text-properties (point-min) (point-max) '(face shadow font-lock-face shadow))
-          (goto-char (point-min)))
-        (insert text)
-        (unless (eobp)
-          (ignore-errors (delete-char (length text))))
+      (let ((inhibit-read-only t)
+            (inhibit-modification-hooks t))
+        (erase-buffer)
+        (insert acc)
+        (when mode
+          (delay-mode-hooks (funcall mode)))
         (font-lock-ensure))
-      (overlay-put ov 'eca-rewrite--new-text (buffer-string))
-      (overlay-put ov 'display (buffer-string)))))
+      (let ((plain (buffer-substring-no-properties (point-min) (point-max)))
+            (propertized (buffer-substring (point-min) (point-max))))
+        (overlay-put ov 'eca-rewrite--new-text plain)
+        ;; Display only the rewritten content; the overlay spans the entire
+        ;; original region, so any leftover original text is fully hidden.
+        (overlay-put ov 'display propertized)))))
 
 ;; Public
 
