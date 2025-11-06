@@ -384,7 +384,8 @@ PATH is the optional file path."
        (setq eca-rewrite--id->buffer (eca-assoc eca-rewrite--id->buffer id (current-buffer)))
        (eca-rewrite--setup-overlay id start end text path prompt (plist-get res :model)))
      :error-callback
-     (lambda (err) (eca-error "Rewrite error: %s" err)))))
+     (lambda (err)
+       (eca-error "Rewrite error: %s" (plist-get err :message))))))
 
 (defun eca-rewrite--set-reasoning (ov)
   "Set OV overlay header to indicate reasoning is in progress."
