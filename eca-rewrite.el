@@ -187,28 +187,31 @@ MODEL is the LLM model used."
     (overlay-put ov 'priority 2000)
     (overlay-put ov 'keymap eca-rewrite-actions-map)
     (overlay-put ov 'help-echo "ECA rewrite")
-    (overlay-put ov 'before-string (eca-rewrite--overlay-menu-str
-                                    ov
-                                    (propertize "Requesting LLM..." 'face 'eca-rewrite-in-progress-prefix-face)))
+    (eca-rewrite--refresh-overlay-actions ov 'started)
     (push ov eca-rewrite--overlays)
     (add-hook 'post-command-hook #'eca-rewrite--hover-update nil t)
     ov))
 
-(defun eca-rewrite--show-overlay-actions (ov)
-  "Display the actions overlay above rewrite overlay OV."
-  (let ((choices '((?a "accept") (?r "reject") (?d "diff") (?m "merge") (?t "retry"))))
+(defun eca-rewrite--refresh-overlay-actions (ov status)
+  "Display the actions overlay above rewrite overlay OV given STATUS."
+  (let ((choices (pcase status
+                   ('started '((?r "reject")))
+                   ('reasoning '((?r "reject")))
+                   ('finished '((?a "accept") (?r "reject") (?d "diff") (?m "merge") (?t "retry")))))
+        (label (pcase status
+                 ('started (propertize "Requesting LLM... " 'face 'eca-rewrite-in-progress-prefix-face))
+                 ('reasoning (propertize "LLM reasoning... " 'face 'eca-rewrite-in-progress-prefix-face))
+                 ('finished (propertize eca-rewrite-finish-prefix 'face 'eca-rewrite-ready-prefix-face)))))
     (overlay-put
      ov
      'before-string (eca-rewrite--overlay-menu-str
                      ov
                      (concat
-                      (propertize eca-rewrite-finish-prefix 'face 'eca-rewrite-ready-prefix-face)
+                      label
                       (when (fboundp #'rmc--add-key-description) ;; > Emacs 29
                         (mapconcat (lambda (e) (cdr e))
                                    (mapcar #'rmc--add-key-description choices)
-                                   ", ")))))
-    (pulse-momentary-highlight-region (overlay-start ov) (overlay-end ov))
-    (kill-buffer (overlay-get ov 'eca-rewrite--temp-buffer))))
+                                   ", ")))))))
 
 (defun eca-rewrite--reject (ovs)
   "Reject (discard) one or more rewrite overlays.
@@ -395,13 +398,6 @@ PATH is the optional file path."
      (lambda (err)
        (eca-error "Rewrite error: %s" (plist-get err :message))))))
 
-(defun eca-rewrite--set-reasoning (ov)
-  "Set OV overlay header to indicate reasoning is in progress."
-  (overlay-put ov 'before-string
-               (eca-rewrite--overlay-menu-str
-                ov
-                (propertize "LLM reasoning..." 'face 'eca-rewrite-in-progress-prefix-face))))
-
 (defun eca-rewrite--add-text (ov text)
   "Add TEXT as the rewritten content to overlay OV.
 This replaces the overlay preview entirely with the accumulated new text,
@@ -455,7 +451,7 @@ accepts, shows menu, or diffs according to `eca-rewrite-finished-action',
       (with-current-buffer buffer
         (when-let ((ov (eca-rewrite--overlay-from-id id)))
           (pcase (plist-get content :type)
-            ("reasoning" (eca-rewrite--set-reasoning ov))
+            ("reasoning" (eca-rewrite--refresh-overlay-actions ov 'reasoning))
             ("text" (eca-rewrite--add-text ov (plist-get content :text)))
             ("finished" (progn
                           (overlay-put ov 'eca-rewrite--total-time-ms (plist-get content :totalTimeMs))
@@ -463,7 +459,10 @@ accepts, shows menu, or diffs according to `eca-rewrite-finished-action',
                             ('accept (eca-rewrite--accept ov))
                             ('diff (eca-rewrite--diff ov))
                             ('merge (eca-rewrite--merge ov))
-                            ('show-overlay-actions (eca-rewrite--show-overlay-actions ov))
+                            ('show-overlay-actions (progn
+                                                     (eca-rewrite--refresh-overlay-actions ov 'finished)
+                                                     (pulse-momentary-highlight-region (overlay-start ov) (overlay-end ov))
+                                                     (kill-buffer (overlay-get ov 'eca-rewrite--temp-buffer))))
                             (_ (user-error (format "Uknown rewrite action '%s' for eca-rewrite-finished-action" eca-rewrite-finished-action))))
                           (with-demoted-errors "eca-rewrite-on-finished-hook: %S"
                             (run-hook-with-args 'eca-rewrite-on-finished-hook ov))))))))))
