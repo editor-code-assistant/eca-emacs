@@ -87,6 +87,8 @@
 (defvar-local eca-rewrite--hovered-ov nil
   "Currently hovered rewrite overlay (point inside), or nil.")
 
+(defvar-local eca-rewrite--restore-paren-mode-after-clean nil)
+
 (defvar-keymap eca-rewrite-actions-map
   :doc "Keymap for rewrite overlay actions."
   "a" #'eca-rewrite-accept
@@ -215,6 +217,9 @@ OVS may be a single overlay or a list of overlays. For each
 overlay, remove it from the internal tracking list
 `eca-rewrite--overlays' and delete it with `delete-overlay'.
 No confirmation is asked; a nil OVS is ignored. Returns nil."
+  (when eca-rewrite--restore-paren-mode-after-clean
+    (setq eca-rewrite--restore-paren-mode-after-clean nil)
+    (show-paren-mode 1))
   (dolist (ov (ensure-list ovs))
     (setq eca-rewrite--overlays (delq ov eca-rewrite--overlays))
     (when (eq ov eca-rewrite--hovered-ov)
@@ -226,6 +231,9 @@ No confirmation is asked; a nil OVS is ignored. Returns nil."
 
 (defun eca-rewrite--accept (ov)
   "Accept rewrite overlay OV."
+  (when eca-rewrite--restore-paren-mode-after-clean
+    (setq eca-rewrite--restore-paren-mode-after-clean nil)
+    (show-paren-mode 1))
   (let ((ov-buf (overlay-buffer ov)))
     (with-current-buffer ov-buf
       (goto-char (overlay-start ov))
@@ -403,6 +411,10 @@ so shorter rewrites don't leave leftover original text in the overlay."
          (mode (and ov-buf (buffer-local-value 'major-mode ov-buf)))
          (acc (concat (overlay-get ov 'eca-rewrite--new-text-acc) text)))
     (overlay-put ov 'eca-rewrite--new-text-acc acc)
+    (with-current-buffer ov-buf
+      (setq eca-rewrite--restore-paren-mode-after-clean t)
+      (when show-paren-mode
+        (show-paren-mode -1)))
     (with-current-buffer temp-buf
       (let ((inhibit-read-only t)
             (inhibit-modification-hooks t))
