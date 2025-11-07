@@ -453,6 +453,9 @@ accepts, shows menu, or diffs according to `eca-rewrite-finished-action',
           (pcase (plist-get content :type)
             ("reasoning" (eca-rewrite--refresh-overlay-actions ov 'reasoning))
             ("text" (eca-rewrite--add-text ov (plist-get content :text)))
+            ("error" (progn
+                       (eca-rewrite--reject (list ov))
+                       (eca-error "Rewrite error: %s" (plist-get content :message))))
             ("finished" (progn
                           (overlay-put ov 'eca-rewrite--total-time-ms (plist-get content :totalTimeMs))
                           (pcase eca-rewrite-finished-action
