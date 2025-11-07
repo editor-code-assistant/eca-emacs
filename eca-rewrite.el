@@ -116,6 +116,18 @@
   (let ((secs (/ (float ms) 1000)))
     (format "%.2f s" secs)))
 
+(defun eca-rewrite--normalize-start-region (start)
+  "Normalize START region.
+If chars from START until bol are all spaces return bol,
+otherwise START."
+  (save-excursion
+    (goto-char start)
+    (let ((bol (line-beginning-position)))
+      (if (string-match-p "\\`[ \t]*\\'"
+                          (buffer-substring bol start))
+          bol
+        start))))
+
 (defun eca-rewrite--overlay-menu-str (ov label)
   "Return the before-string for overlay OV.
 LABEL is the base text prefix."
@@ -484,7 +496,7 @@ PROMPT is the instructions prompt for the LLM."
   (eca-assert-session-running (eca-session))
   (let* ((existing-ov (eca-rewrite--overlay-at-point))
          (start (cond (existing-ov (overlay-start existing-ov))
-                      ((use-region-p) (region-beginning))
+                      ((use-region-p) (eca-rewrite--normalize-start-region (region-beginning)))
                       (t (or (car (bounds-of-thing-at-point 'defun))
                              (car (bounds-of-thing-at-point 'paragraph))
                              (user-error "No region selected or existing-ov rewrite overlay")))))
