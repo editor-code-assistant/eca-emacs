@@ -16,10 +16,13 @@
 
 (require 'lsp-mode nil t)
 (require 'flymake nil t)
+(require 'ht nil t)
 
 (require 'eca-util)
 
 (declare-function lsp-diagnostics "lsp-mode" (current-workspace?))
+(declare-function lsp-get "lsp-mode" (from key))
+(declare-function ht-select "ht" (function table))
 (declare-function flymake-diagnostic-code "flymake" (diagnostic))
 
 (defun eca-editor--lsp-to-eca-severity (severity)
