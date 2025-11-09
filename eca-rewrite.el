@@ -483,18 +483,19 @@ accepts, shows menu, or diffs according to `eca-rewrite-finished-action',
                             (run-hook-with-args 'eca-rewrite-on-finished-hook ov))))))))))
 
 ;;;###autoload
-(defun eca-rewrite (prompt)
+(defun eca-rewrite (&optional prompt)
   "Rewrite a text with a new LLM generated one.
 - If on an existing rewrite overlay, re-iterate
 - Else if region active, rewrite that region
 - Else try to detect defun/paragraph boundaries
 
 PROMPT is the instructions prompt for the LLM."
-  (interactive
-   (list (read-string "Rewrite prompt: " (or eca-rewrite--last-prompt
-                                             eca-rewrite-prompt-prefix))))
+  (interactive)
   (eca-assert-session-running (eca-session))
-  (let* ((existing-ov (eca-rewrite--overlay-at-point))
+  (let* ((prompt (or prompt
+                     (read-string "Rewrite prompt: " (or eca-rewrite--last-prompt
+                                                         eca-rewrite-prompt-prefix))))
+         (existing-ov (eca-rewrite--overlay-at-point))
          (start (cond (existing-ov (overlay-start existing-ov))
                       ((use-region-p) (eca-rewrite--normalize-start-region (region-beginning)))
                       (t (or (car (bounds-of-thing-at-point 'defun))
