@@ -1873,10 +1873,11 @@ Append STATUS, TOOL-CALL-NEXT-LINE-SPACING and ROOTS"
                 (error (plist-get content :error))
                 (label (propertize (format "Executed hook '%s'" name) 'font-lock-face 'eca-chat-hook-label-face)))
            (eca-chat--update-expandable-content id label (eca-chat--content-table
-                                                          `(("Name" . ,name)
-                                                            ("Status" . ,status)
-                                                            ("Output" . ,output)
-                                                            ("Error" . ,error))))))
+                                                          (append
+                                                           `(("Name" . ,name)
+                                                             ("Status" . ,status))
+                                                           (when output `(("Output" . ,output)))
+                                                           (when error `(("Error" . ,error))))))))
         ("toolCallPrepare"
          (let* ((id (plist-get content :id))
                 (name (plist-get content :name))
