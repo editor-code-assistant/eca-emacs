@@ -206,8 +206,9 @@ https://github.com/emacs-lsp/lsp-mode/issues/4746#issuecomment-2957183423"
   "Return the command to start server."
   (let ((system-command (executable-find "eca")))
     (cond
-     (eca-custom-command (list :decision 'custom
-                               :command eca-custom-command))
+     (eca-custom-command
+      (list :decision 'custom
+            :command (list eca-custom-command "server")))
 
      (system-command
       (list :decision 'system
