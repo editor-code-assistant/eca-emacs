@@ -589,13 +589,15 @@ Must be a positive integer."
     (overlay-put prompt-field-ov 'eca-chat-prompt-field t)
     (overlay-put prompt-field-ov 'before-string (propertize eca-chat-prompt-prefix 'font-lock-face 'eca-chat-prompt-prefix-face))))
 
-(defun eca-chat--clear ()
-  "Clear the chat for SESSION."
+(defun eca-chat--clear (&optional new-prompt-content)
+  "Clear the chat for SESSION and then insert NEW-PROMPT-CONTENT."
   (erase-buffer)
   (remove-overlays (point-min) (point-max))
   (eca-chat--insert "\n")
   (eca-chat--insert-prompt-string)
-  (eca-chat--refresh-context))
+  (eca-chat--refresh-context)
+  (when new-prompt-content
+    (eca-chat--set-prompt new-prompt-content)))
 
 (defun eca-chat--stop-prompt (session)
   "Stop the running chat prompt for SESSION."
@@ -665,7 +667,7 @@ Otherwise to a not loading state."
 
 (defun eca-chat--prompt-field-start-point ()
   "Return the metadata overlay for the prompt field start point."
-  (overlay-start (eca-chat--prompt-field-ov)))
+  (-some-> (eca-chat--prompt-field-ov) (overlay-start)))
 
 (defun eca-chat--prompt-progress-field-ov ()
   "Return the overlay for the progress field."
@@ -774,6 +776,13 @@ the prompt/context line."
         (setq pos next-change)))
     result))
 
+(defun eca-chat--prompt-content ()
+  "Return the current prompt content."
+  (when-let ((prompt-start (eca-chat--prompt-field-start-point)))
+    (save-excursion
+      (goto-char prompt-start)
+      (string-trim (buffer-substring-no-properties (point) (point-max))))))
+
 (defun eca-chat--send-prompt (session prompt)
   "Send PROMPT to server for SESSION."
   (let* ((prompt-start (eca-chat--prompt-field-start-point))
@@ -800,11 +809,8 @@ the prompt/context line."
   "Send the current prompt to eca process if in prompt."
   (interactive)
   (eca-chat--allow-write
-   (let* ((prompt-start (eca-chat--prompt-field-start-point))
-          (session (eca-session))
-          (prompt (save-excursion
-                    (goto-char prompt-start)
-                    (string-trim (buffer-substring (point) (point-max))))))
+   (let* ((session (eca-session))
+          (prompt (eca-chat--prompt-content)))
      (cond
       ;; check prompt
       ((and (not (string-empty-p prompt))
@@ -2189,7 +2195,7 @@ Append STATUS, TOOL-CALL-NEXT-LINE-SPACING and ROOTS"
       ;; Reset per-buffer tool prepare counters to avoid leaking across sessions
       (setq-local eca-chat--tool-call-prepare-counters (make-hash-table :test 'equal))
       (setq-local eca-chat--tool-call-prepare-content-cache (make-hash-table :test 'equal))
-      (eca-chat--clear))))
+      (eca-chat--clear (eca-chat--prompt-content)))))
 
 ;;;###autoload
 (defun eca-chat-go-to-prev-user-message ()
@@ -2318,11 +2324,8 @@ if ARG is current prefix, ask for file, otherwise drop current file."
   "Send the prompt in chat if not empty."
   (interactive)
   (eca-chat--with-current-buffer (eca-chat--get-last-buffer (eca-session))
-    (let* ((prompt-start (eca-chat--prompt-field-start-point))
-           (session (eca-session))
-           (prompt (save-excursion
-                     (goto-char prompt-start)
-                     (string-trim (buffer-substring (point) (point-max))))))
+    (let* ((session (eca-session))
+           (prompt (eca-chat--prompt-content)))
       (when (and (not (string-empty-p prompt))
                  (not eca-chat--chat-loading))
         (eca-chat--send-prompt session prompt)))))
