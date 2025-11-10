@@ -785,6 +785,8 @@ the prompt/context line."
 
 (defun eca-chat--send-prompt (session prompt)
   "Send PROMPT to server for SESSION."
+  (when eca-chat--closed
+    (user-error (eca-error "This chat is closed")))
   (let* ((prompt-start (eca-chat--prompt-field-start-point))
          (refined-contexts (-map #'eca-chat--refine-context eca-chat--context)))
     (when (seq-empty-p eca-chat--history) (eca-chat--clear))
@@ -2000,6 +2002,8 @@ Append STATUS, TOOL-CALL-NEXT-LINE-SPACING and ROOTS"
         ("toolCallRejected"
          (let* ((name (plist-get content :name))
                 (server (plist-get content :server))
+                (label (or (plist-get content :summary)
+                           (format "Rejected tool: %s__%s" server name)))
                 (args (plist-get content :arguments))
                 (details (plist-get content :details))
                 (status eca-chat-mcp-tool-call-error-symbol)
@@ -2011,7 +2015,7 @@ Append STATUS, TOOL-CALL-NEXT-LINE-SPACING and ROOTS"
              ("fileChange" (eca-chat--tool-call-file-change-details content label nil nil status tool-call-next-line-spacing roots))
              (_ (eca-chat--update-expandable-content
                  id
-                 (concat (propertize (format "Rejected tool: %s__%s" server name)
+                 (concat (propertize label
                                      'font-lock-face 'eca-chat-mcp-tool-call-label-face)
                          " "
                          eca-chat-mcp-tool-call-error-symbol)
@@ -2080,20 +2084,23 @@ Append STATUS, TOOL-CALL-NEXT-LINE-SPACING and ROOTS"
 
 (defun eca-chat-exit (session)
   "Exit the ECA chat for SESSION."
-  (when (buffer-live-p (eca-chat--get-last-buffer session))
-    (eca-chat--with-current-buffer (eca-chat--get-last-buffer session)
-      (setq eca-chat--closed t)
-      (force-mode-line-update)
-      (goto-char (point-max))
-      (rename-buffer (concat (buffer-name) ":closed") t)
-      ;; Keep only the most recently closed chat buffer; kill older ones.
-      (let ((current (current-buffer)))
-        (dolist (b (buffer-list))
-          (when (and (not (eq b current))
-                     (string-match-p "^<eca-chat:.*>:closed$" (buffer-name b)))
-            (kill-buffer b))))
-      (when-let* ((window (get-buffer-window (eca-chat--get-last-buffer session))))
-        (quit-window nil window)))))
+  (mapcar (lambda (title+buffer)
+            (let ((chat-buffer (cdr title+buffer)))
+              (when (buffer-live-p chat-buffer)
+                (eca-chat--with-current-buffer chat-buffer
+                  (setq eca-chat--closed t)
+                  (force-mode-line-update)
+                  (goto-char (point-max))
+                  (rename-buffer (concat (buffer-name) ":closed") t)
+                  ;; Keep only the most recently closed chat buffer; kill older ones.
+                  (let ((current (current-buffer)))
+                    (dolist (b (buffer-list))
+                      (when (and (not (eq b current))
+                                 (string-match-p "^<eca-chat:.*>:closed$" (buffer-name b)))
+                        (kill-buffer b))))
+                  (when-let* ((window (get-buffer-window chat-buffer)))
+                    (quit-window nil window))))))
+          (eca--session-chats session)))
 
 ;;;###autoload
 (defun eca-chat-clear ()
