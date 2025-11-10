@@ -159,7 +159,7 @@ Check before the [server troubleshooting](https://eca.dev/troubleshooting/).
 
 1. **Check ECA installation**: Verify ECA is available on your PATH or set `eca-custom-command`:
    ```elisp
-   (setq eca-custom-command "/path/to/your/eca/binary")
+   (setq eca-custom-command '("/path/to/your/eca/binary" "server"))
    ```
 
 2. **Enable debug logging**: Add extra arguments for debugging:
