@@ -45,24 +45,39 @@ M-x package-install eca
 3. Type your prompt after the `> ` and press RET.
 4. Attach more context auto completing after the `@`.
 
-## Tips
+## Usage
 
-**Not all**, but most relevant functions and variables:
+### Commands
 
-### Functions
+- `eca`: Starts eca server/session + open chat
+- `eca-stop`: Stop eca server/session
+- `eca-restart`: Restart eca server/session
+- `eca-workspaces`: print worskpace folders of current session
+- `eca-open-global-config`: Open ECA global config file
 
-- `eca-chat-add-context-to-system-prompt`: Add file/dirs to system prompt checking multiple modes with range support.
-- `eca-chat-add-context-to-user-prompt`: Add file/dirs to user prompt checking multiple modes with range support.
-- `eca-chat-add-filepath-to-user-prompt`: Add filepath mention only to user prompt checking multiple modes with range support.
-- `eca-chat-tool-call-accept-all`: Acceppt all pending tool calls in chat.
-- `eca-chat-tool-call-accept-next`: Acceppt next pending tool call in chat.
-- `eca-chat-tool-call-reject-next`: Reject next pending tool call in chat.
-- `eca-chat-send-prompt`: In case you wanna send prompts programatically in elisp.
-- `eca-chat-toggle-window`: toggle chat window.
-- `eca-chat-timeline`: Show user prompt history as a timeline.
-- `eca-open-global-config`: Open ECA global config file.
-- `eca-chat-new`: Starts a new chat for same session.
-- `eca-chat-select`: Select a chat from all running for same session.
+- `eca-chat-toggle-window`: Open/close chat
+- `eca-chat-select`: Select a chat for existing session
+- `eca-chat-new`: Start a new chat for current session/workspace folders.
+- `eca-chat-rename`: Rename current chat
+- `eca-chat-clear`: Clear chat content visually only
+- `eca-chat-reset`: Deletes current chat and start a new one
+- `eca-chat-select-model`: Change chat model
+- `eca-chat-select-behavior`: Change chat behavior
+- `eca-chat-cycle-behavior`: Change chat behavior to next available
+- `eca-chat-add-context-to-system-prompt`: Add file/dirs to system prompt checking multiple modes with range support
+- `eca-chat-add-context-to-user-prompt`: Add file/dirs to user prompt checking multiple modes with range support
+- `eca-chat-add-filepath-to-user-prompt`: Add filepath mention only to user prompt checking multiple modes with range support
+- `eca-chat-drop-context-from-system-prompt`: Drop a context from system prompt
+- `eca-chat-send-prompt`: Send a prompt in chat interactively
+- `eca-chat-send-prompt-at-chat` Open chat and send any prompt written there
+- `eca-chat-clear-prompt`: Clear written prompt in chat
+- `eca-chat-repeat-prompt`: Repeat a previously sent prompt
+- `eca-chat-stop-prompt`: Stop a running prompt in chat
+- `eca-chat-tool-call-accept-all`: Acceppt all pending tool calls in chat
+- `eca-chat-tool-call-accept-next`: Acceppt next pending tool call in chat
+- `eca-chat-tool-call-reject-next`: Reject next pending tool call in chat
+- `eca-chat-timeline`: Show user prompt history as a timeline
+- `eca-chat-talk`: Use whisper.el to send a prompt via voice.
 
 ### Variables
 

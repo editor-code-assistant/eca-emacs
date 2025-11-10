@@ -2113,6 +2113,27 @@ Append STATUS, TOOL-CALL-NEXT-LINE-SPACING and ROOTS"
     (setf (eca--session-chat-selected-model (eca-session)) model)))
 
 ;;;###autoload
+(defun eca-chat-select-behavior ()
+  "Select which chat behavior to use from what server supports."
+  (interactive)
+  (eca-assert-session-running (eca-session))
+  (when-let* ((behavior (completing-read "Select a behavior:" (append (eca--session-chat-behaviors (eca-session)) nil) nil t)))
+    (eca-chat--set-behavior (eca-session) behavior)))
+
+;;;###autoload
+(defun eca-chat-cycle-behavior ()
+  "Cycle between existing chat behaviors to use."
+  (interactive)
+  (eca-assert-session-running (eca-session))
+  (let* ((session (eca-session))
+         (current-behavior (eca--session-chat-selected-behavior session))
+         (all-behaviors (append (eca--session-chat-behaviors session) nil))
+         (current-behavior-index (seq-position all-behaviors current-behavior))
+         (next-behavior (or (nth (1+ current-behavior-index) all-behaviors)
+                            (nth 0 all-behaviors))))
+    (eca-chat--set-behavior session next-behavior)))
+
+;;;###autoload
 (defun eca-chat-tool-call-accept-all ()
   "Accept all pending approval tool call in chat."
   (interactive)
@@ -2153,27 +2174,6 @@ Append STATUS, TOOL-CALL-NEXT-LINE-SPACING and ROOTS"
     (save-excursion
       (when (text-property-search-forward 'eca-tool-call-pending-approval-reject t)
         (call-interactively #'eca-chat--key-pressed-return)))))
-
-;;;###autoload
-(defun eca-chat-select-behavior ()
-  "Select which chat behavior to use from what server supports."
-  (interactive)
-  (eca-assert-session-running (eca-session))
-  (when-let* ((behavior (completing-read "Select a behavior:" (append (eca--session-chat-behaviors (eca-session)) nil) nil t)))
-    (eca-chat--set-behavior (eca-session) behavior)))
-
-;;;###autoload
-(defun eca-chat-cycle-behavior ()
-  "Cycle between existing chat behaviors to use."
-  (interactive)
-  (eca-assert-session-running (eca-session))
-  (let* ((session (eca-session))
-         (current-behavior (eca--session-chat-selected-behavior session))
-         (all-behaviors (append (eca--session-chat-behaviors session) nil))
-         (current-behavior-index (seq-position all-behaviors current-behavior))
-         (next-behavior (or (nth (1+ current-behavior-index) all-behaviors)
-                            (nth 0 all-behaviors))))
-    (eca-chat--set-behavior session next-behavior)))
 
 ;;;###autoload
 (defun eca-chat-reset ()
