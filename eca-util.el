@@ -13,6 +13,7 @@
 
 (require 'cl-lib)
 (require 'dash)
+(require 'f)
 (require 'transient)
 
 (defcustom eca-buttons-allow-mouse nil
@@ -48,17 +49,6 @@
   (and (= (length plist1) (length plist2))
        (cl-loop for (key val) on plist1 by #'cddr
                 always (equal val (plist-get plist2 key)))))
-
-(defun eca-find-root-for-buffer ()
-  "Get the project root using git falling back to file directory."
-  (or (when (fboundp 'project-current)
-        (when-let* ((project (project-current)))
-          (if (fboundp 'project-root)
-              (project-root project)
-            (car (with-no-warnings
-                   (project-roots project))))))
-      (when buffer-file-name (file-name-directory buffer-file-name))
-      default-directory))
 
 (defvar-local eca--session-id-cache nil)
 
@@ -108,6 +98,31 @@
 
   ;; The welcome message for new chats.
   (chat-welcome-message ""))
+
+(defun eca-find-root-for-buffer ()
+  "Return the path that first matches the following:
+- Buffer is within an existent eca session workspace-folder.
+- Use `project` to return the project root if available.
+- Otherwise return buffer file or `default-directory`."
+  (let* ((default-path (or (when buffer-file-name (file-name-directory buffer-file-name))
+                           default-directory))
+         (existing-sessions-folders (-keep (lambda (session)
+                                             (--first (or (f-same? it default-path)
+                                                          (f-ancestor-of? it default-path))
+                                                      (eca--session-workspace-folders session)))
+                                           (eca-vals eca--sessions))))
+    (or (when existing-sessions-folders
+          (-max-by (lambda (a b)
+                     (> (length (expand-file-name a))
+                        (length (expand-file-name b))))
+                   existing-sessions-folders))
+        (when (fboundp 'project-current)
+          (when-let* ((project (project-current)))
+            (if (fboundp 'project-root)
+                (project-root project)
+              (car (with-no-warnings
+                     (project-roots project))))))
+        default-path)))
 
 (defun eca-session ()
   "Return the session related to root of current buffer otherwise nil."

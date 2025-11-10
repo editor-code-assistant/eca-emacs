@@ -910,8 +910,8 @@ Otherwise show plain integer."
       (concat (if (< n 0) "-" "") s "K")))
    (t (number-to-string n))))
 
-(defun eca-chat--mode-line-string ()
-  "Update chat mode line."
+(defun eca-chat--mode-line-string (session)
+  "Update chat mode line for SESSION."
   (let* ((usage-str
           (when (or eca-chat--message-input-tokens
                     eca-chat--message-output-tokens
@@ -931,15 +931,17 @@ Otherwise show plain integer."
                       eca-chat-usage-string-format)
                 (string-join ""))))
          (fill-space (propertize " "
-                                 'display `((space :align-to (- right ,(+ 1 (length usage-str))))))))
+                                 'display `((space :align-to (- right ,(+ 1 (length usage-str)))))))
+         (title (cond
+                 (eca-chat--custom-title
+                  (propertize eca-chat--custom-title 'font-lock-face 'eca-chat-title-face))
+                 (eca-chat--title
+                  (propertize eca-chat--title 'font-lock-face 'eca-chat-title-face))))
+         (root (string-join (eca--session-workspace-folders session) ", ")))
     (concat
      (when eca-chat--closed
        (propertize "*Closed session*" 'font-lock-face 'eca-chat-system-messages-face))
-     (cond
-      (eca-chat--custom-title
-       (propertize eca-chat--custom-title 'font-lock-face 'eca-chat-title-face))
-      (eca-chat--title
-       (propertize eca-chat--title 'font-lock-face 'eca-chat-title-face)))
+     (or title root)
      fill-space
      usage-str)))
 
@@ -1626,7 +1628,7 @@ string."
                          company-minimum-prefix-length 0))
            (when (fboundp 'corfu-mode)
              (setq-local corfu-auto-prefix 0))
-           (setq-local mode-line-format '(t (:eval (eca-chat--mode-line-string))))
+           (setq-local mode-line-format `(t (:eval (eca-chat--mode-line-string ,session))))
            (force-mode-line-update)
            (run-hooks 'eca-chat-mode-hook))))))
 
