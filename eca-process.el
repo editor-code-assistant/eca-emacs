@@ -30,6 +30,16 @@ If not provided, download and start eca automatically."
   :risky t
   :type '(repeat string))
 
+(defcustom eca-server-download-method 'url-retrieve
+  "The method to use to download eca server binary.
+Some Emacs versions / distributions have issues with
+curl blocking Emacs, but `url-retrieve' should be always async.
+Test different options if facing issues."
+  :group 'eca
+  :type '(choice
+          (const :tag "Async url-retrieve" url-retrieve)
+          (const :tag "Curl" curl)))
+
 (defcustom eca-server-download-url nil
   "The custom URL to download eca server."
   :group 'eca
@@ -100,10 +110,9 @@ If current `gc-cons-threshold` is lower use that on filter server messages.'"
 
 (defvar eca-process--latest-server-version nil)
 
-(defun eca--download-file (url path)
-  "Download a file from URL to PATH shelling out to system.
-Workaround for `url-copy-file` that has issues with macos async threads.
-https://github.com/emacs-lsp/lsp-mode/issues/4746#issuecomment-2957183423"
+(cl-defun eca--curl-download-file (&key url path on-done)
+  "Downloads a file from URL to PATH shelling out to system with curl.
+Calls ON-DONE when done."
   (let ((curl-cmd (or (executable-find "curl")
                       (executable-find "curl.exe"))))
     (unless curl-cmd
@@ -113,9 +122,34 @@ https://github.com/emacs-lsp/lsp-mode/issues/4746#issuecomment-2957183423"
                                             (shell-quote-argument path)
                                             (shell-quote-argument url)))))
       (unless (= exit-code 0)
-        (error "Curl failed with exit code %d" exit-code)))))
+        (error "Curl failed with exit code %d" exit-code)))
+    (funcall on-done)))
 
-(defun eca--download-string (url)
+(cl-defun eca--url-retrieve-download-file (&key url path on-done)
+  "Downloads async a file from URL to PATH via `url-retrieve'.
+Calls ON-DONE when done
+Workaround for `url-copy-file` that has issues with macos async threads.
+https://github.com/emacs-lsp/lsp-mode/issues/4746#issuecomment-2957183423"
+  (url-retrieve
+   url
+   (lambda (status)
+     (let ((resp-buf (current-buffer)))
+       (unwind-protect
+           (progn
+             (when-let ((error-data (plist-get status :error)))
+               (error "%s" error-data))
+             (let ((coding-system-for-write 'binary)
+                   (buffer-file-coding-system 'binary))
+               (goto-char (point-min))
+               (unless (re-search-forward "\r?\n\r?\n" nil t)
+                 (error "Failed to parse HTTP response for download"))
+               (write-region (point) (point-max) path nil 'silent)
+               (funcall on-done)))
+         (ignore-errors (kill-buffer resp-buf)))))
+   nil
+   t))
+
+(defun eca--curl-download-string (url)
   "Download content from URL as a string, shelling out to curl."
   (let ((curl-cmd (or (executable-find "curl")
                       (executable-find "curl.exe"))))
@@ -134,7 +168,7 @@ https://github.com/emacs-lsp/lsp-mode/issues/4746#issuecomment-2957183423"
   (or eca-process--latest-server-version
       (condition-case err
           (let* ((releases-url "https://api.github.com/repos/editor-code-assistant/eca/releases")
-                 (json-string (eca--download-string releases-url)))
+                 (json-string (eca--curl-download-string releases-url)))
             (with-temp-buffer
               (insert json-string)
               (goto-char (point-min))
@@ -181,26 +215,32 @@ https://github.com/emacs-lsp/lsp-mode/issues/4746#issuecomment-2957183423"
 (defun eca-process--download-server (on-downloaded version)
   "Download eca server of VERSION calling ON-DOWNLOADED when success."
   (-let ((url (eca-process--download-url version))
-         ((download-path . store-path) (eca-process--download-and-store-path)))
-    (make-thread
-     (lambda ()
-       (condition-case err
-           (progn
-             (when (f-exists? download-path) (f-delete download-path))
-             (when (f-exists? store-path) (f-delete store-path))
-             (when (f-exists? eca-server-version-file-path) (f-delete eca-server-version-file-path))
-             (mkdir (f-parent download-path) t)
-             (eca-info "Downloading eca server from %s to %s..."  url download-path)
-             (eca--download-file url download-path)
-             (eca-info "Downloaded eca, unzipping it...")
-             (unless (and eca-unzip-script (funcall eca-unzip-script))
-               (error "Unable to find `unzip' or `powershell' on the path, please customize `eca-unzip-script'"))
-             (shell-command (format (funcall eca-unzip-script) download-path (f-parent store-path)))
-             (f-write-text version 'utf-8 eca-server-version-file-path)
-             (set-file-modes store-path #o0700))
-         (error (eca-error "Could not download eca server %s" err)))
-       (eca-info "Installed eca successfully!")
-       (funcall on-downloaded)))))
+         ((download-path . store-path) (eca-process--download-and-store-path))
+         (download-fn (pcase eca-server-download-method
+                        ('url-retrieve #'eca--url-retrieve-download-file)
+                        ('curl #'eca--curl-download-file)
+                        (_ (error (eca-error (format "Unknown download method '%s' for eca-server-download-method" eca-server-download-method)))))))
+    (condition-case err
+        (progn
+          (when (f-exists? download-path) (f-delete download-path))
+          (when (f-exists? store-path) (f-delete store-path))
+          (when (f-exists? eca-server-version-file-path) (f-delete eca-server-version-file-path))
+          (mkdir (f-parent download-path) t)
+          (eca-info "Downloading eca server from %s to %s..."  url download-path)
+          (funcall
+           download-fn
+           :url url
+           :path download-path
+           :on-done (lambda ()
+                      (eca-info "Downloaded eca, unzipping it...")
+                      (unless (and eca-unzip-script (funcall eca-unzip-script))
+                        (error "Unable to find `unzip' or `powershell' on the path, please customize `eca-unzip-script'"))
+                      (shell-command (format (funcall eca-unzip-script) download-path (f-parent store-path)))
+                      (f-write-text version 'utf-8 eca-server-version-file-path)
+                      (set-file-modes store-path #o0700)
+                      (eca-info "Installed eca successfully!")
+                      (funcall on-downloaded))))
+      (error (eca-error "Failed to download eca server %s" err)))))
 
 (defun eca-process--server-command ()
   "Return the command to start server."

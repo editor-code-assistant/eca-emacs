@@ -1297,7 +1297,8 @@ If STATIC? return strs with no dynamic values."
     ("cursor" . class)
     ("mcpPrompt" . function)
     ("mcpResource" . file)
-    ("native" . variable)))
+    ("native" . variable)
+    ("custom-prompt" . method)))
 
 (defun eca-chat--completion-item-kind (item)
   "Return the kind for ITEM."

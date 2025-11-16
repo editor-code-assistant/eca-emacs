@@ -81,6 +81,7 @@ M-x package-install eca
 
 ### Variables
 
+- `eca-server-download-method`: Method to download server (`curl` or `url-retrieve`, emacs built-in way).
 - `eca-extra-args`: customize extra args to server to help debug like `("--verbose")` or `("--log-level" "debug")`.
 - `eca-chat-usage-string-format`: to customize what shows on mode-line for usage like costs and tokens.
 - `eca-chat-use-side-window`: customize whether chat window is a side-window or a normal buffer.
