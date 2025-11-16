@@ -444,7 +444,9 @@ Must be a positive integer."
 
 (defun eca-chat--delete-chat ()
   "Delete current chat."
-  (when eca-chat--id
+  (when (and (eq #'kill-current-buffer this-command)
+             eca-chat--id)
+    (message "--> killing buffer")
     (eca-api-request-sync (eca-session)
                           :method "chat/delete"
                           :params (list :chatId eca-chat--id))))
