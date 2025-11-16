@@ -442,6 +442,13 @@ Must be a positive integer."
                   (eca-dissoc 'empty)))
         empty-chat-buffer)))
 
+(defun eca-chat--delete-chat ()
+  "Delete current chat."
+  (when eca-chat--id
+    (eca-api-request-sync (eca-session)
+                          :method "chat/delete"
+                          :params (list :chatId eca-chat--id))))
+
 (defun eca-chat--insert (&rest contents)
   "Insert CONTENTS reseting undo-list to avoid buffer inconsistencies."
   (apply #'insert contents)
@@ -1617,6 +1624,8 @@ string."
     (add-hook 'eldoc-documentation-functions #'eca-chat-eldoc-function nil t)
     (eldoc-mode 1)
 
+    (add-hook 'kill-buffer-hook #'eca-chat--delete-chat nil t)
+
     (let ((chat-buffer (current-buffer)))
       (run-with-timer
        0.05
@@ -2188,9 +2197,7 @@ Append STATUS, TOOL-CALL-NEXT-LINE-SPACING and ROOTS"
   (interactive)
   (eca-chat--with-current-buffer (eca-chat--get-last-buffer (eca-session))
     (when eca-chat--id
-      (eca-api-request-sync (eca-session)
-                            :method "chat/delete"
-                            :params (list :chatId eca-chat--id))
+      (eca-chat--delete-chat)
       (setq-local eca-chat--message-input-tokens nil)
       (setq-local eca-chat--message-output-tokens nil)
       (setq-local eca-chat--session-tokens nil)
