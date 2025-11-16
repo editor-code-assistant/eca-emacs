@@ -49,11 +49,15 @@ M-x package-install eca
 
 ### Commands
 
+Server / process
+
 - `eca`: Starts eca server/session + open chat
 - `eca-stop`: Stop eca server/session
 - `eca-restart`: Restart eca server/session
 - `eca-workspaces`: print worskpace folders of current session
 - `eca-open-global-config`: Open ECA global config file
+
+Chat
 
 - `eca-chat-toggle-window`: Open/close chat
 - `eca-chat-select`: Select a chat for existing session
@@ -81,14 +85,78 @@ M-x package-install eca
 
 ### Variables
 
-- `eca-server-download-method`: Method to download server (`curl` or `url-retrieve`, emacs built-in way).
-- `eca-extra-args`: customize extra args to server to help debug like `("--verbose")` or `("--log-level" "debug")`.
-- `eca-chat-usage-string-format`: to customize what shows on mode-line for usage like costs and tokens.
-- `eca-chat-use-side-window`: customize whether chat window is a side-window or a normal buffer.
-- `eca-chat-window-side`: customize the chat window side.
-- `eca-chat-window-width`: customize the chat window width.
-- `eca-chat-window-height`: customize the chat window height.
-- `eca-chat-diff-tool`: customize viewing diffs, defaults to ediff.
+Server / process
+
+- `eca-custom-command`: The `eca` server command; when nil ECA auto-downloads or uses `eca` from `$PATH`.
+- `eca-server-download-method`: Method to download server (`curl` or `url-retrieve`, Emacs built-in way).
+- `eca-server-download-url`: Custom URL to download the ECA server archive.
+- `eca-server-install-path`: Path where the downloaded ECA server binary is installed.
+- `eca-server-version-file-path`: Path to the file storing the downloaded ECA server version.
+- `eca-unzip-script`: Script/command template used to unzip the downloaded ECA server archive.
+- `eca-extra-args`: Extra args to pass to the ECA server, e.g. `("--verbose")` or `("--log-level" "debug")`.
+- `eca-min-gc-cons-threshold`: Temporary GC threshold used while processing heavy server messages.
+
+Core / session
+
+- `eca-before-initialize-hook`: Functions called before an ECA session is initialized.
+- `eca-after-initialize-hook`: Functions called after an ECA session is initialized.
+- `eca-find-root-for-buffer-function`: Function used to determine the workspace root for the current buffer.
+
+Chat
+
+- `eca-chat-mode-hook`: Hooks to run after entering `eca-chat-mode`.
+- `eca-chat-use-side-window`: Whether the chat buffer is displayed in a side window or a normal window.
+- `eca-chat-window-side`: On which side (`left`, `right`, `top`, `bottom`) the chat side window appears.
+- `eca-chat-window-width`: Width of the chat side window when on the left or right.
+- `eca-chat-window-height`: Height of the chat side window when on the top or bottom.
+- `eca-chat-focus-on-open`: Whether to focus the chat window when it opens.
+- `eca-chat-auto-add-repomap`: Whether to automatically include repoMap context when opening ECA.
+- `eca-chat-auto-add-cursor`: Whether to automatically track the cursor position and add it as context.
+- `eca-chat-cursor-context-debounce`: Seconds to debounce updates when tracking cursor context.
+- `eca-chat-prompt-separator`: Separator string between the chat content and the prompt area.
+- `eca-chat-prompt-prefix`: Prompt prefix string shown before user input.
+- `eca-chat-prompt-prefix-loading`: Prompt prefix string while a request is in progress.
+- `eca-chat-context-prefix`: Prefix used for context references in the chat buffer (default `@`).
+- `eca-chat-filepath-prefix`: Prefix used for file path references in the chat buffer (default `#`).
+- `eca-chat-expandable-block-open-symbol`: Symbol used for expandable blocks in open state.
+- `eca-chat-expandable-block-close-symbol`: Symbol used for expandable blocks in closed state.
+- `eca-chat-mcp-tool-call-loading-symbol`: Symbol used for MCP tool calls while loading.
+- `eca-chat-mcp-tool-call-error-symbol`: Symbol used for MCP tool calls when they fail.
+- `eca-chat-mcp-tool-call-success-symbol`: Symbol used for MCP tool calls when they succeed.
+- `eca-chat-expand-pending-approval-tools`: Whether to auto-expand tool calls that are pending approval.
+- `eca-chat-shrink-called-tools`: Whether to auto-shrink tool calls after they have been executed.
+- `eca-chat-custom-model`: Override the model used for chat (nil = server default).
+- `eca-chat-custom-behavior`: Override the chat behavior (nil = server default).
+- `eca-chat-usage-string-format`: Controls what usage information (tokens/costs/limits) is shown in the mode-line.
+- `eca-chat-diff-tool`: How to show file diffs from chat (`smerge` or `ediff`).
+- `eca-chat-tool-call-prepare-throttle`: Throttle strategy for `toolCallPrepare` events (`all` or `smart`).
+- `eca-chat-tool-call-prepare-update-interval`: When using `smart` throttle, process every Nth `toolCallPrepare` update.
+- `eca-chat-tool-call-approval-content-size`: Face height used for tool call approval UI text.
+
+Completion
+
+- `eca-completion-idle-delay`: Idle delay before triggering inline completion (0 = immediate, nil = disabled).
+
+Rewrite
+
+- `eca-rewrite-prompt-prefix`: Text automatically prefixed to rewrite prompts.
+- `eca-rewrite-finish-prefix`: Prefix text shown in the buffer when a rewrite finishes.
+- `eca-rewrite-diff-tool`: Diff tool for rewrite overlays (`simple-diff` or `ediff`).
+- `eca-rewrite-finished-action`: Action to take when a rewrite finishes (`show-overlay-actions`, `accept`, `diff`, `merge`).
+- `eca-rewrite-on-finished-hook`: Hook run after a rewrite finishes, receiving the overlay as argument.
+
+MCP
+
+- `eca-mcp-details-position-params`: Display parameters for the MCP details side window.
+
+API / requests
+
+- `eca-api-response-timeout`: Maximum time to wait (seconds) for synchronous API responses.
+- `eca-api-request-while-no-input-may-block`: If non-nil, `eca-api-request-while-no-input` may block even when `non-essential` is set.
+
+UI / misc
+
+- `eca-buttons-allow-mouse`: Whether ECA buttons can be clicked with the mouse.
 
 ### Keybindings
 
