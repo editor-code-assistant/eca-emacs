@@ -160,28 +160,40 @@ UI / misc
 
 ### Keybindings
 
-You can access __transient___ menu with commonly commands via `M-x eca-transient-menu` or by pressing `C-c .` in eca's windows.
+You can access the transient menu with common commands via `M-x eca-transient-menu` or by pressing `C-c .` in ECA windows.
 
 #### Manual keybindings
 
-| Feature                         | key                                |
-|---------------------------------|------------------------------------|
-| Chat: clear                     | <kbd>C-c</kbd> <kbd>C-l</kbd>      |
-| Chat: reset                     | <kbd>C-c</kbd> <kbd>C-k</kbd>      |
-| Chat: talk                      | <kbd>C-c</kbd> <kbd>C-t</kbd>      |
-| Chat: Select behavior           | <kbd>C-c</kbd> <kbd>C-b</kbd>      |
-| Chat: Select model              | <kbd>C-c</kbd> <kbd>C-m</kbd>      |
-| Chat: Go to MCP details         | <kbd>C-c</kbd> <kbd>C-,</kbd>      |
-| Chat: Accept next tool call     | <kbd>C-c</kbd> <kbd>C-a</kbd>      |
-| Chat: Reject next tool call     | <kbd>C-c</kbd> <kbd>C-r</kbd>      |
-| Chat: prev prompt history       | <kbd>C-&uarr;</kbd>                |
-| Chat: next prompt history       | <kbd>C-&darr;</kbd>                |
-| Chat: go to prev block          | <kbd>C-c</kbd> <kbd>&uarr;</kbd>   |
-| Chat: go to next block          | <kbd>C-c</kbd> <kbd>&darr;</kbd>   |
-| Chat: go to prev user msg       | <kbd>C-c</kbd> <kbd>C-&uarr;</kbd> |
-| Chat: go to next user msg       | <kbd>C-c</kbd> <kbd>C-&darr;</kbd> |
-| Chat: toggle expandable content | <kbd>C-c</kbd> <kbd>Tab</kbd>      |
-| MCP: Go to chat                 | <kbd>C-c</kbd> <kbd>C-,</kbd>      |
+| Feature                                        | key                                |
+|-----------------------------------------------|------------------------------------|
+| Chat: clear                                   | <kbd>C-c</kbd> <kbd>C-l</kbd>      |
+| Chat: reset                                   | <kbd>C-c</kbd> <kbd>C-k</kbd>      |
+| Chat: talk                                    | <kbd>C-c</kbd> <kbd>C-t</kbd>      |
+| Chat: select behavior                         | <kbd>C-c</kbd> <kbd>C-S-b</kbd>    |
+| Chat: cycle behavior                          | <kbd>C-c</kbd> <kbd>C-b</kbd>      |
+| Chat: select model                            | <kbd>C-c</kbd> <kbd>C-m</kbd>      |
+| Chat: new chat                                | <kbd>C-c</kbd> <kbd>C-n</kbd>      |
+| Chat: select chat                             | <kbd>C-c</kbd> <kbd>C-f</kbd>      |
+| Chat: repeat last prompt                      | <kbd>C-c</kbd> <kbd>C-p</kbd>      |
+| Chat: clear prompt                            | <kbd>C-c</kbd> <kbd>C-d</kbd>      |
+| Chat: timeline                                | <kbd>C-c</kbd> <kbd>C-h</kbd>      |
+| Chat: send prompt at chat buffer              | <kbd>C-c</kbd> <kbd>C-RET</kbd>    |
+| Chat: accept all pending tool calls           | <kbd>C-c</kbd> <kbd>C-a</kbd>      |
+| Chat: accept next pending tool call           | <kbd>C-c</kbd> <kbd>C-S-a</kbd>    |
+| Chat: accept all tool calls and remember      | <kbd>C-c</kbd> <kbd>C-s</kbd>      |
+| Chat: reject next pending tool call           | <kbd>C-c</kbd> <kbd>C-r</kbd>      |
+| Chat: rename chat                             | <kbd>C-c</kbd> <kbd>C-S-r</kbd>    |
+| Chat: prev prompt history                     | <kbd>C-↑</kbd>                     |
+| Chat: next prompt history                     | <kbd>C-↓</kbd>                     |
+| Chat: go to prev tool / diff / reason block   | <kbd>C-c</kbd> <kbd>↑</kbd>        |
+| Chat: go to next tool / diff / reason block   | <kbd>C-c</kbd> <kbd>↓</kbd>        |
+| Chat: go to prev user message                 | <kbd>C-c</kbd> <kbd>C-↑</kbd>      |
+| Chat: go to next user message                 | <kbd>C-c</kbd> <kbd>C-↓</kbd>      |
+| Chat: toggle expandable content at point      | <kbd>C-c</kbd> <kbd>Tab</kbd>      |
+| Chat: open transient menu                     | <kbd>C-c</kbd> <kbd>.</kbd>        |
+| Chat: go to MCP details                       | <kbd>C-c</kbd> <kbd>C-,</kbd>      |
+| MCP: go to chat (from MCP details buffer)     | <kbd>C-c</kbd> <kbd>C-,</kbd>      |
+| MCP: open transient menu (from MCP details)   | <kbd>C-c</kbd> <kbd>.</kbd>        |
 
 ## Features
 
