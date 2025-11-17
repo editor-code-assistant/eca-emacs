@@ -1834,7 +1834,6 @@ Append STATUS, TOOL-CALL-NEXT-LINE-SPACING and ROOTS"
          (tool-call-next-line-spacing (make-string (1+ (length eca-chat-expandable-block-open-symbol)) ?\s))
          (chat-buffer (eca-chat--get-chat-buffer session chat-id)))
     (eca-chat--with-current-buffer chat-buffer
-      (setq-local eca-chat--empty nil)
       (pcase (plist-get content :type)
         ("metadata"
          (setq-local eca-chat--title (plist-get content :title)))
@@ -1843,11 +1842,13 @@ Append STATUS, TOOL-CALL-NEXT-LINE-SPACING and ROOTS"
            (pcase role
              ("user"
               (eca-chat--add-text-content
-               (propertize text
-                           'font-lock-face 'eca-chat-user-messages-face
-                           'line-prefix (propertize eca-chat-prompt-prefix
-                                                    'font-lock-face 'eca-chat-user-messages-face)
-                           'line-spacing 10)
+               (concat
+                (unless eca-chat--empty "\n")
+                (propertize text
+                            'font-lock-face 'eca-chat-user-messages-face
+                            'line-prefix (propertize eca-chat-prompt-prefix
+                                                     'font-lock-face 'eca-chat-user-messages-face)
+                            'line-spacing 10))
                'eca-chat--user-message-id eca-chat--last-request-id)
               (eca-chat--mark-header)
               (font-lock-ensure))
@@ -1857,7 +1858,8 @@ Append STATUS, TOOL-CALL-NEXT-LINE-SPACING and ROOTS"
                            'font-lock-face 'eca-chat-system-messages-face
                            'line-height 20)))
              (_
-              (eca-chat--add-text-content text)))))
+              (eca-chat--add-text-content text))))
+         (setq-local eca-chat--empty nil))
         ("url"
          (eca-chat--add-header
           (concat "🌐 "
@@ -1869,7 +1871,8 @@ Append STATUS, TOOL-CALL-NEXT-LINE-SPACING and ROOTS"
         ("reasonStarted"
          (let ((id (plist-get content :id))
                (label (propertize "Thinking..." 'font-lock-face 'eca-chat-reason-label-face)))
-           (eca-chat--add-expandable-content id label "")))
+           (eca-chat--add-expandable-content id label "")
+           (setq-local eca-chat--empty nil)))
         ("reasonText"
          (let ((id (plist-get content :id))
                (label (propertize "Thinking..." 'font-lock-face 'eca-chat-reason-label-face))
@@ -2058,6 +2061,7 @@ Append STATUS, TOOL-CALL-NEXT-LINE-SPACING and ROOTS"
          (setq-local eca-chat--message-cost          (plist-get content :messageCost))
          (setq-local eca-chat--session-cost          (plist-get content :sessionCost)))
         (_ nil)))))
+
 
 (defun eca-chat-config-updated (session chat-config)
   "Update chat based on the CHAT-CONFIG for SESSION."
