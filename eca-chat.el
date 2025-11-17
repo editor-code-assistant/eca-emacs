@@ -356,6 +356,8 @@ Must be a positive integer."
 (defvar-local eca-chat--id nil)
 (defvar-local eca-chat--title nil)
 (defvar-local eca-chat--custom-title nil)
+(defvar-local eca-chat--selected-model nil)
+(defvar-local eca-chat--selected-behavior nil)
 (defvar-local eca-chat--last-request-id 0)
 (defvar-local eca-chat--context-completion-cache (make-hash-table :test 'equal))
 (defvar-local eca-chat--file-completion-cache (make-hash-table :test 'equal))
@@ -379,6 +381,8 @@ Must be a positive integer."
 ;; Timer used to debounce post-command driven context updates
 (defvar eca-chat--cursor-context-timer nil)
 (defvar eca-chat--new-chat-id 0)
+(defvar eca-chat--last-known-model nil)
+(defvar eca-chat--last-known-behavior nil)
 
 (defun eca-chat-new-buffer-name (session)
   "Return the chat buffer name for SESSION."
@@ -494,15 +498,17 @@ Must be a positive integer."
   (let ((secs (/ (float ms) 1000)))
     (propertize (format "%.2f s" secs) 'font-lock-face 'eca-chat-time-face)))
 
-(defun eca-chat--behavior (session)
-  "The chat behavior considering what's in SESSION and user option."
+(defun eca-chat--behavior ()
+  "The chat behavior considering default and user option."
   (or eca-chat-custom-behavior
-      (eca--session-chat-selected-behavior session)))
+      eca-chat--selected-behavior
+      eca-chat--last-known-behavior))
 
-(defun eca-chat--model (session)
-  "The chat model considering what's in SESSION and user option."
+(defun eca-chat--model ()
+  "The chat model considering default and user option."
   (or eca-chat-custom-model
-      (eca--session-chat-selected-model session)))
+      eca-chat--selected-model
+      eca-chat--last-known-model))
 
 (defun eca-chat--mcps-summary (session)
   "The summary of MCP servers for SESSION."
@@ -810,8 +816,8 @@ the prompt/context line."
      :params (list :message (eca-chat--normalize-prompt prompt)
                    :request-id (cl-incf eca-chat--last-request-id)
                    :chatId eca-chat--id
-                   :model (eca-chat--model session)
-                   :behavior (eca-chat--behavior session)
+                   :model (eca-chat--model)
+                   :behavior (eca-chat--behavior)
                    :contexts (vconcat refined-contexts))
      :success-callback (-lambda (res)
                          (setq-local eca-chat--id (plist-get res :chatId))))))
@@ -882,7 +888,7 @@ the prompt/context line."
                         'font-lock-face 'eca-chat-option-key-face
                         'pointer 'hand
                         'keymap model-keymap)
-            (-some-> (eca-chat--model session)
+            (-some-> (eca-chat--model)
               (propertize
                'font-lock-face 'eca-chat-option-value-face
                'pointer 'hand
@@ -892,7 +898,7 @@ the prompt/context line."
                         'font-lock-face 'eca-chat-option-key-face
                         'pointer 'hand
                         'keymap behavior-keymap)
-            (-some-> (eca-chat--behavior session)
+            (-some-> (eca-chat--behavior)
               (propertize 'font-lock-face 'eca-chat-option-value-face
                           'pointer 'hand
                           'keymap behavior-keymap))
@@ -1774,7 +1780,9 @@ Calls CB with the resulting message."
 
 (defun eca-chat--set-behavior (session new-behavior)
   "Set new behavior to NEW-BEHAVIOR notifying server for SESSION."
-  (setf (eca--session-chat-selected-behavior session) new-behavior)
+  (eca-chat--with-current-buffer (eca-chat--get-last-buffer session)
+    (setq-local eca-chat--selected-behavior new-behavior)
+    (setq eca-chat--last-known-behavior new-behavior))
   (eca-api-notify session
                   :method "chat/selectedBehaviorChanged"
                   :params (list :behavior new-behavior)))
@@ -2071,10 +2079,14 @@ Append STATUS, TOOL-CALL-NEXT-LINE-SPACING and ROOTS"
     (setf (eca--session-models session)))
   (-some->> (plist-get chat-config :behaviors)
     (setf (eca--session-chat-behaviors session)))
-  (-some->> (plist-get chat-config :selectModel)
-    (setf (eca--session-chat-selected-model session)))
-  (-some->> (plist-get chat-config :selectBehavior)
-    (setf (eca--session-chat-selected-behavior session))))
+  (seq-doseq (chat-buffers (eca-vals (eca--session-chats session)))
+    (with-current-buffer chat-buffers
+      (when-let* ((new-model (plist-get chat-config :selectModel)))
+        (setq-local eca-chat--selected-model new-model)
+        (setq eca-chat--last-known-model new-model))
+      (when-let* ((new-behavior (plist-get chat-config :selectBehavior)))
+        (setq-local eca-chat--selected-behavior new-behavior)
+        (setq eca-chat--last-known-behavior new-behavior)))))
 
 (defun eca-chat-open (session)
   "Open or create dedicated eca chat window for SESSION."
@@ -2133,7 +2145,9 @@ Append STATUS, TOOL-CALL-NEXT-LINE-SPACING and ROOTS"
   (when eca-chat-custom-model
     (error (eca-error "The eca-chat-custom-model variable is already set: %s" eca-chat-custom-model)))
   (when-let* ((model (completing-read "Select a model:" (append (eca--session-models (eca-session)) nil) nil t)))
-    (setf (eca--session-chat-selected-model (eca-session)) model)))
+    (eca-chat--with-current-buffer (eca-chat--get-last-buffer (eca-session))
+      (setq-local eca-chat--selected-model model)
+      (setq eca-chat--last-known-model model))))
 
 ;;;###autoload
 (defun eca-chat-select-behavior ()
@@ -2149,7 +2163,8 @@ Append STATUS, TOOL-CALL-NEXT-LINE-SPACING and ROOTS"
   (interactive)
   (eca-assert-session-running (eca-session))
   (let* ((session (eca-session))
-         (current-behavior (eca--session-chat-selected-behavior session))
+         (current-behavior (eca-chat--with-current-buffer (eca-chat--get-last-buffer session)
+                             (eca-chat--behavior)))
          (all-behaviors (append (eca--session-chat-behaviors session) nil))
          (current-behavior-index (seq-position all-behaviors current-behavior))
          (next-behavior (or (nth (1+ current-behavior-index) all-behaviors)
