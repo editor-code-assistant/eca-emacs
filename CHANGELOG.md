@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Add `eca-chat-save-to-file` command. #95 
 - Fix chat not being closed. #89
 - Fix: check existing eca sessions when opening chat. #88
 - Add rewrite feature.

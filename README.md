@@ -82,6 +82,7 @@ Chat
 - `eca-chat-tool-call-reject-next`: Reject next pending tool call in chat
 - `eca-chat-timeline`: Show user prompt history as a timeline
 - `eca-chat-talk`: Use whisper.el to send a prompt via voice.
+- `eca-chat-save-to-file`: Save chat to a file.
 
 ### Variables
 
@@ -132,6 +133,7 @@ Chat
 - `eca-chat-tool-call-prepare-throttle`: Throttle strategy for `toolCallPrepare` events (`all` or `smart`).
 - `eca-chat-tool-call-prepare-update-interval`: When using `smart` throttle, process every Nth `toolCallPrepare` update.
 - `eca-chat-tool-call-approval-content-size`: Face height used for tool call approval UI text.
+- `eca-chat-save-chat-initial-path`: Default initial path to save chats.
 
 Completion
 

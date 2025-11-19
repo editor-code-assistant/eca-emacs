@@ -191,6 +191,13 @@ Must be a positive integer."
   :type 'number
   :group 'eca)
 
+(defcustom eca-chat-save-chat-initial-path 'workspace-root
+  "The initial path to show in the `eca-chat-save-to-file' prompt."
+  :type '(choice
+          (const :tag "Workspace root" workspace-root)
+          (string :tag "Custom path"))
+  :group 'eca)
+
 ;; Faces
 
 (defface eca-chat-prompt-prefix-face
@@ -2583,6 +2590,27 @@ Returns selected message plist or nil if no messages or cancelled."
         (with-current-buffer chat-buffer
           (eca-chat--set-prompt text)))
     (message "No user messages found")))
+
+;;;###autoload
+(defun eca-chat-save-to-file (&optional file)
+  "Export the current chat to a FILE."
+  (interactive)
+  (eca-assert-session-running (eca-session))
+  (with-current-buffer (eca-chat--get-last-buffer (eca-session))
+    (let* ((initial-dir (pcase eca-chat-save-chat-initial-path
+                          ('workspace-root (eca-find-root-for-buffer))
+                          (_ eca-chat-save-chat-initial-path)))
+           (initial-name (concat (or eca-chat--custom-title eca-chat--title)
+                                 ".md"))
+           (file (or file
+                     (read-file-name "Select the file path to save the chat: " initial-dir nil nil initial-name)))
+           (chat-content (buffer-string))
+           (new-buffer (find-file-noselect file)))
+      (with-current-buffer new-buffer
+        (delete-region (point-min) (point-max))
+        (insert chat-content)
+        (save-buffer))
+      (eca-info (format "Saved chat to '%s'" file)))))
 
 (provide 'eca-chat)
 ;;; eca-chat.el ends here
