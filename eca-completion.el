@@ -189,7 +189,8 @@ Call ON-ERROR when error."
   "Complete in BUFFER."
   (when (and (buffer-live-p buffer)
              (equal (current-buffer) buffer)
-             (derived-mode-p 'eca-completion-mode))
+             (and (boundp 'eca-completion-mode)
+                  eca-completion-mode))
     (eca-complete)))
 
 (defun eca-completion--self-insert (command)
