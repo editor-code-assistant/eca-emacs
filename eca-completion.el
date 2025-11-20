@@ -18,7 +18,7 @@
 
 ;; Variables
 
-(defcustom eca-completion-idle-delay 0
+(defcustom eca-completion-idle-delay 0.2
   "Time in seconds to wait before starting completion.
 
 Complete immediately if set to 0.
@@ -189,14 +189,16 @@ Call ON-ERROR when error."
   "Complete in BUFFER."
   (when (and (buffer-live-p buffer)
              (equal (current-buffer) buffer)
-             (derived-mode-p 'eca-completion-mode))
+             (boundp 'eca-completion-mode)
+             eca-completion-mode)
     (eca-complete)))
 
-(defun eca-completion--self-insert (command)
+(defun eca-completion--inserted-next-overlay-char-p (command)
   "Handle the case where the char just inserted is the start of the completion.
 If so, update the overlays and continue.  COMMAND is the command that triggered
 in `post-command-hook'."
-  (when (and (eq command 'self-insert-command)
+  (when (and (symbolp this-command)
+             (eq command 'self-insert-command)
              (eca-completion--overlay-visible))
     (let* ((ov eca-completion--overlay)
            (completion (overlay-get ov 'completion)))
@@ -209,20 +211,17 @@ in `post-command-hook'."
 
 (defun eca-completion--post-command ()
   "Auto complete when idle."
-  (when (and this-command
-             (not (and (symbolp this-command)
-                       (or
-                        (string-prefix-p "eca-" (symbol-name this-command))
-                        (eca-completion--self-insert this-command)))))
+  (unless (eca-completion--inserted-next-overlay-char-p this-command)
     (eca-completion--clear-overlay)
     (when eca-completion--post-command-timer
       (cancel-timer eca-completion--post-command-timer))
-    (when (numberp eca-completion-idle-delay)
-      (setq eca-completion--post-command-timer
-            (run-with-idle-timer eca-completion-idle-delay
-                                 nil
-                                 #'eca-completion--post-command-debounce
-                                 (current-buffer))))))
+    (when (eq 'self-insert-command this-command)
+      (when (numberp eca-completion-idle-delay)
+        (setq eca-completion--post-command-timer
+              (run-with-idle-timer eca-completion-idle-delay
+                                   nil
+                                   #'eca-completion--post-command-debounce
+                                   (current-buffer)))))))
 
 (defun eca-completion--mode-activate ()
   "Initial setup for eca-completion-mode."
@@ -230,6 +229,8 @@ in `post-command-hook'."
 
 (defun eca-completion--mode-deactivate ()
   "Teardown for eca-completion-mode."
+  (when eca-completion--post-command-timer
+    (cancel-timer eca-completion--post-command-timer))
   (remove-hook 'post-command-hook #'eca-completion--post-command 'local))
 
 (defun eca-completion--posn-advice (&rest args)
