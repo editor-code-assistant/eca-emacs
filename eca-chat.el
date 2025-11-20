@@ -747,6 +747,13 @@ the prompt/context line."
             (forward-char 1))
           (delete-region (- (point) item-str-length) (point)))
 
+         ;; Handle some evil commands
+         ((and in-prompt?
+               (or (eq #'evil-delete this-command)
+                   (eq #'evil-change-line this-command)))
+          (setf (nth 2 args) nil) ;; do not delete prompt line passing nil argument
+          (apply side-effect-fn args))
+
          ;; start of the prompt
          ((and cur-ov
                (or (<= (point) (overlay-start cur-ov))
@@ -1632,7 +1639,6 @@ string."
       (advice-add 'evil-delete-backward-word :around #'eca-chat--key-pressed-deletion)
       (advice-add 'evil-delete-back-to-indentation :around #'eca-chat--key-pressed-deletion)
       (advice-add 'evil-delete-whole-line :around #'eca-chat--key-pressed-deletion)
-      (advice-add 'evil-delete-line :around #'eca-chat--key-pressed-deletion)
       (advice-add 'evil-delete-char :around #'eca-chat--key-pressed-deletion)
       (advice-add 'evil-delete :around #'eca-chat--key-pressed-deletion)
       (advice-add 'evil-delete-backward-char :around #'eca-chat--key-pressed-deletion))
