@@ -190,7 +190,8 @@ Call ON-ERROR when error."
   (when (and (buffer-live-p buffer)
              (equal (current-buffer) buffer)
              (boundp 'eca-completion-mode)
-             eca-completion-mode)
+             eca-completion-mode
+             (eca-session))
     (eca-complete)))
 
 (defun eca-completion--inserted-next-overlay-char-p (command)
