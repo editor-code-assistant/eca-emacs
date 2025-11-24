@@ -929,6 +929,9 @@ the prompt/context line."
   "Format N as `x.yM` for |N| >= 1M, `x.yK` for |N| >= 1K.
 Otherwise show plain integer."
   (cond
+   ((not n)
+    "")
+
    ((>= (abs n) 1000000)
     (let* ((m (/ (abs n) 1000000.0))
            (s (format "%.1f" m))
