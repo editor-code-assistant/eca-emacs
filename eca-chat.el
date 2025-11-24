@@ -280,6 +280,13 @@ Must be a positive integer."
   "Face for the user sent messages in chat."
   :group 'eca)
 
+(defface eca-chat-rollback-face
+  '((t (:inherit eca-chat-user-messages-face
+        :weight bold
+        :underline t)))
+  "Face for the rollback button."
+  :group 'eca)
+
 (defface eca-chat-system-messages-face
   '((t :inherit font-lock-builtin-face))
   "Face for the system messages in chat."
@@ -628,6 +635,15 @@ Must be a positive integer."
                     :method "chat/promptStop"
                     :params (list :chatId eca-chat--id))
     (eca-chat--set-chat-loading session nil)))
+
+(defun eca-chat--rollback (session content-id)
+  "Rollback chat messages for SESSION to before CONTENT-ID."
+  (unless eca-chat--chat-loading
+    (when (y-or-n-p "Do you want to really rollback the chat to before this message?")
+      (eca-api-request-sync session
+                            :method "chat/rollback"
+                            :params (list :chatId eca-chat--id
+                                          :contentId content-id)))))
 
 (defun eca-chat--set-chat-loading (session loading)
   "Set the SESSION chat to a loading state if LOADING is non nil.
@@ -1075,21 +1091,29 @@ space, tab, or newline."
       (add-text-properties 0 (length first) properties first)
       (concat first rest))))
 
-(defun eca-chat--add-expandable-content (id label content)
+(defun eca-chat--add-expandable-content (id label content &optional icon-face)
   "Add LABEL to the chat current position for ID as a interactive text.
 When expanded, shows CONTENT.
 Applies LABEL-FACE to label and CONTENT-FACE to content."
   (save-excursion
     (let* ((context-start (eca-chat--prompt-area-start-point))
-           (start-point (1- context-start)))
+           (start-point (1- context-start))
+           (open-icon (if icon-face
+                          (propertize eca-chat-expandable-block-open-symbol 'font-lock-face icon-face)
+                        eca-chat-expandable-block-open-symbol))
+           (close-icon (if icon-face
+                          (propertize eca-chat-expandable-block-close-symbol 'font-lock-face icon-face)
+                        eca-chat-expandable-block-close-symbol)))
       (goto-char start-point)
       (unless (bolp) (eca-chat--insert "\n"))
       (let ((ov-label (make-overlay (point) (point) (current-buffer))))
         (overlay-put ov-label 'eca-chat--expandable-content-id id)
+        (overlay-put ov-label 'eca-chat--expandable-content-open-icon open-icon)
+        (overlay-put ov-label 'eca-chat--expandable-content-close-icon close-icon)
         (overlay-put ov-label 'eca-chat--expandable-content-toggle nil)
         (eca-chat--insert (propertize (eca-chat--propertize-only-first-word label
                                                                             'line-prefix (unless (string-empty-p content)
-                                                                                           eca-chat-expandable-block-open-symbol))
+                                                                                           open-icon))
                                       'keymap (let ((km (make-sparse-keymap)))
                                                 (define-key km (kbd "<mouse-1>") (lambda () (eca-chat--expandable-content-toggle id)))
                                                 (define-key km (kbd "<tab>") (lambda () (eca-chat--expandable-content-toggle id)))
@@ -1121,8 +1145,8 @@ Applies LABEL-FACE to label and CONTENT-FACE to content."
         (eca-chat--insert (propertize (eca-chat--propertize-only-first-word label
                                                                             'line-prefix (unless (string-empty-p new-content)
                                                                                            (if open?
-                                                                                               eca-chat-expandable-block-close-symbol
-                                                                                             eca-chat-expandable-block-open-symbol)))
+                                                                                               (overlay-get ov-label 'eca-chat--expandable-content-close-icon)
+                                                                                             (overlay-get ov-label 'eca-chat--expandable-content-open-icon))))
                                       'help-echo "mouse-1 / RET / tab: expand/collapse"))
         (when open?
           (if append-content?
@@ -1153,13 +1177,13 @@ If FORCE? decide to CLOSE? or not."
             (progn
               (put-text-property (point) (line-end-position)
                                  'line-prefix (unless empty-content?
-                                                eca-chat-expandable-block-open-symbol))
+                                                (overlay-get ov-label 'eca-chat--expandable-content-open-icon)))
               (goto-char (1+ (line-end-position)))
               (delete-region (overlay-start ov-content) (overlay-end ov-content))
               (overlay-put ov-label 'eca-chat--expandable-content-toggle nil))
           (progn
             (put-text-property (point) (line-end-position)
-                               'line-prefix eca-chat-expandable-block-close-symbol)
+                               'line-prefix (overlay-get ov-label 'eca-chat--expandable-content-close-icon))
             (goto-char (overlay-start ov-content))
             (eca-chat--insert content "\n")
             (overlay-put ov-label 'eca-chat--expandable-content-toggle t))))
@@ -1854,6 +1878,7 @@ Append STATUS, TOOL-CALL-NEXT-LINE-SPACING and ROOTS"
   (let* ((chat-id (plist-get params :chatId))
          (role (plist-get params :role))
          (content (plist-get params :content))
+         (content-id (plist-get content :contentId))
          (roots (eca--session-workspace-folders session))
          (tool-call-next-line-spacing (make-string (1+ (length eca-chat-expandable-block-open-symbol)) ?\s))
          (chat-buffer (eca-chat--get-chat-buffer session chat-id)))
@@ -1865,15 +1890,14 @@ Append STATUS, TOOL-CALL-NEXT-LINE-SPACING and ROOTS"
          (when-let* ((text (plist-get content :text)))
            (pcase role
              ("user"
-              (eca-chat--add-text-content
-               (concat
-                (unless eca-chat--empty "\n")
-                (propertize text
-                            'font-lock-face 'eca-chat-user-messages-face
-                            'line-prefix (propertize eca-chat-prompt-prefix
-                                                     'font-lock-face 'eca-chat-user-messages-face)
-                            'line-spacing 10))
-               'eca-chat--user-message-id eca-chat--last-request-id)
+              (eca-chat--add-expandable-content
+               content-id
+               (propertize (string-trim-right text) 'font-lock-face 'eca-chat-user-messages-face)
+               (eca-buttonize
+                eca-chat-mode-map
+                (propertize "Rollback chat to before this message" 'font-lock-face 'eca-chat-rollback-face)
+                (lambda () (eca-chat--rollback session content-id)))
+               'eca-chat-user-messages-face)
               (eca-chat--mark-header)
               (font-lock-ensure))
              ("system"
@@ -1895,7 +1919,7 @@ Append STATUS, TOOL-CALL-NEXT-LINE-SPACING and ROOTS"
         ("reasonStarted"
          (let ((id (plist-get content :id))
                (label (propertize "Thinking..." 'font-lock-face 'eca-chat-reason-label-face)))
-           (eca-chat--add-expandable-content id label "")
+           (eca-chat--add-expandable-content id label "" 'eca-chat-reason-label-face)
            (setq-local eca-chat--empty nil)))
         ("reasonText"
          (let ((id (plist-get content :id))
@@ -1913,7 +1937,7 @@ Append STATUS, TOOL-CALL-NEXT-LINE-SPACING and ROOTS"
          (let* ((id (plist-get content :id))
                 (name (plist-get content :name))
                 (label (propertize (format "Running hook '%s'..." name) 'font-lock-face 'eca-chat-hook-label-face)))
-           (eca-chat--add-expandable-content id label "")))
+           (eca-chat--add-expandable-content id label "" 'eca-chat-hook-label-face)))
         ("hookActionFinished"
          (let* ((id (plist-get content :id))
                 (name (plist-get content :name))
@@ -1958,7 +1982,8 @@ Append STATUS, TOOL-CALL-NEXT-LINE-SPACING and ROOTS"
                   (eca-chat--content-table
                    `(("Tool" . ,name)
                      ("Server" . ,server)
-                     ("Arguments" . ,new-content)))))))))
+                     ("Arguments" . ,new-content)))
+                  'eca-chat-mcp-tool-call-label-face))))))
         ("toolCallRun"
          (let* ((id (plist-get content :id))
                 (args (plist-get content :arguments))
@@ -2086,6 +2111,14 @@ Append STATUS, TOOL-CALL-NEXT-LINE-SPACING and ROOTS"
          (setq-local eca-chat--session-cost          (plist-get content :sessionCost)))
         (_ nil)))))
 
+(defun eca-chat-cleared (session params)
+  "Clear chat for SESSION and PARAMS requested by server."
+  (-let* ((chat-id (plist-get params :chatId))
+          (messages? (plist-get params :messages))
+          (chat-buffer (eca-chat--get-chat-buffer session chat-id)))
+    (eca-chat--with-current-buffer chat-buffer
+      (when messages?
+        (eca-chat--clear)))))
 
 (defun eca-chat-config-updated (session chat-config)
   "Update chat based on the CHAT-CONFIG for SESSION."
