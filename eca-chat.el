@@ -2327,6 +2327,30 @@ Just open if FORCE-OPEN? is non-nil."
       (eca-chat--expandable-content-toggle (overlay-get ov 'eca-chat--expandable-content-id) (when force-open? t) (not force-open?)))))
 
 ;;;###autoload
+(defun eca-chat-expand-all-blocks ()
+  "Expand all expandable blocks in current chat."
+  (interactive)
+  (eca-assert-session-running (eca-session))
+  (eca-chat--with-current-buffer (eca-chat--get-last-buffer (eca-session))
+    (let ((expandable-overlays
+           (-filter (lambda (ov) (overlay-get ov 'eca-chat--expandable-content-id))
+                    (overlays-in (point-min) (point-max)))))
+      (seq-doseq (ov expandable-overlays)
+        (eca-chat--expandable-content-toggle (overlay-get ov 'eca-chat--expandable-content-id) t nil)))))
+
+;;;###autoload
+(defun eca-chat-collapse-all-blocks ()
+  "Collapse all expandable blocks in current chat."
+  (interactive)
+  (eca-assert-session-running (eca-session))
+  (eca-chat--with-current-buffer (eca-chat--get-last-buffer (eca-session))
+    (let ((expandable-overlays
+           (-filter (lambda (ov) (overlay-get ov 'eca-chat--expandable-content-id))
+                    (overlays-in (point-min) (point-max)))))
+      (seq-doseq (ov expandable-overlays)
+        (eca-chat--expandable-content-toggle (overlay-get ov 'eca-chat--expandable-content-id) t t)))))
+
+;;;###autoload
 (defun eca-chat-add-context-to-system-prompt ()
   "Add context to system prompt in chat in a DWIM manner.
 
