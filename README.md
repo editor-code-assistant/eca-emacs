@@ -77,9 +77,17 @@ Chat
 - `eca-chat-clear-prompt`: Clear written prompt in chat
 - `eca-chat-repeat-prompt`: Repeat a previously sent prompt
 - `eca-chat-stop-prompt`: Stop a running prompt in chat
-- `eca-chat-tool-call-accept-all`: Acceppt all pending tool calls in chat
-- `eca-chat-tool-call-accept-next`: Acceppt next pending tool call in chat
+- `eca-chat-tool-call-accept-all`: Accept all pending tool calls in chat
+- `eca-chat-tool-call-accept-all-and-remember`: Accept all pending tool calls in chat and remember for session
+- `eca-chat-tool-call-accept-next`: Accept next pending tool call in chat
 - `eca-chat-tool-call-reject-next`: Reject next pending tool call in chat
+- `eca-chat-go-to-prev-user-message`: Go to the previous user message from point
+- `eca-chat-go-to-next-user-message`: Go to the next user message from point
+- `eca-chat-go-to-prev-expandable-block`: Go to the previous expandable block from point
+- `eca-chat-go-to-next-expandable-block`: Go to the next expandable block from point
+- `eca-chat-toggle-expandable-block`: Toggle current expandable block at point
+- `eca-chat-expand-all-blocks`: Expand all expandable blocks in current chat
+- `eca-chat-collapse-all-blocks`: Collapse all expandable blocks in current chat
 - `eca-chat-timeline`: Show user prompt history as a timeline
 - `eca-chat-talk`: Use whisper.el to send a prompt via voice.
 - `eca-chat-save-to-file`: Save chat to a file.
