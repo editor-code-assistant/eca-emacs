@@ -639,12 +639,19 @@ Must be a positive integer."
 (defun eca-chat--rollback (session content-id)
   "Rollback chat messages for SESSION to before CONTENT-ID."
   (unless eca-chat--chat-loading
-    (let ((rollback-messages-str "Rollback only messages")
-          (rollback-tools-str "Rollback only changes done by tool calls")
-          (rollback-messages-and-tools-str "Rollback messages and changes done by tool calls"))
-      (when-let* ((rollback-type (completing-read "Select the rollback type:" (list rollback-messages-and-tools-str
-                                                                                    rollback-messages-str
-                                                                                    rollback-tools-str) nil t)))
+    (let ((rollback-messages-and-tools-str "1. Rollback messages and changes done by tool calls")
+          (rollback-messages-str "2. Rollback only messages")
+          (rollback-tools-str "3. Rollback only changes done by tool calls"))
+      (when-let* ((rollback-type (completing-read "Select the rollback type:"
+                                                  (lambda (s pred action)
+                                                    (if (eq 'metadata action)
+                                                        `(metadata (display-sort-function . ,#'identity))
+                                                      (complete-with-action action
+                                                                            (list rollback-messages-and-tools-str
+                                                                                  rollback-messages-str
+                                                                                  rollback-tools-str)
+                                                                            s
+                                                                            pred))) nil t)))
         (let ((include (cond
                         ((string= rollback-type rollback-messages-str) ["messages"])
                         ((string= rollback-type rollback-tools-str) ["tools"])
@@ -1125,8 +1132,8 @@ Applies LABEL-FACE to label and CONTENT-FACE to content."
                                                                             'line-prefix (unless (string-empty-p content)
                                                                                            open-icon))
                                       'keymap (let ((km (make-sparse-keymap)))
-                                                (define-key km (kbd "<mouse-1>") (lambda () (eca-chat--expandable-content-toggle id)))
-                                                (define-key km (kbd "<tab>") (lambda () (eca-chat--expandable-content-toggle id)))
+                                                (define-key km (kbd "<mouse-1>") (lambda () (interactive) (eca-chat--expandable-content-toggle id)))
+                                                (define-key km (kbd "<tab>") (lambda () (interactive) (eca-chat--expandable-content-toggle id)))
                                                 km)
                                       'help-echo "mouse-1 / tab / RET: expand/collapse"))
         (eca-chat--insert "\n")
@@ -1900,14 +1907,15 @@ Append STATUS, TOOL-CALL-NEXT-LINE-SPACING and ROOTS"
          (when-let* ((text (plist-get content :text)))
            (pcase role
              ("user"
-              (eca-chat--add-expandable-content
-               content-id
-               (propertize (string-trim-right text) 'font-lock-face 'eca-chat-user-messages-face)
-               (eca-buttonize
-                eca-chat-mode-map
-                (propertize "Rollback chat to before this message" 'font-lock-face 'eca-chat-rollback-face)
-                (lambda () (eca-chat--rollback session content-id)))
-               'eca-chat-user-messages-face)
+              (progn
+                (eca-chat--add-expandable-content
+                 content-id
+                 (propertize (string-trim text) 'font-lock-face 'eca-chat-user-messages-face)
+                 (eca-buttonize
+                  eca-chat-mode-map
+                  (propertize "Rollback chat to before this message" 'font-lock-face 'eca-chat-rollback-face)
+                  (lambda () (eca-chat--rollback session content-id)))
+                 'eca-chat-user-messages-face))
               (eca-chat--mark-header)
               (font-lock-ensure))
              ("system"
