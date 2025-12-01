@@ -639,11 +639,21 @@ Must be a positive integer."
 (defun eca-chat--rollback (session content-id)
   "Rollback chat messages for SESSION to before CONTENT-ID."
   (unless eca-chat--chat-loading
-    (when (y-or-n-p "Do you want to really rollback the chat to before this message?")
-      (eca-api-request-sync session
-                            :method "chat/rollback"
-                            :params (list :chatId eca-chat--id
-                                          :contentId content-id)))))
+    (let ((rollback-messages-str "Rollback only messages")
+          (rollback-tools-str "Rollback only changes done by tool calls")
+          (rollback-messages-and-tools-str "Rollback messages and changes done by tool calls"))
+      (when-let* ((rollback-type (completing-read "Select the rollback type:" (list rollback-messages-and-tools-str
+                                                                                    rollback-messages-str
+                                                                                    rollback-tools-str) nil t)))
+        (let ((include (cond
+                        ((string= rollback-type rollback-messages-str) ["messages"])
+                        ((string= rollback-type rollback-tools-str) ["tools"])
+                        ((string= rollback-type rollback-messages-and-tools-str) ["messages" "tools"]))))
+          (eca-api-request-sync session
+                                :method "chat/rollback"
+                                :params (list :chatId eca-chat--id
+                                              :contentId content-id
+                                              :include include)))))))
 
 (defun eca-chat--set-chat-loading (session loading)
   "Set the SESSION chat to a loading state if LOADING is non nil.
