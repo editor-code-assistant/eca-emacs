@@ -24,6 +24,12 @@
 
 ;; Variables
 
+(eval-and-compile
+  (defcustom eca-chat-parent-mode 'gfm-view-mode
+    "The parent mode to eca-chat-mode inheirit."
+    :type 'symbol
+    :group 'eca))
+
 (defcustom eca-chat-mode-hook '()
   "Hooks to run after entering in eca chat mode hook."
   :type 'hook
@@ -1641,9 +1647,15 @@ string."
       (eca-chat--insert " "))
     (eca-chat--insert text)))
 
+(defmacro eca-chat-define-derived-mode (child name &optional docstring &rest body)
+  "Wrapper for `define-derived-mode' with support for custom parent mode.
+CHILD, NAME, DOCSTRING and BODY are passed down."
+  (declare (indent defun))
+  `(define-derived-mode ,child ,eca-chat-parent-mode ,name ,docstring ,@body))
+
 ;; Public
 
-(define-derived-mode eca-chat-mode gfm-view-mode  "eca-chat"
+(eca-chat-define-derived-mode eca-chat-mode "eca-chat"
   "Major mode for ECA chat sessions.
 \\{eca-chat-mode-map}"
   :group 'eca
