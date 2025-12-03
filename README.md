@@ -113,6 +113,7 @@ Core / session
 
 Chat
 
+- `eca-chat-parent-mode`: Set major-mode of chat parent, can be `markdown-mode`, `markdown-view-mode` or `gfm-view-mode` (default)
 - `eca-chat-mode-hook`: Hooks to run after entering `eca-chat-mode`.
 - `eca-chat-use-side-window`: Whether the chat buffer is displayed in a side window or a normal window.
 - `eca-chat-window-side`: On which side (`left`, `right`, `top`, `bottom`) the chat side window appears.
