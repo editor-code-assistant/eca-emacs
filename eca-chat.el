@@ -849,7 +849,7 @@ the prompt/context line."
   (when-let ((prompt-start (eca-chat--prompt-field-start-point)))
     (save-excursion
       (goto-char prompt-start)
-      (string-trim (buffer-substring-no-properties (point) (point-max))))))
+      (string-trim (buffer-substring (point) (point-max))))))
 
 (defun eca-chat--send-prompt (session prompt)
   "Send PROMPT to server for SESSION."
