@@ -2536,12 +2536,13 @@ if ARG is current prefix, ask for file, otherwise drop current file."
           (eca-chat-new))))))
 
 ;;;###autoload
-(defun eca-chat-rename (new-name)
+(defun eca-chat-rename ()
   "Rename last visited chat to a custom NEW-NAME."
-  (interactive "sInform the new chat title: ")
-  (eca-assert-session-running (eca-session))
-  (with-current-buffer (eca-chat--get-last-buffer (eca-session))
-    (setq eca-chat--custom-title new-name)))
+  (interactive)
+  (let ((new-name (read-string "Inform the new chat title: ")))
+    (eca-assert-session-running (eca-session))
+    (with-current-buffer (eca-chat--get-last-buffer (eca-session))
+      (setq eca-chat--custom-title new-name))))
 
 ;;;###autoload
 (defun eca-chat-new ()

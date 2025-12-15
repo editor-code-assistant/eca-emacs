@@ -219,23 +219,21 @@ Inheirits BASE-MAP."
     ("b" "Change behavior" eca-chat-select-behavior)
     ("o" "Open/close chat window" eca-chat-toggle-window)
     ("a" "Accept all pending tool calls" eca-chat-tool-call-accept-all)
-    ("s" "Accept all pending tool calls and remember" eca-chat-tool-call-accept-all-and-remember)
+    ("!" "Accept all pending tool calls and remember" eca-chat-tool-call-accept-all-and-remember)
+    ("s" "Add to system prompt" eca-chat-add-context-to-system-prompt)
+    ("u" "Add to user prompt" eca-chat-add-context-to-user-prompt)
+    ("d" "Drop from system prompt" eca-chat-drop-context-from-system-prompt)
     ("A" "Accept next pending tool call" eca-chat-tool-call-accept-next)]
 
    ["Navigation"
-    ("h" "Message history" eca-chat-timeline)
-    ("c" "Chat" eca)
-    ("M" "MCP details" eca-mcp-details)
-    ("E" "Show stderr (logs)" eca-show-stderr)]
-
-   ["Context"
-    ("s" "Add to system prompt" eca-chat-add-context-to-system-prompt)
-    ("u" "Add to user prompt" eca-chat-add-context-to-user-prompt)
-    ("d" "Drop from system prompt" eca-chat-drop-context-from-system-prompt)]
+    ("N h" "Message history" eca-chat-timeline)
+    ("N c" "Chat" eca)
+    ("N m" "MCP details" eca-mcp-details)
+    ("N e" "Show stderr (logs)" eca-show-stderr)]
 
    ["Server"
-    ("R" "Restart" eca-restart)
-    ("S" "Stop" eca-stop)]])
+    ("S r" "Restart" eca-restart)
+    ("S s" "Stop" eca-stop)]])
 
 (provide 'eca-util)
 ;;; eca-util.el ends here
