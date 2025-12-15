@@ -25,8 +25,8 @@
 ;; Variables
 
 (eval-and-compile
-  (defcustom eca-chat-parent-mode 'gfm-view-mode
-    "The parent mode to eca-chat-mode inheirit."
+  (defcustom eca-chat-parent-mode 'gfm-mode
+    "The parent mode to eca-chat-mode inherit."
     :type 'symbol
     :group 'eca))
 
@@ -1661,12 +1661,14 @@ CHILD, NAME, DOCSTRING and BODY are passed down."
   :group 'eca
   (visual-line-mode)
   (hl-line-mode -1)
-  (read-only-mode -1)
   (setq-local eca-chat--history '())
   (setq-local eca-chat--history-index -1)
 
-  ;; Show diff blocks in markdown-mode with colors.
+   ;; Show diff blocks in markdown-mode with colors.
   (setq-local markdown-fontify-code-blocks-natively t)
+  ;; Enable gfm-view-mode-like rendering without read-only
+  (setq-local markdown-hide-markup t)
+  (add-to-invisibility-spec 'markdown-markup)
 
   (make-local-variable 'completion-at-point-functions)
   (setq-local completion-at-point-functions (list #'eca-chat-completion-at-point))
