@@ -611,7 +611,7 @@ Must be a positive integer."
   (let ((prompt-area-ov (make-overlay (line-beginning-position) (1+ (line-beginning-position)) (current-buffer))))
     (overlay-put prompt-area-ov 'eca-chat-prompt-area t))
   (eca-chat--insert eca-chat-prompt-separator)
-  (let ((progress-area-ov (make-overlay (line-beginning-position) (line-end-position) (current-buffer) nil t)))
+  (let ((progress-area-ov (make-overlay (1+ (point)) (line-end-position) (current-buffer) nil t)))
     (overlay-put progress-area-ov 'eca-chat-progress-area t)
     (eca-chat--insert "\n")
     (move-overlay progress-area-ov (overlay-start progress-area-ov) (1- (overlay-end progress-area-ov))))
@@ -1278,8 +1278,8 @@ Show parent upwards if HIDE-FILENAME? is non nil."
           (goto-char (overlay-start ov))
           (delete-region (point) (overlay-end ov)))
         (eca-chat--insert (propertize (if (string-empty-p eca-chat--progress-text)
-                                          eca-chat-prompt-separator
-                                        (concat eca-chat-prompt-separator "\n" eca-chat--progress-text))
+                                          ""
+                                          (concat "\n" eca-chat--progress-text))
                                       'font-lock-face 'eca-chat-system-messages-face)
                           eca-chat--spinner-string)))))
 
