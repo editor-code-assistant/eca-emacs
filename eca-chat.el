@@ -1639,13 +1639,19 @@ string."
      (list :type "file" :path (buffer-file-name))))))
 
 (defun eca-chat--insert-prompt (text)
-  "Insert TEXT to latest chat prompt point."
+  "Insert TEXT to latest chat prompt point unless point is already in prompt."
   (save-excursion
-    (goto-char (eca-chat--prompt-field-start-point))
-    (goto-char (line-end-position))
-    (when (= (line-beginning-position) (line-end-position))
-      (eca-chat--insert " "))
-    (eca-chat--insert text)))
+    (if (eca-chat--point-at-prompt-field-p)
+        (progn
+          (when (and (eolp)
+                     (= (line-beginning-position) (line-end-position)))
+            (eca-chat--insert " "))
+          (eca-chat--insert text))
+      (goto-char (eca-chat--prompt-field-start-point))
+      (goto-char (line-end-position))
+      (when (= (line-beginning-position) (line-end-position))
+        (eca-chat--insert " "))
+      (eca-chat--insert text))))
 
 (defmacro eca-chat-define-derived-mode (child name &optional docstring &rest body)
   "Wrapper for `define-derived-mode' with support for custom parent mode.
