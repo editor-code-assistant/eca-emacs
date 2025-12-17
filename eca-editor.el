@@ -37,12 +37,9 @@
 (defun eca-editor--flymake-to-eca-severity (severity)
   "Convert flymake SEVERITY to eca one."
   (pcase severity
-    ('flymake-error "error")
-    (':error "error")
-    ('flymake-warning "warning")
-    (':warning "warning")
-    ('flymake-note "information")
-    (':note "information")
+    ((or 'flymake-error ':error 'eglot-error) "error")
+    ((or 'flymake-warning ':warning 'eglot-warning) "warning")
+    ((or 'flymake-note ':note 'eglot-note) "information")
     (_ "unknown")))
 
 (defun eca-editor--lsp-mode-diagnostics (uri workspace)
@@ -83,35 +80,36 @@ If URI is nil find all diagnostics otherwise filter to that uri."
                diagnostics))
     eca-diagnostics))
 
-(defun eca-editor--flymake-diagnostics (_uri workspace)
+(defun eca-editor--flymake-diagnostics (uri workspace)
   "Find all flymake diagnostics found for WORKSPACE.
 If URI is nil find all diagnostics otherwise filter to that uri."
-  (with-current-buffer (find-file-noselect workspace)
-    (--map
-     (with-current-buffer (flymake-diagnostic-buffer it)
-       (save-excursion
-         (let* ((beg (flymake-diagnostic-beg it))
-                (end (flymake-diagnostic-end it))
-                (beg-line (progn (goto-char beg)
-                                 (line-number-at-pos)))
-                (beg-col (current-column))
-                (end-line (progn (goto-char end)
-                                 (line-number-at-pos)))
-                (end-col (current-column)))
-           (list :uri (eca--path-to-uri (buffer-file-name (flymake-diagnostic-buffer it)))
+  (let ((default-directory workspace))
+    (--keep
+     (let* ((locus (flymake-diagnostic-buffer it))
+            (buffer-p (bufferp locus))
+            (file-path (if buffer-p (buffer-file-name locus) locus))
+            (diag-uri (eca--path-to-uri file-path))
+            (beg (flymake-diagnostic-beg it))
+            (end (flymake-diagnostic-end it)))
+       (when (or (null uri) (string= uri diag-uri))
+         (let ((range (if buffer-p
+                          (with-current-buffer locus
+                            (save-excursion
+                              (list :start (list :line (progn (goto-char beg) (line-number-at-pos))
+                                                 :character (current-column))
+                                    :end (list :line (progn (goto-char (or end beg)) (line-number-at-pos))
+                                               :character (current-column)))))
+                        ;; file path locus - beg/end are already (line . col)
+                        (list :start (list :line (car beg) :character (cdr beg))
+                              :end (list :line (if end (car end) (car beg))
+                                         :character (if end (cdr end) (cdr beg)))))))
+           (list :uri diag-uri
                  :severity (eca-editor--flymake-to-eca-severity (flymake-diagnostic-type it))
                  :code (when-let ((code (flymake-diagnostic-code it)))
-                         (if (symbolp code)
-                             (symbol-name code)
-                           (format "%s" code)))
-                 :range (list :start (list :line beg-line
-                                           :character beg-col)
-                              :end (list :line end-line
-                                         :character end-col))
+                         (if (symbolp code) (symbol-name code) (format "%s" code)))
+                 :range range
                  :source (when-let ((backend (flymake-diagnostic-backend it)))
-                           (if (symbolp backend)
-                               (symbol-name backend)
-                             (format "%s" backend)))
+                           (if (symbolp backend) (symbol-name backend) (format "%s" backend)))
                  :message (flymake-diagnostic-text it)))))
      (flymake--project-diagnostics))))
 
