@@ -1807,6 +1807,8 @@ Call ORIG-FUN with ARGS if not media."
 
     ;; Paste image from clipboard support
     (when (fboundp 'yank-media-handler)
+      ;; reset current handlers inherit from markdown
+      (setq-local yank-media--registered-handlers nil)
       (yank-media-handler "image/png" #'eca-chat--yank-image-handler)
       (yank-media-handler "image/jpeg" #'eca-chat--yank-image-handler)
       (yank-media-handler "image/jpg" #'eca-chat--yank-image-handler)
