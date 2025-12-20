@@ -40,9 +40,9 @@
 Can be `'left', `'right', `'top', or `'bottom'.  This setting will only
 be used when `eca-chat-use-side-window' is non-nil."
   :type '(choice (const :tag "Left" left)
-          (const :tag "Right" right)
-          (const :tag "Top" top)
-          (const :tag "Bottom" bottom))
+                 (const :tag "Right" right)
+                 (const :tag "Top" top)
+                 (const :tag "Bottom" bottom))
   :group 'eca)
 
 (defcustom eca-chat-window-width 0.40
@@ -170,14 +170,14 @@ Must be a valid model supported by server, check `eca-chat-select-model`."
 (defcustom eca-chat-diff-tool 'smerge
   "Select the method for displaying file-change diffs in ECA chat."
   :type '(choice (const :tag "Side-by-side Ediff" ediff)
-          (const :tag "Merge-style Smerge" smerge))
+                 (const :tag "Merge-style Smerge" smerge))
   :group 'eca)
 
 (defcustom eca-chat-tool-call-prepare-throttle 'smart
   "Throttle strategy for handling `toolCallPrepare` events.
 Possible values: `all` or `smart` (default)."
   :type '(choice (const :tag "Process all updates" all)
-          (const :tag "Smart throttle" smart))
+                 (const :tag "Smart throttle" smart))
   :group 'eca)
 
 (defcustom eca-chat-tool-call-prepare-update-interval 5
@@ -404,6 +404,7 @@ Must be a positive integer."
 (defvar eca-chat--last-known-model nil)
 (defvar eca-chat--last-known-behavior nil)
 
+
 (defun eca-chat-new-buffer-name (session)
   "Return the chat buffer name for SESSION."
   (format "<eca-chat:%s:%s>" (eca--session-id session) eca-chat--new-chat-id))
@@ -441,6 +442,7 @@ Must be a positive integer."
     (define-key map (kbd "C-c <up>") #'eca-chat-go-to-prev-expandable-block)
     (define-key map (kbd "C-c <down>") #'eca-chat-go-to-next-expandable-block)
     (define-key map (kbd "C-c <tab>") #'eca-chat-toggle-expandable-block)
+    (define-key map (kbd "C-c C-y") #'eca-chat-media-yank-screenshot)
     map)
   "Keymap used by `eca-chat-mode'.")
 
@@ -851,12 +853,28 @@ the prompt/context line."
       (goto-char prompt-start)
       (string-trim (buffer-substring (point) (point-max))))))
 
+(defun eca-chat--extract-contexts-from-prompt ()
+  "Extract contexts from prompt text properties.
+Returns a list of context plists found in the prompt field."
+  (when-let ((prompt-start (eca-chat--prompt-field-start-point)))
+    (let ((contexts '())
+          (pos prompt-start)
+          (end (point-max)))
+      (while (< pos end)
+        (when-let ((context (get-text-property pos 'eca-chat-context-item)))
+          (unless (member context contexts)
+            (push context contexts)))
+        (setq pos (next-single-property-change pos 'eca-chat-context-item nil end)))
+      (nreverse contexts))))
+
 (defun eca-chat--send-prompt (session prompt)
   "Send PROMPT to server for SESSION."
   (when eca-chat--closed
     (user-error (eca-error "This chat is closed")))
   (let* ((prompt-start (eca-chat--prompt-field-start-point))
-         (refined-contexts (-map #'eca-chat--refine-context eca-chat--context)))
+         (prompt-contexts (eca-chat--extract-contexts-from-prompt))
+         (refined-contexts (-map #'eca-chat--refine-context 
+                                 (append eca-chat--context prompt-contexts))))
     (when (seq-empty-p eca-chat--history) (eca-chat--clear))
     (add-to-list 'eca-chat--history prompt)
     (setq eca-chat--history-index -1)
@@ -1289,14 +1307,16 @@ If STATIC? return strs with no dynamic values."
   (-let* (((&plist :type type) context)
           (context-str
            (pcase type
-             ("file" (propertize (concat eca-chat-context-prefix
-                                         (eca-chat--context-presentable-path (plist-get context :path))
-                                         (-when-let ((&plist :start start :end end) (plist-get context :linesRange))
-                                           (format "(%d-%d)" start end)))
-                                 'eca-chat-expanded-item-str (concat eca-chat-context-prefix (plist-get context :path)
-                                                                     (-when-let ((&plist :start start :end end) (plist-get context :linesRange))
-                                                                       (format ":L%d-L%d" start end)))
-                                 'font-lock-face 'eca-chat-context-file-face))
+             ("file" (let ((path (plist-get context :path))
+                           (lines-range (plist-get context :linesRange)))
+                       (propertize (concat eca-chat-context-prefix
+                                           (eca-chat--context-presentable-path path)
+                                           (-when-let ((&plist :start start :end end) lines-range)
+                                             (format "(%d-%d)" start end)))
+                                   'eca-chat-expanded-item-str (concat eca-chat-context-prefix path
+                                                                       (-when-let ((&plist :start start :end end) lines-range)
+                                                                         (format ":L%d-L%d" start end)))
+                                   'font-lock-face 'eca-chat-context-file-face)))
              ("directory" (propertize (concat eca-chat-context-prefix (eca-chat--context-presentable-path (plist-get context :path)))
                                       'eca-chat-expanded-item-str (concat eca-chat-context-prefix (plist-get context :path))
                                       'font-lock-face 'eca-chat-context-file-face))
@@ -1329,7 +1349,7 @@ If STATIC? return strs with no dynamic values."
                                              ")"))
                                    'eca-chat-expanded-item-str (concat eca-chat-context-prefix "cursor")
                                    'font-lock-face 'eca-chat-context-cursor-face))
-             (_ (concat eca-chat-context-prefix "unkown:" type)))))
+             (_ (concat eca-chat-context-prefix "unknown:" type)))))
     (propertize context-str
                 'eca-chat-item-type 'context
                 'eca-chat-item-str-length (length context-str)
@@ -1468,20 +1488,22 @@ Add text property to prompt text to match context."
 
 (defun eca-chat--context-to-completion (context)
   "Convert CONTEXT to a completion item."
-  (let ((raw-label (pcase (plist-get context :type)
-                     ("file" (f-filename (plist-get context :path)))
-                     ("directory" (f-filename (plist-get context :path)))
-                     ("repoMap" "repoMap")
-                     ("cursor" "cursor")
-                     ("mcpResource" (concat (plist-get context :server) ":" (plist-get context :name)))
-                     (_ (concat "Unknown - " (plist-get context :type)))))
-        (face (pcase (plist-get context :type)
-                ("file" 'eca-chat-context-file-face)
-                ("directory" 'eca-chat-context-file-face)
-                ("repoMap" 'eca-chat-context-repo-map-face)
-                ("cursor" 'eca-chat-context-cursor-face)
-                ("mcpResource" 'eca-chat-context-mcp-resource-face)
-                (_ nil))))
+  (let* ((ctx-type (plist-get context :type))
+         (ctx-path (plist-get context :path))
+         (raw-label (pcase ctx-type
+                      ("file" (f-filename ctx-path))
+                      ("directory" (f-filename ctx-path))
+                      ("repoMap" "repoMap")
+                      ("cursor" "cursor")
+                      ("mcpResource" (concat (plist-get context :server) ":" (plist-get context :name)))
+                      (_ (concat "Unknown - " ctx-type))))
+         (face (pcase ctx-type
+                 ("file" 'eca-chat-context-file-face)
+                 ("directory" 'eca-chat-context-file-face)
+                 ("repoMap" 'eca-chat-context-repo-map-face)
+                 ("cursor" 'eca-chat-context-cursor-face)
+                 ("mcpResource" 'eca-chat-context-mcp-resource-face)
+                 (_ nil))))
     (propertize raw-label
                 'eca-chat-completion-item context
                 'face face)))
@@ -1671,6 +1693,8 @@ CHILD, NAME, DOCSTRING and BODY are passed down."
   (setq-local eca-chat--history-index -1)
 
    ;; Show diff blocks in markdown-mode with colors.
+  (when (fboundp 'yank-media-handler)
+    (yank-media-handler "image/.*" #'eca-chat-media--yank-image-handler))
   (setq-local markdown-fontify-code-blocks-natively t)
   ;; Enable gfm-view-mode-like rendering without read-only
   (setq-local markdown-hide-markup t)
@@ -1839,8 +1863,8 @@ Calls CB with the resulting message."
        (cond
         ((eq action 'metadata)
          '(metadata (category . eca-capf)
-           (display-sort-function . identity)
-           (cycle-sort-function . identity)))
+                    (display-sort-function . identity)
+                    (cycle-sort-function . identity)))
         ((eq (car-safe action) 'boundaries) nil)
         (t
          (complete-with-action action (funcall candidates-fn) probe pred))))
@@ -2718,4 +2742,5 @@ Returns selected message plist or nil if no messages or cancelled."
       (eca-info (format "Saved chat to '%s'" file)))))
 
 (provide 'eca-chat)
+(require 'eca-chat-media)
 ;;; eca-chat.el ends here
