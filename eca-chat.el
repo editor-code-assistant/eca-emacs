@@ -873,7 +873,7 @@ Returns a list of context plists found in the prompt field."
     (user-error (eca-error "This chat is closed")))
   (let* ((prompt-start (eca-chat--prompt-field-start-point))
          (prompt-contexts (eca-chat--extract-contexts-from-prompt))
-         (refined-contexts (-map #'eca-chat--refine-context 
+         (refined-contexts (-map #'eca-chat--refine-context
                                  (append eca-chat--context prompt-contexts))))
     (when (seq-empty-p eca-chat--history) (eca-chat--clear))
     (add-to-list 'eca-chat--history prompt)
@@ -1681,6 +1681,56 @@ CHILD, NAME, DOCSTRING and BODY are passed down."
   (declare (indent defun))
   `(define-derived-mode ,child ,eca-chat-parent-mode ,name ,docstring ,@body))
 
+(defconst eca-chat-media--mime-extension-map
+  '(("image/png" . "png")
+    ("image/x-png" . "png")
+    ("image/jpeg" . "jpg")
+    ("image/jpg" . "jpg")
+    ("image/gif" . "gif")
+    ("image/webp" . "webp")
+    ("image/heic" . "heic")
+    ("image/heif" . "heif")
+    ("image/svg+xml" . "svg"))
+  "Mapping of mime types to screenshot file extensions.")
+
+(defun eca-chat-media--extension-for-type (type)
+  "Return file extension (without dot) for mime TYPE.
+TYPE can be a string or symbol."
+  (let* ((type-str (if (symbolp type) (symbol-name type) type))
+         (clean (and type-str (string-trim type-str))))
+    (or (cdr (assoc-string clean eca-chat-media--mime-extension-map t))
+        (when clean
+          (let* ((parts (split-string clean "/"))
+                 (raw-subtype (cadr parts))
+                 (subtype (car (split-string (or raw-subtype "") "\\+"))))
+            (unless (string-empty-p subtype)
+              subtype)))
+        "png")))
+
+(defun eca-chat-media--yank-image-handler (type data)
+  "Handler for `yank-media' to insert images from clipboard.
+TYPE is the MIME type (e.g., image/png).
+DATA is the binary image data as a string."
+  (when-let* ((session (eca-session))
+              (chat-buffer (eca-chat--get-last-buffer session))
+              (extension (eca-chat-media--extension-for-type type))
+              (output-path (make-temp-file "eca-screenshot-" nil (concat "." extension))))
+    (condition-case err
+        (progn
+          (with-temp-file output-path
+            (set-buffer-multibyte nil)
+            (insert data))
+          (when (f-exists? output-path)
+            (eca-chat--with-current-buffer chat-buffer
+              (let ((context (list :type "file" :path output-path)))
+                (eca-chat--insert-prompt (concat (eca-chat--context->str context 'static) " "))
+                (eca-chat--select-window)
+                (goto-char (line-end-position)))
+              (eca-info "Image yanked and added to prompt: %s"
+                        (file-size-human-readable (file-attribute-size (file-attributes output-path)))))))
+      (error
+       (eca-error "Failed to save yanked image: %s" (error-message-string err))))))
+
 ;; Public
 
 (eca-chat-define-derived-mode eca-chat-mode "eca-chat"
@@ -1692,7 +1742,7 @@ CHILD, NAME, DOCSTRING and BODY are passed down."
   (setq-local eca-chat--history '())
   (setq-local eca-chat--history-index -1)
 
-   ;; Show diff blocks in markdown-mode with colors.
+  ;; Show diff blocks in markdown-mode with colors.
   (when (fboundp 'yank-media-handler)
     (yank-media-handler "image/.*" #'eca-chat-media--yank-image-handler))
   (setq-local markdown-fontify-code-blocks-natively t)
@@ -2742,6 +2792,20 @@ Returns selected message plist or nil if no messages or cancelled."
         (save-buffer))
       (eca-info (format "Saved chat to '%s'" file)))))
 
+;;;###autoload
+(defun eca-chat-media-yank-screenshot ()
+  "Yank image from clipboard and add to context.
+Uses native `yank-media'. Requires Emacs 29+."
+  (interactive)
+  (unless (fboundp 'yank-media)
+    (user-error "Screenshot yanking requires Emacs 29+ with yank-media support"))
+  (let* ((session (eca-session))
+         (chat-buffer (eca-chat--get-last-buffer session)))
+    (eca-assert-session-running session)
+    (unless chat-buffer
+      (user-error "Open an ECA chat buffer before yanking a screenshot"))
+    (eca-chat--select-window)
+    (yank-media)))
+
 (provide 'eca-chat)
-(require 'eca-chat-media)
 ;;; eca-chat.el ends here
