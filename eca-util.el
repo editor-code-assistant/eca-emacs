@@ -223,8 +223,7 @@ Inheirits BASE-MAP."
     ("s" "Add to system prompt" eca-chat-add-context-to-system-prompt)
     ("u" "Add to user prompt" eca-chat-add-context-to-user-prompt)
     ("d" "Drop from system prompt" eca-chat-drop-context-from-system-prompt)
-    ("A" "Accept next pending tool call" eca-chat-tool-call-accept-next)
-    ("y" "Yank screenshot" eca-chat-media-yank-screenshot)]
+    ("A" "Accept next pending tool call" eca-chat-tool-call-accept-next)]
 
    ["Navigation"
     ("N h" "Message history" eca-chat-timeline)

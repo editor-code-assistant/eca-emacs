@@ -186,6 +186,12 @@ Must be a positive integer."
   :type 'integer
   :group 'eca)
 
+(defcustom eca-chat-yank-image-context-location 'system
+  "Where to paste images from clipboard."
+  :type '(choice (const :tag "System context area" system)
+                 (const :tag "user context area" user))
+  :group 'eca)
+
 (defvar-local eca-chat--tool-call-prepare-counters (make-hash-table :test 'equal)
   "Hash table mapping toolCall ID to message count.")
 
@@ -442,7 +448,6 @@ Must be a positive integer."
     (define-key map (kbd "C-c <up>") #'eca-chat-go-to-prev-expandable-block)
     (define-key map (kbd "C-c <down>") #'eca-chat-go-to-next-expandable-block)
     (define-key map (kbd "C-c <tab>") #'eca-chat-toggle-expandable-block)
-    (define-key map (kbd "C-c C-y") #'eca-chat-media-yank-screenshot)
     map)
   "Keymap used by `eca-chat-mode'.")
 
@@ -1707,7 +1712,7 @@ TYPE can be a string or symbol."
               subtype)))
         "png")))
 
-(defun eca-chat-media--yank-image-handler (type data)
+(defun eca-chat--yank-image-handler (type data)
   "Handler for `yank-media' to insert images from clipboard.
 TYPE is the MIME type (e.g., image/png).
 DATA is the binary image data as a string."
@@ -1722,14 +1727,30 @@ DATA is the binary image data as a string."
             (insert data))
           (when (f-exists? output-path)
             (eca-chat--with-current-buffer chat-buffer
-              (let ((context (list :type "file" :path output-path)))
-                (eca-chat--insert-prompt (concat (eca-chat--context->str context 'static) " "))
+              (let ((context (list :type "file" :path output-path))
+                    (file-size (file-size-human-readable (file-attribute-size (file-attributes output-path)))))
                 (eca-chat--select-window)
-                (goto-char (line-end-position)))
-              (eca-info "Image yanked and added to prompt: %s"
-                        (file-size-human-readable (file-attribute-size (file-attributes output-path)))))))
+                (if (eq 'system eca-chat-yank-image-context-location)
+                    (eca-chat--add-context context)
+                    (eca-chat--insert-prompt (concat (eca-chat--context->str context 'static) " ")))
+                (eca-info "Image added, size: %s" file-size)))))
       (error
        (eca-error "Failed to save yanked image: %s" (error-message-string err))))))
+
+(defun eca-chat--yank-considering-image (orig-fun &rest args)
+  "Around advice for paste commands to use `yank-media' for images.
+Call ORIG-FUN with ARGS if not media."
+  (if (and (derived-mode-p 'eca-chat-mode)
+           (fboundp 'yank-media)
+           (boundp 'yank-media--registered-handlers)
+           yank-media--registered-handlers
+           (when-let* ((targets (gui-get-selection 'CLIPBOARD 'TARGETS)))
+             (seq-some (lambda (type)
+                         (and (symbolp type)
+                              (string-match-p "^image/" (symbol-name type))))
+                       (if (vectorp targets) (append targets nil) targets))))
+      (call-interactively #'yank-media)
+    (apply orig-fun args)))
 
 ;; Public
 
@@ -1740,11 +1761,9 @@ DATA is the binary image data as a string."
   (visual-line-mode)
   (hl-line-mode -1)
   (setq-local eca-chat--history '())
-  (setq-local eca-chat--history-index -1)
+  (setq-local eca-chat--history-index -1) 
 
   ;; Show diff blocks in markdown-mode with colors.
-  (when (fboundp 'yank-media-handler)
-    (yank-media-handler "image/.*" #'eca-chat-media--yank-image-handler))
   (setq-local markdown-fontify-code-blocks-natively t)
   ;; Enable gfm-view-mode-like rendering without read-only
   (setq-local markdown-hide-markup t)
@@ -1785,6 +1804,18 @@ DATA is the binary image data as a string."
     (eldoc-mode 1)
 
     (add-hook 'kill-buffer-hook #'eca-chat--delete-chat nil t)
+
+    ;; Paste image from clipboard support
+    (when (fboundp 'yank-media-handler)
+      (yank-media-handler "image/png" #'eca-chat--yank-image-handler)
+      (yank-media-handler "image/jpeg" #'eca-chat--yank-image-handler)
+      (yank-media-handler "image/jpg" #'eca-chat--yank-image-handler)
+      (yank-media-handler "image/gif" #'eca-chat--yank-image-handler)
+      (yank-media-handler "image/webp" #'eca-chat--yank-image-handler)
+      (advice-add 'yank :around #'eca-chat--yank-considering-image)
+      (when (featurep 'evil)
+        (advice-add 'evil-paste-after :around #'eca-chat--yank-considering-image)
+        (advice-add 'evil-paste-before :around #'eca-chat--yank-considering-image)))
 
     (let ((chat-buffer (current-buffer)))
       (run-with-timer
@@ -2791,21 +2822,6 @@ Returns selected message plist or nil if no messages or cancelled."
         (insert chat-content)
         (save-buffer))
       (eca-info (format "Saved chat to '%s'" file)))))
-
-;;;###autoload
-(defun eca-chat-media-yank-screenshot ()
-  "Yank image from clipboard and add to context.
-Uses native `yank-media'. Requires Emacs 29+."
-  (interactive)
-  (unless (fboundp 'yank-media)
-    (user-error "Screenshot yanking requires Emacs 29+ with yank-media support"))
-  (let* ((session (eca-session))
-         (chat-buffer (eca-chat--get-last-buffer session)))
-    (eca-assert-session-running session)
-    (unless chat-buffer
-      (user-error "Open an ECA chat buffer before yanking a screenshot"))
-    (eca-chat--select-window)
-    (yank-media)))
 
 (provide 'eca-chat)
 ;;; eca-chat.el ends here
