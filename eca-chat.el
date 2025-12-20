@@ -186,7 +186,7 @@ Must be a positive integer."
   :type 'integer
   :group 'eca)
 
-(defcustom eca-chat-yank-image-context-location 'system
+(defcustom eca-chat-yank-image-context-location 'user
   "Where to paste images from clipboard."
   :type '(choice (const :tag "System context area" system)
                  (const :tag "user context area" user))
