@@ -1896,10 +1896,11 @@ Append STATUS, TOOL-CALL-NEXT-LINE-SPACING and ROOTS"
   "Update tool call UI for json output given CONTENT, TIME and STATUS."
   (-let* (((&plist :name name :arguments arguments :server server :details details :id
                    id :summary summary) content)
-          (jsons (plist-get details :jsons)))
+          (jsons (plist-get details :jsons))
+          (label (or summary (format "Called tool: %s__%s" server name))))
     (eca-chat--update-expandable-content
      id
-     (concat (propertize summary 'font-lock-face 'eca-chat-mcp-tool-call-label-face)
+     (concat (propertize label 'font-lock-face 'eca-chat-mcp-tool-call-label-face)
              " " status time)
      (eca-chat--content-table
       `(("Tool"   . ,name)
