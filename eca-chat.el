@@ -1722,9 +1722,8 @@ DATA is the binary image data as a string."
               (output-path (make-temp-file "eca-screenshot-" nil (concat "." extension))))
     (condition-case err
         (progn
-          (with-temp-file output-path
-            (set-buffer-multibyte nil)
-            (insert data))
+          (let ((coding-system-for-write 'no-conversion))
+            (write-region data nil output-path nil 'silent))
           (when (f-exists? output-path)
             (eca-chat--with-current-buffer chat-buffer
               (let ((context (list :type "file" :path output-path))
