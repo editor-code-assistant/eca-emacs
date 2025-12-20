@@ -1731,7 +1731,9 @@ DATA is the binary image data as a string."
                 (eca-chat--select-window)
                 (if (eq 'system eca-chat-yank-image-context-location)
                     (eca-chat--add-context context)
-                    (eca-chat--insert-prompt (concat (eca-chat--context->str context 'static) " ")))
+                  (progn
+                    (eca-chat--insert-prompt (concat (eca-chat--context->str context 'static) " "))
+                    (goto-char (+ (point) (+ 2 (length output-path))))))
                 (eca-info "Image added, size: %s" file-size)))))
       (error
        (eca-error "Failed to save yanked image: %s" (error-message-string err))))))
