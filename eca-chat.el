@@ -475,7 +475,8 @@ Must be a positive integer."
 
 (defun eca-chat--delete-chat ()
   "Delete current chat."
-  (when (and (eq #'kill-current-buffer this-command)
+  (when (and (or (eq #'kill-current-buffer this-command)
+                 (eq #'kill-buffer this-command))
              eca-chat--id
              (yes-or-no-p "Delete chat from server (this chat history will be lost and not acessible via /resume later)?"))
     (eca-api-request-sync (eca-session)
