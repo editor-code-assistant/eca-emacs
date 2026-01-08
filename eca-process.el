@@ -190,6 +190,18 @@ https://github.com/emacs-lsp/lsp-mode/issues/4746#issuecomment-2957183423"
          (download-path (concat store-path ".zip")))
     `(,download-path . ,store-path)))
 
+(defun eca-process--cleanup-old-server ()
+  "Try to delete any leftover .old server binary from previous update.
+On Windows, running executables can be renamed but not deleted, so we
+clean them up on next startup."
+  (let ((old-path (concat eca-server-install-path ".old")))
+    (when (f-exists? old-path)
+      (condition-case nil
+          (progn
+            (f-delete old-path)
+            (eca-info "Cleaned up old server binary"))
+        (error nil)))))
+
 (defun eca-process--uninstall-server ()
   "Remove downloaded server."
   (-let (((download-path . store-path) (eca-process--download-and-store-path)))
@@ -216,17 +228,21 @@ https://github.com/emacs-lsp/lsp-mode/issues/4746#issuecomment-2957183423"
   "Download eca server of VERSION calling ON-DOWNLOADED when success."
   (-let ((url (eca-process--download-url version))
          ((download-path . store-path) (eca-process--download-and-store-path))
+         (old-path (concat eca-server-install-path ".old"))
+         (temp-extract-dir (concat (f-parent eca-server-install-path) "-temp"))
          (download-fn (pcase eca-server-download-method
                         ('url-retrieve #'eca--url-retrieve-download-file)
                         ('curl #'eca--curl-download-file)
                         (_ (error (eca-error (format "Unknown download method '%s' for eca-server-download-method" eca-server-download-method)))))))
     (condition-case err
         (progn
+          ;; Clean up any old files from previous updates
+          (eca-process--cleanup-old-server)
           (when (f-exists? download-path) (f-delete download-path))
-          (when (f-exists? store-path) (f-delete store-path))
           (when (f-exists? eca-server-version-file-path) (f-delete eca-server-version-file-path))
+          (when (f-exists? temp-extract-dir) (f-delete temp-extract-dir t))
           (mkdir (f-parent download-path) t)
-          (eca-info "Downloading eca server from %s to %s..."  url download-path)
+          (eca-info "Downloading eca server from %s to %s..." url download-path)
           (funcall
            download-fn
            :url url
@@ -235,7 +251,26 @@ https://github.com/emacs-lsp/lsp-mode/issues/4746#issuecomment-2957183423"
                       (eca-info "Downloaded eca, unzipping it...")
                       (unless (and eca-unzip-script (funcall eca-unzip-script))
                         (error "Unable to find `unzip' or `powershell' on the path, please customize `eca-unzip-script'"))
-                      (shell-command (format (funcall eca-unzip-script) download-path (f-parent store-path)))
+                      ;; Extract to temp directory first
+                      (mkdir temp-extract-dir t)
+                      (shell-command (format (funcall eca-unzip-script) download-path temp-extract-dir))
+                      (let ((new-binary (f-join temp-extract-dir (f-filename store-path))))
+                        (unless (f-exists? new-binary)
+                          (error "Expected binary not found after extraction: %s" new-binary))
+                        ;; Rename old binary to .old if it exists
+                        ;; On Windows, running executables can be renamed but not deleted
+                        (when (f-exists? store-path)
+                          (when (f-exists? old-path)
+                            (condition-case nil (f-delete old-path) (error nil)))
+                          (rename-file store-path old-path))
+                        ;; Move new binary into place
+                        (rename-file new-binary store-path))
+                      ;; Clean up temp directory
+                      (when (f-exists? temp-extract-dir)
+                        (condition-case nil (f-delete temp-extract-dir t) (error nil)))
+                      ;; Try to delete old binary (may fail if still in use, that's ok)
+                      (when (f-exists? old-path)
+                        (condition-case nil (f-delete old-path) (error nil)))
                       (f-write-text version 'utf-8 eca-server-version-file-path)
                       (set-file-modes store-path #o0700)
                       (eca-info "Installed eca successfully!")
@@ -357,6 +392,8 @@ https://github.com/emacs-lsp/lsp-mode/issues/4746#issuecomment-2957183423"
   "Start the eca process for SESSION calling ON-START after.
 Call HANDLE-MSG for new msgs processed."
   (unless (process-live-p (eca--session-process session))
+    ;; Clean up any .old binary from previous updates
+    (eca-process--cleanup-old-server)
     (-let* (((result &as &plist :decision decision :command command) (eca-process--server-command))
             (start-process-fn (lambda ()
                                 (let ((command (append command eca-extra-args)))
