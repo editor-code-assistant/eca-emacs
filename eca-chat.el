@@ -478,7 +478,8 @@ Must be a positive integer."
   (when (and (or (eq #'kill-current-buffer this-command)
                  (eq #'kill-buffer this-command))
              eca-chat--id
-             (yes-or-no-p "Delete chat from server (this chat history will be lost and not acessible via /resume later)?"))
+             (not eca-chat--closed)
+             (yes-or-no-p "Also delete chat from server (this chat history will be lost and not acessible via /resume later)?"))
     (eca-api-request-sync (eca-session)
                           :method "chat/delete"
                           :params (list :chatId eca-chat--id))))
