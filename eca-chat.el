@@ -1008,26 +1008,29 @@ Otherwise show plain integer."
       (concat (if (< n 0) "-" "") s "K")))
    (t (number-to-string n))))
 
+(defun eca-chat--usage-str ()
+  "Return the usage string of this chat."
+  (when (or eca-chat--message-input-tokens
+            eca-chat--message-output-tokens
+            eca-chat--session-tokens
+            eca-chat--message-cost
+            eca-chat--session-cost)
+    (-> (-map (lambda (segment)
+                (pcase segment
+                  (:message-input-tokens (eca-chat--number->friendly-number eca-chat--message-input-tokens))
+                  (:message-output-tokens (eca-chat--number->friendly-number eca-chat--message-output-tokens))
+                  (:session-tokens (eca-chat--number->friendly-number eca-chat--session-tokens))
+                  (:message-cost (concat "$" eca-chat--message-cost))
+                  (:session-cost (concat "$" eca-chat--session-cost))
+                  (:context-limit (eca-chat--number->friendly-number eca-chat--session-limit-context))
+                  (:output-limit (eca-chat--number->friendly-number eca-chat--session-limit-output))
+                  (_ (propertize segment 'font-lock-face 'eca-chat-usage-string-face))))
+              eca-chat-usage-string-format)
+        (string-join ""))))
+
 (defun eca-chat--mode-line-string (session)
   "Update chat mode line for SESSION."
-  (let* ((usage-str
-          (when (or eca-chat--message-input-tokens
-                    eca-chat--message-output-tokens
-                    eca-chat--session-tokens
-                    eca-chat--message-cost
-                    eca-chat--session-cost)
-            (-> (-map (lambda (segment)
-                        (pcase segment
-                          (:message-input-tokens (eca-chat--number->friendly-number eca-chat--message-input-tokens))
-                          (:message-output-tokens (eca-chat--number->friendly-number eca-chat--message-output-tokens))
-                          (:session-tokens (eca-chat--number->friendly-number eca-chat--session-tokens))
-                          (:message-cost (concat "$" eca-chat--message-cost))
-                          (:session-cost (concat "$" eca-chat--session-cost))
-                          (:context-limit (eca-chat--number->friendly-number eca-chat--session-limit-context))
-                          (:output-limit (eca-chat--number->friendly-number eca-chat--session-limit-output))
-                          (_ (propertize segment 'font-lock-face 'eca-chat-usage-string-face))))
-                      eca-chat-usage-string-format)
-                (string-join ""))))
+  (let* ((usage-str (eca-chat--usage-str))
          (fill-space (propertize " "
                                  'display `((space :align-to (- right ,(+ 1 (length usage-str)))))))
          (title (cond
@@ -1764,7 +1767,7 @@ Call ORIG-FUN with ARGS if not media."
   (visual-line-mode)
   (hl-line-mode -1)
   (setq-local eca-chat--history '())
-  (setq-local eca-chat--history-index -1) 
+  (setq-local eca-chat--history-index -1)
 
   ;; Show diff blocks in markdown-mode with colors.
   (setq-local markdown-fontify-code-blocks-natively t)
@@ -1958,6 +1961,15 @@ Calls CB with the resulting message."
      :company-require-match 'never
      :annotation-function annotation-fn
      :exit-function exit-fn)))
+
+(defun eca-chat-title ()
+  "Return the chat title."
+  (cond
+   (eca-chat--custom-title
+    (propertize eca-chat--custom-title 'font-lock-face 'eca-chat-title-face))
+   (eca-chat--title
+    (propertize eca-chat--title 'font-lock-face 'eca-chat-title-face))
+   (t "Empty chat")))
 
 (defun eca-chat--handle-mcp-server-updated (session _server)
   "Handle mcp SERVER updated for SESSION."

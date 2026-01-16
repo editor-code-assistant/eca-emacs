@@ -20,6 +20,8 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'hierarchy)
+(require 'tree-widget)
 (require 'smerge-mode)
 
 (require 'eca-util)
@@ -47,7 +49,24 @@
   :type 'hook
   :group 'eca)
 
+(defface eca-workspaces-tree-chat-idle-face
+  '((t :underline t))
+  "Face for idle chat entries in eca-workspaces buffer."
+  :group 'eca)
+
+(defface eca-workspaces-tree-chat-loading-face
+  '((t :inherit warning :underline t))
+  "Face for loading chat entries in eca-workspaces buffer."
+  :group 'eca)
+
+(defface eca-workspaces-tree-chat-details-face
+  '((t :inherit shadow :height 0.8))
+  "Face for chat details in entries in eca-workspaces buffer."
+  :group 'eca)
+
 ;; Internal
+
+(defvar eca-workspaces-buffer-name "*eca-workspaces*")
 
 (defun eca--get-message-type (json-data)
   "Get the message type from JSON-DATA."
@@ -164,6 +183,24 @@
                                                   (complete-with-action action '("no" "yes") string pred)))))))
     workspaces))
 
+(defun eca--tree-widget-open-all (tree-widget)
+  "Recursively add :open t and custom icons to TREE-WIDGET and all its children."
+  (let ((args (plist-get (cdr tree-widget) :args)))
+    (when args
+      (plist-put (cdr tree-widget) :args
+                 (mapcar #'eca--tree-widget-open-all args))))
+  (append tree-widget `(:open t
+                        :open-icon (tree-widget-icon :tag ,"▼ ")
+                        :close-icon (tree-widget-icon :tag ,"▶ ")
+                        :empty-icon (tree-widget-icon :tag ,(propertize "" 'face 'shadow))
+                        :leaf-icon (tree-widget-icon :tag ,(propertize "" 'face 'shadow))
+                        :guide (tree-widget-icon :tag ,(propertize "│" 'face 'shadow))
+                        :end-guide (tree-widget-icon :tag ,(propertize "└" 'face 'shadow))
+                        :no-guide (tree-widget-icon :tag " ")
+                        :handle (tree-widget-icon :tag ,(propertize "─" 'face 'shadow))
+                        :no-handle (tree-widget-icon :tag "  ")
+                        :nohandle-guide (tree-widget-icon :tag ,(propertize "│" 'face 'shadow)))))
+
 ;; Public
 
 ;;;###autoload
@@ -225,8 +262,64 @@ When ARG is current prefix, ask for workspace roots to use."
 (defun eca-workspaces ()
   "Return workspaces used by current session."
   (interactive)
-  (eca-assert-session-running (eca-session))
-  (eca-info "Workspaces: %s" (eca--session-workspace-folders (eca-session))))
+  (let ((h (hierarchy-new))
+        (parent-fn (lambda (item)
+                     (cond
+                      ((eca--session-p item) 'root)
+                      ((bufferp item)
+                       (with-current-buffer item
+                         (eca-get eca--sessions eca--session-id-cache)))
+                      (t nil))))
+        (label-fn (lambda (item _)
+                    (insert
+                     (cond
+                      ((eca--session-p item)
+                       (propertize (string-join (eca--session-workspace-folders item) ", ")
+                                   'face 'shadow))
+                      ((bufferp item)
+                       (with-current-buffer item
+                         (concat
+                          (eca-buttonize
+                             nil
+                             (propertize (eca-chat-title)
+                                         'face (if (buffer-local-value 'eca-chat--chat-loading item)
+                                                   'eca-workspaces-tree-chat-loading-face
+                                                 'eca-workspaces-tree-chat-idle-face))
+                             (lambda ()
+                               (with-current-buffer item
+                                 (setf (eca--session-last-chat-buffer (eca-session)) item)
+                                 (eca-chat-open (eca-session)))))
+                          (when eca-chat--session-cost
+                            (propertize (format "  %s" (eca-chat--usage-str)) 'face 'eca-workspaces-tree-chat-details-face)))))
+                      (t (propertize "ECA" 'face 'shadow)))))))
+    (seq-doseq (session (eca-vals eca--sessions))
+      (hierarchy-add-tree h session parent-fn)
+      (seq-doseq (chat-by-id (eca--session-chats session))
+        (when (buffer-live-p (cdr chat-by-id))
+          (hierarchy-add-tree h (cdr chat-by-id) parent-fn))))
+    (let ((b (or (when-let ((b (get-buffer eca-workspaces-buffer-name)))
+                   (when (buffer-live-p b)
+                     (with-current-buffer b
+                       (let ((inhibit-read-only t))
+                         (erase-buffer))))
+                   b)
+                 (generate-new-buffer eca-workspaces-buffer-name))))
+      (with-current-buffer b
+        (setq-local tree-widget-image-enable nil)
+        (widget-create (eca--tree-widget-open-all
+                        (hierarchy-convert-to-tree-widget h label-fn)))
+        (widget-setup))
+      (let* ((display-buffer-alist
+              `((,(regexp-quote (buffer-name b))
+                 (display-buffer-in-side-window)
+                 (side . bottom)
+                 (slot . 0)
+                 ;; ,@(when (memq side '(left right))
+                 ;;     `((window-width . ,eca-chat-window-width)))
+                 ;; ,@(when (memq side '(top bottom))
+                 ;;     `((window-height . ,eca-chat-window-height)))
+                 (window-parameters . ((no-delete-other-windows . t)))))))
+        (select-window (display-buffer b))))))
 
 ;;;###autoload
 (defun eca-open-global-config ()
