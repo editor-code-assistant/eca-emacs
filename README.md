@@ -54,7 +54,7 @@ Server / process
 - `eca`: Starts eca server/session + open chat
 - `eca-stop`: Stop eca server/session
 - `eca-restart`: Restart eca server/session
-- `eca-workspaces`: print worskpace folders of current session
+- `eca-workspaces`: show a view with all worskpaces and chats
 - `eca-open-global-config`: Open ECA global config file
 
 Chat

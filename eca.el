@@ -314,10 +314,6 @@ When ARG is current prefix, ask for workspace roots to use."
                  (display-buffer-in-side-window)
                  (side . bottom)
                  (slot . 0)
-                 ;; ,@(when (memq side '(left right))
-                 ;;     `((window-width . ,eca-chat-window-width)))
-                 ;; ,@(when (memq side '(top bottom))
-                 ;;     `((window-height . ,eca-chat-window-height)))
                  (window-parameters . ((no-delete-other-windows . t)))))))
         (select-window (display-buffer b))))))
 
