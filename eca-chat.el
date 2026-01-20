@@ -403,6 +403,7 @@ Must be a positive integer."
 (defvar-local eca-chat--session-limit-output nil)
 (defvar-local eca-chat--empty t)
 (defvar-local eca-chat--cursor-context nil)
+(defvar-local eca-chat--queued-prompt nil)
 
 ;; Timer used to debounce post-command driven context updates
 (defvar eca-chat--cursor-context-timer nil)
@@ -629,6 +630,9 @@ Must be a positive integer."
     (eca-chat--insert (propertize eca-chat-context-prefix 'font-lock-face 'eca-chat-context-unlinked-face))
     (eca-chat--insert "\n")
     (move-overlay context-area-ov (overlay-start context-area-ov) (1- (overlay-end context-area-ov))))
+  (let ((loading-area-ov (make-overlay (line-beginning-position) (1+ (line-beginning-position)) (current-buffer))))
+    (overlay-put loading-area-ov 'eca-chat-loading-area t))
+  (eca-chat--insert "\n")
   (let ((prompt-field-ov (make-overlay (line-beginning-position) (1+ (line-beginning-position)) (current-buffer))))
     (overlay-put prompt-field-ov 'eca-chat-prompt-field t)
     (overlay-put prompt-field-ov 'before-string (propertize eca-chat-prompt-prefix 'font-lock-face 'eca-chat-prompt-prefix-face))))
@@ -682,22 +686,22 @@ Must be a positive integer."
 Otherwise to a not loading state."
   (unless (eq eca-chat--chat-loading loading)
     (setq-local eca-chat--chat-loading loading)
-    (setq-local buffer-read-only loading)
-    (let ((prompt-field-ov (eca-chat--prompt-field-ov))
+    ;; (setq-local buffer-read-only loading)
+    (let ((loading-area-ov (eca-chat--loading-area-ov))
           (stop-text (eca-buttonize
                       eca-chat-mode-map
                       (propertize "stop" 'font-lock-face 'eca-chat-prompt-stop-face)
                       (lambda () (eca-chat--stop-prompt session)))))
       (if eca-chat--chat-loading
           (progn
-            (overlay-put prompt-field-ov 'before-string (propertize eca-chat-prompt-prefix-loading 'font-lock-face 'default))
+            (overlay-put loading-area-ov 'before-string (propertize eca-chat-prompt-prefix-loading 'font-lock-face 'default))
             (save-excursion
-              (goto-char (overlay-start prompt-field-ov))
+              (goto-char (overlay-start loading-area-ov))
               (eca-chat--insert stop-text)))
         (progn
-          (overlay-put prompt-field-ov 'before-string (propertize eca-chat-prompt-prefix 'font-lock-face 'eca-chat-prompt-prefix-face))
+          (overlay-put loading-area-ov 'before-string "")
           (save-excursion
-            (goto-char (overlay-start prompt-field-ov))
+            (goto-char (overlay-start loading-area-ov))
             (delete-region (point) (+ (point) (length stop-text)))))))))
 
 (defun eca-chat--set-prompt (text)
@@ -729,6 +733,11 @@ Otherwise to a not loading state."
   (interactive)
   (when (>= (point) (eca-chat--prompt-field-start-point))
     (eca-chat--insert "\n")))
+
+(defun eca-chat--loading-area-ov ()
+  "Return the overlay for the loading area."
+  (-first (-lambda (ov) (eq t (overlay-get ov 'eca-chat-loading-area)))
+          (overlays-in (point-min) (point-max))))
 
 (defun eca-chat--prompt-field-ov ()
   "Return the overlay for the prompt field."
@@ -878,15 +887,13 @@ Returns a list of context plists found in the prompt field."
   "Send PROMPT to server for SESSION."
   (when eca-chat--closed
     (user-error (eca-error "This chat is closed")))
-  (let* ((prompt-start (eca-chat--prompt-field-start-point))
-         (prompt-contexts (eca-chat--extract-contexts-from-prompt))
+  (let* ((prompt-contexts (eca-chat--extract-contexts-from-prompt))
          (refined-contexts (-map #'eca-chat--refine-context
                                  (append eca-chat--context prompt-contexts))))
     (when (seq-empty-p eca-chat--history) (eca-chat--clear))
     (add-to-list 'eca-chat--history prompt)
     (setq eca-chat--history-index -1)
-    (goto-char prompt-start)
-    (delete-region (point) (point-max))
+    (eca-chat--set-prompt "")
     (eca-chat--set-chat-loading session t)
     (eca-api-request-async
      session
@@ -900,6 +907,19 @@ Returns a list of context plists found in the prompt field."
      :success-callback (-lambda (res)
                          (setq-local eca-chat--id (plist-get res :chatId))))))
 
+(defun eca-chat--queue-prompt (prompt)
+  "Queue PROMPT to be sent to SESSION when it finish current prompt."
+  (setq-local eca-chat--queued-prompt (if eca-chat--queued-prompt
+                                          (concat eca-chat--queued-prompt "\n" prompt)
+                                        prompt))
+  (eca-chat--set-prompt ""))
+
+(defun eca-chat--send-queued-prompt (session)
+  "Send any queued prompt for SESSION."
+  (when eca-chat--queued-prompt
+    (eca-chat--send-prompt session eca-chat--queued-prompt)
+    (setq-local eca-chat--queued-prompt nil)))
+
 (defun eca-chat--key-pressed-return ()
   "Send the current prompt to eca process if in prompt."
   (interactive)
@@ -911,6 +931,10 @@ Returns a list of context plists found in the prompt field."
       ((and (not (string-empty-p prompt))
             (not eca-chat--chat-loading))
        (eca-chat--send-prompt session prompt))
+
+      ((and (not (string-empty-p prompt))
+            eca-chat--chat-loading)
+       (eca-chat--queue-prompt prompt))
 
       ;; check it's an actionable text
       ((-some->> (thing-at-point 'symbol) (get-text-property 0 'eca-button-on-action))
@@ -2261,7 +2285,8 @@ Append STATUS, TOOL-CALL-NEXT-LINE-SPACING and ROOTS"
             (eca-chat--spinner-stop)
             (eca-chat--add-text-content "\n")
             (eca-chat--set-chat-loading session nil)
-            (eca-chat--refresh-progress chat-buffer))))
+            (eca-chat--refresh-progress chat-buffer)
+            (eca-chat--send-queued-prompt session))))
         ("usage"
          (setq-local eca-chat--message-input-tokens  (plist-get content :messageInputTokens))
          (setq-local eca-chat--message-output-tokens (plist-get content :messageOutputTokens))
