@@ -1124,6 +1124,18 @@ If `eca-chat-focus-on-open' is non-nil, the window is selected."
       (goto-char eca-chat--last-user-message-pos)
       (eca-chat--insert content))))
 
+(defun eca-chat--align-tables ()
+  "Align all markdown tables in the chat content area."
+  (save-excursion
+    (goto-char (or eca-chat--last-user-message-pos (point-min)))
+    (let ((end (eca-chat--prompt-area-start-point)))
+      (while (and (< (point) end)
+                  (re-search-forward markdown-table-line-regexp end t))
+        (when (markdown-table-at-point-p)
+          (markdown-table-align)
+          ;; Move past this table to avoid re-processing
+          (goto-char (markdown-table-end)))))))
+
 (defun eca-chat--add-text-content (text &optional overlay-key overlay-value)
   "Add TEXT to the chat current position.
 Add a overlay before with OVERLAY-KEY = OVERLAY-VALUE if passed."
@@ -1788,7 +1800,10 @@ Call ORIG-FUN with ARGS if not media."
   "Major mode for ECA chat sessions.
 \\{eca-chat-mode-map}"
   :group 'eca
-  (visual-line-mode)
+  ;; Use word-wrap instead of visual-line-mode to preserve table formatting.
+  ;; visual-line-mode wraps all lines including tables, breaking their layout.
+  (setq-local word-wrap t)
+  (setq-local truncate-lines nil)
   (hl-line-mode -1)
   (setq-local eca-chat--history '())
   (setq-local eca-chat--history-index -1)
@@ -1868,6 +1883,10 @@ Call ORIG-FUN with ARGS if not media."
 
   (face-remap-add-relative 'markdown-line-break-face
                            '(:underline nil))
+
+  ;; Ensure tables use a monospace font for proper alignment.
+  (face-remap-add-relative 'markdown-table-face
+                           '(:inherit fixed-pitch))
 
   (goto-char (point-max)))
 
@@ -2091,8 +2110,8 @@ Append STATUS, TOOL-CALL-NEXT-LINE-SPACING and ROOTS"
                            'font-lock-face 'eca-chat-system-messages-face
                            'line-height 20)))
              (_
-              (eca-chat--add-text-content text))))
-         (setq-local eca-chat--empty nil))
+              (eca-chat--add-text-content text)
+              (font-lock-ensure)))))
         ("url"
          (eca-chat--add-header
           (concat "🌐 "
@@ -2284,6 +2303,7 @@ Append STATUS, TOOL-CALL-NEXT-LINE-SPACING and ROOTS"
             (setq-local eca-chat--progress-text "")
             (eca-chat--spinner-stop)
             (eca-chat--add-text-content "\n")
+            (eca-chat--align-tables)
             (eca-chat--set-chat-loading session nil)
             (eca-chat--refresh-progress chat-buffer)
             (eca-chat--send-queued-prompt session))))
