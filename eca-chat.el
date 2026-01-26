@@ -401,7 +401,6 @@ Must be a positive integer."
 (defvar-local eca-chat--session-tokens nil)
 (defvar-local eca-chat--session-limit-context nil)
 (defvar-local eca-chat--session-limit-output nil)
-(defvar-local eca-chat--empty t)
 (defvar-local eca-chat--cursor-context nil)
 (defvar-local eca-chat--queued-prompt nil)
 
@@ -477,7 +476,9 @@ Must be a positive integer."
 (defun eca-chat--delete-chat ()
   "Delete current chat."
   (when (and (or (eq #'kill-current-buffer this-command)
-                 (eq #'kill-buffer this-command))
+                 (eq #'kill-buffer this-command)
+                 (and (symbolp this-command)
+                      (string-prefix-p "eca-" (symbol-name this-command))))
              eca-chat--id
              (not eca-chat--closed)
              (yes-or-no-p "Also delete chat from server (this chat history will be lost and not acessible via /resume later)?"))
@@ -2123,8 +2124,7 @@ Append STATUS, TOOL-CALL-NEXT-LINE-SPACING and ROOTS"
         ("reasonStarted"
          (let ((id (plist-get content :id))
                (label (propertize "Thinking..." 'font-lock-face 'eca-chat-reason-label-face)))
-           (eca-chat--add-expandable-content id label "" 'eca-chat-reason-label-face)
-           (setq-local eca-chat--empty nil)))
+           (eca-chat--add-expandable-content id label "" 'eca-chat-reason-label-face)))
         ("reasonText"
          (let ((id (plist-get content :id))
                (label (propertize "Thinking..." 'font-lock-face 'eca-chat-reason-label-face))
@@ -2470,25 +2470,12 @@ Append STATUS, TOOL-CALL-NEXT-LINE-SPACING and ROOTS"
 
 ;;;###autoload
 (defun eca-chat-reset ()
-  "Request a chat reset."
+  "Kill current chat (asking to keep or not history) and start a new."
   (interactive)
   (eca-chat--with-current-buffer (eca-chat--get-last-buffer (eca-session))
     (when eca-chat--id
-      (eca-chat--delete-chat)
-      (setq-local eca-chat--message-input-tokens nil)
-      (setq-local eca-chat--message-output-tokens nil)
-      (setq-local eca-chat--session-tokens nil)
-      (setq-local eca-chat--message-cost nil)
-      (setq-local eca-chat--session-cost nil)
-      (setq-local eca-chat--empty t)
-      (setq-local eca-chat--title nil)
-      (clrhash eca-chat--context-completion-cache)
-      (clrhash eca-chat--file-completion-cache)
-      (setq-local eca-chat--custom-title nil)
-      ;; Reset per-buffer tool prepare counters to avoid leaking across sessions
-      (setq-local eca-chat--tool-call-prepare-counters (make-hash-table :test 'equal))
-      (setq-local eca-chat--tool-call-prepare-content-cache (make-hash-table :test 'equal))
-      (eca-chat--clear (eca-chat--prompt-content)))))
+      (kill-buffer)
+      (eca-chat-new))))
 
 ;;;###autoload
 (defun eca-chat-go-to-prev-user-message ()
