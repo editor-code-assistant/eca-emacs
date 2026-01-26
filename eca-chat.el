@@ -439,7 +439,7 @@ Must be a positive integer."
     (define-key map (kbd "C-c C-h") #'eca-chat-timeline)
     (define-key map (kbd "C-c C-a") #'eca-chat-tool-call-accept-all)
     (define-key map (kbd "C-c C-S-a") #'eca-chat-tool-call-accept-next)
-    (define-key map (kbd "C-c C-s") #'eca-chat-tool-call-accept-all-and-remember)
+    (define-key map (kbd "C-c C-y") #'eca-chat-tool-call-accept-all-and-remember)
     (define-key map (kbd "C-c C-r") #'eca-chat-tool-call-reject-next)
     (define-key map (kbd "C-c C-S-r") #'eca-chat-rename)
     (define-key map (kbd "C-c .") #'eca-transient-menu)
