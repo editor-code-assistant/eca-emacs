@@ -1783,7 +1783,8 @@ DATA is the binary image data as a string."
 (defun eca-chat--yank-considering-image (orig-fun &rest args)
   "Around advice for paste commands to use `yank-media' for images.
 Call ORIG-FUN with ARGS if not media."
-  (if (and (derived-mode-p 'eca-chat-mode)
+  (if (and (display-graphic-p)
+           (derived-mode-p 'eca-chat-mode)
            (fboundp 'yank-media)
            (boundp 'yank-media--registered-handlers)
            yank-media--registered-handlers
