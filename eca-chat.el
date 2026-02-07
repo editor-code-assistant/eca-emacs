@@ -350,6 +350,11 @@ Must be a positive integer."
   "Face for subagent tool call labels in chat."
   :group 'eca)
 
+(defface eca-chat-subagent-turns-info-face
+  '((t :inherit font-lock-comment-face :slant italic :height 0.9))
+  "Face for times spent in chat."
+  :group 'eca)
+
 (defface eca-chat-file-change-label-face
   '((t :inherit diff-file-header))
   "Face for file changes labels in chat."
@@ -2373,7 +2378,7 @@ Append STATUS, TOOL-CALL-NEXT-LINE-SPACING, ROOTS and optional PARENT-ID."
      nil
      parent-id)))
 
-(defun eca-chat--tool-call-subagent-details (id args label approval-text time status parent-id details)
+(defun eca-chat--tool-call-subagent-details (id args label approval-text time status parent-id details &optional output-text)
   "Update tool call UI for a subagent tool call.
 ID and ARGS are from the tool call content.
 LABEL is the expandable block label.
@@ -2381,21 +2386,62 @@ DETAILS is the details of the tool call.
 Can include optional APPROVAL-TEXT and TIME.
 Append STATUS symbol.  Optional PARENT-ID for nested rendering."
   (-let* ((agent-name (plist-get args :agent))
-          (model (plist-get details :model)))
-    (eca-chat--update-expandable-content
-     id
-     (concat (propertize label 'font-lock-face 'eca-chat-subagent-tool-call-label-face)
-             " " status time
-             (when approval-text (concat "\n" approval-text)))
-     (eca-chat--content-table
-      `(("Agent" . ,agent-name)
-        ("Model" . ,model)))
-     nil
-     parent-id)
+          (model (plist-get details :model))
+          (turn (plist-get details :turn))
+          (max-turns (plist-get details :maxTurns))
+          (turns-info (propertize (if (and turn max-turns)
+                                      (format " %d/%d" turn max-turns)
+                                    "")
+                                  'font-lock-face 'eca-chat-subagent-turns-info-face))
+          (new-label (concat (propertize label 'font-lock-face 'eca-chat-subagent-tool-call-label-face)
+                             turns-info " " status time
+                             (when approval-text (concat "\n" approval-text))))
+          (existing-ov (eca-chat--get-expandable-content id))
+          (has-children? (and existing-ov
+                              (eca-chat--segments-children
+                               (overlay-get existing-ov 'eca-chat--expandable-content-segments)))))
+    (if has-children?
+        ;; Block already has nested child content (subagent tool calls, reasoning,
+        ;; approval prompts, etc).  Only update the label line to reflect the new
+        ;; turn count / status, preserving all rendered children.
+        (let* ((ov-content (overlay-get existing-ov 'eca-chat--expandable-content-ov-content))
+               (open? (overlay-get existing-ov 'eca-chat--expandable-content-toggle))
+               (content (overlay-get ov-content 'eca-chat--expandable-content-content))
+               (has-content? (or (and content (not (string-empty-p content)))
+                                 has-children?))
+               (new-icon-face (get-text-property 0 'font-lock-face new-label))
+               (label-indent (when (overlay-get existing-ov 'eca-chat--expandable-content-nested)
+                               eca-chat--expandable-content-base-indent))
+               (new-icons (eca-chat--make-expandable-icons new-icon-face label-indent)))
+          (overlay-put existing-ov 'eca-chat--expandable-content-open-icon (car new-icons))
+          (overlay-put existing-ov 'eca-chat--expandable-content-close-icon (cdr new-icons))
+          (save-excursion
+            (goto-char (overlay-start existing-ov))
+            (delete-region (point) (1- (overlay-start ov-content)))
+            (eca-chat--insert
+             (propertize (eca-chat--propertize-only-first-word
+                          new-label
+                          'line-prefix (when has-content?
+                                         (if open?
+                                             (cdr new-icons)
+                                           (car new-icons))))
+                         'help-echo "mouse-1 / RET / tab: expand/collapse"))
+            (eca-chat--paint-nested-label existing-ov)))
+      ;; No children yet — safe to replace the full content body
+      (eca-chat--update-expandable-content
+       id
+       new-label
+       (eca-chat--content-table
+        `(("Agent" . ,agent-name)
+          ("Model" . ,model)
+          ,@(when output-text `(("Output" . ,(concat "\n" output-text))))))
+       nil
+       parent-id))
     ;; Store status and label on the overlay so we can update them later
     (when-let* ((ov (eca-chat--get-expandable-content id)))
       (overlay-put ov 'eca-chat--tool-call-status status)
       (overlay-put ov 'eca-chat--tool-call-label label)
+      (overlay-put ov 'eca-chat--tool-call-turns-info turns-info)
       (overlay-put ov 'eca-chat--tool-call-time time))))
 
 (defun eca-chat--update-parent-subagent-status (parent-tool-call-id new-status)
@@ -2406,8 +2452,9 @@ Only updates the label line, preserving all nested child content."
               (time (or (overlay-get ov-label 'eca-chat--tool-call-time) ""))
               (ov-content (overlay-get ov-label 'eca-chat--expandable-content-ov-content)))
     (overlay-put ov-label 'eca-chat--tool-call-status new-status)
-    (let* ((new-label (concat (propertize label 'font-lock-face 'eca-chat-subagent-tool-call-label-face)
-                              " " new-status time))
+    (let* ((turns-info (or (overlay-get ov-label 'eca-chat--tool-call-turns-info) ""))
+           (new-label (concat (propertize label 'font-lock-face 'eca-chat-subagent-tool-call-label-face)
+                              turns-info " " new-status time))
            (open? (overlay-get ov-label 'eca-chat--expandable-content-toggle))
            (content (overlay-get ov-content 'eca-chat--expandable-content-content))
            (has-content? (and content (not (string-empty-p content)))))
@@ -2608,7 +2655,9 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
          ;; Register subagent mapping only for top-level tool calls
          (when (and (not parent-tool-call-id)
                     (string= "subagent" (plist-get details :type)))
-           (puthash (plist-get details :subagentChatId) id eca-chat--subagent-chat-id->tool-call-id))
+           (let ((subagent-chat-id (plist-get details :subagentChatId)))
+             (unless (gethash subagent-chat-id eca-chat--subagent-chat-id->tool-call-id)
+               (puthash subagent-chat-id id eca-chat--subagent-chat-id->tool-call-id))))
          (pcase (plist-get details :type)
            ("fileChange" (eca-chat--tool-call-file-change-details content label nil nil status tool-call-next-line-spacing roots parent-tool-call-id))
            ("subagent" (eca-chat--tool-call-subagent-details id args label nil nil status parent-tool-call-id details))
@@ -2653,7 +2702,7 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
          (pcase (plist-get details :type)
            ("fileChange" (eca-chat--tool-call-file-change-details content label nil time status tool-call-next-line-spacing roots parent-tool-call-id))
            ("jsonOutputs" (eca-chat--tool-call-json-outputs-details content time status parent-tool-call-id))
-           ("subagent" (eca-chat--tool-call-subagent-details id args label nil time status parent-tool-call-id details))
+           ("subagent" (eca-chat--tool-call-subagent-details id args label nil time status parent-tool-call-id details output-text))
            (_ (eca-chat--update-expandable-content
                id
                (concat (propertize label 'font-lock-face 'eca-chat-mcp-tool-call-label-face)
