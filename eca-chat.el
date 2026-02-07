@@ -2953,7 +2953,7 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
   (eca-assert-session-running (eca-session))
   (eca-chat--with-current-buffer (eca-chat--get-last-buffer (eca-session))
     (save-excursion
-      (when (text-property-search-forward 'eca-tool-call-pending-approval-reject t)
+      (when (text-property-search-forward 'eca-tool-call-pending-approval-reject t t)
         (call-interactively #'eca-chat--key-pressed-return)))))
 
 ;;;###autoload
