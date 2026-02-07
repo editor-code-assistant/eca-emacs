@@ -350,9 +350,9 @@ Must be a positive integer."
   "Face for subagent tool call labels in chat."
   :group 'eca)
 
-(defface eca-chat-subagent-turns-info-face
+(defface eca-chat-subagent-steps-info-face
   '((t :inherit font-lock-comment-face :slant italic :height 0.9))
-  "Face for times spent in chat."
+  "Face for the steps done by subagent."
   :group 'eca)
 
 (defface eca-chat-file-change-label-face
@@ -935,7 +935,7 @@ the prompt/context line."
 
 (defun eca-chat--extract-contexts-from-prompt ()
   "Extract contexts from prompt text properties.
-Returns a list of context plists found in the prompt field."
+Resteps a list of context plists found in the prompt field."
   (when-let ((prompt-start (eca-chat--prompt-field-start-point)))
     (let ((contexts '())
           (pos prompt-start)
@@ -1865,7 +1865,7 @@ Add text property to prompt text to match context."
 
 (defun eca-chat--cur-position ()
   "Return the start and end positions for current point.
-Returns a cons cell (START . END) where START and END are cons cells
+Resteps a cons cell (START . END) where START and END are cons cells
 of (LINE . CHARACTER) representing the current selection or cursor position."
   (save-excursion
     (let* ((start-pos (if (use-region-p) (region-beginning) (point)))
@@ -1921,7 +1921,7 @@ of (LINE . CHARACTER) representing the current selection or cursor position."
 (defun eca-chat--parse-unified-diff (diff-text)
   "Compatibility wrapper that delegates to `eca-diff-parse-unified-diff'.
 
-DIFF-TEXT is the unified diff string to parse and returns the parsed
+DIFF-TEXT is the unified diff string to parse and resteps the parsed
 plist produced by `eca-diff-parse-unified-diff'."
   (eca-diff-parse-unified-diff diff-text))
 
@@ -1951,7 +1951,7 @@ restore the chat display after smerge quits."
 
 (defun eca-chat--find-typed-query (prefix)
   "Return the text typed after the last item after PREFIX (@ or #).
-For example: `@foo @bar @baz` => `baz`. If nothing is typed, returns an empty
+For example: `@foo @bar @baz` => `baz`. If nothing is typed, resteps an empty
 string."
   (when (eca-chat--point-at-new-context-p)
     (save-excursion
@@ -2387,14 +2387,17 @@ Can include optional APPROVAL-TEXT and TIME.
 Append STATUS symbol.  Optional PARENT-ID for nested rendering."
   (-let* ((agent-name (plist-get args :agent))
           (model (plist-get details :model))
-          (turn (plist-get details :turn))
-          (max-turns (plist-get details :maxTurns))
-          (turns-info (propertize (if (and turn max-turns)
-                                      (format " %d/%d" turn max-turns)
-                                    "")
-                                  'font-lock-face 'eca-chat-subagent-turns-info-face))
+          (step (plist-get details :step))
+          (max-steps (plist-get details :maxSteps))
+          (steps-info (propertize (cond
+                                   ((and step max-steps)
+                                    (format " (%d/%d steps)" step max-steps))
+                                   (step
+                                    (format " (%d steps)" step))
+                                   (t ""))
+                                  'font-lock-face 'eca-chat-subagent-steps-info-face))
           (new-label (concat (propertize label 'font-lock-face 'eca-chat-subagent-tool-call-label-face)
-                             turns-info " " status time
+                             steps-info " " status time
                              (when approval-text (concat "\n" approval-text))))
           (existing-ov (eca-chat--get-expandable-content id))
           (has-children? (and existing-ov
@@ -2403,7 +2406,7 @@ Append STATUS symbol.  Optional PARENT-ID for nested rendering."
     (if has-children?
         ;; Block already has nested child content (subagent tool calls, reasoning,
         ;; approval prompts, etc).  Only update the label line to reflect the new
-        ;; turn count / status, preserving all rendered children.
+        ;; step count / status, preserving all rendered children.
         (let* ((ov-content (overlay-get existing-ov 'eca-chat--expandable-content-ov-content))
                (open? (overlay-get existing-ov 'eca-chat--expandable-content-toggle))
                (content (overlay-get ov-content 'eca-chat--expandable-content-content))
@@ -2441,7 +2444,7 @@ Append STATUS symbol.  Optional PARENT-ID for nested rendering."
     (when-let* ((ov (eca-chat--get-expandable-content id)))
       (overlay-put ov 'eca-chat--tool-call-status status)
       (overlay-put ov 'eca-chat--tool-call-label label)
-      (overlay-put ov 'eca-chat--tool-call-turns-info turns-info)
+      (overlay-put ov 'eca-chat--tool-call-steps-info steps-info)
       (overlay-put ov 'eca-chat--tool-call-time time))))
 
 (defun eca-chat--update-parent-subagent-status (parent-tool-call-id new-status)
@@ -2452,9 +2455,9 @@ Only updates the label line, preserving all nested child content."
               (time (or (overlay-get ov-label 'eca-chat--tool-call-time) ""))
               (ov-content (overlay-get ov-label 'eca-chat--expandable-content-ov-content)))
     (overlay-put ov-label 'eca-chat--tool-call-status new-status)
-    (let* ((turns-info (or (overlay-get ov-label 'eca-chat--tool-call-turns-info) ""))
+    (let* ((steps-info (or (overlay-get ov-label 'eca-chat--tool-call-steps-info) ""))
            (new-label (concat (propertize label 'font-lock-face 'eca-chat-subagent-tool-call-label-face)
-                              turns-info " " new-status time))
+                              steps-info " " new-status time))
            (open? (overlay-get ov-label 'eca-chat--expandable-content-toggle))
            (content (overlay-get ov-content 'eca-chat--expandable-content-content))
            (has-content? (and content (not (string-empty-p content)))))
@@ -3248,7 +3251,7 @@ If MSG has :timestamp, prepends [HH:MM] to the text."
 (defun eca-chat--get-user-messages (&optional buffer)
   "Extract all user messages from the chat BUFFER.
 If BUFFER is nil, use the last chat buffer from current session.
-Returns a list of plists, each containing:
+Resteps a list of plists, each containing:
   :text      - the message text
   :start     - start position in buffer
   :end       - end position in buffer
@@ -3257,7 +3260,7 @@ Returns a list of plists, each containing:
   :timestamp - timestamp when message was sent
 
 Messages are ordered from newest to oldest.
-Returns empty list if session is not running or buffer is not available."
+Resteps empty list if session is not running or buffer is not available."
   (when-let* ((session (eca-session))
               (chat-buffer (or buffer (eca-chat--get-last-buffer session)))
               ((buffer-live-p chat-buffer)))
@@ -3287,7 +3290,7 @@ Returns empty list if session is not running or buffer is not available."
 
 (defun eca-chat--select-message-from-completion (prompt)
   "Show completion with user messages using PROMPT.
-Returns selected message plist or nil if no messages or cancelled."
+Resteps selected message plist or nil if no messages or cancelled."
   (when-let ((messages (eca-chat--get-user-messages)))
     (let ((table (make-hash-table :test 'equal)))
       (dolist (msg (reverse messages))
