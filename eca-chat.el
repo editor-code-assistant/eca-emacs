@@ -140,7 +140,7 @@ for light themes."
   :type 'string
   :group 'eca)
 
-(defcustom eca-chat-mcp-tool-call-pending-approval-symbol "🔐"
+(defcustom eca-chat-mcp-tool-call-pending-approval-symbol "🚧"
   "The string used in eca chat buffer for mcp tool calls waiting for approval."
   :type 'string
   :group 'eca)
