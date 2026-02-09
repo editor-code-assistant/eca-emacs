@@ -66,8 +66,8 @@ Chat
 - `eca-chat-clear`: Clear chat content visually only
 - `eca-chat-reset`: Deletes current chat and start a new one
 - `eca-chat-select-model`: Change chat model
-- `eca-chat-select-behavior`: Change chat behavior
-- `eca-chat-cycle-behavior`: Change chat behavior to next available
+- `eca-chat-select-agent`: Change chat agent
+- `eca-chat-cycle-agent`: Change chat agent to next available
 - `eca-chat-add-context-to-system-prompt`: Add file/dirs to system prompt checking multiple modes with range support
 - `eca-chat-add-context-to-user-prompt`: Add file/dirs to user prompt checking multiple modes with range support
 - `eca-chat-add-filepath-to-user-prompt`: Add filepath mention only to user prompt checking multiple modes with range support
@@ -136,7 +136,7 @@ Chat
 - `eca-chat-expand-pending-approval-tools`: Whether to auto-expand tool calls that are pending approval.
 - `eca-chat-shrink-called-tools`: Whether to auto-shrink tool calls after they have been executed.
 - `eca-chat-custom-model`: Override the model used for chat (nil = server default).
-- `eca-chat-custom-behavior`: Override the chat behavior (nil = server default).
+- `eca-chat-custom-agent`: Override the chat agent (nil = server default).
 - `eca-chat-usage-string-format`: Controls what usage information (tokens/costs/limits) is shown in the mode-line.
 - `eca-chat-diff-tool`: How to show file diffs from chat (`smerge` or `ediff`).
 - `eca-chat-tool-call-prepare-throttle`: Throttle strategy for `toolCallPrepare` events (`all` or `smart`).
@@ -180,8 +180,8 @@ You can access the transient menu with common commands via `M-x eca-transient-me
 | Chat: clear                                   | <kbd>C-c</kbd> <kbd>C-l</kbd>      |
 | Chat: reset                                   | <kbd>C-c</kbd> <kbd>C-k</kbd>      |
 | Chat: talk                                    | <kbd>C-c</kbd> <kbd>C-t</kbd>      |
-| Chat: select behavior                         | <kbd>C-c</kbd> <kbd>C-S-b</kbd>    |
-| Chat: cycle behavior                          | <kbd>C-c</kbd> <kbd>C-b</kbd>      |
+| Chat: select agent                            | <kbd>C-c</kbd> <kbd>C-S-b</kbd>    |
+| Chat: cycle agent                             | <kbd>C-c</kbd> <kbd>C-b</kbd>      |
 | Chat: select model                            | <kbd>C-c</kbd> <kbd>C-m</kbd>      |
 | Chat: new chat                                | <kbd>C-c</kbd> <kbd>C-n</kbd>      |
 | Chat: select chat                             | <kbd>C-c</kbd> <kbd>C-f</kbd>      |

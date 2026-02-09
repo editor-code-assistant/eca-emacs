@@ -154,7 +154,7 @@
                                    :version (emacs-version))
                  :capabilities (list :codeAssistant (list :chat t
                                                           :editor (list :diagnostics t)))
-                 :initializationOptions (list :chatBehavior eca-chat-custom-behavior)
+                 :initializationOptions (list :chatAgent eca-chat-custom-agent)
                  :workspaceFolders (vconcat (-map (lambda (folder)
                                                     (list :uri (eca--path-to-uri folder)
                                                           :name (file-name-nondirectory (directory-file-name folder))))

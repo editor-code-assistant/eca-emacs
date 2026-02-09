@@ -171,8 +171,8 @@ Must be a valid model supported by server, check `eca-chat-select-model`."
   :type 'string
   :group 'eca)
 
-(defcustom eca-chat-custom-behavior nil
-  "Which chat behavior to use, if nil use server's default."
+(defcustom eca-chat-custom-agent nil
+  "Which chat agent to use, if nil use server's default."
   :type 'string
   :group 'eca)
 
@@ -441,7 +441,7 @@ darkens for light themes."
 (defvar-local eca-chat--title nil)
 (defvar-local eca-chat--custom-title nil)
 (defvar-local eca-chat--selected-model nil)
-(defvar-local eca-chat--selected-behavior nil)
+(defvar-local eca-chat--selected-agent nil)
 (defvar-local eca-chat--last-request-id 0)
 (defvar-local eca-chat--context-completion-cache (make-hash-table :test 'equal))
 (defvar-local eca-chat--file-completion-cache (make-hash-table :test 'equal))
@@ -468,7 +468,7 @@ darkens for light themes."
 (defvar eca-chat--cursor-context-timer nil)
 (defvar eca-chat--new-chat-id 0)
 (defvar eca-chat--last-known-model nil)
-(defvar eca-chat--last-known-behavior nil)
+(defvar eca-chat--last-known-agent nil)
 
 
 (defun eca-chat-new-buffer-name (session)
@@ -488,8 +488,8 @@ darkens for light themes."
     (define-key map (kbd "C-c C-k") #'eca-chat-reset)
     (define-key map (kbd "C-c C-l") #'eca-chat-clear)
     (define-key map (kbd "C-c C-t") #'eca-chat-talk)
-    (define-key map (kbd "C-c C-S-b") #'eca-chat-select-behavior)
-    (define-key map (kbd "C-c C-b") #'eca-chat-cycle-behavior)
+    (define-key map (kbd "C-c C-S-b") #'eca-chat-select-agent)
+    (define-key map (kbd "C-c C-b") #'eca-chat-cycle-agent)
     (define-key map (kbd "C-c C-m") #'eca-chat-select-model)
     (define-key map (kbd "C-c C-n") #'eca-chat-new)
     (define-key map (kbd "C-c C-f") #'eca-chat-select)
@@ -589,11 +589,11 @@ darkens for light themes."
   (let ((secs (/ (float ms) 1000)))
     (propertize (format "%.2f s" secs) 'font-lock-face 'eca-chat-time-face)))
 
-(defun eca-chat--behavior ()
-  "The chat behavior considering default and user option."
-  (or eca-chat-custom-behavior
-      eca-chat--selected-behavior
-      eca-chat--last-known-behavior))
+(defun eca-chat--agent ()
+  "The chat agent considering default and user option."
+  (or eca-chat-custom-agent
+      eca-chat--selected-agent
+      eca-chat--last-known-agent))
 
 (defun eca-chat--model ()
   "The chat model considering default and user option."
@@ -966,7 +966,7 @@ Resteps a list of context plists found in the prompt field."
                    :request-id (cl-incf eca-chat--last-request-id)
                    :chatId eca-chat--id
                    :model (eca-chat--model)
-                   :behavior (eca-chat--behavior)
+                   :agent (eca-chat--agent)
                    :contexts (vconcat refined-contexts))
      :success-callback (-lambda (res)
                          (setq-local eca-chat--id (plist-get res :chatId))))))
@@ -1045,10 +1045,10 @@ Resteps a list of context plists found in the prompt field."
   "Update chat header line for SESSION."
   (when session
     (let ((model-keymap (make-sparse-keymap))
-          (behavior-keymap (make-sparse-keymap))
+          (agent-keymap (make-sparse-keymap))
           (mcp-keymap (make-sparse-keymap)))
       (define-key model-keymap (kbd "<header-line> <mouse-1>") #'eca-chat-select-model)
-      (define-key behavior-keymap (kbd "<header-line> <mouse-1>") #'eca-chat-select-behavior)
+      (define-key agent-keymap (kbd "<header-line> <mouse-1>") #'eca-chat-select-agent)
       (define-key mcp-keymap (kbd "<header-line> <mouse-1>") #'eca-mcp-details)
       (list (propertize "model:"
                         'font-lock-face 'eca-chat-option-key-face
@@ -1060,14 +1060,14 @@ Resteps a list of context plists found in the prompt field."
                'pointer 'hand
                'keymap model-keymap))
             "  "
-            (propertize "behavior:"
+            (propertize "agent:"
                         'font-lock-face 'eca-chat-option-key-face
                         'pointer 'hand
-                        'keymap behavior-keymap)
-            (-some-> (eca-chat--behavior)
+                        'keymap agent-keymap)
+            (-some-> (eca-chat--agent)
               (propertize 'font-lock-face 'eca-chat-option-value-face
                           'pointer 'hand
-                          'keymap behavior-keymap))
+                          'keymap agent-keymap))
             "  "
             (propertize "mcps:"
                         'font-lock-face 'eca-chat-option-key-face
@@ -2318,14 +2318,14 @@ Calls CB with the resulting message."
   (eca-chat--with-current-buffer (eca-chat--get-last-buffer session)
     (force-mode-line-update)))
 
-(defun eca-chat--set-behavior (session new-behavior)
-  "Set new behavior to NEW-BEHAVIOR notifying server for SESSION."
+(defun eca-chat--set-agent (session new-agent)
+  "Set new agent to NEW-AGENT notifying server for SESSION."
   (eca-chat--with-current-buffer (eca-chat--get-last-buffer session)
-    (setq-local eca-chat--selected-behavior new-behavior)
-    (setq eca-chat--last-known-behavior new-behavior))
+    (setq-local eca-chat--selected-agent new-agent)
+    (setq eca-chat--last-known-agent new-agent))
   (eca-api-notify session
-                  :method "chat/selectedBehaviorChanged"
-                  :params (list :behavior new-behavior)))
+                  :method "chat/selectedAgentChanged"
+                  :params (list :agent new-agent)))
 
 (defun eca-chat--tool-call-file-change-details
     (content label approval-text time status tool-call-next-line-spacing roots &optional parent-id)
@@ -2820,16 +2820,16 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
     (setf (eca--session-chat-welcome-message session)))
   (-some->> (plist-get chat-config :models)
     (setf (eca--session-models session)))
-  (-some->> (plist-get chat-config :behaviors)
-    (setf (eca--session-chat-behaviors session)))
+  (-some->> (plist-get chat-config :agents)
+    (setf (eca--session-chat-agents session)))
   (seq-doseq (chat-buffers (eca-vals (eca--session-chats session)))
     (with-current-buffer chat-buffers
       (when-let* ((new-model (plist-get chat-config :selectModel)))
         (setq-local eca-chat--selected-model new-model)
         (setq eca-chat--last-known-model new-model))
-      (when-let* ((new-behavior (plist-get chat-config :selectBehavior)))
-        (setq-local eca-chat--selected-behavior new-behavior)
-        (setq eca-chat--last-known-behavior new-behavior)))))
+      (when-let* ((new-agent (plist-get chat-config :selectAgent)))
+        (setq-local eca-chat--selected-agent new-agent)
+        (setq eca-chat--last-known-agent new-agent)))))
 
 (defun eca-chat-open (session)
   "Open or create dedicated eca chat window for SESSION."
@@ -2893,26 +2893,26 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
       (setq eca-chat--last-known-model model))))
 
 ;;;###autoload
-(defun eca-chat-select-behavior ()
-  "Select which chat behavior to use from what server supports."
+(defun eca-chat-select-agent ()
+  "Select which chat agent to use from what server supports."
   (interactive)
   (eca-assert-session-running (eca-session))
-  (when-let* ((behavior (completing-read "Select a behavior:" (append (eca--session-chat-behaviors (eca-session)) nil) nil t)))
-    (eca-chat--set-behavior (eca-session) behavior)))
+  (when-let* ((agent (completing-read "Select an agent:" (append (eca--session-chat-agents (eca-session)) nil) nil t)))
+    (eca-chat--set-agent (eca-session) agent)))
 
 ;;;###autoload
-(defun eca-chat-cycle-behavior ()
-  "Cycle between existing chat behaviors to use."
+(defun eca-chat-cycle-agent ()
+  "Cycle between existing chat agents to use."
   (interactive)
   (eca-assert-session-running (eca-session))
   (let* ((session (eca-session))
-         (current-behavior (eca-chat--with-current-buffer (eca-chat--get-last-buffer session)
-                             (eca-chat--behavior)))
-         (all-behaviors (append (eca--session-chat-behaviors session) nil))
-         (current-behavior-index (seq-position all-behaviors current-behavior))
-         (next-behavior (or (nth (1+ current-behavior-index) all-behaviors)
-                            (nth 0 all-behaviors))))
-    (eca-chat--set-behavior session next-behavior)))
+         (current-agent (eca-chat--with-current-buffer (eca-chat--get-last-buffer session)
+                          (eca-chat--agent)))
+         (all-agents (append (eca--session-chat-agents session) nil))
+         (current-agent-index (seq-position all-agents current-agent))
+         (next-agent (or (nth (1+ current-agent-index) all-agents)
+                         (nth 0 all-agents))))
+    (eca-chat--set-agent session next-agent)))
 
 ;;;###autoload
 (defun eca-chat-tool-call-accept-all ()
