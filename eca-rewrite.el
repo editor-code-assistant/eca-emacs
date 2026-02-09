@@ -65,7 +65,8 @@
   :group 'eca)
 
 (defface eca-rewrite-ready-prefix-face
-  '((t (:foreground "turquoise" :bold t)))
+  '((((background dark))  (:foreground "turquoise" :bold t))
+    (((background light)) (:foreground "dark cyan" :bold t)))
   "Face to show in the ready prefix text."
   :group 'eca)
 

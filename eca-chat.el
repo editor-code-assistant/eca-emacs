@@ -40,9 +40,9 @@
 Can be `'left', `'right', `'top', or `'bottom'.  This setting will only
 be used when `eca-chat-use-side-window' is non-nil."
   :type '(choice (const :tag "Left" left)
-                 (const :tag "Right" right)
-                 (const :tag "Top" top)
-                 (const :tag "Bottom" bottom))
+          (const :tag "Right" right)
+          (const :tag "Top" top)
+          (const :tag "Bottom" bottom))
   :group 'eca)
 
 (defcustom eca-chat-window-width 0.40
@@ -234,7 +234,8 @@ Must be a positive integer."
 ;; Faces
 
 (defface eca-chat-prompt-prefix-face
-  '((t (:foreground "lime green" :weight bold)))
+  '((((background dark))  (:foreground "lime green" :weight bold))
+    (((background light)) (:foreground "dark green" :weight bold)))
   "Face for the `eca-chat-prompt-prefix`."
   :group 'eca)
 
@@ -274,32 +275,38 @@ Must be a positive integer."
   :group 'eca)
 
 (defface eca-chat-diff-view-face
-  '((t (:foreground "dodger blue" :underline t :weight bold)))
+  '((((background dark))  (:foreground "dodger blue" :underline t :weight bold))
+    (((background light)) (:foreground "blue3" :underline t :weight bold)))
   "Face for the diff view button."
   :group 'eca)
 
 (defface eca-chat-context-unlinked-face
-  '((t (:foreground "gold" :height 0.9)))
+  '((((background dark))  (:foreground "gold" :height 0.9))
+    (((background light)) (:foreground "dark goldenrod" :height 0.9)))
   "Face for contexts to be added."
   :group 'eca)
 
 (defface eca-chat-context-file-face
-  '((t (:foreground "coral" :underline t :height 0.9)))
+  '((((background dark))  (:foreground "coral" :underline t :height 0.9))
+    (((background light)) (:foreground "firebrick" :underline t :height 0.9)))
   "Face for contexts of file type."
   :group 'eca)
 
 (defface eca-chat-context-repo-map-face
-  '((t (:foreground "turquoise" :underline t :height 0.9)))
+  '((((background dark))  (:foreground "turquoise" :underline t :height 0.9))
+    (((background light)) (:foreground "dark cyan" :underline t :height 0.9)))
   "Face for contexts of repoMap type."
   :group 'eca)
 
 (defface eca-chat-context-mcp-resource-face
-  '((t (:foreground "lime green" :underline t :height 0.9)))
+  '((((background dark))  (:foreground "lime green" :underline t :height 0.9))
+    (((background light)) (:foreground "dark green" :underline t :height 0.9)))
   "Face for contexts of mcpResource type."
   :group 'eca)
 
 (defface eca-chat-context-cursor-face
-  '((t (:foreground "gainsboro" :underline t :height 0.9)))
+  '((((background dark))  (:foreground "gainsboro" :underline t :height 0.9))
+    (((background light)) (:foreground "dim gray" :underline t :height 0.9)))
   "Face for contexts of cursor type."
   :group 'eca)
 
