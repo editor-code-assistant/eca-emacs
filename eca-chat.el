@@ -35,6 +35,12 @@
   :type 'hook
   :group 'eca)
 
+(defcustom eca-chat-finished-hook nil
+  "List of functions to be called after ECA chat is finished.
+For when chat went back to idle state."
+  :type 'hook
+  :group 'eca)
+
 (defcustom eca-chat-window-side 'right
   "Side of the frame where the ECA chat window should appear.
 Can be `'left', `'right', `'top', or `'bottom'.  This setting will only
@@ -2781,7 +2787,8 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
             (eca-chat--align-tables)
             (eca-chat--set-chat-loading session nil)
             (eca-chat--refresh-progress chat-buffer)
-            (eca-chat--send-queued-prompt session)))))
+            (eca-chat--send-queued-prompt session)
+            (run-hooks 'eca-chat-finished-hook)))))
       ("usage"
        (unless parent-tool-call-id
          (setq-local eca-chat--message-input-tokens  (plist-get content :messageInputTokens))
