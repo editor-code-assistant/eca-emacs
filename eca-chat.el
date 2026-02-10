@@ -2331,9 +2331,11 @@ Calls CB with the resulting message."
   (eca-chat--with-current-buffer (eca-chat--get-last-buffer session)
     (force-mode-line-update)))
 
-(defun eca-chat--set-agent (session new-agent)
-  "Set new agent to NEW-AGENT notifying server for SESSION."
-  (eca-chat--with-current-buffer (eca-chat--get-last-buffer session)
+(defun eca-chat--set-agent (session new-agent &optional buffer)
+  "Set new agent to NEW-AGENT notifying server for SESSION.
+When BUFFER is provided, set the agent in that buffer instead of
+the last chat buffer of SESSION."
+  (eca-chat--with-current-buffer (or buffer (eca-chat--get-last-buffer session))
     (setq-local eca-chat--selected-agent new-agent)
     (setq eca-chat--last-known-agent new-agent))
   (eca-api-notify session
@@ -2409,10 +2411,18 @@ Append STATUS symbol.  Optional PARENT-ID for nested rendering."
                                     (format " (%d steps)" step))
                                    (t ""))
                                   'font-lock-face 'eca-chat-subagent-steps-info-face))
+          (existing-ov (eca-chat--get-expandable-content id))
+          ;; Preserve pending-approval status when a step update arrives with
+          ;; loading status — an inner tool call may be waiting for approval.
+          (status (if (and existing-ov
+                          (string= status eca-chat-mcp-tool-call-loading-symbol)
+                          (string= (overlay-get existing-ov 'eca-chat--tool-call-status)
+                                   eca-chat-mcp-tool-call-pending-approval-symbol))
+                     eca-chat-mcp-tool-call-pending-approval-symbol
+                   status))
           (new-label (concat (propertize label 'font-lock-face 'eca-chat-subagent-tool-call-label-face)
                              steps-info " " status time
                              (when approval-text (concat "\n" approval-text))))
-          (existing-ov (eca-chat--get-expandable-content id))
           (has-children? (and existing-ov
                               (eca-chat--segments-children
                                (overlay-get existing-ov 'eca-chat--expandable-content-segments)))))
@@ -2858,6 +2868,8 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
   (eca-chat--with-current-buffer (eca-chat--get-last-buffer session)
     (unless (derived-mode-p 'eca-chat-mode)
       (eca-chat-mode)
+      (setq-local eca-chat--selected-agent eca-chat--last-known-agent)
+      (setq-local eca-chat--selected-model eca-chat--last-known-model)
       (eca-chat--track-cursor-position-schedule)
       (when eca-chat-auto-add-cursor
         (eca-chat--add-context (list :type "cursor")))
@@ -2917,7 +2929,7 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
   (interactive)
   (eca-assert-session-running (eca-session))
   (when-let* ((agent (completing-read "Select an agent:" (append (eca--session-chat-agents (eca-session)) nil) nil t)))
-    (eca-chat--set-agent (eca-session) agent)))
+    (eca-chat--set-agent (eca-session) agent (current-buffer))))
 
 ;;;###autoload
 (defun eca-chat-cycle-agent ()
@@ -2925,13 +2937,12 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
   (interactive)
   (eca-assert-session-running (eca-session))
   (let* ((session (eca-session))
-         (current-agent (eca-chat--with-current-buffer (eca-chat--get-last-buffer session)
-                          (eca-chat--agent)))
+         (current-agent (eca-chat--agent))
          (all-agents (append (eca--session-chat-agents session) nil))
          (current-agent-index (seq-position all-agents current-agent))
          (next-agent (or (nth (1+ current-agent-index) all-agents)
                          (nth 0 all-agents))))
-    (eca-chat--set-agent session next-agent)))
+    (eca-chat--set-agent session next-agent (current-buffer))))
 
 ;;;###autoload
 (defun eca-chat-tool-call-accept-all ()
