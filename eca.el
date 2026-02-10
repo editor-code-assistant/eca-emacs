@@ -149,7 +149,8 @@
   (eca-api-request-async
    session
    :method "initialize"
-   :params (list :processId (emacs-pid)
+   :params (list :processId (unless (file-remote-p (buffer-file-name))
+                              (emacs-pid))
                  :clientInfo (list :name "emacs"
                                    :version (emacs-version))
                  :capabilities (list :codeAssistant (list :chat t
