@@ -106,6 +106,7 @@
               (insert (propertize "Tools: " 'font-lock-face font-lock-doc-face))
               (seq-doseq (tool tools)
                 (insert (propertize (plist-get tool :name)
+                                    'eca-mcp-tool tool
                                     'font-lock-face (if (plist-get tool :disabled)
                                                         'eca-mcp-details-tool-disabled-face
                                                       'eca-mcp-details-tool-face)) " "))))
@@ -122,6 +123,44 @@
                                 'font-lock-face 'error))))
         (insert "\n\n")))))
 
+(defun eca-mcp--format-input-schema-args (input-schema)
+  "Format INPUT-SCHEMA properties into a list of readable arg description strings."
+  (when-let* ((properties (plist-get input-schema :properties)))
+    (let ((required (append (plist-get input-schema :required) nil))
+          (args '()))
+      (cl-loop for (key val) on properties by #'cddr
+               do (let* ((name (substring (symbol-name key) 1))
+                         (type (plist-get val :type))
+                         (description (plist-get val :description))
+                         (required? (member name required)))
+                    (push (concat (propertize name 'face (if required? 'bold 'italic))
+                                  (when type
+                                    (concat " (" (propertize type 'face 'font-lock-type-face) ")"))
+                                  (unless required?
+                                    (propertize " [optional]" 'face 'shadow))
+                                  (when description
+                                    (concat ": " description)))
+                          args)))
+      (nreverse args))))
+
+(defun eca-mcp--eldoc-function (cb &rest _ignored)
+  "Eldoc function for MCP details buffer.
+When point is on a tool name, call CB with its description and arguments."
+  (when-let* ((tool (get-text-property (point) 'eca-mcp-tool)))
+    (let* ((name (plist-get tool :name))
+           (description (plist-get tool :description))
+           (input-schema (plist-get tool :inputSchema))
+           (args (eca-mcp--format-input-schema-args input-schema))
+           (doc (concat (propertize name 'face 'bold)
+                        (when description
+                          (concat ": " description))
+                        (when args
+                          (concat "\n"
+                                  (propertize "Args:" 'face 'font-lock-keyword-face)
+                                  "\n  "
+                                  (string-join args "\n  "))))))
+      (funcall cb doc))))
+
 ;; Public
 
 (define-derived-mode eca-mcp-details-mode fundamental-mode "eca-mcp-details"
@@ -129,6 +168,8 @@
 \\{eca-mcp-details-mode-map}"
   :group 'eca
   (visual-line-mode)
+  (add-hook 'eldoc-documentation-functions #'eca-mcp--eldoc-function nil t)
+  (eldoc-mode 1)
   (eca-mcp--refresh-server-details (eca-session)))
 
 (defun eca-mcp-servers (session)
