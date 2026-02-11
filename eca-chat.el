@@ -125,7 +125,7 @@ ECA chat opens in a regular buffer that follows standard
   :type 'string
   :group 'eca)
 
-(defcustom eca-chat-expandable-block-bg-shift-1 2
+(defcustom eca-chat-expandable-block-bg-shift-1 5
   "Percentage to shift the default background for level-1 expanded blocks.
 Higher values make the block background more distinct from the surrounding
 buffer.  The shift direction is automatic: lightens for dark themes and
@@ -133,7 +133,7 @@ darkens for light themes."
   :type 'number
   :group 'eca)
 
-(defcustom eca-chat-expandable-block-bg-shift-2 15
+(defcustom eca-chat-expandable-block-bg-shift-2 20
   "Percentage to shift the default background for level-2 (nested) expanded blocks.
 Higher values make the nested block background more distinct.
 The shift direction is automatic: lightens for dark themes and darkens
