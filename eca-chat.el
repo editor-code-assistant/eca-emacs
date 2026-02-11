@@ -2401,6 +2401,7 @@ DETAILS is the details of the tool call.
 Can include optional APPROVAL-TEXT and TIME.
 Append STATUS symbol.  Optional PARENT-ID for nested rendering."
   (-let* ((agent-name (plist-get args :agent))
+          (task (plist-get args :task))
           (model (plist-get details :model))
           (step (plist-get details :step))
           (max-steps (plist-get details :maxSteps))
@@ -2454,18 +2455,16 @@ Append STATUS symbol.  Optional PARENT-ID for nested rendering."
                          'help-echo "mouse-1 / RET / tab: expand/collapse"))
             (eca-chat--paint-nested-label existing-ov)))
       ;; No children yet — safe to replace the full content body
-      (let ((user-message (when existing-ov
-                            (overlay-get existing-ov 'eca-chat--subagent-user-message))))
-        (eca-chat--update-expandable-content
-         id
-         new-label
-         (eca-chat--content-table
-          `(("Agent" . ,agent-name)
-            ("Model" . ,model)
-            ,@(when user-message `(("Task" . ,(concat user-message "\n\n"))))
-            ,@(when output-text `(("Output" . ,(concat "\n" output-text))))))
-         nil
-         parent-id)))
+      (eca-chat--update-expandable-content
+       id
+       new-label
+       (eca-chat--content-table
+        `(("Agent" . ,agent-name)
+          ("Model" . ,model)
+          ,@(when task `(("Task" . ,(concat task "\n\n"))))
+          ,@(when output-text `(("Output" . ,(concat "\n" output-text))))))
+       nil
+       parent-id))
     ;; Store status and label on the overlay so we can update them later
     (when-let* ((ov (eca-chat--get-expandable-content id)))
       (overlay-put ov 'eca-chat--tool-call-status status)
@@ -2517,17 +2516,7 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
        (when-let* ((text (plist-get content :text)))
          (pcase role
            ("user"
-            (if parent-tool-call-id
-                (progn
-                  ;; Store user message on the overlay so subagent detail updates
-                  ;; can include it when rebuilding the content table.
-                  (when-let* ((ov (eca-chat--get-expandable-content parent-tool-call-id)))
-                    (overlay-put ov 'eca-chat--subagent-user-message (string-trim text)))
-                  (eca-chat--update-expandable-content
-                   parent-tool-call-id
-                   nil
-                   (propertize (string-trim text) 'font-lock-face 'eca-chat-user-messages-face)
-                   t))
+            (unless parent-tool-call-id
               (progn
                 (eca-chat--add-expandable-content
                  content-id
