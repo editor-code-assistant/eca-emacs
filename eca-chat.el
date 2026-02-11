@@ -1326,7 +1326,8 @@ NESTED-PROPS is a plist with :parent-id and :label-indent for nested blocks."
     (eca-chat--insert (propertize (eca-chat--propertize-only-first-word label
                                                                         'line-prefix (cond
                                                                                       ((not (string-empty-p content)) open-icon)
-                                                                                      (label-indent label-indent)))
+                                                                                      (label-indent (concat label-indent
+                                                                                                            (make-string (length eca-chat-expandable-block-open-symbol) ?\s)))))
                                   'keymap (let ((km (make-sparse-keymap)))
                                             (define-key km (kbd "<mouse-1>") (lambda () (interactive) (eca-chat--expandable-content-toggle id)))
                                             (define-key km (kbd "<tab>") (lambda () (interactive) (eca-chat--expandable-content-toggle id)))
@@ -1454,12 +1455,20 @@ in parent."
               (overlay-put ov-label 'eca-chat--expandable-content-close-icon (cdr new-icons)))
             (goto-char (overlay-start ov-label))
             (delete-region (point) (1- (overlay-start ov-content)))
-            (eca-chat--insert (propertize (eca-chat--propertize-only-first-word label
-                                                                                'line-prefix (unless (string-empty-p new-content)
-                                                                                               (if open?
-                                                                                                   (overlay-get ov-label 'eca-chat--expandable-content-close-icon)
-                                                                                                 (overlay-get ov-label 'eca-chat--expandable-content-open-icon))))
-                                          'help-echo "mouse-1 / RET / tab: expand/collapse"))
+            (let* ((children (eca-chat--segments-children
+                              (overlay-get ov-label 'eca-chat--expandable-content-segments)))
+                   (has-content? (or (not (string-empty-p new-content)) children))
+                   (label-prefix (cond
+                                  (has-content?
+                                   (if open?
+                                       (overlay-get ov-label 'eca-chat--expandable-content-close-icon)
+                                     (overlay-get ov-label 'eca-chat--expandable-content-open-icon)))
+                                  (nested?
+                                   (concat eca-chat--expandable-content-base-indent
+                                           (make-string (length eca-chat-expandable-block-open-symbol) ?\s))))))
+              (eca-chat--insert (propertize (eca-chat--propertize-only-first-word label
+                                                                                  'line-prefix label-prefix)
+                                            'help-echo "mouse-1 / RET / tab: expand/collapse")))
             ;; Repaint nested label's line-prefix after label replacement
             (eca-chat--paint-nested-label ov-label))
           (when open?
