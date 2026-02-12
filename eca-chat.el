@@ -1004,15 +1004,6 @@ Resteps a list of context plists found in the prompt field."
    (let* ((session (eca-session))
           (prompt (eca-chat--prompt-content)))
      (cond
-      ;; check prompt
-      ((and (not (string-empty-p prompt))
-            (not eca-chat--chat-loading))
-       (eca-chat--send-prompt session prompt))
-
-      ((and (not (string-empty-p prompt))
-            eca-chat--chat-loading)
-       (eca-chat--queue-prompt prompt))
-
       ;; check it's an actionable text
       ((-some->> (thing-at-point 'symbol) (get-text-property 0 'eca-button-on-action))
        (-some->> (thing-at-point 'symbol)
@@ -1023,6 +1014,15 @@ Resteps a list of context plists found in the prompt field."
       ((eca-chat--expandable-content-at-point)
        (let ((ov (eca-chat--expandable-content-at-point)))
          (eca-chat--expandable-content-toggle (overlay-get ov 'eca-chat--expandable-content-id))))
+
+      ;; check prompt
+      ((and (not (string-empty-p prompt))
+            (not eca-chat--chat-loading))
+       (eca-chat--send-prompt session prompt))
+
+      ((and (not (string-empty-p prompt))
+            eca-chat--chat-loading)
+       (eca-chat--queue-prompt prompt))
 
       (t nil)))))
 
