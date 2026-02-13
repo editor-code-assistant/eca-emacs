@@ -90,6 +90,9 @@
   ;; The supported chat agents by the server.
   (chat-agents nil)
 
+  ;; The available variants for the current model.
+  (chat-variants '())
+
   ;; The welcome message for new chats.
   (chat-welcome-message ""))
 
@@ -216,6 +219,7 @@ Inheirits BASE-MAP."
     ("p" "Repeat prompt" eca-chat-repeat-prompt)
     ("C" "Clear prompt" eca-chat-clear-prompt)
     ("m" "Select model" eca-chat-select-model)
+    ("v" "Select variant" eca-chat-select-variant)
     ("b" "Change agent" eca-chat-select-agent)
     ("o" "Open/close chat window" eca-chat-toggle-window)
     ("a" "Accept all pending tool calls" eca-chat-tool-call-accept-all)

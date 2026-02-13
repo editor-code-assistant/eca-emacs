@@ -455,6 +455,7 @@ darkens for light themes."
 (defvar-local eca-chat--custom-title nil)
 (defvar-local eca-chat--selected-model nil)
 (defvar-local eca-chat--selected-agent nil)
+(defvar-local eca-chat--selected-variant nil)
 (defvar-local eca-chat--last-request-id 0)
 (defvar-local eca-chat--context-completion-cache (make-hash-table :test 'equal))
 (defvar-local eca-chat--file-completion-cache (make-hash-table :test 'equal))
@@ -482,6 +483,7 @@ darkens for light themes."
 (defvar eca-chat--new-chat-id 0)
 (defvar eca-chat--last-known-model nil)
 (defvar eca-chat--last-known-agent nil)
+(defvar eca-chat--last-known-variant nil)
 
 
 (defun eca-chat-new-buffer-name (session)
@@ -504,6 +506,7 @@ darkens for light themes."
     (define-key map (kbd "C-c C-S-b") #'eca-chat-select-agent)
     (define-key map (kbd "C-c C-b") #'eca-chat-cycle-agent)
     (define-key map (kbd "C-c C-m") #'eca-chat-select-model)
+    (define-key map (kbd "C-c C-v") #'eca-chat-select-variant)
     (define-key map (kbd "C-c C-n") #'eca-chat-new)
     (define-key map (kbd "C-c C-f") #'eca-chat-select)
     (define-key map (kbd "C-c C-p") #'eca-chat-repeat-prompt)
@@ -613,6 +616,11 @@ darkens for light themes."
   (or eca-chat-custom-model
       eca-chat--selected-model
       eca-chat--last-known-model))
+
+(defun eca-chat--variant ()
+  "The chat variant for the current model."
+  (or eca-chat--selected-variant
+      eca-chat--last-known-variant))
 
 (defun eca-chat--mcps-summary (session)
   "The summary of MCP servers for SESSION."
@@ -975,12 +983,14 @@ Resteps a list of context plists found in the prompt field."
     (eca-api-request-async
      session
      :method "chat/prompt"
-     :params (list :message (eca-chat--normalize-prompt prompt)
-                   :request-id (cl-incf eca-chat--last-request-id)
-                   :chatId eca-chat--id
-                   :model (eca-chat--model)
-                   :agent (eca-chat--agent)
-                   :contexts (vconcat refined-contexts))
+     :params (append (list :message (eca-chat--normalize-prompt prompt)
+                          :request-id (cl-incf eca-chat--last-request-id)
+                          :chatId eca-chat--id
+                          :model (eca-chat--model)
+                          :agent (eca-chat--agent)
+                          :contexts (vconcat refined-contexts))
+                     (when-let* ((variant (eca-chat--variant)))
+                       (list :variant variant)))
      :success-callback (-lambda (res)
                          (setq-local eca-chat--id (plist-get res :chatId))))))
 
@@ -1059,36 +1069,49 @@ Resteps a list of context plists found in the prompt field."
   (when session
     (let ((model-keymap (make-sparse-keymap))
           (agent-keymap (make-sparse-keymap))
+          (variant-keymap (make-sparse-keymap))
           (mcp-keymap (make-sparse-keymap)))
       (define-key model-keymap (kbd "<header-line> <mouse-1>") #'eca-chat-select-model)
       (define-key agent-keymap (kbd "<header-line> <mouse-1>") #'eca-chat-select-agent)
+      (define-key variant-keymap (kbd "<header-line> <mouse-1>") #'eca-chat-select-variant)
       (define-key mcp-keymap (kbd "<header-line> <mouse-1>") #'eca-mcp-details)
-      (list (propertize "model:"
-                        'font-lock-face 'eca-chat-option-key-face
-                        'pointer 'hand
-                        'keymap model-keymap)
-            (-some-> (eca-chat--model)
-              (propertize
-               'font-lock-face 'eca-chat-option-value-face
-               'pointer 'hand
-               'keymap model-keymap))
-            "  "
-            (propertize "agent:"
-                        'font-lock-face 'eca-chat-option-key-face
-                        'pointer 'hand
-                        'keymap agent-keymap)
-            (-some-> (eca-chat--agent)
-              (propertize 'font-lock-face 'eca-chat-option-value-face
-                          'pointer 'hand
-                          'keymap agent-keymap))
-            "  "
-            (propertize "mcps:"
-                        'font-lock-face 'eca-chat-option-key-face
-                        'pointer 'hand
-                        'keymap mcp-keymap)
-            (propertize (eca-chat--mcps-summary session)
-                        'pointer 'hand
-                        'keymap mcp-keymap)))))
+      (append
+       (list (propertize "model:"
+                         'font-lock-face 'eca-chat-option-key-face
+                         'pointer 'hand
+                         'keymap model-keymap)
+             (-some-> (eca-chat--model)
+               (propertize
+                'font-lock-face 'eca-chat-option-value-face
+                'pointer 'hand
+                'keymap model-keymap))
+             "  "
+             (propertize "agent:"
+                         'font-lock-face 'eca-chat-option-key-face
+                         'pointer 'hand
+                         'keymap agent-keymap)
+             (-some-> (eca-chat--agent)
+               (propertize 'font-lock-face 'eca-chat-option-value-face
+                           'pointer 'hand
+                           'keymap agent-keymap))
+             "  ")
+       (when (eca--session-chat-variants session)
+         (list (propertize "variant:"
+                           'font-lock-face 'eca-chat-option-key-face
+                           'pointer 'hand
+                           'keymap variant-keymap)
+               (-some-> (eca-chat--variant)
+                 (propertize 'font-lock-face 'eca-chat-option-value-face
+                             'pointer 'hand
+                             'keymap variant-keymap))
+               "  "))
+       (list (propertize "mcps:"
+                         'font-lock-face 'eca-chat-option-key-face
+                         'pointer 'hand
+                         'keymap mcp-keymap)
+             (propertize (eca-chat--mcps-summary session)
+                         'pointer 'hand
+                         'keymap mcp-keymap))))))
 
 (defun eca-chat--number->friendly-number (n)
   "Format N as `x.yM` for |N| >= 1M, `x.yK` for |N| >= 1K.
@@ -2849,6 +2872,9 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
     (setf (eca--session-models session)))
   (-some->> (plist-get chat-config :agents)
     (setf (eca--session-chat-agents session)))
+  (when (plist-member chat-config :variants)
+    (setf (eca--session-chat-variants session)
+          (append (plist-get chat-config :variants) nil)))
   (seq-doseq (chat-buffers (eca-vals (eca--session-chats session)))
     (with-current-buffer chat-buffers
       (when-let* ((new-model (plist-get chat-config :selectModel)))
@@ -2856,7 +2882,12 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
         (setq eca-chat--last-known-model new-model))
       (when-let* ((new-agent (plist-get chat-config :selectAgent)))
         (setq-local eca-chat--selected-agent new-agent)
-        (setq eca-chat--last-known-agent new-agent)))))
+        (setq eca-chat--last-known-agent new-agent))
+      (when (plist-member chat-config :selectVariant)
+        (let ((new-variant (plist-get chat-config :selectVariant)))
+          (setq-local eca-chat--selected-variant new-variant)
+          (setq eca-chat--last-known-variant new-variant)))
+      (force-mode-line-update))))
 
 (defun eca-chat-open (session)
   "Open or create dedicated eca chat window for SESSION."
@@ -2868,6 +2899,7 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
       (eca-chat-mode)
       (setq-local eca-chat--selected-agent eca-chat--last-known-agent)
       (setq-local eca-chat--selected-model eca-chat--last-known-model)
+      (setq-local eca-chat--selected-variant eca-chat--last-known-variant)
       (eca-chat--track-cursor-position-schedule)
       (when eca-chat-auto-add-cursor
         (eca-chat--add-context (list :type "cursor")))
@@ -2919,7 +2951,23 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
   (when-let* ((model (completing-read "Select a model:" (append (eca--session-models (eca-session)) nil) nil t)))
     (eca-chat--with-current-buffer (eca-chat--get-last-buffer (eca-session))
       (setq-local eca-chat--selected-model model)
-      (setq eca-chat--last-known-model model))))
+      (setq eca-chat--last-known-model model))
+    (eca-api-notify (eca-session)
+                    :method "chat/selectedModelChanged"
+                    :params (list :model model))))
+
+;;;###autoload
+(defun eca-chat-select-variant ()
+  "Select which variant to use for the current model."
+  (interactive)
+  (eca-assert-session-running (eca-session))
+  (let ((variants (eca--session-chat-variants (eca-session))))
+    (unless variants
+      (user-error "No variants available for the current model"))
+    (when-let* ((variant (completing-read "Select a variant:" variants nil t)))
+      (eca-chat--with-current-buffer (eca-chat--get-last-buffer (eca-session))
+        (setq-local eca-chat--selected-variant variant)
+        (setq eca-chat--last-known-variant variant)))))
 
 ;;;###autoload
 (defun eca-chat-select-agent ()
