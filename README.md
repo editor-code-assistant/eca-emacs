@@ -29,6 +29,13 @@ For more details about ECA, check [ECA server](https://github.com/editor-code-as
 M-x package-install eca
 ```
 
+### Use Package
+
+```
+(use-package eca
+  :vc (:url "https://github.com/editor-code-assistant/eca-emacs" :rev :newest))
+```
+
 ### Doom Emacs:
 
 ```elisp
