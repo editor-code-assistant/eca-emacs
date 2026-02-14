@@ -2966,21 +2966,23 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
 
 ;;;###autoload
 (defun eca-chat-tool-call-accept-next ()
-  "Search the next pending approval tool call after cursor and approve it."
+  "Search the next pending approval tool call in the buffer and approve it, starting from the beginning of the buffer."
   (interactive)
   (eca-assert-session-running (eca-session))
   (eca-chat--with-current-buffer (eca-chat--get-last-buffer (eca-session))
     (save-excursion
+      (goto-char (point-min))
       (when (text-property-search-forward 'eca-tool-call-pending-approval-accept t t)
         (call-interactively #'eca-chat--key-pressed-return)))))
 
 ;;;###autoload
 (defun eca-chat-tool-call-reject-next ()
-  "Search the next pending approval tool call after cursor and reject it."
+  "Search the next pending approval tool call in the buffer and reject it, starting from the beginning of the buffer."
   (interactive)
   (eca-assert-session-running (eca-session))
   (eca-chat--with-current-buffer (eca-chat--get-last-buffer (eca-session))
     (save-excursion
+      (goto-char (point-min))
       (when (text-property-search-forward 'eca-tool-call-pending-approval-reject t t)
         (call-interactively #'eca-chat--key-pressed-return)))))
 
