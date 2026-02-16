@@ -262,7 +262,7 @@ When ARG is current prefix, ask for workspace roots to use."
 
 ;;;###autoload
 (defun eca-workspaces ()
-  "Return workspaces used by current session."
+  "Display all running ECA sessions and their chats in a tree view."
   (interactive)
   (let ((h (hierarchy-new))
         (parent-fn (lambda (item)
