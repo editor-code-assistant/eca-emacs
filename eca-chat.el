@@ -477,6 +477,9 @@ darkens for light themes."
 (defvar-local eca-chat--queued-prompt nil)
 (defvar-local eca-chat--subagent-chat-id->tool-call-id (make-hash-table :test 'equal)
   "Hash table mapping subagent chatId to the parent tool call expandable block id.")
+(defvar-local eca-chat--subagent-usage (make-hash-table :test 'equal)
+  "Hash table mapping tool-call-id to a plist (:session-tokens N :context-limit N).
+Stores the latest usage data received for each running subagent.")
 
 ;; Timer used to debounce post-command driven context updates
 (defvar eca-chat--cursor-context-timer nil)
@@ -1131,6 +1134,33 @@ Otherwise show plain integer."
            (s (if (string-match "\\.0\\'" s) (substring s 0 -2) s)))
       (concat (if (< n 0) "-" "") s "K")))
    (t (number-to-string n))))
+
+(defun eca-chat--subagent-usage-str (tool-call-id)
+  "Return a formatted usage string for subagent TOOL-CALL-ID.
+Returns a string like \"31.5K / 200K\" or \"\" if no usage data."
+  (if-let* ((usage (gethash tool-call-id eca-chat--subagent-usage))
+            (session-tokens (plist-get usage :session-tokens))
+            (context-limit (plist-get usage :context-limit)))
+      (format "%s / %s"
+              (eca-chat--number->friendly-number session-tokens)
+              (eca-chat--number->friendly-number context-limit))
+    ""))
+
+(defun eca-chat--subagent-steps-info (step max-steps usage-str)
+  "Build a propertized steps-info string from STEP, MAX-STEPS and USAGE-STR."
+  (propertize (cond
+               ((and step max-steps (not (string-empty-p usage-str)))
+                (format " (%d/%d steps, %s)" step max-steps usage-str))
+               ((and step (not (string-empty-p usage-str)))
+                (format " (%d steps, %s)" step usage-str))
+               ((not (string-empty-p usage-str))
+                (format " (%s)" usage-str))
+               ((and step max-steps)
+                (format " (%d/%d steps)" step max-steps))
+               (step
+                (format " (%d steps)" step))
+               (t ""))
+              'font-lock-face 'eca-chat-subagent-steps-info-face))
 
 (defun eca-chat--usage-str ()
   "Return the usage string of this chat."
@@ -2437,13 +2467,8 @@ Append STATUS symbol.  Optional PARENT-ID for nested rendering."
           (model (plist-get details :model))
           (step (plist-get details :step))
           (max-steps (plist-get details :maxSteps))
-          (steps-info (propertize (cond
-                                   ((and step max-steps)
-                                    (format " (%d/%d steps)" step max-steps))
-                                   (step
-                                    (format " (%d steps)" step))
-                                   (t ""))
-                                  'font-lock-face 'eca-chat-subagent-steps-info-face))
+          (usage-str (eca-chat--subagent-usage-str id))
+          (steps-info (eca-chat--subagent-steps-info step max-steps usage-str))
           (existing-ov (eca-chat--get-expandable-content id))
           ;; Preserve pending-approval status when a step update arrives with
           ;; loading status — an inner tool call may be waiting for approval.
@@ -2502,7 +2527,39 @@ Append STATUS symbol.  Optional PARENT-ID for nested rendering."
       (overlay-put ov 'eca-chat--tool-call-status status)
       (overlay-put ov 'eca-chat--tool-call-label label)
       (overlay-put ov 'eca-chat--tool-call-steps-info steps-info)
+      (overlay-put ov 'eca-chat--tool-call-step step)
+      (overlay-put ov 'eca-chat--tool-call-max-steps max-steps)
       (overlay-put ov 'eca-chat--tool-call-time time))))
+
+(defun eca-chat--refresh-subagent-usage-label (tool-call-id)
+  "Refresh the label of subagent TOOL-CALL-ID to reflect latest usage data.
+Rebuilds the steps-info string with current usage and updates the overlay."
+  (when-let* ((ov-label (eca-chat--get-expandable-content tool-call-id))
+              (label (overlay-get ov-label 'eca-chat--tool-call-label))
+              (status (or (overlay-get ov-label 'eca-chat--tool-call-status) ""))
+              (time (or (overlay-get ov-label 'eca-chat--tool-call-time) ""))
+              (ov-content (overlay-get ov-label 'eca-chat--expandable-content-ov-content)))
+    (let* ((step (overlay-get ov-label 'eca-chat--tool-call-step))
+           (max-steps (overlay-get ov-label 'eca-chat--tool-call-max-steps))
+           (usage-str (eca-chat--subagent-usage-str tool-call-id))
+           (steps-info (eca-chat--subagent-steps-info step max-steps usage-str))
+           (new-label (concat (propertize label 'font-lock-face 'eca-chat-subagent-tool-call-label-face)
+                              steps-info " " status time))
+           (open? (overlay-get ov-label 'eca-chat--expandable-content-toggle))
+           (content (overlay-get ov-content 'eca-chat--expandable-content-content))
+           (has-content? (and content (not (string-empty-p content)))))
+      (overlay-put ov-label 'eca-chat--tool-call-steps-info steps-info)
+      (save-excursion
+        (goto-char (overlay-start ov-label))
+        (delete-region (point) (1- (overlay-start ov-content)))
+        (eca-chat--insert
+         (propertize (eca-chat--propertize-only-first-word
+                      new-label
+                      'line-prefix (when has-content?
+                                     (if open?
+                                         (overlay-get ov-label 'eca-chat--expandable-content-close-icon)
+                                       (overlay-get ov-label 'eca-chat--expandable-content-open-icon))))
+                     'help-echo "mouse-1 / RET / tab: expand/collapse"))))))
 
 (defun eca-chat--update-parent-subagent-status (parent-tool-call-id new-status)
   "Update to NEW-STATUS symbol of a parent subagent tool call PARENT-TOOL-CALL-ID.
@@ -2826,7 +2883,14 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
             (eca-chat--send-queued-prompt session)
             (run-hooks 'eca-chat-finished-hook)))))
       ("usage"
-       (unless parent-tool-call-id
+       (if parent-tool-call-id
+           ;; Subagent usage — store and refresh the tool call label
+           (let ((session-tokens (plist-get content :sessionTokens))
+                 (context-limit (plist-get (plist-get content :limit) :context)))
+             (puthash parent-tool-call-id
+                      (list :session-tokens session-tokens :context-limit context-limit)
+                      eca-chat--subagent-usage)
+             (eca-chat--refresh-subagent-usage-label parent-tool-call-id))
          (setq-local eca-chat--message-input-tokens  (plist-get content :messageInputTokens))
          (setq-local eca-chat--message-output-tokens (plist-get content :messageOutputTokens))
          (setq-local eca-chat--session-tokens        (plist-get content :sessionTokens))
@@ -3014,21 +3078,23 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
 
 ;;;###autoload
 (defun eca-chat-tool-call-accept-next ()
-  "Search the next pending approval tool call after cursor and approve it."
+  "Search the next pending approval tool call in the buffer and approve it, starting from the beginning of the buffer."
   (interactive)
   (eca-assert-session-running (eca-session))
   (eca-chat--with-current-buffer (eca-chat--get-last-buffer (eca-session))
     (save-excursion
+      (goto-char (point-min))
       (when (text-property-search-forward 'eca-tool-call-pending-approval-accept t t)
         (call-interactively #'eca-chat--key-pressed-return)))))
 
 ;;;###autoload
 (defun eca-chat-tool-call-reject-next ()
-  "Search the next pending approval tool call after cursor and reject it."
+  "Search the next pending approval tool call in the buffer and reject it, starting from the beginning of the buffer."
   (interactive)
   (eca-assert-session-running (eca-session))
   (eca-chat--with-current-buffer (eca-chat--get-last-buffer (eca-session))
     (save-excursion
+      (goto-char (point-min))
       (when (text-property-search-forward 'eca-tool-call-pending-approval-reject t t)
         (call-interactively #'eca-chat--key-pressed-return)))))
 
