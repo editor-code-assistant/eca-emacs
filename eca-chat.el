@@ -993,7 +993,8 @@ Resteps a list of context plists found in the prompt field."
                           :agent (eca-chat--agent)
                           :contexts (vconcat refined-contexts))
                      (when-let* ((variant (eca-chat--variant)))
-                       (list :variant variant)))
+                       (unless (string= variant "-")
+                         (list :variant variant))))
      :success-callback (-lambda (res)
                          (setq-local eca-chat--id (plist-get res :chatId))))))
 
@@ -1098,16 +1099,15 @@ Resteps a list of context plists found in the prompt field."
                            'pointer 'hand
                            'keymap agent-keymap))
              "  ")
-       (when (eca--session-chat-variants session)
-         (list (propertize "variant:"
-                           'font-lock-face 'eca-chat-option-key-face
-                           'pointer 'hand
-                           'keymap variant-keymap)
-               (-some-> (eca-chat--variant)
-                 (propertize 'font-lock-face 'eca-chat-option-value-face
-                             'pointer 'hand
-                             'keymap variant-keymap))
-               "  "))
+       (list (propertize "variant:"
+                        'font-lock-face 'eca-chat-option-key-face
+                        'pointer 'hand
+                        'keymap variant-keymap)
+             (propertize (or (eca-chat--variant) "-")
+                         'font-lock-face 'eca-chat-option-value-face
+                         'pointer 'hand
+                         'keymap variant-keymap)
+             "  ")
        (list (propertize "mcps:"
                          'font-lock-face 'eca-chat-option-key-face
                          'pointer 'hand
@@ -3025,10 +3025,9 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
   "Select which variant to use for the current model."
   (interactive)
   (eca-assert-session-running (eca-session))
-  (let ((variants (eca--session-chat-variants (eca-session))))
-    (unless variants
-      (user-error "No variants available for the current model"))
-    (when-let* ((variant (completing-read "Select a variant:" variants nil t)))
+  (let* ((variants (eca--session-chat-variants (eca-session)))
+         (candidates (cons "-" variants)))
+    (when-let* ((variant (completing-read "Select a variant:" candidates nil t)))
       (eca-chat--with-current-buffer (eca-chat--get-last-buffer (eca-session))
         (setq-local eca-chat--selected-variant variant)
         (setq eca-chat--last-known-variant variant)))))
