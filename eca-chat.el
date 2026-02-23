@@ -3018,7 +3018,8 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
       (setq eca-chat--last-known-model model))
     (eca-api-notify (eca-session)
                     :method "chat/selectedModelChanged"
-                    :params (list :model model))))
+                    :params (list :model model
+                                  :variant eca-chat--selected-variant))))
 
 ;;;###autoload
 (defun eca-chat-select-variant ()
