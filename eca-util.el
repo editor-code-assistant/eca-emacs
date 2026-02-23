@@ -229,7 +229,8 @@ Inheirits BASE-MAP."
     ("N h" "Message history" eca-chat-timeline)
     ("N c" "Chat" eca)
     ("N m" "MCP details" eca-mcp-details)
-    ("N e" "Show stderr (logs)" eca-show-stderr)]
+    ("N e" "Show stderr (logs)" eca-show-stderr)
+    ("N E" "Show emacs errors" eca-show-errors)]
 
    ["Server"
     ("S r" "Restart" eca-restart)
