@@ -318,73 +318,86 @@ clean them up on next startup."
                  nil (format "Invalid Content-Length value: %s" val)))
     (cons key val)))
 
-(defun eca-process--filter (handle-msg _proc raw-output)
-  "Process filter to parse eca's stdout RAW-OUTPUT delivering to HANDLE-MSG."
-  (let ((gc-cons-threshold (max gc-cons-threshold eca-min-gc-cons-threshold))
+(defun eca-process--make-filter (handle-msg)
+  "Return a process filter function that parses JSON-RPC from stdout.
+HANDLE-MSG is called for each complete message parsed.
+
+The returned closure captures parsing state across invocations so that
+messages larger than a single OS pipe read (e.g. large `write_file'
+tool calls with full diffs) are reassembled correctly."
+  (let (;; Persistent state across filter invocations:
+        (leftovers nil)
+        (body-length nil)
         (body-received 0)
-        leftovers body-length body chunk)
-    (setf chunk (if (s-blank? leftovers)
-                    (encode-coding-string raw-output 'utf-8-unix t)
-                  (concat leftovers (encode-coding-string raw-output 'utf-8-unix t))))
-    (let (messages)
-      (while (not (s-blank? chunk))
-        (if (not body-length)
-            ;; Read headers
-            (if-let* ((body-sep-pos (string-match-p "\r\n\r\n" chunk)))
-                ;; We've got all the headers, handle them all at once:
-                (setf body-length (let* ((headers (mapcar #'eca-process--parse-header
-                                                          (split-string
-                                                           (substring-no-properties chunk
-                                                                                    (or (string-match-p "Content-Length" chunk)
-                                                                                        (error "Unable to find Content-Length header"))
-                                                                                    body-sep-pos)
-                                                           "\r\n")))
-                                         (content-length (cdr (assoc "Content-Length" headers))))
-                                    (if content-length
-                                        (string-to-number content-length)
-                                      ;; This usually means either the server or our parser is
-                                      ;; screwed up with a previous Content-Length
-                                      (error "No Content-Length header")))
-                      body-received 0
-                      leftovers nil
-                      chunk (substring-no-properties chunk (+ body-sep-pos 4)))
+        (body nil))
+    (lambda (_proc raw-output)
+      (let ((gc-cons-threshold (max gc-cons-threshold eca-min-gc-cons-threshold))
+            chunk)
+        (setf chunk (if (s-blank? leftovers)
+                        (encode-coding-string raw-output 'utf-8-unix t)
+                      (concat leftovers (encode-coding-string raw-output 'utf-8-unix t))))
+        (setf leftovers nil)
+        (let (messages)
+          (while (not (s-blank? chunk))
+            (if (not body-length)
+                ;; Read headers
+                (if-let* ((body-sep-pos (string-match-p "\r\n\r\n" chunk)))
+                    ;; We've got all the headers, handle them all at once:
+                    (setf body-length (let* ((headers (mapcar #'eca-process--parse-header
+                                                              (split-string
+                                                               (substring-no-properties chunk
+                                                                                        (or (string-match-p "Content-Length" chunk)
+                                                                                            (error "Unable to find Content-Length header"))
+                                                                                        body-sep-pos)
+                                                               "\r\n")))
+                                             (content-length (cdr (assoc "Content-Length" headers))))
+                                        (if content-length
+                                            (string-to-number content-length)
+                                          ;; This usually means either the server or our parser is
+                                          ;; screwed up with a previous Content-Length
+                                          (error "No Content-Length header")))
+                          body-received 0
+                          body nil
+                          chunk (substring-no-properties chunk (+ body-sep-pos 4)))
 
-              ;; Haven't found the end of the headers yet. Save everything
-              ;; for when the next chunk arrives and await further input.
-              (setf leftovers chunk
-                    chunk nil))
-          (let* ((chunk-length (string-bytes chunk))
-                 (left-to-receive (- body-length body-received))
-                 (this-body (if (< left-to-receive chunk-length)
-                                (prog1 (substring-no-properties chunk 0 left-to-receive)
-                                  (setf chunk (substring-no-properties chunk left-to-receive)))
-                              (prog1 chunk
-                                (setf chunk nil))))
-                 (body-bytes (string-bytes this-body)))
-            (push this-body body)
-            (setf body-received (+ body-received body-bytes))
-            (when (>= chunk-length left-to-receive)
-              (condition-case err
-                  (with-temp-buffer
-                    (apply #'insert
-                           (nreverse
-                            (prog1 body
-                              (setf leftovers nil
-                                    body-length nil
-                                    body-received nil
-                                    body nil))))
-                    (decode-coding-region (point-min)
-                                          (point-max)
-                                          'utf-8)
-                    (goto-char (point-min))
-                    (push (eca-api--json-read-buffer) messages))
+                  ;; Haven't found the end of the headers yet. Save everything
+                  ;; for when the next chunk arrives and await further input.
+                  (setf leftovers chunk
+                        chunk nil))
+              (let* ((chunk-length (string-bytes chunk))
+                     (left-to-receive (- body-length body-received))
+                     (this-body (if (< left-to-receive chunk-length)
+                                    (prog1 (substring-no-properties chunk 0 left-to-receive)
+                                      (setf chunk (substring-no-properties chunk left-to-receive)))
+                                  (prog1 chunk
+                                    (setf chunk nil))))
+                     (body-bytes (string-bytes this-body)))
+                (push this-body body)
+                (setf body-received (+ body-received body-bytes))
+                (when (>= chunk-length left-to-receive)
+                  (condition-case err
+                      (with-temp-buffer
+                        (apply #'insert
+                               (nreverse
+                                (prog1 body
+                                  (setf body-length nil
+                                        body-received 0
+                                        body nil))))
+                        (decode-coding-region (point-min)
+                                              (point-max)
+                                              'utf-8)
+                        (goto-char (point-min))
+                        (push (eca-api--json-read-buffer) messages))
 
-                (error
-                 (eca-warn "Failed to parse the following chunk:\n'''\n%s\n'''\nwith message %s"
-                           (concat leftovers raw-output)
-                           err)))))))
-      (mapc handle-msg
-            (nreverse messages)))))
+                    (error
+                     (setf body-length nil
+                           body-received 0
+                           body nil)
+                     (eca-warn "Failed to parse the following chunk:\n'''\n%s\n'''\nwith message %s"
+                               (concat leftovers raw-output)
+                               err)))))))
+          (mapc handle-msg
+                (nreverse messages)))))))
 
 ;; Public
 
@@ -406,7 +419,7 @@ Call HANDLE-MSG for new msgs processed."
                                          :command command
                                          :buffer (eca-process--buffer-name session)
                                          :stderr (get-buffer-create (eca-process--stderr-buffer-name session))
-                                         :filter (-partial #'eca-process--filter handle-msg)
+                                         :filter (eca-process--make-filter handle-msg)
                                          :sentinel (lambda (process exit-str)
                                                      (unless (process-live-p process)
                                                        (eca-delete-session session)

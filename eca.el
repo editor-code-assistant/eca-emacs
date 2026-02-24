@@ -68,6 +68,55 @@
 
 (defvar eca-workspaces-buffer-name "*eca-workspaces*")
 
+(defun eca--emacs-errors-buffer-name (session)
+  "Return the emacs errors buffer name for SESSION."
+  (format "<eca:emacs-errors:%s>" (eca--session-id session)))
+
+(defun eca--log-error (session err &optional context)
+  "Log error ERR to the emacs errors buffer for SESSION.
+Optional CONTEXT is a string describing what was happening when the error occurred."
+  (let ((buffer (get-buffer-create (eca--emacs-errors-buffer-name session))))
+    (with-current-buffer buffer
+      (goto-char (point-max))
+      (insert (format "[%s] %s%s\n"
+                      (format-time-string "%Y-%m-%d %H:%M:%S")
+                      (if context (format "%s: " context) "")
+                      (error-message-string err))))))
+
+(defun eca-show-emacs-errors (session)
+  "Open the emacs errors buffer for SESSION."
+  (let ((buffer (get-buffer (eca--emacs-errors-buffer-name session))))
+    (if buffer
+        (with-current-buffer buffer
+          (if (window-live-p (get-buffer-window (buffer-name)))
+              (select-window (get-buffer-window (buffer-name)))
+            (display-buffer (current-buffer))))
+      (eca-info "No emacs errors logged for this session"))))
+
+;;;###autoload
+(defun eca-show-errors ()
+  "Open the eca emacs errors buffer if running."
+  (interactive)
+  (eca-show-emacs-errors (eca-session)))
+
+(defun eca--emacs-errors-exit (session)
+  "Clean up the emacs errors buffer for SESSION on stop."
+  (let ((buffer (get-buffer (eca--emacs-errors-buffer-name session))))
+    (when buffer
+      (with-current-buffer buffer
+        (rename-buffer (concat (buffer-name) ":closed") t)
+        (setq-local mode-line-format '("*Closed session*"))
+        (when-let ((win (get-buffer-window (current-buffer))))
+          (quit-window nil win))
+        ;; Keep only the most recently closed errors buffer; kill older ones.
+        (let ((current (current-buffer)))
+          (dolist (b (buffer-list))
+            (when (and (not (eq b current))
+                       (or
+                        (string-match-p "^<eca:emacs-errors:.*>:closed$" (buffer-name b))
+                        (string-match-p "^<eca:emacs-errors:.*>$" (buffer-name b))))
+              (kill-buffer b))))))))
+
 (defun eca--get-message-type (json-data)
   "Get the message type from JSON-DATA."
   (if (plist-member json-data :id)
@@ -126,7 +175,7 @@
   "Handle raw message JSON-DATA for SESSION."
   (let ((id (plist-get json-data :id))
         (result (plist-get json-data :result)))
-    (condition-case _err
+    (condition-case err
         (pcase (eca--get-message-type json-data)
           ('response (-let [(success-callback) (plist-get (eca--session-response-handlers session) id)]
                        (when success-callback
@@ -139,8 +188,7 @@
           ('notification (eca--handle-server-notification session json-data))
           ('request (let ((response (eca--handle-server-request session json-data)))
                       (eca-api-send-request-response session json-data response))))
-      ;; TODO handle errors
-      (error nil))))
+      (error (eca--log-error session err "handle-message")))))
 
 (defun eca--initialize (session)
   "Send the initialize request for SESSION."
@@ -251,6 +299,7 @@ When ARG is current prefix, ask for workspace roots to use."
       (eca-process-stop session)
       (eca-chat-exit session)
       (eca-mcp-details-exit session)
+      (eca--emacs-errors-exit session)
       (eca-delete-session session))))
 
 ;;;###autoload
