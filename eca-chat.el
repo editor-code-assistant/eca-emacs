@@ -2558,29 +2558,43 @@ Rebuilds the steps-info string with current usage and updates the overlay."
 
 (defun eca-chat--update-parent-subagent-status (parent-tool-call-id new-status)
   "Update to NEW-STATUS symbol of a parent subagent tool call PARENT-TOOL-CALL-ID.
-Only updates the label line, preserving all nested child content."
+Only updates the label line, preserving all nested child content.
+When NEW-STATUS is the loading symbol, checks whether any child tool call
+still has pending-approval status and preserves that instead."
   (when-let* ((ov-label (eca-chat--get-expandable-content parent-tool-call-id))
               (label (overlay-get ov-label 'eca-chat--tool-call-label))
               (time (or (overlay-get ov-label 'eca-chat--tool-call-time) ""))
               (ov-content (overlay-get ov-label 'eca-chat--expandable-content-ov-content)))
-    (overlay-put ov-label 'eca-chat--tool-call-status new-status)
-    (let* ((steps-info (or (overlay-get ov-label 'eca-chat--tool-call-steps-info) ""))
-           (new-label (concat (propertize label 'font-lock-face 'eca-chat-subagent-tool-call-label-face)
-                              steps-info " " new-status time))
-           (open? (overlay-get ov-label 'eca-chat--expandable-content-toggle))
-           (content (overlay-get ov-content 'eca-chat--expandable-content-content))
-           (has-content? (and content (not (string-empty-p content)))))
-      (save-excursion
-        (goto-char (overlay-start ov-label))
-        (delete-region (point) (1- (overlay-start ov-content)))
-        (eca-chat--insert
-         (propertize (eca-chat--propertize-only-first-word
-                      new-label
-                      'line-prefix (when has-content?
-                                     (if open?
-                                         (overlay-get ov-label 'eca-chat--expandable-content-close-icon)
-                                       (overlay-get ov-label 'eca-chat--expandable-content-open-icon))))
-                     'help-echo "mouse-1 / RET / tab: expand/collapse"))))))
+    ;; When resetting to loading, check if any child is still pending approval.
+    ;; If so, keep the parent at pending-approval so the icon stays correct.
+    (let* ((new-status
+            (if (and (string= new-status eca-chat-mcp-tool-call-loading-symbol)
+                     (let ((children (eca-chat--segments-children
+                                      (overlay-get ov-label 'eca-chat--expandable-content-segments))))
+                       (--any? (when-let* ((child-ov (eca-chat--get-expandable-content (plist-get it :id))))
+                                 (string= (overlay-get child-ov 'eca-chat--tool-call-status)
+                                          eca-chat-mcp-tool-call-pending-approval-symbol))
+                               children)))
+                eca-chat-mcp-tool-call-pending-approval-symbol
+              new-status)))
+      (overlay-put ov-label 'eca-chat--tool-call-status new-status)
+      (let* ((steps-info (or (overlay-get ov-label 'eca-chat--tool-call-steps-info) ""))
+             (new-label (concat (propertize label 'font-lock-face 'eca-chat-subagent-tool-call-label-face)
+                                steps-info " " new-status time))
+             (open? (overlay-get ov-label 'eca-chat--expandable-content-toggle))
+             (content (overlay-get ov-content 'eca-chat--expandable-content-content))
+             (has-content? (and content (not (string-empty-p content)))))
+        (save-excursion
+          (goto-char (overlay-start ov-label))
+          (delete-region (point) (1- (overlay-start ov-content)))
+          (eca-chat--insert
+           (propertize (eca-chat--propertize-only-first-word
+                        new-label
+                        'line-prefix (when has-content?
+                                       (if open?
+                                           (overlay-get ov-label 'eca-chat--expandable-content-close-icon)
+                                         (overlay-get ov-label 'eca-chat--expandable-content-open-icon))))
+                       'help-echo "mouse-1 / RET / tab: expand/collapse")))))))
 
 (defun eca-chat--render-content (session chat-buffer role content roots &optional parent-tool-call-id chat-id)
   "Render CONTENT inside CHAT-BUFFER for SESSION.
