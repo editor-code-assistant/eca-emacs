@@ -1551,28 +1551,32 @@ in parent."
                                     segments)))
             (when label (plist-put spec :label label))
             (plist-put spec :content new-content))))
-    ;; Block not rendered yet, update spec in parent (only for nested blocks)
-    (when parent-id
-      (when-let* ((parent-ov (eca-chat--get-expandable-content parent-id)))
-        (let* ((segments (overlay-get parent-ov 'eca-chat--expandable-content-segments))
-               (existing-spec (-first (lambda (spec) (and (eq 'child (plist-get spec :type))
-                                                          (string= id (plist-get spec :id))))
-                                      segments)))
-          (if existing-spec
-              (let* ((old-content (plist-get existing-spec :content))
-                     (new-content (if append-content?
-                                      (concat old-content content)
-                                    content)))
-                (when label
-                  (plist-put existing-spec :label label)
-                  (plist-put existing-spec :icon-face (get-text-property 0 'font-lock-face label)))
-                (plist-put existing-spec :content new-content))
-            (let ((child-spec (list :type 'child :id id :label label :content content
-                                   :icon-face (get-text-property 0 'font-lock-face label))))
-              (overlay-put parent-ov 'eca-chat--expandable-content-segments
-                           (append segments (list child-spec)))
-              (when (overlay-get parent-ov 'eca-chat--expandable-content-toggle)
-                (eca-chat--render-nested-block parent-ov child-spec)))))))))
+    ;; Block not rendered yet
+    (if parent-id
+        ;; Nested: update spec in parent
+        (when-let* ((parent-ov (eca-chat--get-expandable-content parent-id)))
+          (let* ((segments (overlay-get parent-ov 'eca-chat--expandable-content-segments))
+                 (existing-spec (-first (lambda (spec) (and (eq 'child (plist-get spec :type))
+                                                            (string= id (plist-get spec :id))))
+                                        segments)))
+            (if existing-spec
+                (let* ((old-content (plist-get existing-spec :content))
+                       (new-content (if append-content?
+                                        (concat old-content content)
+                                      content)))
+                  (when label
+                    (plist-put existing-spec :label label)
+                    (plist-put existing-spec :icon-face (get-text-property 0 'font-lock-face label)))
+                  (plist-put existing-spec :content new-content))
+              (let ((child-spec (list :type 'child :id id :label label :content content
+                                     :icon-face (get-text-property 0 'font-lock-face label))))
+                (overlay-put parent-ov 'eca-chat--expandable-content-segments
+                             (append segments (list child-spec)))
+                (when (overlay-get parent-ov 'eca-chat--expandable-content-toggle)
+                  (eca-chat--render-nested-block parent-ov child-spec))))))
+      ;; Top-level: create the block so toolCallRun et al. don't
+      ;; silently lose content when no toolCallPrepare preceded them.
+      (eca-chat--add-expandable-content id label (or content "")))))
 
 (defun eca-chat--expandable-content-toggle (id &optional force? close?)
   "Toggle the expandable-content of ID.
@@ -1674,22 +1678,25 @@ Show parent upwards if HIDE-FILENAME? is non nil."
 (defun eca-chat--file-change-diff (path diff roots)
   "Return a diff block for relative PATH from ROOTS with DIFF."
   (concat "\n"
-          (if (f-exists? path)
+          (if (and path (f-exists? path))
               (eca-buttonize
                eca-chat-mode-map
                (propertize (eca-chat--relativize-filename-for-workspace-root path roots)
                            'font-lock-face 'eca-chat-file-path-face)
                (lambda () (find-file-other-window path)))
-            path) "\n"
-          "```diff\n" diff "\n```"))
+            (or path "")) "\n"
+          "```diff\n" (or diff "") "\n```"))
 
 (defun eca-chat--file-change-details-label (details)
   "Build the label from DETAILS for a file change block."
-  (concat (propertize (f-filename (plist-get details :path)) 'font-lock-face 'eca-chat-file-change-label-face)
-          " "
-          (propertize (concat  "+" (number-to-string (plist-get details :linesAdded))) 'font-lock-face 'success)
-          " "
-          (propertize (concat  "-" (number-to-string (plist-get details :linesRemoved))) 'font-lock-face 'error)))
+  (let ((path (plist-get details :path))
+        (added (plist-get details :linesAdded))
+        (removed (plist-get details :linesRemoved)))
+    (concat (propertize (if path (f-filename path) "") 'font-lock-face 'eca-chat-file-change-label-face)
+            " "
+            (propertize (concat "+" (number-to-string (or added 0))) 'font-lock-face 'success)
+            " "
+            (propertize (concat "-" (number-to-string (or removed 0))) 'font-lock-face 'error))))
 
 (defun eca-chat--context-presentable-path (filename)
   "Return the presentable string for FILENAME."
@@ -2180,6 +2187,17 @@ Call ORIG-FUN with ARGS if not media."
   (setq-local markdown-hide-markup t)
   (add-to-invisibility-spec 'markdown-markup)
 
+  ;; markdown-mode declares keymap, help-echo, and mouse-face as
+  ;; font-lock-extra-managed-props, which causes font-lock-ensure to
+  ;; strip these properties from the entire buffer on every
+  ;; refontification cycle.  ECA uses these properties on interactive
+  ;; elements (approval buttons, expandable block labels, etc.) that
+  ;; must survive font-lock.  Remove them so font-lock leaves our
+  ;; interactive text properties intact.
+  (setq-local font-lock-extra-managed-props
+              (seq-difference font-lock-extra-managed-props
+                              '(keymap help-echo mouse-face)))
+
   (make-local-variable 'completion-at-point-functions)
   (setq-local completion-at-point-functions (list #'eca-chat-completion-at-point))
 
@@ -2415,19 +2433,19 @@ Append STATUS, TOOL-CALL-NEXT-LINE-SPACING, ROOTS and optional PARENT-ID."
           (path (plist-get details :path))
           (diff (plist-get details :diff))
           (view-diff-btn
-           (eca-buttonize
-            eca-chat-mode-map
-            (propertize "view diff" 'font-lock-face 'eca-chat-diff-view-face)
-            (lambda ()
-              (interactive)
-              (eca-chat--show-diff path diff)))))
+           (when (and path diff)
+             (eca-buttonize
+              eca-chat-mode-map
+              (propertize "view diff" 'font-lock-face 'eca-chat-diff-view-face)
+              (lambda ()
+                (eca-chat--show-diff path diff))))))
     (eca-chat--update-expandable-content
      id
      (concat (propertize label 'font-lock-face 'eca-chat-mcp-tool-call-label-face)
              " " (eca-chat--file-change-details-label details)
              " " status time
-             "\n"
-             (propertize view-diff-btn 'line-prefix tool-call-next-line-spacing)
+             (when view-diff-btn
+               (concat "\n" (propertize view-diff-btn 'line-prefix tool-call-next-line-spacing)))
              approval-text)
      (concat "Tool: `" name "`\n"
              (eca-chat--file-change-diff path diff roots))
@@ -2744,6 +2762,12 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
                   ("Arguments" . ,args)))
                nil
                parent-tool-call-id)))
+         ;; Mark this ID as having received toolCallRun so that any late-arriving
+         ;; toolCallPrepare events (still in-flight for long files) don't overwrite
+         ;; the approval prompt we just rendered.  Set this AFTER the pcase dispatch
+         ;; so that if rendering errors, the flag doesn't poison subsequent prepare
+         ;; events (which would prevent the block from ever being created).
+         (puthash id t eca-chat--tool-call-run-received)
          (when (and eca-chat-expand-pending-approval-tools manual?)
            (when parent-tool-call-id
              (eca-chat--expandable-content-toggle parent-tool-call-id t nil))
