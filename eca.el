@@ -270,13 +270,16 @@ Optional CONTEXT is a string describing what was happening when the error occurr
                                    :port ,nrepl-port)))))))))
 
 ;;;###autoload
-(defun eca (&optional arg)
+(defun eca (&optional workspaces)
   "Start or switch to a eca session.
-When ARG is current prefix, ask for workspace roots to use."
+When called with prefix argument (C-u), ask for workspace roots to use.
+If optional parameter WORKSPACES is supplied as a list of paths, eca 
+will start with those workspace roots."
   (interactive "P")
-  (let* ((workspaces (if (equal arg '(4))
-                         (eca--discover-workspaces)
-                       (list (funcall eca-find-root-for-buffer-function))))
+  (let* ((workspaces
+          (cond ((equal current-prefix-arg '(4)) (eca--discover-workspaces)
+                 (workspaces workspaces)
+                 (t (list (funcall eca-find-root-for-buffer-function))))))
          (session (or (eca-session)
                       (eca-create-session workspaces))))
     (pcase (eca--session-status session)
