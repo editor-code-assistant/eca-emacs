@@ -2609,6 +2609,9 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
                   eca-chat-mode-map
                   (propertize "Rollback chat to before this message" 'font-lock-face 'eca-chat-rollback-face)
                   (lambda () (eca-chat--rollback session content-id))))
+                (when-let* ((ov (eca-chat--get-expandable-content content-id)))
+                  (overlay-put ov 'eca-chat--user-message-id content-id)
+                  (overlay-put ov 'eca-chat--timestamp (float-time)))
                 (eca-chat--mark-header)
                 (font-lock-ensure))))
            ("system"
