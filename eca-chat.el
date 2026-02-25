@@ -2767,7 +2767,6 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
          ;; the approval prompt we just rendered.  Set this AFTER the pcase dispatch
          ;; so that if rendering errors, the flag doesn't poison subsequent prepare
          ;; events (which would prevent the block from ever being created).
-         (puthash id t eca-chat--tool-call-run-received)
          (when (and eca-chat-expand-pending-approval-tools manual?)
            (when parent-tool-call-id
              (eca-chat--expandable-content-toggle parent-tool-call-id t nil))
