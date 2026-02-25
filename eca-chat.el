@@ -2963,7 +2963,7 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
         (eca-chat--add-context (list :type "cursor")))
       (when eca-chat-auto-add-repomap
         (eca-chat--add-context (list :type "repoMap"))))
-    (unless (eq (current-buffer) (eca-get (eca--session-chats session) 'empty))
+    (unless (member (current-buffer) (eca-vals (eca--session-chats session)))
       (setf (eca--session-chats session) (eca-assoc (eca--session-chats session) 'empty (current-buffer))))
     (if (window-live-p (get-buffer-window (buffer-name)))
         (eca-chat--select-window)
