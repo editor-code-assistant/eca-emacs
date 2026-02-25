@@ -2632,6 +2632,9 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
                   eca-chat-mode-map
                   (propertize "Rollback chat to before this message" 'font-lock-face 'eca-chat-rollback-face)
                   (lambda () (eca-chat--rollback session content-id))))
+                (when-let* ((ov (eca-chat--get-expandable-content content-id)))
+                  (overlay-put ov 'eca-chat--user-message-id content-id)
+                  (overlay-put ov 'eca-chat--timestamp (float-time)))
                 (eca-chat--mark-header)
                 (font-lock-ensure))))
            ("system"
@@ -2992,7 +2995,7 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
         (eca-chat--add-context (list :type "cursor")))
       (when eca-chat-auto-add-repomap
         (eca-chat--add-context (list :type "repoMap"))))
-    (unless (eq (current-buffer) (eca-get (eca--session-chats session) 'empty))
+    (unless (member (current-buffer) (eca-vals (eca--session-chats session)))
       (setf (eca--session-chats session) (eca-assoc (eca--session-chats session) 'empty (current-buffer))))
     (if (window-live-p (get-buffer-window (buffer-name)))
         (eca-chat--select-window)
