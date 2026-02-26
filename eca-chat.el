@@ -19,6 +19,7 @@
 (require 'eca-api)
 (require 'eca-mcp)
 (require 'eca-diff)
+(require 'eca-table)
 
 (require 'evil nil t)
 
@@ -235,6 +236,15 @@ Must be a positive integer."
   :type '(choice
           (const :tag "Workspace root" workspace-root)
           (string :tag "Custom path"))
+  :group 'eca)
+
+(defcustom eca-chat-table-beautify t
+  "When non-nil, apply enhanced visual styling to markdown tables.
+Adds header highlighting, dimmed separators, zebra-striped rows,
+and subtler pipe characters.  Only affects visual presentation via
+overlays — the underlying buffer text is unchanged, so copy/paste
+works normally."
+  :type 'boolean
   :group 'eca)
 
 ;; Faces
@@ -463,6 +473,7 @@ darkens for light themes."
 (defvar-local eca-chat--context '())
 (defvar-local eca-chat--spinner-string "")
 (defvar-local eca-chat--spinner-timer nil)
+(defvar-local eca-chat--table-resize-timer nil)
 (defvar-local eca-chat--progress-text "")
 (defvar-local eca-chat--last-user-message-pos nil)
 (defvar-local eca-chat--chat-loading nil)
@@ -1254,17 +1265,43 @@ If `eca-chat-focus-on-open' is non-nil, the window is selected."
       (goto-char eca-chat--last-user-message-pos)
       (eca-chat--insert content))))
 
-(defun eca-chat--align-tables ()
-  "Align all markdown tables in the chat content area."
-  (save-excursion
-    (goto-char (or eca-chat--last-user-message-pos (point-min)))
-    (let ((end (eca-chat--prompt-area-start-point)))
-      (while (and (< (point) end)
-                  (re-search-forward markdown-table-line-regexp end t))
-        (when (markdown-table-at-point-p)
-          (markdown-table-align)
-          ;; Move past this table to avoid re-processing
-          (goto-char (markdown-table-end)))))))
+(defun eca-chat--align-tables (&optional from)
+  "Align all markdown tables in the chat content area.
+When FROM is non-nil, scan from that position; otherwise scan from
+the last user message."
+  (eca-table-align (or from eca-chat--last-user-message-pos (point-min))
+                   (eca-chat--prompt-area-start-point)))
+
+(defun eca-chat--beautify-tables (&optional from)
+  "Apply visual enhancements to markdown tables in the chat buffer.
+When FROM is non-nil, scan from that position; otherwise scan from
+the last user message.  Respects `eca-chat-table-beautify'."
+  (eca-table-beautify (or from eca-chat--last-user-message-pos (point-min))
+                      (eca-chat--prompt-area-start-point)))
+
+(defun eca-chat--on-window-size-change (frame)
+  "Debounced handler for window resize; re-evaluates table action bars.
+FRAME is the resized frame."
+  (dolist (win (window-list frame 'no-mini))
+    (let ((buf (window-buffer win)))
+      (when (and (buffer-live-p buf)
+                 (eq (buffer-local-value 'major-mode buf) 'eca-chat-mode)
+                 (buffer-local-value 'eca-chat-table-beautify buf))
+        (with-current-buffer buf
+          (when (timerp eca-chat--table-resize-timer)
+            (cancel-timer eca-chat--table-resize-timer))
+          (setq eca-chat--table-resize-timer
+                (run-with-idle-timer
+                 0.3 nil
+                 (lambda (b)
+                   (when (buffer-live-p b)
+                     (with-current-buffer b
+                       (eca-chat--beautify-tables (point-min))
+                       ;; Reset truncation if no table wants it anymore
+                       (unless (eca-table--any-truncated-p)
+                         (setq-local truncate-lines nil)
+                         (setq-local word-wrap t)))))
+                 buf)))))))
 
 (defun eca-chat--add-text-content (text &optional overlay-key overlay-value)
   "Add TEXT to the chat current position.
@@ -2275,9 +2312,16 @@ Call ORIG-FUN with ARGS if not media."
   ;; Compute expandable-block background faces from current theme and
   ;; keep them in sync when the user switches themes.
   (eca-chat--update-expandable-block-faces)
+  (eca-table-update-faces)
   (add-hook 'enable-theme-functions
-            (lambda (&rest _) (eca-chat--update-expandable-block-faces))
+            (lambda (&rest _)
+              (eca-chat--update-expandable-block-faces)
+              (eca-table-update-faces))
             nil t)
+
+  ;; Re-evaluate table action bars when window is resized.
+  (add-hook 'window-size-change-functions
+            #'eca-chat--on-window-size-change)
 
   (goto-char (point-max)))
 
@@ -2903,7 +2947,8 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
             (setq-local eca-chat--progress-text "")
             (eca-chat--spinner-stop)
             (eca-chat--add-text-content "\n")
-            (eca-chat--align-tables)
+            (eca-chat--align-tables (point-min))
+            (eca-chat--beautify-tables (point-min))
             (eca-chat--set-chat-loading session nil)
             (eca-chat--refresh-progress chat-buffer)
             (eca-chat--send-queued-prompt session)
