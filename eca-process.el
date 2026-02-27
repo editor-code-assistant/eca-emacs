@@ -319,7 +319,7 @@ clean them up on next startup."
     (cons key val)))
 
 (defun eca-process--make-filter (handle-msg)
-  "Return a process filter function that parses JSON-RPC from stdout.
+  "Return a process filter function that parse JSON-RPC from stdout.
 HANDLE-MSG is called for each complete message parsed.
 
 The returned closure captures parsing state across invocations so that
@@ -473,6 +473,20 @@ Call HANDLE-MSG for new msgs processed."
     (if (window-live-p (get-buffer-window (buffer-name)))
         (select-window (get-buffer-window (buffer-name)))
       (display-buffer (current-buffer)))))
+
+(defun eca-process--server-version ()
+  "Return the server version by running the eca binary with --version."
+  (when-let* ((binary (or (car eca-custom-command)
+                          (executable-find "eca")
+                          (when (f-exists? eca-server-install-path)
+                            eca-server-install-path)))
+              (output (ignore-errors
+                        (string-trim
+                         (shell-command-to-string
+                          (format "%s --version 2>/dev/null"
+                                  (shell-quote-argument (expand-file-name binary))))))))
+    (unless (string-empty-p output)
+      output)))
 
 ;;;###autoload
 (defun eca-show-stderr ()

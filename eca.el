@@ -33,6 +33,38 @@
 (require 'eca-completion)
 (require 'eca-rewrite)
 
+(declare-function package-desc-version "package" (pkg-desc))
+(declare-function package-version-join "package" (vlist))
+
+(defun eca--client-version ()
+  "Return the eca-emacs client version string.
+Tries git info first, then package.el version, then file modification date."
+  (let ((lib-file (or load-file-name (locate-library "eca"))))
+    (when lib-file
+      (let ((lib-dir (file-name-directory lib-file)))
+        (or
+         ;; Try git: SHA + date
+         (when-let* ((git-dir (locate-dominating-file lib-dir ".git"))
+                     (default-directory git-dir)
+                     (sha (ignore-errors
+                            (string-trim
+                             (shell-command-to-string "git rev-parse --short HEAD 2>/dev/null"))))
+                     (date (ignore-errors
+                             (string-trim
+                              (shell-command-to-string "git log -1 --format=%cd --date=short 2>/dev/null")))))
+           (when (and (not (string-empty-p sha))
+                      (not (string-empty-p date))
+                      (not (string-match-p "fatal" sha)))
+             (format "%s (%s)" sha date)))
+         ;; Try package.el version
+         (when (bound-and-true-p package-alist)
+           (when-let* ((pkg-desc (cadr (assq 'eca package-alist))))
+             (package-version-join (package-desc-version pkg-desc))))
+         ;; Fallback: file modification date
+         (when-let* ((attrs (file-attributes lib-file))
+                     (mtime (file-attribute-modification-time attrs)))
+           (format "unknown (modified %s)" (format-time-string "%Y-%m-%d" mtime))))))))
+
 (defgroup eca nil
   "ECA group."
   :group 'eca)
@@ -69,12 +101,13 @@
 (defvar eca-workspaces-buffer-name "*eca-workspaces*")
 
 (defun eca--emacs-errors-buffer-name (session)
-  "Return the emacs errors buffer name for SESSION."
+  "Return the Emacs errors buffer name for SESSION."
   (format "<eca:emacs-errors:%s>" (eca--session-id session)))
 
 (defun eca--log-error (session err &optional context)
-  "Log error ERR to the emacs errors buffer for SESSION.
-Optional CONTEXT is a string describing what was happening when the error occurred."
+  "Log error ERR to the Emacs errors buffer for SESSION.
+Optional CONTEXT is a string describing what was happening
+when the error occurred."
   (let ((buffer (get-buffer-create (eca--emacs-errors-buffer-name session))))
     (with-current-buffer buffer
       (goto-char (point-max))
@@ -84,7 +117,7 @@ Optional CONTEXT is a string describing what was happening when the error occurr
                       (error-message-string err))))))
 
 (defun eca-show-emacs-errors (session)
-  "Open the emacs errors buffer for SESSION."
+  "Open the Emacs errors buffer for SESSION."
   (let ((buffer (get-buffer (eca--emacs-errors-buffer-name session))))
     (if buffer
         (with-current-buffer buffer
@@ -95,12 +128,12 @@ Optional CONTEXT is a string describing what was happening when the error occurr
 
 ;;;###autoload
 (defun eca-show-errors ()
-  "Open the eca emacs errors buffer if running."
+  "Open the eca Emacs errors buffer if running."
   (interactive)
   (eca-show-emacs-errors (eca-session)))
 
 (defun eca--emacs-errors-exit (session)
-  "Clean up the emacs errors buffer for SESSION on stop."
+  "Clean up the Emacs errors buffer for SESSION on stop."
   (let ((buffer (get-buffer (eca--emacs-errors-buffer-name session))))
     (when buffer
       (with-current-buffer buffer
@@ -268,6 +301,18 @@ Optional CONTEXT is a string describing what was happening when the error occurr
             (when (functionp 'cider-connect-clj)
               (cider-connect-clj `(:host "localhost"
                                    :port ,nrepl-port)))))))))
+
+;;;###autoload
+(defun eca-version ()
+  "Show ECA version information for debugging.
+Displays eca-emacs client version, server version, and Emacs version."
+  (interactive)
+  (let* ((client-version (or (eca--client-version) "unknown"))
+         (server-version
+          (or (eca-process--server-version)
+              "not found")))
+    (message "eca-emacs: %s | server: %s | emacs: %s"
+             client-version server-version (emacs-version))))
 
 ;;;###autoload
 (defun eca (&optional arg)

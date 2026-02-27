@@ -3156,7 +3156,8 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
 
 ;;;###autoload
 (defun eca-chat-tool-call-accept-next ()
-  "Search the next pending approval tool call in the buffer and approve it, starting from the beginning of the buffer."
+  "Search the next pending approval tool call in the buffer and approve it.
+Starting from the beginning of the buffer."
   (interactive)
   (eca-assert-session-running (eca-session))
   (eca-chat--with-current-buffer (eca-chat--get-last-buffer (eca-session))
@@ -3167,7 +3168,8 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
 
 ;;;###autoload
 (defun eca-chat-tool-call-reject-next ()
-  "Search the next pending approval tool call in the buffer and reject it, starting from the beginning of the buffer."
+  "Search the next pending approval tool call in the buffer and reject it.
+Starting from the beginning of the buffer."
   (interactive)
   (eca-assert-session-running (eca-session))
   (eca-chat--with-current-buffer (eca-chat--get-last-buffer (eca-session))
