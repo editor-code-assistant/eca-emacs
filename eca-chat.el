@@ -2954,21 +2954,23 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
             (eca-chat--send-queued-prompt session)
             (run-hooks 'eca-chat-finished-hook)))))
       ("usage"
-       (if parent-tool-call-id
-           ;; Subagent usage — store and refresh the tool call label
-           (let ((session-tokens (plist-get content :sessionTokens))
-                 (context-limit (plist-get (plist-get content :limit) :context)))
-             (puthash parent-tool-call-id
-                      (list :session-tokens session-tokens :context-limit context-limit)
-                      eca-chat--subagent-usage)
-             (eca-chat--refresh-subagent-usage-label parent-tool-call-id))
-         (setq-local eca-chat--message-input-tokens  (plist-get content :messageInputTokens))
-         (setq-local eca-chat--message-output-tokens (plist-get content :messageOutputTokens))
-         (setq-local eca-chat--session-tokens        (plist-get content :sessionTokens))
-         (setq-local eca-chat--session-limit-context (plist-get (plist-get content :limit) :context))
-         (setq-local eca-chat--session-limit-output  (plist-get (plist-get content :limit) :output))
-         (setq-local eca-chat--message-cost          (plist-get content :messageCost))
-         (setq-local eca-chat--session-cost          (plist-get content :sessionCost))))
+       (progn
+         (if parent-tool-call-id
+             ;; Subagent usage — store and refresh the tool call label
+             (let ((session-tokens (plist-get content :sessionTokens))
+                   (context-limit (plist-get (plist-get content :limit) :context)))
+               (puthash parent-tool-call-id
+                        (list :session-tokens session-tokens :context-limit context-limit)
+                        eca-chat--subagent-usage)
+               (eca-chat--refresh-subagent-usage-label parent-tool-call-id))
+           (setq-local eca-chat--message-input-tokens  (plist-get content :messageInputTokens))
+           (setq-local eca-chat--message-output-tokens (plist-get content :messageOutputTokens))
+           (setq-local eca-chat--session-tokens        (plist-get content :sessionTokens))
+           (setq-local eca-chat--session-limit-context (plist-get (plist-get content :limit) :context))
+           (setq-local eca-chat--session-limit-output  (plist-get (plist-get content :limit) :output))
+           (setq-local eca-chat--message-cost          (plist-get content :messageCost))
+           (setq-local eca-chat--session-cost          (plist-get content :sessionCost)))
+         (force-mode-line-update)))
       (_ nil))))
 
 (defun eca-chat-content-received (session params)
