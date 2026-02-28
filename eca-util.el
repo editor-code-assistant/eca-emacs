@@ -16,6 +16,8 @@
 (require 'f)
 (require 'transient)
 
+(declare-function eca-api-notify "eca-api")
+
 (defcustom eca-buttons-allow-mouse nil
   "Whether to allow mouse clicks on ECA buttons."
   :type 'boolean
@@ -121,14 +123,62 @@
                      (project-roots project))))))
         default-path)))
 
+(defun eca--git-common-dir (dir)
+  "Return the absolute git common dir for DIR, or nil if not in a git repo.
+Uses `git rev-parse --git-common-dir` to find the shared git
+directory, which is the same for all worktrees of a repository."
+  (when-let* ((default-directory (expand-file-name dir))
+              (output (ignore-errors
+                        (string-trim
+                         (shell-command-to-string
+                          "git rev-parse --git-common-dir 2>/dev/null")))))
+    (when (and (not (string-empty-p output))
+               ;; Git < 2.5 echoes the flag back literally
+               (not (string= output "--git-common-dir")))
+      (expand-file-name output default-directory))))
+
+(defun eca--session-for-worktree (root)
+  "Find a session whose workspace shares the same git repo as ROOT.
+Returns the session if ROOT is a git worktree (or regular repo) that
+shares the same `git-common-dir` as one of an existing session's
+workspace folders. Returns nil otherwise."
+  (when-let* ((root-common-dir (eca--git-common-dir root)))
+    (-first (lambda (session)
+              (--first (when-let* ((folder-common-dir (eca--git-common-dir it)))
+                         (string= (file-truename root-common-dir)
+                                  (file-truename folder-common-dir)))
+                       (eca--session-workspace-folders session)))
+            (eca-vals eca--sessions))))
+
+(defun eca--session-add-workspace-folder (session folder)
+  "Add FOLDER to SESSION's workspace-folders and notify the server."
+  (let ((folder (expand-file-name folder)))
+    (unless (--first (string= it folder)
+                     (eca--session-workspace-folders session))
+      (setf (eca--session-workspace-folders session)
+            (append (eca--session-workspace-folders session) (list folder)))
+      (eca-api-notify
+       session
+       :method "workspace/didChangeWorkspaceFolders"
+       :params (list :event
+                     (list :added (vector
+                                  (list :uri (eca--path-to-uri folder)
+                                        :name (file-name-nondirectory (directory-file-name folder))))
+                           :removed [])))
+      (eca-info "Added workspace folder: %s" folder))))
+
 (defun eca-session ()
   "Return the session related to root of current buffer otherwise nil."
   (or (eca-get eca--sessions eca--session-id-cache)
       (let* ((root (funcall eca-find-root-for-buffer-function))
-             (session (-first (lambda (session)
-                                (--first (string= it root)
-                                         (eca--session-workspace-folders session)))
-                              (eca-vals eca--sessions))))
+             (session (or (-first (lambda (session)
+                                    (--first (string= it root)
+                                             (eca--session-workspace-folders session)))
+                                  (eca-vals eca--sessions))
+                          ;; Worktree fallback: find session sharing the same git repo
+                          (when-let* ((worktree-session (eca--session-for-worktree root)))
+                            (eca--session-add-workspace-folder worktree-session root)
+                            worktree-session))))
         (when session
           (setq-local eca--session-id-cache (eca--session-id session)))
         session)))

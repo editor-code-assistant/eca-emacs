@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.6.0
 
 - Add `eca-chat-save-to-file` command. #95 
 - Fix chat not being closed. #89
@@ -9,4 +9,4 @@
 - Fix issue with `view_ediff` displaying empty buffers in ediff. #86
 - Fix user message contexts and file paths not being sent. #112
 
-# Started tracking since 03/11
+# Started tracking since 03/11/25
