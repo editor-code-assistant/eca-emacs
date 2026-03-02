@@ -469,6 +469,9 @@ accepts, shows menu, or diffs according to `eca-rewrite-finished-action',
             ("error" (progn
                        (eca-rewrite--reject (list ov))
                        (eca-error "Rewrite error: %s" (plist-get content :message))))
+            ("replace" (progn
+                         (overlay-put ov 'eca-rewrite--new-text-acc "")
+                         (eca-rewrite--add-text ov (plist-get content :text))))
             ("finished" (progn
                           (overlay-put ov 'eca-rewrite--total-time-ms (plist-get content :totalTimeMs))
                           (pcase eca-rewrite-finished-action
