@@ -3073,9 +3073,13 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
 
 ;;;###autoload
 (defun eca-chat-clear ()
-  "Clear the eca chat."
+  "Clear the eca chat messages history on server and visually."
   (interactive)
   (eca-chat--with-current-buffer (eca-chat--get-last-buffer (eca-session))
+    (when eca-chat--id
+      (eca-api-request-sync (eca-session)
+                            :method "chat/clear"
+                            :params (list :chatId eca-chat--id :messages t)))
     (eca-chat--clear)))
 
 ;;;###autoload

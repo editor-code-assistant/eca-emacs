@@ -70,7 +70,7 @@ Chat
 - `eca-chat-select`: Select a chat for existing session
 - `eca-chat-new`: Start a new chat for current session/workspace folders.
 - `eca-chat-rename`: Rename current chat
-- `eca-chat-clear`: Clear chat content visually only
+- `eca-chat-clear`: Clear chat messages both on server and local.
 - `eca-chat-reset`: Deletes current chat and start a new one
 - `eca-chat-select-model`: Change chat model
 - `eca-chat-select-agent`: Change chat agent
