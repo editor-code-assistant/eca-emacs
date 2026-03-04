@@ -2407,17 +2407,48 @@ Call ORIG-FUN with ARGS if not media."
 
   (goto-char (point-max)))
 
+(defun eca-chat--task-find-by-id (id)
+  "Find a task by ID in the current task state.
+Returns the task plist or nil."
+  (when-let* ((tasks (append (plist-get eca-chat--task-state :tasks) nil)))
+    (-first (lambda (task) (equal id (plist-get task :id))) tasks)))
+
 (defun eca-chat-eldoc-function (cb &rest _ignored)
   "Eldoc function to show details of context and prompt in eldoc.
 Calls CB with the resulting message."
-  (when-let ((item-type (get-text-property (point) 'eca-chat-item-type)))
-    (when-let ((item-str (get-text-property (point) 'eca-chat-expanded-item-str)))
-      (when-let ((face (get-text-property (point) 'font-lock-face)))
-        (funcall cb (format "%s: %s"
-                            (pcase item-type
-                              ('context "Context")
-                              ('filepath "Filepath"))
-                            (propertize item-str 'face face)))))))
+  (cond
+   ;; Task eldoc: show description and blocked-by
+   ((when-let* ((task (get-text-property (point) 'eca-chat-task)))
+      (let* ((subject (plist-get task :subject))
+             (description (plist-get task :description))
+             (blocked-by (append (plist-get task :blockedBy) nil))
+             (blocked-subjects
+              (when blocked-by
+                (mapcar (lambda (id)
+                          (if-let* ((tk (eca-chat--task-find-by-id id)))
+                              (plist-get tk :subject)
+                            (format "#%s" id)))
+                        blocked-by)))
+             (doc (concat
+                   (propertize subject 'face 'bold)
+                   (when description
+                     (concat "\n" description))
+                   (when blocked-subjects
+                     (concat "\n"
+                             (propertize "Blocked by: " 'face 'font-lock-keyword-face)
+                             (string-join blocked-subjects ", "))))))
+        (funcall cb doc)
+        t)))
+   ;; Context/filepath eldoc
+   ((when-let ((item-type (get-text-property (point) 'eca-chat-item-type)))
+      (when-let ((item-str (get-text-property (point) 'eca-chat-expanded-item-str)))
+        (when-let ((face (get-text-property (point) 'font-lock-face)))
+          (funcall cb (format "%s: %s"
+                              (pcase item-type
+                                ('context "Context")
+                                ('filepath "Filepath"))
+                              (propertize item-str 'face face)))
+          t))))))
 
 (defun eca-chat-completion-at-point ()
   "Complete at point in the chat."
@@ -2744,11 +2775,16 @@ Only updates the label line, preserving all nested child content."
          (in-progress (string= status "in-progress")))
     (cond
      (done
-      (propertize (format "- [x] %s" subject) 'font-lock-face 'eca-chat-task-done-face))
+      (propertize (format "- [x] %s" subject)
+                  'font-lock-face 'eca-chat-task-done-face
+                  'eca-chat-task task))
      (in-progress
-      (propertize (format "- [ ] %s" subject) 'font-lock-face 'eca-chat-task-in-progress-face))
+      (propertize (format "- [ ] %s" subject)
+                  'font-lock-face 'eca-chat-task-in-progress-face
+                  'eca-chat-task task))
      (t
-      (format "- [ ] %s" subject)))))
+      (propertize (format "- [ ] %s" subject)
+                  'eca-chat-task task)))))
 
 (defun eca-chat--task-build-content (tasks)
   "Build the expandable block content string from TASKS list."
