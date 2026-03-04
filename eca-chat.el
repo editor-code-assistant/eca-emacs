@@ -403,6 +403,36 @@ works normally."
   "Face for the MCP tool calls's argument value in chat."
   :group 'eca)
 
+(defface eca-chat-task-prefix-face
+  '((t :inherit font-lock-operator-face :slant italic))
+  "Face for the task text prefix in task label."
+  :group 'eca)
+
+(defface eca-chat-task-label-face
+  '((t :height 0.9))
+  "Face for the task area label in chat."
+  :group 'eca)
+
+(defface eca-chat-task-label-in-progress-face
+  '((t :inherit font-lock-string-face))
+  "Face for the task area label when a task is in progress."
+  :group 'eca)
+
+(defface eca-chat-task-in-progress-face
+  '((t :weight bold))
+  "Face for in-progress tasks in the task area."
+  :group 'eca)
+
+(defface eca-chat-task-progress-face
+  '((t :inherit font-lock-comment-face :slant italic :height 0.9))
+  "Face for the progress counter (e.g. 1/5) in the task label."
+  :group 'eca)
+
+(defface eca-chat-task-done-face
+  '((t :inherit font-lock-comment-face :strike-through t))
+  "Face for completed tasks in the task area."
+  :group 'eca)
+
 (defface eca-chat-welcome-face
   '((t :inherit font-lock-builtin-face))
   "Face for the welcome message in chat."
@@ -491,6 +521,12 @@ darkens for light themes."
 (defvar-local eca-chat--subagent-usage (make-hash-table :test 'equal)
   "Hash table mapping tool-call-id to a plist (:session-tokens N :context-limit N).
 Stores the latest usage data received for each running subagent.")
+
+(defvar-local eca-chat--task-state nil
+  "Current task state plist with :goal and :tasks.
+Each task is a plist with :id, :content, :status, :priority, etc.")
+
+
 
 ;; Timer used to debounce post-command driven context updates
 (defvar eca-chat--cursor-context-timer nil)
@@ -720,6 +756,10 @@ request, useful for subagent tool calls."
   (let ((prompt-area-ov (make-overlay (line-beginning-position) (1+ (line-beginning-position)) (current-buffer))))
     (overlay-put prompt-area-ov 'eca-chat-prompt-area t))
   (eca-chat--insert eca-chat-prompt-separator)
+  (let ((task-area-ov (make-overlay (1+ (point)) (line-end-position) (current-buffer) nil t)))
+    (overlay-put task-area-ov 'eca-chat-task-area t)
+    (eca-chat--insert " ")
+    (move-overlay task-area-ov (overlay-start task-area-ov) (1- (overlay-end task-area-ov))))
   (let ((progress-area-ov (make-overlay (1+ (point)) (line-end-position) (current-buffer) nil t)))
     (overlay-put progress-area-ov 'eca-chat-progress-area t)
     (eca-chat--insert "\n")
@@ -740,6 +780,7 @@ request, useful for subagent tool calls."
   "Clear the chat for SESSION and then insert NEW-PROMPT-CONTENT."
   (erase-buffer)
   (remove-overlays (point-min) (point-max))
+  (setq-local eca-chat--task-state nil)
   (eca-chat--insert "\n")
   (eca-chat--insert-prompt-string)
   (eca-chat--refresh-context)
@@ -862,10 +903,23 @@ Otherwise to a not loading state."
   (-first (-lambda (ov) (eq t (overlay-get ov 'eca-chat-prompt-area)))
           (overlays-in (point-min) (point-max))))
 
+(defun eca-chat--task-area-ov ()
+  "Return the overlay for the task area."
+  (-first (-lambda (ov) (eq t (overlay-get ov 'eca-chat-task-area)))
+          (overlays-in (point-min) (point-max))))
+
 (defun eca-chat--prompt-area-start-point ()
   "Return the metadata overlay for the prompt area start point."
   (-some-> (eca-chat--prompt-area-ov)
     (overlay-start)))
+
+(defconst eca-chat--task-block-id "eca-chat-task"
+  "Fixed expandable block ID for the task area widget.")
+
+(defun eca-chat--content-insertion-point ()
+  "Return the point where new chat content should be inserted.
+Returns the position just before the prompt area start."
+  (1- (eca-chat--prompt-area-start-point)))
 
 (defun eca-chat--new-context-start-point ()
   "Return the metadata overlay for the new context area start point."
@@ -1252,11 +1306,9 @@ If `eca-chat-focus-on-open' is non-nil, the window is selected."
 
 (defun eca-chat--mark-header ()
   "Mark last messages header."
-  (let ((context-start (eca-chat--prompt-area-start-point)))
-    (save-excursion
-      (goto-char context-start)
-      (goto-char (1- (point)))
-      (setq-local eca-chat--last-user-message-pos (point)))))
+  (save-excursion
+    (goto-char (eca-chat--content-insertion-point))
+    (setq-local eca-chat--last-user-message-pos (point))))
 
 (defun eca-chat--add-header (content)
   "Add CONTENT to the chat just after last user input."
@@ -1306,17 +1358,15 @@ FRAME is the resized frame."
 (defun eca-chat--add-text-content (text &optional overlay-key overlay-value)
   "Add TEXT to the chat current position.
 Add a overlay before with OVERLAY-KEY = OVERLAY-VALUE if passed."
-  (let ((context-start (eca-chat--prompt-area-start-point)))
-    (save-excursion
-      (goto-char context-start)
-      (goto-char (1- (point)))
-      (when overlay-key
-        (let ((ov (make-overlay (point) (point) (current-buffer))))
-          (overlay-put ov overlay-key overlay-value)
-          (when (eq overlay-key 'eca-chat--user-message-id)
-            (overlay-put ov 'eca-chat--timestamp (float-time)))))
-      (eca-chat--insert text)
-      (point))))
+  (save-excursion
+    (goto-char (eca-chat--content-insertion-point))
+    (when overlay-key
+      (let ((ov (make-overlay (point) (point) (current-buffer))))
+        (overlay-put ov overlay-key overlay-value)
+        (when (eq overlay-key 'eca-chat--user-message-id)
+          (overlay-put ov 'eca-chat--timestamp (float-time)))))
+    (eca-chat--insert text)
+    (point)))
 
 (defun eca-chat--expandable-content-at-point ()
   "Return expandable content overlay at point, or nil if none."
@@ -1472,11 +1522,13 @@ NESTED-PROPS is a plist with :parent-id and :label-indent for nested blocks."
   "Return all child specs from SEGMENTS."
   (-filter (lambda (seg) (eq 'child (plist-get seg :type))) segments))
 
-(defun eca-chat--add-expandable-content (id label content &optional parent-id)
+(defun eca-chat--add-expandable-content (id label content &optional parent-id at-point)
   "Add LABEL to the chat current position for ID as a interactive text.
 When expanded, shows CONTENT.
 Applies ICON-FACE to open/close icons.
-If PARENT-ID is provided, adds as a nested block under that parent."
+If PARENT-ID is provided, adds as a nested block under that parent.
+If AT-POINT is provided, inserts at that buffer position instead of
+the default content insertion point."
   (if parent-id
       (when-let* ((parent-ov (eca-chat--get-expandable-content parent-id)))
         (let* ((segments (overlay-get parent-ov 'eca-chat--expandable-content-segments))
@@ -1505,8 +1557,7 @@ If PARENT-ID is provided, adds as a nested block under that parent."
               (when (overlay-get parent-ov 'eca-chat--expandable-content-toggle)
                 (eca-chat--render-nested-block parent-ov child-spec))))))
     (save-excursion
-      (let* ((context-start (eca-chat--prompt-area-start-point))
-             (start-point (1- context-start))
+      (let* ((start-point (or at-point (eca-chat--content-insertion-point)))
              (icon-face (get-text-property 0 'font-lock-face label))
              (icons (eca-chat--make-expandable-icons icon-face)))
         (goto-char start-point)
@@ -2649,6 +2700,58 @@ Only updates the label line, preserving all nested child content."
                                        (overlay-get ov-label 'eca-chat--expandable-content-open-icon))))
                      'help-echo "mouse-1 / RET / tab: expand/collapse"))))))
 
+(defun eca-chat--task-tool-call-p (content)
+  "Return non-nil if CONTENT represents an eca__todo tool call."
+  (and (plist-get content :name)
+       (string= (plist-get content :server) "eca")
+       (string= (plist-get content :name) "todo")))
+
+(defun eca-chat--task-format-task (task)
+  "Format a single TASK as a checkbox line string."
+  (let* ((status (plist-get task :status))
+         (content (plist-get task :content))
+         (done (string= status "done"))
+         (in-progress (string= status "in-progress")))
+    (cond
+     (done
+      (propertize (format "- [x] %s" content) 'font-lock-face 'eca-chat-task-done-face))
+     (in-progress
+      (propertize (format "- [ ] %s" content) 'font-lock-face 'eca-chat-task-in-progress-face))
+     (t
+      (format "- [ ] %s" content)))))
+
+(defun eca-chat--task-build-content (tasks)
+  "Build the expandable block content string from TASKS list."
+  (mapconcat #'eca-chat--task-format-task tasks "\n"))
+
+(defun eca-chat--update-task-state (content)
+  "Extract task state from tool-call CONTENT details and update the task area.
+Uses the expandable block system to render the task widget.
+The server sends a :details plist with :type \"todo\", :goal, :tasks,
+:inProgressTaskIds, and :summary."
+  (when-let* ((details (plist-get content :details)))
+    (when (string= "todo" (plist-get details :type))
+      (setq-local eca-chat--task-state details)
+      (let* ((tasks (append (plist-get details :tasks) nil))
+             (goal (plist-get details :goal))
+             (done-count (length (-filter (lambda (task) (string= "done" (plist-get task :status))) tasks)))
+             (total-count (length tasks))
+             (in-progress-task (-first (lambda (task) (string= "in-progress" (plist-get task :status))) tasks))
+             (label-text (or (when in-progress-task (plist-get in-progress-task :content))
+                             goal))
+             (prefix-text "Task: ")
+             (progress-text (format " (%d/%d)" done-count total-count))
+             (label-face (if in-progress-task 'eca-chat-task-label-in-progress-face 'eca-chat-task-label-face))
+             (label (concat
+                     (propertize prefix-text 'font-lock-face 'eca-chat-task-prefix-face)
+                     (propertize label-text 'font-lock-face label-face)
+                     (propertize progress-text 'font-lock-face 'eca-chat-task-progress-face)))
+             (body (eca-chat--task-build-content tasks)))
+        (if (eca-chat--get-expandable-content eca-chat--task-block-id)
+            (eca-chat--update-expandable-content eca-chat--task-block-id label body)
+          (eca-chat--add-expandable-content eca-chat--task-block-id label body nil
+                                            (overlay-start (eca-chat--task-area-ov))))))))
+
 (defun eca-chat--render-content (session chat-buffer role content roots &optional parent-tool-call-id chat-id)
   "Render CONTENT inside CHAT-BUFFER for SESSION.
 ROLE is the message role.  ROOTS is the list of workspace roots.
@@ -2738,201 +2841,207 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
                                                          (when error `(("Error" . ,error)))))
                                               nil parent-tool-call-id)))
       ("toolCallPrepare"
-       (let* ((id (plist-get content :id))
-              (name (plist-get content :name))
-              (server (plist-get content :server))
-              (argsText (plist-get content :argumentsText))
-              (details (plist-get content :details))
-              (subagent? (string= "subagent" (plist-get details :type)))
-              (label (or (plist-get content :summary)
-                         (format "Preparing tool: %s__%s" server name)))
-              (current-count (gethash id eca-chat--tool-call-prepare-counters 0))
-              (cached-content (gethash id eca-chat--tool-call-prepare-content-cache ""))
-              (new-content (concat cached-content argsText))
-              (should-update-ui-p
-               (pcase eca-chat-tool-call-prepare-throttle
-                 ('all t)
-                 ('smart (or (= current-count 0)
-                             (= (mod current-count eca-chat-tool-call-prepare-update-interval) 0))))))
-         ;; Always cache the metadata and content
-         (puthash id (1+ current-count) eca-chat--tool-call-prepare-counters)
-         (puthash id new-content eca-chat--tool-call-prepare-content-cache)
-         ;; Only update UI when throttling permits
-         (when should-update-ui-p
-           (let* ((label-face (if subagent?
-                                  'eca-chat-subagent-tool-call-label-face
-                                'eca-chat-mcp-tool-call-label-face))
-                  (label (concat (propertize label 'font-lock-face label-face)
-                                 " " eca-chat-mcp-tool-call-loading-symbol))
-                  (body (if subagent?
-                            (eca-chat--content-table `())
-                          (eca-chat--content-table
-                           `(("Tool" . ,name)
-                             ("Server" . ,server)
-                             ("Arguments" . ,new-content))))))
-             (if (eca-chat--get-expandable-content id)
-                 ;; Update with accumulated content, not just this chunk
-                 (eca-chat--update-expandable-content
-                  id label (if subagent? body new-content) nil parent-tool-call-id)
-               (eca-chat--add-expandable-content
-                id label body parent-tool-call-id))))))
+       (unless (eca-chat--task-tool-call-p content)
+         (let* ((id (plist-get content :id))
+                (name (plist-get content :name))
+                (server (plist-get content :server))
+                (argsText (plist-get content :argumentsText))
+                (details (plist-get content :details))
+                (subagent? (string= "subagent" (plist-get details :type)))
+                (label (or (plist-get content :summary)
+                           (format "Preparing tool: %s__%s" server name)))
+                (current-count (gethash id eca-chat--tool-call-prepare-counters 0))
+                (cached-content (gethash id eca-chat--tool-call-prepare-content-cache ""))
+                (new-content (concat cached-content argsText))
+                (should-update-ui-p
+                 (pcase eca-chat-tool-call-prepare-throttle
+                   ('all t)
+                   ('smart (or (= current-count 0)
+                               (= (mod current-count eca-chat-tool-call-prepare-update-interval) 0))))))
+           ;; Always cache the metadata and content
+           (puthash id (1+ current-count) eca-chat--tool-call-prepare-counters)
+           (puthash id new-content eca-chat--tool-call-prepare-content-cache)
+           ;; Only update UI when throttling permits
+           (when should-update-ui-p
+             (let* ((label-face (if subagent?
+                                    'eca-chat-subagent-tool-call-label-face
+                                  'eca-chat-mcp-tool-call-label-face))
+                    (label (concat (propertize label 'font-lock-face label-face)
+                                   " " eca-chat-mcp-tool-call-loading-symbol))
+                    (body (if subagent?
+                              (eca-chat--content-table `())
+                            (eca-chat--content-table
+                             `(("Tool" . ,name)
+                               ("Server" . ,server)
+                               ("Arguments" . ,new-content))))))
+               (if (eca-chat--get-expandable-content id)
+                   ;; Update with accumulated content, not just this chunk
+                   (eca-chat--update-expandable-content
+                    id label (if subagent? body new-content) nil parent-tool-call-id)
+                 (eca-chat--add-expandable-content
+                  id label body parent-tool-call-id)))))))
       ("toolCallRun"
-       (let* ((id (plist-get content :id))
-              (args (plist-get content :arguments))
-              (name (plist-get content :name))
-              (server (plist-get content :server))
-              (label (or (plist-get content :summary)
-                         (format "Calling tool: %s__%s" server name)))
-              (manual? (plist-get content :manualApproval))
-              (status (if manual?
-                          eca-chat-mcp-tool-call-pending-approval-symbol
-                        eca-chat-mcp-tool-call-loading-symbol))
-              (approval-text (when manual?
-                               (eca-chat--build-tool-call-approval-str-content session id tool-call-next-line-spacing chat-id)))
-              (details (plist-get content :details)))
-         ;; Register subagent mapping only for top-level tool calls
-         (when (and (not parent-tool-call-id)
-                    (string= "subagent" (plist-get details :type)))
-           (puthash (plist-get details :subagentChatId) id eca-chat--subagent-chat-id->tool-call-id))
-         (pcase (plist-get details :type)
-           ("fileChange" (eca-chat--tool-call-file-change-details content label approval-text nil status tool-call-next-line-spacing roots parent-tool-call-id))
-           ("subagent" (eca-chat--tool-call-subagent-details id args label approval-text nil status parent-tool-call-id details))
-           (_ (eca-chat--update-expandable-content
-               id
-               (concat (propertize label 'font-lock-face 'eca-chat-mcp-tool-call-label-face)
-                       " " status
-                       "\n"
-                       approval-text)
-               (eca-chat--content-table
-                `(("Tool" . ,name)
-                  ("Server" . ,server)
-                  ("Arguments" . ,args)))
-               nil
-               parent-tool-call-id)))
-         ;; Mark this ID as having received toolCallRun so that any late-arriving
-         ;; toolCallPrepare events (still in-flight for long files) don't overwrite
-         ;; the approval prompt we just rendered.  Set this AFTER the pcase dispatch
-         ;; so that if rendering errors, the flag doesn't poison subsequent prepare
-         ;; events (which would prevent the block from ever being created).
-         (when (and eca-chat-expand-pending-approval-tools manual?)
-           (when parent-tool-call-id
-             (eca-chat--expandable-content-toggle parent-tool-call-id t nil))
-           (eca-chat--expandable-content-toggle id t nil))
-         ;; Update parent subagent status to show pending approval
-         (when (and manual? parent-tool-call-id)
-           (eca-chat--update-parent-subagent-status
-            parent-tool-call-id eca-chat-mcp-tool-call-pending-approval-symbol))))
+       (unless (eca-chat--task-tool-call-p content)
+         (let* ((id (plist-get content :id))
+                (args (plist-get content :arguments))
+                (name (plist-get content :name))
+                (server (plist-get content :server))
+                (label (or (plist-get content :summary)
+                           (format "Calling tool: %s__%s" server name)))
+                (manual? (plist-get content :manualApproval))
+                (status (if manual?
+                            eca-chat-mcp-tool-call-pending-approval-symbol
+                          eca-chat-mcp-tool-call-loading-symbol))
+                (approval-text (when manual?
+                                 (eca-chat--build-tool-call-approval-str-content session id tool-call-next-line-spacing chat-id)))
+                (details (plist-get content :details)))
+           ;; Register subagent mapping only for top-level tool calls
+           (when (and (not parent-tool-call-id)
+                      (string= "subagent" (plist-get details :type)))
+             (puthash (plist-get details :subagentChatId) id eca-chat--subagent-chat-id->tool-call-id))
+           (pcase (plist-get details :type)
+             ("fileChange" (eca-chat--tool-call-file-change-details content label approval-text nil status tool-call-next-line-spacing roots parent-tool-call-id))
+             ("subagent" (eca-chat--tool-call-subagent-details id args label approval-text nil status parent-tool-call-id details))
+             (_ (eca-chat--update-expandable-content
+                 id
+                 (concat (propertize label 'font-lock-face 'eca-chat-mcp-tool-call-label-face)
+                         " " status
+                         "\n"
+                         approval-text)
+                 (eca-chat--content-table
+                  `(("Tool" . ,name)
+                    ("Server" . ,server)
+                    ("Arguments" . ,args)))
+                 nil
+                 parent-tool-call-id)))
+           ;; Mark this ID as having received toolCallRun so that any late-arriving
+           ;; toolCallPrepare events (still in-flight for long files) don't overwrite
+           ;; the approval prompt we just rendered.  Set this AFTER the pcase dispatch
+           ;; so that if rendering errors, the flag doesn't poison subsequent prepare
+           ;; events (which would prevent the block from ever being created).
+           (when (and eca-chat-expand-pending-approval-tools manual?)
+             (when parent-tool-call-id
+               (eca-chat--expandable-content-toggle parent-tool-call-id t nil))
+             (eca-chat--expandable-content-toggle id t nil))
+           ;; Update parent subagent status to show pending approval
+           (when (and manual? parent-tool-call-id)
+             (eca-chat--update-parent-subagent-status
+              parent-tool-call-id eca-chat-mcp-tool-call-pending-approval-symbol)))))
       ("toolCallRunning"
-       (let* ((id (plist-get content :id))
-              (args (plist-get content :arguments))
-              (name (plist-get content :name))
-              (server (plist-get content :server))
-              (label (or (plist-get content :summary)
-                         (format "Running tool: %s__%s" server name)))
-              (details (plist-get content :details))
-              (status eca-chat-mcp-tool-call-loading-symbol))
-         ;; Register subagent mapping only for top-level tool calls
-         (when (and (not parent-tool-call-id)
-                    (string= "subagent" (plist-get details :type)))
-           (let ((subagent-chat-id (plist-get details :subagentChatId)))
-             (unless (gethash subagent-chat-id eca-chat--subagent-chat-id->tool-call-id)
-               (puthash subagent-chat-id id eca-chat--subagent-chat-id->tool-call-id))))
-         (pcase (plist-get details :type)
-           ("fileChange" (eca-chat--tool-call-file-change-details content label nil nil status tool-call-next-line-spacing roots parent-tool-call-id))
-           ("subagent" (eca-chat--tool-call-subagent-details id args label nil nil status parent-tool-call-id details))
-           (_ (eca-chat--update-expandable-content
-               id
-               (concat (propertize label 'font-lock-face 'eca-chat-mcp-tool-call-label-face)
-                       " " status)
-               (eca-chat--content-table
-                `(("Tool" . ,name)
-                  ("Server" . ,server)
-                  ("Arguments" . ,args)))
-               nil
-               parent-tool-call-id)))
-         ;; Restore parent subagent status back to loading
-         (when parent-tool-call-id
-           (eca-chat--update-parent-subagent-status
-            parent-tool-call-id eca-chat-mcp-tool-call-loading-symbol))))
+       (unless (eca-chat--task-tool-call-p content)
+         (let* ((id (plist-get content :id))
+                (args (plist-get content :arguments))
+                (name (plist-get content :name))
+                (server (plist-get content :server))
+                (label (or (plist-get content :summary)
+                           (format "Running tool: %s__%s" server name)))
+                (details (plist-get content :details))
+                (status eca-chat-mcp-tool-call-loading-symbol))
+           ;; Register subagent mapping only for top-level tool calls
+           (when (and (not parent-tool-call-id)
+                      (string= "subagent" (plist-get details :type)))
+             (let ((subagent-chat-id (plist-get details :subagentChatId)))
+               (unless (gethash subagent-chat-id eca-chat--subagent-chat-id->tool-call-id)
+                 (puthash subagent-chat-id id eca-chat--subagent-chat-id->tool-call-id))))
+           (pcase (plist-get details :type)
+             ("fileChange" (eca-chat--tool-call-file-change-details content label nil nil status tool-call-next-line-spacing roots parent-tool-call-id))
+             ("subagent" (eca-chat--tool-call-subagent-details id args label nil nil status parent-tool-call-id details))
+             (_ (eca-chat--update-expandable-content
+                 id
+                 (concat (propertize label 'font-lock-face 'eca-chat-mcp-tool-call-label-face)
+                         " " status)
+                 (eca-chat--content-table
+                  `(("Tool" . ,name)
+                    ("Server" . ,server)
+                    ("Arguments" . ,args)))
+                 nil
+                 parent-tool-call-id)))
+           ;; Restore parent subagent status back to loading
+           (when parent-tool-call-id
+             (eca-chat--update-parent-subagent-status
+              parent-tool-call-id eca-chat-mcp-tool-call-loading-symbol)))))
       ("toolCalled"
-       (let* ((id (plist-get content :id))
-              (name (plist-get content :name))
-              (server (plist-get content :server))
-              (label (or (plist-get content :summary)
-                         (format "Called tool: %s__%s" server name)))
-              (args (plist-get content :arguments))
-              (outputs (plist-get content :outputs))
-              (output-text (if outputs
-                               (mapconcat (lambda (o) (or (plist-get o :text) "")) outputs "\n")
-                             ""))
-              (details (plist-get content :details))
-              (time (when-let ((ms (plist-get content :totalTimeMs)))
-                      (concat " " (eca-chat--time->presentable-time ms))))
-              (status (if (plist-get content :error)
-                          eca-chat-mcp-tool-call-error-symbol
-                        eca-chat-mcp-tool-call-success-symbol)))
-         ;; Cleanup counters for this tool-call id to avoid unbounded growth
-         (remhash id eca-chat--tool-call-prepare-counters)
-         (remhash id eca-chat--tool-call-prepare-content-cache)
-         ;; Cleanup subagent mapping only for top-level tool calls
-         (when (and (not parent-tool-call-id)
-                    (string= "subagent" (plist-get details :type)))
-           (remhash (plist-get details :subagentChatId) eca-chat--subagent-chat-id->tool-call-id))
-         (pcase (plist-get details :type)
-           ("fileChange" (eca-chat--tool-call-file-change-details content label nil time status tool-call-next-line-spacing roots parent-tool-call-id))
-           ("jsonOutputs" (eca-chat--tool-call-json-outputs-details content time status parent-tool-call-id))
-           ("subagent" (eca-chat--tool-call-subagent-details id args label nil time status parent-tool-call-id details output-text))
-           (_ (eca-chat--update-expandable-content
-               id
-               (concat (propertize label 'font-lock-face 'eca-chat-mcp-tool-call-label-face)
-                       " " status time)
-               (eca-chat--content-table
-                `(("Tool"   . ,name)
-                  ("Server" . ,server)
-                  ("Arguments" . ,args)
-                  ("Output" . ,output-text)))
-               nil
-               parent-tool-call-id)))
-         (when eca-chat-shrink-called-tools
-           (eca-chat--expandable-content-toggle id t t))
-         ;; Restore parent subagent status back to loading
-         (when parent-tool-call-id
-           (eca-chat--update-parent-subagent-status
-            parent-tool-call-id eca-chat-mcp-tool-call-loading-symbol))))
+       (if (eca-chat--task-tool-call-p content)
+           (eca-chat--update-task-state content)
+         (let* ((id (plist-get content :id))
+                (name (plist-get content :name))
+                (server (plist-get content :server))
+                (label (or (plist-get content :summary)
+                           (format "Called tool: %s__%s" server name)))
+                (args (plist-get content :arguments))
+                (outputs (plist-get content :outputs))
+                (output-text (if outputs
+                                 (mapconcat (lambda (o) (or (plist-get o :text) "")) outputs "\n")
+                               ""))
+                (details (plist-get content :details))
+                (time (when-let ((ms (plist-get content :totalTimeMs)))
+                        (concat " " (eca-chat--time->presentable-time ms))))
+                (status (if (plist-get content :error)
+                            eca-chat-mcp-tool-call-error-symbol
+                          eca-chat-mcp-tool-call-success-symbol)))
+           ;; Cleanup counters for this tool-call id to avoid unbounded growth
+           (remhash id eca-chat--tool-call-prepare-counters)
+           (remhash id eca-chat--tool-call-prepare-content-cache)
+           ;; Cleanup subagent mapping only for top-level tool calls
+           (when (and (not parent-tool-call-id)
+                      (string= "subagent" (plist-get details :type)))
+             (remhash (plist-get details :subagentChatId) eca-chat--subagent-chat-id->tool-call-id))
+           (pcase (plist-get details :type)
+             ("fileChange" (eca-chat--tool-call-file-change-details content label nil time status tool-call-next-line-spacing roots parent-tool-call-id))
+             ("jsonOutputs" (eca-chat--tool-call-json-outputs-details content time status parent-tool-call-id))
+             ("subagent" (eca-chat--tool-call-subagent-details id args label nil time status parent-tool-call-id details output-text))
+             (_ (eca-chat--update-expandable-content
+                 id
+                 (concat (propertize label 'font-lock-face 'eca-chat-mcp-tool-call-label-face)
+                         " " status time)
+                 (eca-chat--content-table
+                  `(("Tool"   . ,name)
+                    ("Server" . ,server)
+                    ("Arguments" . ,args)
+                    ("Output" . ,output-text)))
+                 nil
+                 parent-tool-call-id)))
+           (when eca-chat-shrink-called-tools
+             (eca-chat--expandable-content-toggle id t t))
+           ;; Restore parent subagent status back to loading
+           (when parent-tool-call-id
+             (eca-chat--update-parent-subagent-status
+              parent-tool-call-id eca-chat-mcp-tool-call-loading-symbol)))))
       ("toolCallRejected"
-       (let* ((name (plist-get content :name))
-              (server (plist-get content :server))
-              (label (or (plist-get content :summary)
-                         (format "Rejected tool: %s__%s" server name)))
-              (args (plist-get content :arguments))
-              (details (plist-get content :details))
-              (status eca-chat-mcp-tool-call-error-symbol)
-              (id (plist-get content :id)))
-         ;; Cleanup counters for this tool-call id
-         (remhash id eca-chat--tool-call-prepare-counters)
-         (remhash id eca-chat--tool-call-prepare-content-cache)
-         ;; Cleanup subagent mapping only for top-level tool calls
-         (when (and (not parent-tool-call-id)
-                    (string= "subagent" (plist-get details :type)))
-           (remhash (plist-get details :subagentChatId) eca-chat--subagent-chat-id->tool-call-id))
-         (pcase (plist-get details :type)
-           ("fileChange" (eca-chat--tool-call-file-change-details content label nil nil status tool-call-next-line-spacing roots parent-tool-call-id))
-           ("subagent" (eca-chat--tool-call-subagent-details id args label nil nil status parent-tool-call-id details))
-           (_ (eca-chat--update-expandable-content
-               id
-               (concat (propertize label
-                                   'font-lock-face 'eca-chat-mcp-tool-call-label-face)
-                       " "
-                       eca-chat-mcp-tool-call-error-symbol)
-               (eca-chat--content-table `(("Tool" . ,name)
-                                          ("Server" . ,server)
-                                          ("Arguments" . ,args)))
-               nil
-               parent-tool-call-id)))
-         ;; Restore parent subagent status back to loading
-         (when parent-tool-call-id
-           (eca-chat--update-parent-subagent-status
-            parent-tool-call-id eca-chat-mcp-tool-call-loading-symbol))))
+       (unless (eca-chat--task-tool-call-p content)
+         (let* ((name (plist-get content :name))
+                (server (plist-get content :server))
+                (label (or (plist-get content :summary)
+                           (format "Rejected tool: %s__%s" server name)))
+                (args (plist-get content :arguments))
+                (details (plist-get content :details))
+                (status eca-chat-mcp-tool-call-error-symbol)
+                (id (plist-get content :id)))
+           ;; Cleanup counters for this tool-call id
+           (remhash id eca-chat--tool-call-prepare-counters)
+           (remhash id eca-chat--tool-call-prepare-content-cache)
+           ;; Cleanup subagent mapping only for top-level tool calls
+           (when (and (not parent-tool-call-id)
+                      (string= "subagent" (plist-get details :type)))
+             (remhash (plist-get details :subagentChatId) eca-chat--subagent-chat-id->tool-call-id))
+           (pcase (plist-get details :type)
+             ("fileChange" (eca-chat--tool-call-file-change-details content label nil nil status tool-call-next-line-spacing roots parent-tool-call-id))
+             ("subagent" (eca-chat--tool-call-subagent-details id args label nil nil status parent-tool-call-id details))
+             (_ (eca-chat--update-expandable-content
+                 id
+                 (concat (propertize label
+                                     'font-lock-face 'eca-chat-mcp-tool-call-label-face)
+                         " "
+                         eca-chat-mcp-tool-call-error-symbol)
+                 (eca-chat--content-table `(("Tool" . ,name)
+                                            ("Server" . ,server)
+                                            ("Arguments" . ,args)))
+                 nil
+                 parent-tool-call-id)))
+           ;; Restore parent subagent status back to loading
+           (when parent-tool-call-id
+             (eca-chat--update-parent-subagent-status
+              parent-tool-call-id eca-chat-mcp-tool-call-loading-symbol)))))
       ("progress"
        (unless parent-tool-call-id
          (pcase (plist-get content :state)
