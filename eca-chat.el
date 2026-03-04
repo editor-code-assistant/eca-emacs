@@ -2807,8 +2807,8 @@ The server sends a :details plist with :type \"task\", :activeSummary, :tasks,
                (done-count (length (-filter (lambda (task) (string= "done" (plist-get task :status))) tasks)))
                (total-count (length tasks))
                (in-progress-task (-first (lambda (task) (string= "in-progress" (plist-get task :status))) tasks))
-               (label-text (or (when in-progress-task (plist-get in-progress-task :subject))
-                               active-summary
+               (label-text (or active-summary
+                               (when in-progress-task (plist-get in-progress-task :subject))
                                ""))
                (prefix-text (if active-summary "Task: " "Tasks "))
                (progress-text (format " (%d/%d)" done-count total-count))
