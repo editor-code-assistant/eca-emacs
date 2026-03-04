@@ -131,7 +131,7 @@ Call SUCCESS-CALLBACK when success or ERROR-CALLBACK when error."
     (cond
      ((eq resp-result :finished) nil)
      (resp-result resp-result)
-     (resp-error (error resp-error)))))
+     (resp-error (error "%s" resp-error)))))
 
 (cl-defun eca-api-request-while-no-input (session &key method params)
   "Request sync the ECA server SESSION passing METHOD and PARAMS.
