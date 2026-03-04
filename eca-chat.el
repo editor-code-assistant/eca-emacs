@@ -781,6 +781,8 @@ request, useful for subagent tool calls."
   (erase-buffer)
   (remove-overlays (point-min) (point-max))
   (setq-local eca-chat--task-state nil)
+  (clrhash eca-chat--subagent-chat-id->tool-call-id)
+  (clrhash eca-chat--subagent-usage)
   (eca-chat--insert "\n")
   (eca-chat--insert-prompt-string)
   (eca-chat--refresh-context)
