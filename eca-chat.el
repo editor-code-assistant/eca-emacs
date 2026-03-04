@@ -2701,24 +2701,24 @@ Only updates the label line, preserving all nested child content."
                      'help-echo "mouse-1 / RET / tab: expand/collapse"))))))
 
 (defun eca-chat--task-tool-call-p (content)
-  "Return non-nil if CONTENT represents an eca__todo tool call."
+  "Return non-nil if CONTENT represents an eca__task tool call."
   (and (plist-get content :name)
        (string= (plist-get content :server) "eca")
-       (string= (plist-get content :name) "todo")))
+       (string= (plist-get content :name) "task")))
 
 (defun eca-chat--task-format-task (task)
   "Format a single TASK as a checkbox line string."
   (let* ((status (plist-get task :status))
-         (content (plist-get task :content))
+         (subject (plist-get task :subject))
          (done (string= status "done"))
          (in-progress (string= status "in-progress")))
     (cond
      (done
-      (propertize (format "- [x] %s" content) 'font-lock-face 'eca-chat-task-done-face))
+      (propertize (format "- [x] %s" subject) 'font-lock-face 'eca-chat-task-done-face))
      (in-progress
-      (propertize (format "- [ ] %s" content) 'font-lock-face 'eca-chat-task-in-progress-face))
+      (propertize (format "- [ ] %s" subject) 'font-lock-face 'eca-chat-task-in-progress-face))
      (t
-      (format "- [ ] %s" content)))))
+      (format "- [ ] %s" subject)))))
 
 (defun eca-chat--task-build-content (tasks)
   "Build the expandable block content string from TASKS list."
@@ -2727,30 +2727,30 @@ Only updates the label line, preserving all nested child content."
 (defun eca-chat--update-task-state (content)
   "Extract task state from tool-call CONTENT details and update the task area.
 Uses the expandable block system to render the task widget.
-The server sends a :details plist with :type \"todo\", :goal, :tasks,
+The server sends a :details plist with :type \"task\", :activeSummary, :tasks,
 :inProgressTaskIds, and :summary."
   (when-let* ((details (plist-get content :details)))
-    (when (string= "todo" (plist-get details :type))
-      (setq-local eca-chat--task-state details)
-      (let* ((tasks (append (plist-get details :tasks) nil))
-             (goal (plist-get details :goal))
-             (done-count (length (-filter (lambda (task) (string= "done" (plist-get task :status))) tasks)))
-             (total-count (length tasks))
-             (in-progress-task (-first (lambda (task) (string= "in-progress" (plist-get task :status))) tasks))
-             (label-text (or (when in-progress-task (plist-get in-progress-task :content))
-                             goal))
-             (prefix-text "Task: ")
-             (progress-text (format " (%d/%d)" done-count total-count))
-             (label-face (if in-progress-task 'eca-chat-task-label-in-progress-face 'eca-chat-task-label-face))
-             (label (concat
-                     (propertize prefix-text 'font-lock-face 'eca-chat-task-prefix-face)
-                     (propertize label-text 'font-lock-face label-face)
-                     (propertize progress-text 'font-lock-face 'eca-chat-task-progress-face)))
-             (body (eca-chat--task-build-content tasks)))
-        (if (eca-chat--get-expandable-content eca-chat--task-block-id)
-            (eca-chat--update-expandable-content eca-chat--task-block-id label body)
-          (eca-chat--add-expandable-content eca-chat--task-block-id label body nil
-                                            (overlay-start (eca-chat--task-area-ov))))))))
+    (setq-local eca-chat--task-state details)
+    (let* ((tasks (append (plist-get details :tasks) nil))
+           (active-summary (plist-get details :activeSummary))
+           (done-count (length (-filter (lambda (task) (string= "done" (plist-get task :status))) tasks)))
+           (total-count (length tasks))
+           (in-progress-task (-first (lambda (task) (string= "in-progress" (plist-get task :status))) tasks))
+           (label-text (or (when in-progress-task (plist-get in-progress-task :subject))
+                           active-summary
+                           ""))
+           (prefix-text (if active-summary "Task: " "Tasks "))
+           (progress-text (format " (%d/%d)" done-count total-count))
+           (label-face (if in-progress-task 'eca-chat-task-label-in-progress-face 'eca-chat-task-label-face))
+           (label (concat
+                   (propertize prefix-text 'font-lock-face 'eca-chat-task-prefix-face)
+                   (propertize label-text 'font-lock-face label-face)
+                   (propertize progress-text 'font-lock-face 'eca-chat-task-progress-face)))
+           (body (eca-chat--task-build-content tasks)))
+      (if (eca-chat--get-expandable-content eca-chat--task-block-id)
+          (eca-chat--update-expandable-content eca-chat--task-block-id label body)
+        (eca-chat--add-expandable-content eca-chat--task-block-id label body nil
+                                          (overlay-start (eca-chat--task-area-ov)))))))
 
 (defun eca-chat--render-content (session chat-buffer role content roots &optional parent-tool-call-id chat-id)
   "Render CONTENT inside CHAT-BUFFER for SESSION.
