@@ -1566,6 +1566,26 @@ the default content insertion point."
                                            (car icons) (cdr icons)
                                            eca-chat--expandable-content-base-indent)))))
 
+(defun eca-chat--remove-expandable-content (id)
+  "Remove the expandable block with ID from the buffer.
+Deletes both the label overlay and its content overlay, along with
+any text they covered."
+  (when-let* ((ov-label (eca-chat--get-expandable-content id)))
+    (let* ((ov-content (overlay-get ov-label 'eca-chat--expandable-content-ov-content))
+           ;; Determine the full region: from label overlay start to content overlay end
+           (start (overlay-start ov-label))
+           (end (if ov-content
+                    (overlay-end ov-content)
+                  (overlay-end ov-label))))
+      ;; Destroy any nested blocks first
+      (eca-chat--destroy-nested-blocks id)
+      ;; Delete overlays
+      (when ov-content (delete-overlay ov-content))
+      (delete-overlay ov-label)
+      ;; Remove the text region
+      (let ((inhibit-read-only t))
+        (delete-region start end)))))
+
 (defun eca-chat--update-expandable-content (id label content &optional append-content? parent-id)
   "Update to LABEL and CONTENT the expandable content of id ID.
 If LABEL is nil, the existing label is preserved.
@@ -2702,9 +2722,8 @@ Only updates the label line, preserving all nested child content."
 
 (defun eca-chat--task-tool-call-p (content)
   "Return non-nil if CONTENT represents an eca__task tool call."
-  (and (plist-get content :name)
-       (string= (plist-get content :server) "eca")
-       (string= (plist-get content :name) "task")))
+  (and (string= "eca" (plist-get content :server))
+       (string= "task" (plist-get content :name))))
 
 (defun eca-chat--task-format-task (task)
   "Format a single TASK as a checkbox line string."
@@ -2731,26 +2750,29 @@ The server sends a :details plist with :type \"task\", :activeSummary, :tasks,
 :inProgressTaskIds, and :summary."
   (when-let* ((details (plist-get content :details)))
     (setq-local eca-chat--task-state details)
-    (let* ((tasks (append (plist-get details :tasks) nil))
-           (active-summary (plist-get details :activeSummary))
-           (done-count (length (-filter (lambda (task) (string= "done" (plist-get task :status))) tasks)))
-           (total-count (length tasks))
-           (in-progress-task (-first (lambda (task) (string= "in-progress" (plist-get task :status))) tasks))
-           (label-text (or (when in-progress-task (plist-get in-progress-task :subject))
-                           active-summary
-                           ""))
-           (prefix-text (if active-summary "Task: " "Tasks "))
-           (progress-text (format " (%d/%d)" done-count total-count))
-           (label-face (if in-progress-task 'eca-chat-task-label-in-progress-face 'eca-chat-task-label-face))
-           (label (concat
-                   (propertize prefix-text 'font-lock-face 'eca-chat-task-prefix-face)
-                   (propertize label-text 'font-lock-face label-face)
-                   (propertize progress-text 'font-lock-face 'eca-chat-task-progress-face)))
-           (body (eca-chat--task-build-content tasks)))
-      (if (eca-chat--get-expandable-content eca-chat--task-block-id)
-          (eca-chat--update-expandable-content eca-chat--task-block-id label body)
-        (eca-chat--add-expandable-content eca-chat--task-block-id label body nil
-                                          (overlay-start (eca-chat--task-area-ov)))))))
+    (let* ((tasks (append (plist-get details :tasks) nil)))
+      (if (null tasks)
+          ;; Task list was cleared — remove the expandable block
+          (eca-chat--remove-expandable-content eca-chat--task-block-id)
+        (let* ((active-summary (plist-get details :activeSummary))
+               (done-count (length (-filter (lambda (task) (string= "done" (plist-get task :status))) tasks)))
+               (total-count (length tasks))
+               (in-progress-task (-first (lambda (task) (string= "in-progress" (plist-get task :status))) tasks))
+               (label-text (or (when in-progress-task (plist-get in-progress-task :subject))
+                               active-summary
+                               ""))
+               (prefix-text (if active-summary "Task: " "Tasks "))
+               (progress-text (format " (%d/%d)" done-count total-count))
+               (label-face (if in-progress-task 'eca-chat-task-label-in-progress-face 'eca-chat-task-label-face))
+               (label (concat
+                       (propertize prefix-text 'font-lock-face 'eca-chat-task-prefix-face)
+                       (propertize label-text 'font-lock-face label-face)
+                       (propertize progress-text 'font-lock-face 'eca-chat-task-progress-face)))
+               (body (eca-chat--task-build-content tasks)))
+          (if (eca-chat--get-expandable-content eca-chat--task-block-id)
+              (eca-chat--update-expandable-content eca-chat--task-block-id label body)
+            (eca-chat--add-expandable-content eca-chat--task-block-id label body nil
+                                              (overlay-start (eca-chat--task-area-ov)))))))))
 
 (defun eca-chat--render-content (session chat-buffer role content roots &optional parent-tool-call-id chat-id)
   "Render CONTENT inside CHAT-BUFFER for SESSION.
@@ -2841,7 +2863,15 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
                                                          (when error `(("Error" . ,error)))))
                                               nil parent-tool-call-id)))
       ("toolCallPrepare"
-       (unless (eca-chat--task-tool-call-p content)
+       (if (eca-chat--task-tool-call-p content)
+           (unless (eca-chat--get-expandable-content eca-chat--task-block-id)
+             (let ((label (concat
+                           (propertize "Creating tasks... "
+                                       'font-lock-face 'eca-chat-task-prefix-face)
+                           eca-chat-mcp-tool-call-loading-symbol)))
+               (eca-chat--add-expandable-content
+                eca-chat--task-block-id label "" nil
+                (overlay-start (eca-chat--task-area-ov)))))
          (let* ((id (plist-get content :id))
                 (name (plist-get content :name))
                 (server (plist-get content :server))
