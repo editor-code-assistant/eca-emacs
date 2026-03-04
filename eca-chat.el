@@ -1569,14 +1569,25 @@ the default content insertion point."
 (defun eca-chat--remove-expandable-content (id)
   "Remove the expandable block with ID from the buffer.
 Deletes both the label overlay and its content overlay, along with
-any text they covered."
+any text they covered, including surrounding newlines added during insertion."
   (when-let* ((ov-label (eca-chat--get-expandable-content id)))
     (let* ((ov-content (overlay-get ov-label 'eca-chat--expandable-content-ov-content))
            ;; Determine the full region: from label overlay start to content overlay end
            (start (overlay-start ov-label))
            (end (if ov-content
                     (overlay-end ov-content)
-                  (overlay-end ov-label))))
+                  (overlay-end ov-label)))
+           ;; Include preceding newline (inserted by add-expandable-content)
+           (start (if (and (> start (point-min))
+                           (eq (char-before start) ?\n))
+                      (1- start)
+                    start))
+           ;; Include trailing newline (inserted between label/content in
+           ;; insert-expandable-block)
+           (end (if (and (< end (point-max))
+                         (eq (char-after end) ?\n))
+                    (1+ end)
+                  end)))
       ;; Destroy any nested blocks first
       (eca-chat--destroy-nested-blocks id)
       ;; Delete overlays
@@ -2866,8 +2877,7 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
        (if (eca-chat--task-tool-call-p content)
            (unless (eca-chat--get-expandable-content eca-chat--task-block-id)
              (let ((label (concat
-                           (propertize "Creating tasks... "
-                                       'font-lock-face 'eca-chat-task-prefix-face)
+                           (propertize "Creating tasks... " 'font-lock-face 'eca-chat-task-prefix-face)
                            eca-chat-mcp-tool-call-loading-symbol)))
                (eca-chat--add-expandable-content
                 eca-chat--task-block-id label "" nil
