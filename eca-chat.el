@@ -740,6 +740,8 @@ request, useful for subagent tool calls."
   "Clear the chat for SESSION and then insert NEW-PROMPT-CONTENT."
   (erase-buffer)
   (remove-overlays (point-min) (point-max))
+  (clrhash eca-chat--subagent-chat-id->tool-call-id)
+  (clrhash eca-chat--subagent-usage)
   (eca-chat--insert "\n")
   (eca-chat--insert-prompt-string)
   (eca-chat--refresh-context)
