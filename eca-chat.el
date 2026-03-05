@@ -419,7 +419,7 @@ works normally."
   :group 'eca)
 
 (defface eca-chat-task-in-progress-face
-  '((t :inherit font-lock-string-face))
+  '((t :inherit font-lock-string-face :weight bold))
   "Face for in-progress tasks in the task area."
   :group 'eca)
 
