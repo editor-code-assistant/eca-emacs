@@ -630,6 +630,23 @@ Each task is a plist with :id, :content, :status, :priority, etc.")
      (let ((inhibit-read-only t))
        ,@body)))
 
+(defmacro eca-chat--with-preserved-scroll (&rest body)
+  "Execute BODY preserving scroll position of all windows showing this buffer.
+Saves `window-start' for every window displaying the current buffer
+before BODY runs, then restores it afterwards.  This prevents the
+visible content from jumping when buffer text is inserted or deleted
+\(e.g. when an expandable block is toggled)."
+  (declare (indent 0) (debug t))
+  (let ((saved (gensym "saved-wins-")))
+    `(let ((,saved (mapcar (lambda (w) (cons w (window-start w)))
+                           (get-buffer-window-list (current-buffer) nil t))))
+       (prog1 (progn ,@body)
+         (dolist (entry ,saved)
+           (let ((win (car entry))
+                 (start (cdr entry)))
+             (when (window-live-p win)
+               (set-window-start win (min start (point-max)) t))))))))
+
 (defun eca-chat--spinner-start (callback)
   "Start modeline spinner calling CALLBACK when updating."
   (eca-chat--allow-write
@@ -923,6 +940,21 @@ Otherwise to a not loading state."
   "Return the point where new chat content should be inserted.
 Returns the position just before the prompt area start."
   (1- (eca-chat--prompt-area-start-point)))
+
+(defun eca-chat--ensure-prompt-visible ()
+  "Scroll the chat window so the prompt area stays visible.
+Only acts when the user is currently viewing the bottom of the
+buffer.  When the user has scrolled up to read earlier content,
+scrolling is suppressed so the view does not jump."
+  (when-let* ((win (get-buffer-window (current-buffer))))
+    (let* ((prompt-start (eca-chat--prompt-area-start-point))
+           (win-end (window-end win t)))
+      ;; Only auto-scroll when the prompt separator was already
+      ;; visible — meaning the user is at the bottom of the chat.
+      (when (and prompt-start (>= win-end prompt-start))
+        (with-selected-window win
+          (goto-char (point-max))
+          (recenter -1))))))
 
 (defun eca-chat--new-context-start-point ()
   "Return the metadata overlay for the new context area start point."
@@ -1718,53 +1750,54 @@ If FORCE? decide to CLOSE? or not."
            (already-in-state? (and force?
                                    (if close? (not currently-open?) currently-open?))))
       (unless already-in-state?
-        (save-excursion
-          (goto-char (overlay-start ov-label))
-          (if (or close? (not has-content?))
+        (eca-chat--with-preserved-scroll
+          (save-excursion
+            (goto-char (overlay-start ov-label))
+            (if (or close? (not has-content?))
+                (progn
+                  (put-text-property (point) (line-end-position)
+                                     'line-prefix (when has-content?
+                                                    (overlay-get ov-label 'eca-chat--expandable-content-open-icon)))
+                  (goto-char (1+ (line-end-position)))
+                  ;; Destroy nested blocks first (they are within content region)
+                  (eca-chat--destroy-nested-blocks id)
+                  (delete-region (overlay-start ov-content) (overlay-end ov-content))
+                  (overlay-put ov-content 'face nil)
+                  (overlay-put ov-label 'eca-chat--expandable-content-toggle nil))
               (progn
                 (put-text-property (point) (line-end-position)
-                                   'line-prefix (when has-content?
-                                                  (overlay-get ov-label 'eca-chat--expandable-content-open-icon)))
-                (goto-char (1+ (line-end-position)))
-                ;; Destroy nested blocks first (they are within content region)
-                (eca-chat--destroy-nested-blocks id)
-                (delete-region (overlay-start ov-content) (overlay-end ov-content))
-                (overlay-put ov-content 'face nil)
-                (overlay-put ov-label 'eca-chat--expandable-content-toggle nil))
-            (progn
-              (put-text-property (point) (line-end-position)
-                                 'line-prefix (overlay-get ov-label 'eca-chat--expandable-content-close-icon))
-              (goto-char (overlay-start ov-content))
-              (if segments
-                  ;; Segments-aware rendering: interleave text and children in order
-                  (let* ((full-content content)
-                         (segmented-text (eca-chat--segments-total-text segments))
-                         (trailing-text (when (> (length full-content) (length segmented-text))
-                                          (substring full-content (length segmented-text)))))
-                    (dolist (seg segments)
-                      (pcase (plist-get seg :type)
-                        ('text (eca-chat--insert (plist-get seg :content)))
-                        ('child
-                         (eca-chat--render-nested-block ov-label seg)
-                         ;; render-nested-block uses save-excursion so point stays
-                         ;; before the child; advance past it to maintain order
-                         (goto-char (overlay-end ov-content)))))
-                    ;; Insert any trailing text not yet captured in segments
-                    (when (and trailing-text (not (string-empty-p trailing-text)))
-                      (eca-chat--insert trailing-text))
-                    (eca-chat--insert "\n"))
-                ;; Legacy path: no segments, insert content then children
-                (eca-chat--insert content "\n")
-                (dolist (child-spec children)
-                  (eca-chat--render-nested-block ov-label child-spec)))
-              (let ((block-face (eca-chat--expandable-block-face
-                                (overlay-get ov-content 'eca-chat--expandable-block-nested))))
-                (overlay-put ov-content 'face block-face)
-                (eca-chat--apply-face-to-line-prefixes
-                 (overlay-start ov-content) (overlay-end ov-content) block-face))
-              (overlay-put ov-label 'eca-chat--expandable-content-toggle t)))
-          ;; Repaint nested label's line-prefix after icon swap
-          (eca-chat--paint-nested-label ov-label)))
+                                   'line-prefix (overlay-get ov-label 'eca-chat--expandable-content-close-icon))
+                (goto-char (overlay-start ov-content))
+                (if segments
+                    ;; Segments-aware rendering: interleave text and children in order
+                    (let* ((full-content content)
+                           (segmented-text (eca-chat--segments-total-text segments))
+                           (trailing-text (when (> (length full-content) (length segmented-text))
+                                            (substring full-content (length segmented-text)))))
+                      (dolist (seg segments)
+                        (pcase (plist-get seg :type)
+                          ('text (eca-chat--insert (plist-get seg :content)))
+                          ('child
+                           (eca-chat--render-nested-block ov-label seg)
+                           ;; render-nested-block uses save-excursion so point stays
+                           ;; before the child; advance past it to maintain order
+                           (goto-char (overlay-end ov-content)))))
+                      ;; Insert any trailing text not yet captured in segments
+                      (when (and trailing-text (not (string-empty-p trailing-text)))
+                        (eca-chat--insert trailing-text))
+                      (eca-chat--insert "\n"))
+                  ;; Legacy path: no segments, insert content then children
+                  (eca-chat--insert content "\n")
+                  (dolist (child-spec children)
+                    (eca-chat--render-nested-block ov-label child-spec)))
+                (let ((block-face (eca-chat--expandable-block-face
+                                  (overlay-get ov-content 'eca-chat--expandable-block-nested))))
+                  (overlay-put ov-content 'face block-face)
+                  (eca-chat--apply-face-to-line-prefixes
+                   (overlay-start ov-content) (overlay-end ov-content) block-face))
+                (overlay-put ov-label 'eca-chat--expandable-content-toggle t)))
+            ;; Repaint nested label's line-prefix after icon swap
+            (eca-chat--paint-nested-label ov-label))))
       close?)))
 
 (defun eca-chat--content-table (key-vals)
@@ -3001,7 +3034,8 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
            (when (and eca-chat-expand-pending-approval-tools manual?)
              (when parent-tool-call-id
                (eca-chat--expandable-content-toggle parent-tool-call-id t nil))
-             (eca-chat--expandable-content-toggle id t nil))
+             (eca-chat--expandable-content-toggle id t nil)
+             (eca-chat--ensure-prompt-visible))
            ;; Update parent subagent status to show pending approval
            (when (and manual? parent-tool-call-id)
              (eca-chat--update-parent-subagent-status
@@ -3081,7 +3115,8 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
                  nil
                  parent-tool-call-id)))
            (when eca-chat-shrink-called-tools
-             (eca-chat--expandable-content-toggle id t t))
+             (eca-chat--expandable-content-toggle id t t)
+             (eca-chat--ensure-prompt-visible))
            ;; Restore parent subagent status back to loading
            (when parent-tool-call-id
              (eca-chat--update-parent-subagent-status
