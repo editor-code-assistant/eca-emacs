@@ -1408,6 +1408,43 @@ Add a overlay before with OVERLAY-KEY = OVERLAY-VALUE if passed."
   (-first (-lambda (ov) (overlay-get ov 'eca-chat--expandable-content-id))
           (overlays-in (line-beginning-position) (point))))
 
+(defun eca-chat--expandable-content-at-point-dwim ()
+  "Return the most specific expandable block overlay for point.
+
+Prefers a block label on the current line; otherwise returns the
+innermost block whose content region contains point."
+  (let* ((pos (point))
+         (label-candidates (delete-dups
+                            (-filter (-lambda (ov)
+                                       (overlay-get ov 'eca-chat--expandable-content-id))
+                                     (append (overlays-at pos)
+                                             (overlays-in (line-beginning-position) pos))))))
+    (or
+     ;; If point is on a block label line, toggle that block.
+     (car (sort label-candidates
+                (lambda (a b)
+                  (> (overlay-start a) (overlay-start b)))))
+     ;; Otherwise, toggle the innermost block whose content contains point.
+     (let ((best-ov nil)
+           (best-span nil)
+           (best-start nil))
+       (dolist (ov (overlays-in (point-min) (point-max)))
+         (when-let* ((id (overlay-get ov 'eca-chat--expandable-content-id))
+                     (_ id)
+                     (ov-content (overlay-get ov 'eca-chat--expandable-content-ov-content))
+                     (start (overlay-start ov-content))
+                     (end (overlay-end ov-content))
+                     (_ (and start end (<= start pos) (< pos end))))
+           (let ((span (- end start)))
+             (when (or (null best-ov)
+                       (< span best-span)
+                       (and (= span best-span)
+                            (> start best-start)))
+               (setq best-ov ov
+                     best-span span
+                     best-start start)))))
+       best-ov))))
+
 (defun eca-chat--get-expandable-content (id)
   "Return the overlay if there is a expandable content for ID."
   (-first (-lambda (ov) (string= id (overlay-get ov 'eca-chat--expandable-content-id)))
@@ -3451,9 +3488,9 @@ Just open if FORCE-OPEN? is non-nil."
   (interactive)
   (eca-assert-session-running (eca-session))
   (eca-chat--with-current-buffer (eca-chat--get-last-buffer (eca-session))
-    (unless (eca-chat--expandable-content-at-point)
+    (unless (eca-chat--expandable-content-at-point-dwim)
       (eca-chat-go-to-prev-expandable-block))
-    (when-let ((ov (eca-chat--expandable-content-at-point)))
+    (when-let ((ov (eca-chat--expandable-content-at-point-dwim)))
       (eca-chat--expandable-content-toggle (overlay-get ov 'eca-chat--expandable-content-id) (when force-open? t) (not force-open?)))))
 
 ;;;###autoload
