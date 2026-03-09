@@ -191,6 +191,7 @@ Call ON-ERROR when error."
              (equal (current-buffer) buffer)
              (boundp 'eca-completion-mode)
              eca-completion-mode
+             (not (derived-mode-p 'eca-chat-mode))
              (eca-session))
     (eca-complete)))
 
@@ -288,6 +289,8 @@ in `post-command-hook'."
 (defun eca-complete ()
   "Complete at the current point."
   (interactive)
+  (when (derived-mode-p 'eca-chat-mode)
+    (user-error "Completion is not available in eca-chat buffers"))
   (eca-assert-session-running (eca-session))
   (setq eca-completion--last-doc-version eca-completion--doc-version)
 
