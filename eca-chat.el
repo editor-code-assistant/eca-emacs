@@ -2131,11 +2131,10 @@ Add text property to prompt text to match context."
 
 (defun eca-chat--go-to-overlay (ov-key range-min range-max first?)
   "Go to overlay finding from RANGE-MIN to RANGE-MAX if matches OV-KEY."
-  (eca-chat--with-current-buffer (eca-chat--get-last-buffer (eca-session))
-    (let ((get-fn (if first? #'-first #'-last)))
-      (when-let ((ov (funcall get-fn (-lambda (ov) (overlay-get ov ov-key))
-                              (overlays-in range-min range-max))))
-        (goto-char (overlay-start ov))))))
+  (let ((get-fn (if first? #'-first #'-last)))
+    (when-let ((ov (funcall get-fn (-lambda (ov) (overlay-get ov ov-key))
+                            (overlays-in range-min range-max))))
+      (goto-char (overlay-start ov)))))
 
 (defun eca-chat--cur-position ()
   "Return the start and end positions for current point.
