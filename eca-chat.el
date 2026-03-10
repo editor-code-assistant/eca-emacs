@@ -3313,10 +3313,18 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
 
 (defun eca-chat-exit (session)
   "Exit the ECA chat for SESSION."
+  ;; Cancel the global repeating idle timer that tracks cursor position.
+  (when (timerp eca-chat--cursor-context-timer)
+    (cancel-timer eca-chat--cursor-context-timer)
+    (setq eca-chat--cursor-context-timer nil))
+  ;; Remove the global window-size-change handler registered by eca-chat-mode.
+  (remove-hook 'window-size-change-functions #'eca-chat--on-window-size-change)
   (mapcar (lambda (title+buffer)
             (let ((chat-buffer (cdr title+buffer)))
               (when (buffer-live-p chat-buffer)
                 (eca-chat--with-current-buffer chat-buffer
+                  ;; Cancel spinner timer if chat was still loading.
+                  (eca-chat--spinner-stop)
                   (setq eca-chat--closed t)
                   (force-mode-line-update)
                   (goto-char (point-max))
