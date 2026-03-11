@@ -121,20 +121,12 @@ with `eca-process-wrapper-function' for a fully sandboxed setup."
 
 ;; Internal
 
-(defvar eca-workspaces-buffer-name "*eca-workspaces*")
-
-(defun eca--emacs-errors-buffer-name (session)
-  "Return the Emacs errors buffer name for SESSION."
-  (format "<eca:emacs-errors[%s]:%s>"
-          (eca--session-project-name session)
-          (eca--session-id session)))
-
 (defun eca--log-error (session err &optional context backtrace)
   "Log error ERR to the Emacs errors buffer for SESSION.
 Optional CONTEXT is a string describing what was happening
 when the error occurred.  Optional BACKTRACE is a list of
 frames captured via `backtrace-get-frames'."
-  (let ((buffer (get-buffer-create (eca--emacs-errors-buffer-name session))))
+  (let ((buffer (get-buffer-create (funcall eca-generate-buffer-name-function "eca:emacs-errors" :session session))))
     (with-current-buffer buffer
       (goto-char (point-max))
       (insert (format "[%s] %s%s\n"
@@ -150,7 +142,7 @@ frames captured via `backtrace-get-frames'."
 
 (defun eca-show-emacs-errors (session)
   "Open the Emacs errors buffer for SESSION."
-  (let ((buffer (get-buffer (eca--emacs-errors-buffer-name session))))
+  (let ((buffer (get-buffer (funcall eca-generate-buffer-name-function "eca:emacs-errors" :session session))))
     (if buffer
         (with-current-buffer buffer
           (if (window-live-p (get-buffer-window (buffer-name)))
@@ -166,20 +158,19 @@ frames captured via `backtrace-get-frames'."
 
 (defun eca--emacs-errors-exit (session)
   "Clean up the Emacs errors buffer for SESSION on stop."
-  (let ((buffer (get-buffer (eca--emacs-errors-buffer-name session))))
+  (let ((buffer (get-buffer (funcall eca-generate-buffer-name-function "eca:emacs-errors" :session session))))
     (when buffer
       (with-current-buffer buffer
         (rename-buffer (concat (buffer-name) ":closed") t)
-        (setq-local mode-line-format '("*Closed session*"))
-        (when-let ((win (get-buffer-window (current-buffer))))
-          (quit-window nil win))
-        ;; Keep only the most recently closed errors buffer; kill older ones.
-        (let ((current (current-buffer)))
-          (dolist (b (buffer-list))
-            (when (and (not (eq b current))
-                       (or
-                        (string-match-p "^<eca:emacs-errors:.*>:closed$" (buffer-name b))
-                        (string-match-p "^<eca:emacs-errors:.*>$" (buffer-name b))))
+                (setq-local eca-chat-closed t)
+                (setq-local mode-line-format '("*Closed session*"))
+                  (when-let ((win (get-buffer-window (current-buffer))))
+                  (quit-window nil win))
+                ;; Keep only the most recently closed errors buffer; kill older ones.
+                (let ((current (current-buffer)))
+                  (dolist (b (buffer-list))
+                    (when (and (not (eq b current))
+                               (buffer-local-value 'eca-chat-closed b))
               (kill-buffer b))))))))
 
 (defun eca--get-message-type (json-data)
@@ -364,7 +355,7 @@ backtrace.  On older Emacs, runs BODY without capture."
   "Connect in eca nrepl port for development."
   (interactive)
   (eca-assert-session-running (eca-session))
-  (with-current-buffer (eca-process--stderr-buffer-name (eca-session))
+  (with-current-buffer (funcall eca-generate-buffer-name-function "eca:stderr" :session (eca-session))
     (save-excursion
       (goto-char (point-min))
       (when (re-search-forward "started on port \\([0-9]+\\)" nil t)
@@ -466,13 +457,14 @@ When ARG is current prefix, ask for workspace roots to use."
       (seq-doseq (chat-by-id (eca--session-chats session))
         (when (buffer-live-p (cdr chat-by-id))
           (hierarchy-add-tree h (cdr chat-by-id) parent-fn))))
-    (let ((b (or (when-let ((b (get-buffer eca-workspaces-buffer-name)))
-                   (when (buffer-live-p b)
-                     (with-current-buffer b
-                       (let ((inhibit-read-only t))
-                         (erase-buffer))))
-                   b)
-                 (generate-new-buffer eca-workspaces-buffer-name))))
+    (let* ((buffer-name (funcall eca-generate-buffer-name-function "eca-workspaces"))
+           (b (or (when-let ((b (get-buffer buffer-name)))
+                    (when (buffer-live-p b)
+                      (with-current-buffer b
+                        (let ((inhibit-read-only t))
+                          (erase-buffer))))
+                    b)
+                  (generate-new-buffer buffer-name))))
       (with-current-buffer b
         (setq-local tree-widget-image-enable nil)
         (widget-create (eca--tree-widget-open-all
