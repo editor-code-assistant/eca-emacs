@@ -706,6 +706,7 @@ visible content from jumping when buffer text is inserted or deleted
           (pcase (plist-get mcp-server :status)
             ("running" (cl-incf running))
             ("starting" (cl-incf starting))
+            ("requires-auth" (cl-incf starting))
             ("failed" (cl-incf failed))))
         (concat (funcall propertize-fn failed 'error (or (> running 0) (> starting 0)))
                 (funcall propertize-fn starting 'warning (> running 0))
