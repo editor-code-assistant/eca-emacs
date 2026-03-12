@@ -523,6 +523,11 @@ darkens for light themes."
 (defvar-local eca-chat--modeline-timer nil
   "Timer that refreshes the mode-line every second during loading.")
 
+(defvar-local eca-chat--tool-call-elapsed-times (make-hash-table :test 'equal)
+  "Mapping tool-call ID to `current-time' when toolCallRunning was received.")
+(defvar-local eca-chat--tool-call-elapsed-timer nil
+  "Repeating timer that updates elapsed-time display for running tool calls.")
+
 (defvar-local eca-chat--table-resize-timer nil)
 (defvar-local eca-chat--progress-text "")
 (defvar-local eca-chat--last-user-message-pos nil)
@@ -694,6 +699,80 @@ visible content from jumping when buffer text is inserted or deleted
   "Return a presentable time for MS."
   (let ((secs (/ (float ms) 1000)))
     (propertize (format "%.2f s" secs) 'font-lock-face 'eca-chat-time-face)))
+
+(defun eca-chat--elapsed-time-string (start-time)
+  "Return a propertized elapsed-time string since START-TIME.
+The result looks like \" 1s\", \" 2s\", etc. with `eca-chat-time-face' and
+a `eca-chat--elapsed-time' text property so the timer can locate it."
+  (let* ((elapsed (floor (float-time (time-subtract (current-time) start-time))))
+         (str (concat " " (propertize (format "%ds" elapsed)
+                                      'font-lock-face 'eca-chat-time-face))))
+    (propertize str 'eca-chat--elapsed-time t)))
+
+(defun eca-chat--tool-call-elapsed-start (id)
+  "Start tracking elapsed time for tool call ID.
+Records current time (only on first call for ID) and ensures the shared
+update timer is running."
+  (unless (gethash id eca-chat--tool-call-elapsed-times)
+    (puthash id (current-time) eca-chat--tool-call-elapsed-times))
+  (unless eca-chat--tool-call-elapsed-timer
+    (let ((buf (current-buffer))
+          (timer nil))
+      (setq timer
+            (run-with-timer
+             1 1
+             (lambda ()
+               (if (buffer-live-p buf)
+                   (with-current-buffer buf
+                     (eca-chat--tool-call-elapsed-tick))
+                 ;; Buffer was killed — cancel ourselves to avoid leak
+                 (cancel-timer timer)))))
+      (setq eca-chat--tool-call-elapsed-timer timer))))
+
+(defun eca-chat--tool-call-elapsed-stop (id)
+  "Stop tracking elapsed time for tool call ID.
+Cancels the shared timer when no more tool calls are being tracked."
+  (remhash id eca-chat--tool-call-elapsed-times)
+  (when (and eca-chat--tool-call-elapsed-timer
+             (zerop (hash-table-count eca-chat--tool-call-elapsed-times)))
+    (cancel-timer eca-chat--tool-call-elapsed-timer)
+    (setq eca-chat--tool-call-elapsed-timer nil)))
+
+(defun eca-chat--tool-call-elapsed-tick ()
+  "Timer callback: update elapsed-time display for all running tool calls."
+  (eca-chat--allow-write
+   (maphash
+    (lambda (id start-time)
+      (when-let* ((ov-label (eca-chat--get-expandable-content id)))
+        (let* ((label-start (overlay-start ov-label))
+               (ov-content (overlay-get ov-label 'eca-chat--expandable-content-ov-content))
+               (new-time (eca-chat--elapsed-time-string start-time)))
+          (when ov-content
+            (let ((label-end (1- (overlay-start ov-content))))
+              (save-excursion
+                ;; Find the text span with eca-chat--elapsed-time property
+                (goto-char label-start)
+                (let ((prop-start (text-property-any label-start label-end
+                                                     'eca-chat--elapsed-time t)))
+                  (when prop-start
+                    (let ((prop-end (next-single-property-change
+                                    prop-start 'eca-chat--elapsed-time nil label-end)))
+                      (goto-char prop-start)
+                      (delete-region prop-start prop-end)
+                      (insert new-time)))))))
+          ;; Keep the overlay property in sync so that functions which
+          ;; rebuild the label from stored properties (e.g.
+          ;; eca-chat--update-parent-subagent-status) use the latest value.
+          (when (overlay-get ov-label 'eca-chat--tool-call-time)
+            (overlay-put ov-label 'eca-chat--tool-call-time new-time)))))
+    eca-chat--tool-call-elapsed-times)))
+
+(defun eca-chat--tool-call-elapsed-stop-all ()
+  "Cancel the elapsed-time timer and clear all tracked tool calls."
+  (when eca-chat--tool-call-elapsed-timer
+    (cancel-timer eca-chat--tool-call-elapsed-timer)
+    (setq eca-chat--tool-call-elapsed-timer nil))
+  (clrhash eca-chat--tool-call-elapsed-times))
 
 (defun eca-chat--agent ()
   "The chat agent considering default and user option."
@@ -3277,7 +3356,11 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
                 (label (or (plist-get content :summary)
                            (format "Running tool: %s__%s" server name)))
                 (details (plist-get content :details))
-                (status eca-chat-mcp-tool-call-loading-symbol))
+                (status eca-chat-mcp-tool-call-loading-symbol)
+                (elapsed-time (progn
+                                (eca-chat--tool-call-elapsed-start id)
+                                (eca-chat--elapsed-time-string
+                                 (gethash id eca-chat--tool-call-elapsed-times)))))
            ;; Register subagent mapping only for top-level tool calls
            (when (and (not parent-tool-call-id)
                       (string= "subagent" (plist-get details :type)))
@@ -3285,12 +3368,12 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
                (unless (gethash subagent-chat-id eca-chat--subagent-chat-id->tool-call-id)
                  (puthash subagent-chat-id id eca-chat--subagent-chat-id->tool-call-id))))
            (pcase (plist-get details :type)
-             ("fileChange" (eca-chat--tool-call-file-change-details content label nil nil status tool-call-next-line-spacing roots parent-tool-call-id))
-             ("subagent" (eca-chat--tool-call-subagent-details id args label nil nil status parent-tool-call-id details))
+             ("fileChange" (eca-chat--tool-call-file-change-details content label nil elapsed-time status tool-call-next-line-spacing roots parent-tool-call-id))
+             ("subagent" (eca-chat--tool-call-subagent-details id args label nil elapsed-time status parent-tool-call-id details))
              (_ (eca-chat--update-expandable-content
                  id
                  (concat (propertize label 'font-lock-face 'eca-chat-mcp-tool-call-label-face)
-                         " " status)
+                         " " status elapsed-time)
                  (eca-chat--content-table
                   `(("Tool" . ,name)
                     ("Server" . ,server)
@@ -3323,6 +3406,8 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
            ;; Cleanup counters for this tool-call id to avoid unbounded growth
            (remhash id eca-chat--tool-call-prepare-counters)
            (remhash id eca-chat--tool-call-prepare-content-cache)
+           ;; Stop elapsed-time tracking for this tool call
+           (eca-chat--tool-call-elapsed-stop id)
            ;; Cleanup subagent mapping only for top-level tool calls
            (when (and (not parent-tool-call-id)
                       (string= "subagent" (plist-get details :type)))
@@ -3397,6 +3482,7 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
            ("finished"
             (setq-local eca-chat--progress-text "")
             (eca-chat--spinner-stop)
+            (eca-chat--tool-call-elapsed-stop-all)
             (eca-chat--add-text-content "\n")
             (eca-chat--align-tables (point-min))
             (eca-chat--beautify-tables (point-min))
@@ -3517,6 +3603,7 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
                 (eca-chat--with-current-buffer chat-buffer
                   ;; Cancel spinner timer if chat was still loading.
                   (eca-chat--spinner-stop)
+                  (eca-chat--tool-call-elapsed-stop-all)
                   (setq eca-chat--closed t)
                   (force-mode-line-update)
                   (goto-char (point-max))
