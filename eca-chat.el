@@ -172,6 +172,14 @@ for light themes."
   :type 'boolean
   :group 'eca)
 
+(defcustom eca-chat-tab-line t
+  "Whether to show a tab line with chat tabs at the top of each chat window.
+When non-nil, enables `tab-line-mode' in chat buffers with tabs
+for every open chat in the session.  Each tab shows the chat status
+\(pending approval, loading), title and elapsed time."
+  :type 'boolean
+  :group 'eca)
+
 (defcustom eca-chat-custom-model nil
   "Which model to use during chat, nil means use server's default.
 Must be a valid model supported by server, check `eca-chat-select-model`."
@@ -620,7 +628,7 @@ Each task is a plist with :id, :content, :status, :priority, etc.")
                       (string-prefix-p "eca-" (symbol-name this-command))))
              eca-chat--id
              (not eca-chat--closed)
-             (yes-or-no-p "Also delete chat from server (this chat history will be lost and not acessible via /resume later)?"))
+             (yes-or-no-p "Delete chat from server side (otherwise it will just kill the buffer) ?"))
     (eca-api-request-sync (eca-session)
                           :method "chat/delete"
                           :params (list :chatId eca-chat--id))))
@@ -868,7 +876,7 @@ Otherwise to a not loading state."
                                         (lambda ()
                                           (when (buffer-live-p buf)
                                             (with-current-buffer buf
-                                              (force-mode-line-update))))))))
+                                              (eca-chat--force-tab-line-update))))))))
       (when eca-chat--prompt-start-time
         (setq-local eca-chat--turn-duration-secs
                     (floor (float-time (time-subtract (current-time) eca-chat--prompt-start-time))))
@@ -876,7 +884,7 @@ Otherwise to a not loading state."
       (when eca-chat--modeline-timer
         (cancel-timer eca-chat--modeline-timer)
         (setq-local eca-chat--modeline-timer nil))
-      (force-mode-line-update))
+      (eca-chat--force-tab-line-update))
     ;; (setq-local buffer-read-only loading)
     (let ((loading-area-ov (eca-chat--loading-area-ov))
           (stop-text (eca-buttonize
@@ -1335,6 +1343,103 @@ When IN-PROGRESS is non-nil, append an ellipsis."
    (eca-chat--turn-duration-secs
     (eca-chat--format-duration eca-chat--turn-duration-secs))))
 
+(defun eca-chat--has-pending-approvals-p ()
+  "Return non-nil if current buffer has any pending approval tool call."
+  (save-excursion
+    (goto-char (point-min))
+    (not (null (text-property-search-forward
+                'eca-tool-call-pending-approval-accept t t)))))
+
+(defun eca-chat--chat-status-prefix ()
+  "Return a status prefix string for the current chat buffer.
+Returns \"🚧 \" for pending approvals, \"⏳ \" for loading, or \"\" otherwise."
+  (cond
+   ((eca-chat--has-pending-approvals-p) "🚧 ")
+   (eca-chat--chat-loading "⏳ ")
+   (t "")))
+
+(defun eca-chat--tab-line-tab-name (buffer)
+  "Return a formatted tab label for chat BUFFER.
+Shows 🚧 prefix for pending approvals."
+  (with-current-buffer buffer
+    (let* ((title (eca-chat-title))
+           (pending (eca-chat--has-pending-approvals-p)))
+      (concat " " (when pending "🚧 ") title " "))))
+
+(defun eca-chat--tab-line-face (tab _tabs face _selected-p _buffer)
+  "Apply warning face to loading chat tabs.
+Merges `warning' with the default tab FACE via inheritance."
+  (let ((buf (cdr (assq 'buffer tab))))
+    (if (and buf (buffer-live-p buf)
+             (buffer-local-value 'eca-chat--chat-loading buf))
+        `(:inherit (warning ,face))
+      face)))
+
+(defun eca-chat--tab-line-tabs ()
+  "Return tab descriptors for all chats in the current session.
+Each tab is an alist with `name', `buffer', and `selected' entries.
+Tabs are ordered oldest-first so new chats appear on the right."
+  (when-let ((session (ignore-errors (eca-session))))
+    (let* ((current-buf (current-buffer))
+           (tabs (-keep
+                  (lambda (buf)
+                    (when (buffer-live-p buf)
+                      `(tab
+                        (name . ,(eca-chat--tab-line-tab-name buf))
+                        (buffer . ,buf)
+                        (selected . ,(eq buf current-buf)))))
+                  (eca-vals (eca--session-chats session)))))
+      (nreverse tabs))))
+
+(defun eca-chat--tab-line-close-tab (&optional e)
+  "Close the chat tab clicked on.
+If closing the current buffer, switch to another chat tab first.
+E is the mouse event."
+  (interactive "e")
+  (let* ((posnp (event-start e))
+         (window (posn-window posnp))
+         (tab-prop (get-pos-property 1 'tab (car (posn-string posnp))))
+         (buffer (if (bufferp tab-prop)
+                     tab-prop
+                   (cdr (assq 'buffer tab-prop)))))
+    (when (and buffer (buffer-live-p buffer))
+      (with-selected-window window
+        (when (eq buffer (current-buffer))
+          ;; Switch to another chat before killing
+          (let* ((session (ignore-errors (eca-session)))
+                 (other (-first (lambda (buf)
+                                  (and (buffer-live-p buf)
+                                       (not (eq buf buffer))))
+                                (eca-vals (eca--session-chats session)))))
+            (when other
+              (setf (eca--session-last-chat-buffer session) other)
+              (switch-to-buffer other))))
+        (kill-buffer buffer)))))
+
+(defvar eca-chat--tab-close-map
+  (let ((map (make-sparse-keymap)))
+    (define-key map [tab-line mouse-1] #'eca-chat--tab-line-close-tab)
+    (define-key map [tab-line mouse-2] #'eca-chat--tab-line-close-tab)
+    map)
+  "Keymap for the tab-line close button in chat buffers.")
+
+(defun eca-chat--force-tab-line-update ()
+  "Force tab-line to redraw in all chat windows by clearing the render cache."
+  (walk-windows
+   (lambda (win)
+     (when (provided-mode-derived-p
+            (buffer-local-value 'major-mode (window-buffer win))
+            'eca-chat-mode)
+       (set-window-parameter win 'tab-line-cache nil)))
+   nil t)
+  (force-mode-line-update t))
+
+(defun eca-chat--sync-last-buffer ()
+  "Update session last-chat-buffer to track the current chat buffer."
+  (when-let ((session (ignore-errors (eca-session))))
+    (unless (eq (eca--session-last-chat-buffer session) (current-buffer))
+      (setf (eca--session-last-chat-buffer session) (current-buffer)))))
+
 (defun eca-chat--mode-line-string (session)
   "Update chat mode line for SESSION."
   (let* ((usage-str (eca-chat--usage-str))
@@ -1348,16 +1453,11 @@ When IN-PROGRESS is non-nil, append an ellipsis."
                           usage-str)))
          (fill-space (propertize " "
                                  'display `((space :align-to (- right ,(+ 1 (length right-str)))))))
-         (title (cond
-                 (eca-chat--custom-title
-                  (propertize eca-chat--custom-title 'font-lock-face 'eca-chat-title-face))
-                 (eca-chat--title
-                  (propertize eca-chat--title 'font-lock-face 'eca-chat-title-face))))
          (root (string-join (eca--session-workspace-folders session) ", ")))
     (concat
-     (when eca-chat--closed
-       (propertize "*Closed session*" 'font-lock-face 'eca-chat-system-messages-face))
-     (or title root)
+     (if eca-chat--closed
+         (propertize "*Closed session*" 'font-lock-face 'eca-chat-system-messages-face)
+       root)
      fill-space
      right-str)))
 
@@ -2515,6 +2615,32 @@ Call ORIG-FUN with ARGS if not media."
            (when (fboundp 'corfu-mode)
              (setq-local corfu-auto-prefix 0))
            (setq-local mode-line-format `(t (:eval (eca-chat--mode-line-string ,session))))
+
+           ;; Tab-line: show a tab for each open chat
+           (when eca-chat-tab-line
+             (setq-local tab-line-tabs-function #'eca-chat--tab-line-tabs)
+             (setq-local tab-line-new-button-show t)
+             (setq-local tab-line-close-button-show t)
+             (setq-local tab-line-new-tab-function #'eca-chat-new)
+             (setq-local tab-line-separator "")
+             (setq-local tab-line-tab-face-functions '(eca-chat--tab-line-face))
+             (face-remap-add-relative 'tab-line :height 0.9)
+             (let ((fallback-bg (face-background 'default nil t)))
+               (face-remap-add-relative 'tab-line-tab :box `(:line-width 4 :color ,(or (face-background 'tab-line-tab nil t) fallback-bg)))
+               (face-remap-add-relative 'tab-line-tab-current :box `(:line-width 4 :color ,(or (face-background 'tab-line-tab-current nil t) fallback-bg)))
+               (face-remap-add-relative 'tab-line-tab-inactive :box `(:line-width 4 :color ,(or (face-background 'tab-line-tab-inactive nil t) fallback-bg)))
+)
+             ;; Use text × instead of XPM image so it inherits the tab background
+             (setq-local tab-line-close-button
+                         (propertize " × "
+                                     'keymap eca-chat--tab-close-map
+                                     'mouse-face 'tab-line-close-highlight
+                                     'help-echo "Click to close tab"))
+             (tab-line-mode 1))
+
+           ;; Keep session last-chat-buffer in sync with the displayed chat
+           (add-hook 'post-command-hook #'eca-chat--sync-last-buffer nil t)
+
            (force-mode-line-update)
            (run-hooks 'eca-chat-mode-hook))))))
 
@@ -3702,38 +3828,56 @@ if ARG is current prefix, ask for file, otherwise drop current file."
 
 ;;;###autoload
 (defun eca-chat-select ()
-  "Select a chat."
+  "Select a chat.
+Shows each chat with its status (🚧 pending approval, ⏳ loading),
+title, and elapsed time annotation."
   (interactive)
-  (let ((session (eca-session))
-        (get-title-fn (lambda ()
-                        (or eca-chat--custom-title
-                            eca-chat--title
-                            eca-chat--id))))
+  (let* ((session (eca-session))
+         (buf-by-label (make-hash-table :test 'equal))
+         (annotation-by-label (make-hash-table :test 'equal)))
     (eca-assert-session-running session)
+    ;; Build items oldest-first (same order as tab-line)
     (let ((items (append
-                  (sort
+                  (nreverse
                    (-keep (lambda (buffer)
                             (when (buffer-live-p buffer)
                               (with-current-buffer buffer
-                                (when-let ((item (funcall get-title-fn)))
-                                  (propertize item
-                                              'face (when eca-chat--chat-loading 'warning))))))
-                          (eca-vals (eca--session-chats session)))
-                   #'string<)
+                                (let* ((title (eca-chat-title))
+                                       (status (eca-chat--chat-status-prefix))
+                                       (label (concat status title))
+                                       ;; Disambiguate duplicate titles
+                                       (label (if (gethash label buf-by-label)
+                                                  (concat label " (" eca-chat--id ")")
+                                                label))
+                                       (face (cond
+                                              ((eca-chat--has-pending-approvals-p) 'warning)
+                                              (eca-chat--chat-loading 'shadow)
+                                              (t nil)))
+                                       (display (if face
+                                                    (propertize label 'face face)
+                                                  label))
+                                       (time-str (eca-chat--turn-duration-str)))
+                                  (puthash display buffer buf-by-label)
+                                  (when time-str
+                                    (puthash display
+                                             (propertize (concat "  " time-str)
+                                                         'face 'eca-chat-elapsed-time-face)
+                                             annotation-by-label))
+                                  display))))
+                          (eca-vals (eca--session-chats session))))
                   (list eca-chat-new-chat-label))))
-      (when-let (chosen-title (completing-read
-                               "Select the chat: "
-                               (lambda (string pred action)
-                                 (if (eq action 'metadata)
-                                     `(metadata (display-sort-function . ,#'identity))
-                                   (complete-with-action action items string pred)))
-                               nil
-                               t))
-        (if-let (buffer (-first (lambda (buffer)
-                                  (when (buffer-live-p buffer)
-                                    (with-current-buffer buffer
-                                      (string= chosen-title (funcall get-title-fn)))))
-                                (eca-vals (eca--session-chats session))))
+      (when-let (chosen (completing-read
+                         "Select the chat: "
+                         (lambda (string pred action)
+                           (if (eq action 'metadata)
+                               `(metadata
+                                 (display-sort-function . ,#'identity)
+                                 (annotation-function
+                                  . ,(lambda (candidate)
+                                       (gethash candidate annotation-by-label))))
+                             (complete-with-action action items string pred)))
+                         nil t))
+        (if-let (buffer (gethash chosen buf-by-label))
             (progn
               (setf (eca--session-last-chat-buffer session) buffer)
               (eca-chat-open session))

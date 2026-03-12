@@ -143,6 +143,7 @@ Chat
 - `eca-chat-mcp-tool-call-success-symbol`: Symbol used for MCP tool calls when they succeed.
 - `eca-chat-expand-pending-approval-tools`: Whether to auto-expand tool calls that are pending approval.
 - `eca-chat-shrink-called-tools`: Whether to auto-shrink tool calls after they have been executed.
+- `eca-chat-tab-line`: Whether to show a tab line with chat tabs at the top of each chat window (default `t`). Each tab shows the chat status (pending approval, loading) and title.
 - `eca-chat-custom-model`: Override the model used for chat (nil = server default).
 - `eca-chat-custom-agent`: Override the chat agent (nil = server default).
 - `eca-chat-usage-string-format`: Controls what usage information (tokens/costs/limits) is shown in the mode-line.
