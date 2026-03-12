@@ -555,6 +555,8 @@ Each task is a plist with :id, :content, :status, :priority, etc.")
 (defvar eca-chat--last-known-agent nil)
 (defvar eca-chat--last-known-variant nil)
 
+(defvar eca--chat-init-session nil
+  "Dynamically bound session during `eca-chat-mode' initialization.")
 
 (defun eca-chat-new-buffer-name (session)
   "Return the chat buffer name for SESSION."
@@ -2558,7 +2560,9 @@ Call ORIG-FUN with ARGS if not media."
   (when (featurep 'company-box)
     (add-to-list 'company-box-icons-functions #'eca-chat--completion-item-company-box-icon))
 
-  (let ((session (eca-session)))
+  (let ((session (or eca--chat-init-session (eca-session))))
+    (when session
+      (setq-local eca--session-id-cache (eca--session-id session)))
     (unless (listp header-line-format)
       (setq-local header-line-format (list header-line-format)))
     (add-to-list 'header-line-format `(t (:eval (eca-chat--header-line-string (eca-session)))))
@@ -3480,7 +3484,8 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
     (eca-chat--create-buffer session))
   (eca-chat--with-current-buffer (eca-chat--get-last-buffer session)
     (unless (derived-mode-p 'eca-chat-mode)
-      (eca-chat-mode)
+      (let ((eca--chat-init-session session))
+        (eca-chat-mode))
       (setq-local eca-chat--selected-agent eca-chat--last-known-agent)
       (setq-local eca-chat--selected-model eca-chat--last-known-model)
       (setq-local eca-chat--selected-variant eca-chat--last-known-variant)
