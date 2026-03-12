@@ -1367,7 +1367,7 @@ Shows 🚧 prefix for pending approvals."
       (concat " " (when pending "🚧 ") title " "))))
 
 (defun eca-chat--tab-line-face (tab _tabs face _selected-p _buffer)
-  "Apply warning face to loading chat tabs.
+  "Apply warning face to loading chat tabs considering TAB.
 Merges `warning' with the default tab FACE via inheritance."
   (let ((buf (cdr (assq 'buffer tab))))
     (if (and buf (buffer-live-p buf)
