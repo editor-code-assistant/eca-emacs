@@ -449,8 +449,13 @@ works normally."
   :group 'eca)
 
 (defface eca-chat-usage-string-face
-  '((t :inherit font-lock-doc-face))
+  '((t :height 0.9 :inherit font-lock-doc-face))
   "Face for the strings segments in usage string in mode-line of the chat."
+  :group 'eca)
+
+(defface eca-chat-elapsed-time-face
+  '((t :height 0.9 :inherit font-lock-comment-face))
+  "Face for the elapsed time indicator in mode-line of the chat."
   :group 'eca)
 
 (defface eca-chat-command-description-face
@@ -503,6 +508,13 @@ darkens for light themes."
 (defvar-local eca-chat--context '())
 (defvar-local eca-chat--spinner-string "")
 (defvar-local eca-chat--spinner-timer nil)
+(defvar-local eca-chat--prompt-start-time nil
+  "Start time of the current prompt, from `current-time'.")
+(defvar-local eca-chat--turn-duration-secs nil
+  "Duration in seconds of the last completed turn.")
+(defvar-local eca-chat--modeline-timer nil
+  "Timer that refreshes the mode-line every second during loading.")
+
 (defvar-local eca-chat--table-resize-timer nil)
 (defvar-local eca-chat--progress-text "")
 (defvar-local eca-chat--last-user-message-pos nil)
@@ -847,6 +859,24 @@ request, useful for subagent tool calls."
 Otherwise to a not loading state."
   (unless (eq eca-chat--chat-loading loading)
     (setq-local eca-chat--chat-loading loading)
+    (if loading
+        (progn
+          (setq-local eca-chat--prompt-start-time (current-time))
+          (let ((buf (current-buffer)))
+            (setq-local eca-chat--modeline-timer
+                        (run-with-timer 1 1
+                                        (lambda ()
+                                          (when (buffer-live-p buf)
+                                            (with-current-buffer buf
+                                              (force-mode-line-update))))))))
+      (when eca-chat--prompt-start-time
+        (setq-local eca-chat--turn-duration-secs
+                    (floor (float-time (time-subtract (current-time) eca-chat--prompt-start-time))))
+        (setq-local eca-chat--prompt-start-time nil))
+      (when eca-chat--modeline-timer
+        (cancel-timer eca-chat--modeline-timer)
+        (setq-local eca-chat--modeline-timer nil))
+      (force-mode-line-update))
     ;; (setq-local buffer-read-only loading)
     (let ((loading-area-ov (eca-chat--loading-area-ov))
           (stop-text (eca-buttonize
@@ -1271,23 +1301,53 @@ Returns a string like \"31.5K / 200K\" or \"\" if no usage data."
             eca-chat--message-cost
             eca-chat--session-cost)
     (-> (-map (lambda (segment)
-                (pcase segment
-                  (:message-input-tokens (eca-chat--number->friendly-number eca-chat--message-input-tokens))
-                  (:message-output-tokens (eca-chat--number->friendly-number eca-chat--message-output-tokens))
-                  (:session-tokens (eca-chat--number->friendly-number eca-chat--session-tokens))
-                  (:message-cost (concat "$" eca-chat--message-cost))
-                  (:session-cost (concat "$" eca-chat--session-cost))
-                  (:context-limit (eca-chat--number->friendly-number eca-chat--session-limit-context))
-                  (:output-limit (eca-chat--number->friendly-number eca-chat--session-limit-output))
-                  (_ (propertize segment 'font-lock-face 'eca-chat-usage-string-face))))
+                (propertize
+                 (pcase segment
+                   (:message-input-tokens (eca-chat--number->friendly-number eca-chat--message-input-tokens))
+                   (:message-output-tokens (eca-chat--number->friendly-number eca-chat--message-output-tokens))
+                   (:session-tokens (eca-chat--number->friendly-number eca-chat--session-tokens))
+                   (:message-cost (concat "$" eca-chat--message-cost))
+                   (:session-cost (concat "$" eca-chat--session-cost))
+                   (:context-limit (eca-chat--number->friendly-number eca-chat--session-limit-context))
+                   (:output-limit (eca-chat--number->friendly-number eca-chat--session-limit-output))
+                   (_ segment))
+                 'font-lock-face 'eca-chat-usage-string-face))
               eca-chat-usage-string-format)
         (string-join ""))))
+
+(defun eca-chat--format-duration (secs &optional in-progress)
+  "Format SECS as a human-readable duration string.
+When IN-PROGRESS is non-nil, append an ellipsis."
+  (let* ((mins (/ secs 60))
+         (remaining-secs (mod secs 60))
+         (time-str (if (>= mins 1)
+                       (format "%dm %ds" mins remaining-secs)
+                     (format "%ds" secs))))
+    (concat "⏱ " time-str (when in-progress "…"))))
+
+(defun eca-chat--turn-duration-str ()
+  "Return formatted turn duration string, or nil if no data available."
+  (cond
+   (eca-chat--prompt-start-time
+    (eca-chat--format-duration
+     (floor (float-time (time-subtract (current-time) eca-chat--prompt-start-time)))
+     t))
+   (eca-chat--turn-duration-secs
+    (eca-chat--format-duration eca-chat--turn-duration-secs))))
 
 (defun eca-chat--mode-line-string (session)
   "Update chat mode line for SESSION."
   (let* ((usage-str (eca-chat--usage-str))
+         (total-time-str (eca-chat--turn-duration-str))
+         (right-str (if (and usage-str total-time-str)
+                        (concat (propertize total-time-str 'font-lock-face 'eca-chat-elapsed-time-face)
+                                (propertize "   " 'font-lock-face 'eca-chat-usage-string-face)
+                                usage-str)
+                      (or (when total-time-str
+                            (propertize total-time-str 'font-lock-face 'eca-chat-elapsed-time-face))
+                          usage-str)))
          (fill-space (propertize " "
-                                 'display `((space :align-to (- right ,(+ 1 (length usage-str)))))))
+                                 'display `((space :align-to (- right ,(+ 1 (length right-str)))))))
          (title (cond
                  (eca-chat--custom-title
                   (propertize eca-chat--custom-title 'font-lock-face 'eca-chat-title-face))
@@ -1299,7 +1359,7 @@ Returns a string like \"31.5K / 200K\" or \"\" if no usage data."
        (propertize "*Closed session*" 'font-lock-face 'eca-chat-system-messages-face))
      (or title root)
      fill-space
-     usage-str)))
+     right-str)))
 
 (defun eca-chat--select-window ()
   "Select the Window."
