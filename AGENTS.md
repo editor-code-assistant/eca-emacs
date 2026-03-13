@@ -1,0 +1,1 @@
+- docstrings should have 80 chars or less, otherwise emacs built-in diagnostics complains.
