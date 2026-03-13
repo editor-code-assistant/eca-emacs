@@ -2656,6 +2656,9 @@ Call ORIG-FUN with ARGS if not media."
 
     ;; TODO is there a better way to do that?
     (advice-add 'delete-char :around #'eca-chat--key-pressed-deletion)
+    (advice-add 'delete-backward-char :around #'eca-chat--key-pressed-deletion)
+    (advice-add 'backward-delete-char :around #'eca-chat--key-pressed-deletion)
+    (advice-add 'backward-delete-char-untabify :around #'eca-chat--key-pressed-deletion)
     (advice-add 'backward-kill-word :around #'eca-chat--key-pressed-deletion)
     (when (featurep 'evil)
       (advice-add 'evil-delete-backward-word :around #'eca-chat--key-pressed-deletion)
