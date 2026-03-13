@@ -33,6 +33,11 @@
   "Face for tools showed in mcp details buffer."
   :group 'eca)
 
+(defface eca-mcp-details-requires-auth-face
+  '((t (:inherit warning :weight bold)))
+  "Face for requires-auth status in mcp details."
+  :group 'eca)
+
 (defface eca-mcp-details-button-face
   '((t (:inherit button)))
   "Face for buttons in mcp details buffer."
@@ -83,22 +88,43 @@
                                                 ("failed" 'error)
                                                 ("stopped" 'default)
                                                 ("stopping" 'default)
-                                                ("disabled" 'shadow))))
-          (insert " "
-                  (if (or (string= "running" status)
-                          (string= "starting" status))
-                      (eca-buttonize
-                       eca-mcp-details-mode-map
-                       (propertize "stop" 'font-lock-face 'eca-mcp-details-button-face)
-                       (lambda () (eca-api-notify session
+                                                ("disabled" 'shadow)
+                                                ("requires-auth" 'eca-mcp-details-requires-auth-face))))
+          (insert " ")
+          (pcase status
+            ("requires-auth"
+             (insert (eca-buttonize
+                      eca-mcp-details-mode-map
+                      (propertize "connect"
+                                  'font-lock-face 'eca-mcp-details-button-face)
+                      (lambda () (eca-api-notify session
+                                                  :method "mcp/connectServer"
+                                                  :params (list :name name))))))
+            ((or "running" "starting")
+             (insert (eca-buttonize
+                      eca-mcp-details-mode-map
+                      (propertize "stop"
+                                  'font-lock-face 'eca-mcp-details-button-face)
+                      (lambda () (eca-api-notify session
                                                   :method "mcp/stopServer"
-                                                  :params (list :name name))))
-                    (eca-buttonize
-                     eca-mcp-details-mode-map
-                     (propertize "start" 'font-lock-face 'eca-mcp-details-button-face)
-                     (lambda () (eca-api-notify session
-                                                :method "mcp/startServer"
-                                                :params (list :name name))))))
+                                                  :params (list :name name)))))
+             (when (plist-get server :hasAuth)
+               (insert " "
+                       (eca-buttonize
+                        eca-mcp-details-mode-map
+                        (propertize "logout"
+                                    'font-lock-face 'eca-mcp-details-button-face)
+                        (lambda () (eca-api-notify session
+                                                    :method "mcp/logoutServer"
+                                                    :params (list :name name)))))))
+            (_
+             (insert (eca-buttonize
+                      eca-mcp-details-mode-map
+                      (propertize "start"
+                                  'font-lock-face 'eca-mcp-details-button-face)
+                      (lambda () (eca-api-notify session
+                                                  :method "mcp/startServer"
+                                                  :params (list :name name)))))))
           (insert "\n")
           (if (seq-empty-p tools)
               (insert (propertize "No tools available" 'font-lock-face font-lock-doc-face))
