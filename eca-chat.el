@@ -1408,6 +1408,21 @@ E is the mouse event."
     (unless (eq (eca--session-last-chat-buffer session) (current-buffer))
       (setf (eca--session-last-chat-buffer session) (current-buffer)))))
 
+(defun eca-chat-add-workspace-root ()
+  "Prompt for a directory and add it as workspace."
+  (interactive)
+  (when-let ((session (eca-session)))
+    (let ((folder (read-directory-name "Add workspace: ")))
+      (eca--session-add-workspace-folder session folder)
+      (force-mode-line-update))))
+
+(defvar eca-chat--add-workspace-map
+  (let ((map (make-sparse-keymap)))
+    (define-key map [mode-line mouse-1]
+                #'eca-chat-add-workspace-root)
+    map)
+  "Keymap for the modeline [+] workspace button.")
+
 (defun eca-chat--mode-line-string (session)
   "Update chat mode line for SESSION."
   (let* ((usage-str (eca-chat--usage-str))
@@ -1421,11 +1436,23 @@ E is the mouse event."
                           usage-str)))
          (fill-space (propertize " "
                                  'display `((space :align-to (- right ,(+ 1 (length right-str)))))))
-         (root (string-join (eca--session-workspace-folders session) ", ")))
+         (home (expand-file-name "~"))
+         (root (string-join
+                (mapcar (lambda (f)
+                          (if (string-prefix-p home f)
+                              (concat "~" (substring f (length home)))
+                            f))
+                        (eca--session-workspace-folders session))
+                ", "))
+         (add-btn (propertize " [+]"
+                              'face 'shadow
+                              'mouse-face 'highlight
+                              'help-echo "Add workspace folder"
+                              'local-map eca-chat--add-workspace-map)))
     (concat
      (if eca-chat--closed
          (propertize "*Closed session*" 'font-lock-face 'eca-chat-system-messages-face)
-       root)
+       (concat root add-btn))
      fill-space
      right-str)))
 
