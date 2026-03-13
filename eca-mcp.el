@@ -43,6 +43,16 @@
   "Face for buttons in mcp details buffer."
   :group 'eca)
 
+(defface eca-mcp-details-button-stop-face
+  '((t (:inherit error :underline t)))
+  "Face for stop button in mcp details buffer."
+  :group 'eca)
+
+(defface eca-mcp-details-button-logout-face
+  '((t (:inherit warning :underline t)))
+  "Face for logout button in mcp details buffer."
+  :group 'eca)
+
 ;; Internal
 
 (declare-function eca "eca.el" args)
@@ -104,7 +114,7 @@
              (insert (eca-buttonize
                       eca-mcp-details-mode-map
                       (propertize "stop"
-                                  'font-lock-face 'eca-mcp-details-button-face)
+                                  'font-lock-face 'eca-mcp-details-button-stop-face)
                       (lambda () (eca-api-notify session
                                                   :method "mcp/stopServer"
                                                   :params (list :name name)))))
@@ -113,7 +123,7 @@
                        (eca-buttonize
                         eca-mcp-details-mode-map
                         (propertize "logout"
-                                    'font-lock-face 'eca-mcp-details-button-face)
+                                    'font-lock-face 'eca-mcp-details-button-logout-face)
                         (lambda () (eca-api-notify session
                                                     :method "mcp/logoutServer"
                                                     :params (list :name name)))))))
@@ -136,6 +146,20 @@
                                     'font-lock-face (if (plist-get tool :disabled)
                                                         'eca-mcp-details-tool-disabled-face
                                                       'eca-mcp-details-tool-face)) " "))))
+          (when-let* ((prompts (plist-get server :prompts))
+                      (_ (not (seq-empty-p prompts))))
+            (insert "\n")
+            (insert (propertize "Prompts: " 'font-lock-face font-lock-doc-face))
+            (seq-doseq (prompt prompts)
+              (insert (propertize (plist-get prompt :name)
+                                  'font-lock-face 'eca-mcp-details-tool-face) " ")))
+          (when-let* ((resources (plist-get server :resources))
+                      (_ (not (seq-empty-p resources))))
+            (insert "\n")
+            (insert (propertize "Resources: " 'font-lock-face font-lock-doc-face))
+            (seq-doseq (resource resources)
+              (insert (propertize (plist-get resource :name)
+                                  'font-lock-face 'eca-mcp-details-tool-face) " ")))
           (when command
             (insert "\n")
             (insert (propertize "Command: " 'font-lock-face font-lock-doc-face))
