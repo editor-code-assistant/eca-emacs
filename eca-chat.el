@@ -13,6 +13,7 @@
 
 (require 'f)
 (require 'markdown-mode)
+(require 'tab-line)
 (require 'compat)
 
 (require 'eca-util)
