@@ -268,6 +268,11 @@ works normally."
   "Face for the stop action when loading."
   :group 'eca)
 
+(defface eca-chat-queued-prompt-face
+  '((t :inherit font-lock-comment-face :slant italic :underline nil))
+  "Face for the queued prompt indicator."
+  :group 'eca)
+
 (defface eca-chat-tool-call-approval-content-face
   `((t :height ,eca-chat-tool-call-approval-content-size))
   "Face for the MCP tool calls approval content in chat."
@@ -884,6 +889,8 @@ request, useful for subagent tool calls."
     (overlay-put progress-area-ov 'eca-chat-progress-area t)
     (eca-chat--insert "\n")
     (move-overlay progress-area-ov (overlay-start progress-area-ov) (1- (overlay-end progress-area-ov))))
+  (let ((queued-area-ov (make-overlay (line-beginning-position) (1+ (line-beginning-position)) (current-buffer))))
+    (overlay-put queued-area-ov 'eca-chat-queued-area t))
   (let ((context-area-ov (make-overlay (line-beginning-position) (line-end-position) (current-buffer) nil t)))
     (overlay-put context-area-ov 'eca-chat-context-area t)
     (eca-chat--insert (propertize eca-chat-context-prefix 'font-lock-face 'eca-chat-context-unlinked-face))
@@ -1046,6 +1053,11 @@ Otherwise to a not loading state."
 (defun eca-chat--task-area-ov ()
   "Return the overlay for the task area."
   (-first (-lambda (ov) (eq t (overlay-get ov 'eca-chat-task-area)))
+          (overlays-in (point-min) (point-max))))
+
+(defun eca-chat--queued-area-ov ()
+  "Return the overlay for the queued prompt area."
+  (-first (-lambda (ov) (eq t (overlay-get ov 'eca-chat-queued-area)))
           (overlays-in (point-min) (point-max))))
 
 (defun eca-chat--prompt-area-start-point ()
@@ -1218,18 +1230,37 @@ Resteps a list of context plists found in the prompt field."
      :success-callback (-lambda (res)
                          (setq-local eca-chat--id (plist-get res :chatId))))))
 
+(defun eca-chat--queued-prompt-display-string (text)
+  "Return a display string for queued prompt TEXT, truncated to 40 chars."
+  (let* ((single-line (replace-regexp-in-string "\n" " " text))
+         (truncated (if (> (length single-line) 40)
+                        (concat (substring single-line 0 40) "...")
+                      single-line)))
+    (propertize (concat "Queued: " truncated "\n")
+                'face 'eca-chat-queued-prompt-face)))
+
+(defun eca-chat--update-queued-area ()
+  "Update the queued-area overlay to reflect `eca-chat--queued-prompt'."
+  (when-let* ((ov (eca-chat--queued-area-ov)))
+    (overlay-put ov 'before-string
+                 (if eca-chat--queued-prompt
+                     (eca-chat--queued-prompt-display-string eca-chat--queued-prompt)
+                   ""))))
+
 (defun eca-chat--queue-prompt (prompt)
   "Queue PROMPT to be sent to SESSION when it finish current prompt."
   (setq-local eca-chat--queued-prompt (if eca-chat--queued-prompt
                                           (concat eca-chat--queued-prompt "\n" prompt)
                                         prompt))
+  (eca-chat--update-queued-area)
   (eca-chat--set-prompt ""))
 
 (defun eca-chat--send-queued-prompt (session)
   "Send any queued prompt for SESSION."
   (when eca-chat--queued-prompt
     (eca-chat--send-prompt session eca-chat--queued-prompt)
-    (setq-local eca-chat--queued-prompt nil)))
+    (setq-local eca-chat--queued-prompt nil)
+    (eca-chat--update-queued-area)))
 
 (defun eca-chat--key-pressed-return ()
   "Send the current prompt to eca process if in prompt."
