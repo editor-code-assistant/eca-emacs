@@ -53,6 +53,11 @@
   "Face for logout button in mcp details buffer."
   :group 'eca)
 
+(defface eca-mcp-details-command-value-face
+  '((t (:inherit font-lock-doc-face :height 0.9)))
+  "Face for command value in mcp details."
+  :group 'eca)
+
 ;; Internal
 
 (declare-function eca "eca.el" args)
@@ -163,7 +168,8 @@
           (when command
             (insert "\n")
             (insert (propertize "Command: " 'font-lock-face font-lock-doc-face))
-            (insert command " " (string-join args " ")))
+            (insert (propertize (concat command " " (string-join args " "))
+                               'font-lock-face 'eca-mcp-details-command-value-face)))
           (when (string= "failed" status)
             (insert "\n")
             (insert (propertize (format "Failed to start, check %s for details"
