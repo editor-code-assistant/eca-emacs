@@ -14,7 +14,7 @@
 (require 'cl-lib)
 (require 'dash)
 (require 'f)
-(require 'transient)
+(require 'transient nil t)
 
 (declare-function eca-api-notify "eca-api")
 
@@ -256,39 +256,52 @@ Inheirits BASE-MAP."
                 'local-map km
                 'keymap km)))
 
-(transient-define-prefix eca-transient-menu
-  ()
-  "ECA transient menu"
-  [["Chat"
-    ("n" "New" eca-chat-new)
-    ("f" "Select" eca-chat-select)
-    ("c" "Clear" eca-chat-clear)
-    ("r" "Reset" eca-chat-reset)
-    ("R" "Rename" eca-chat-rename)
-    ("t" "Talk" eca-chat-talk)
-    ("p" "Repeat prompt" eca-chat-repeat-prompt)
-    ("C" "Clear prompt" eca-chat-clear-prompt)
-    ("m" "Select model" eca-chat-select-model)
-    ("v" "Select variant" eca-chat-select-variant)
-    ("b" "Change agent" eca-chat-select-agent)
-    ("o" "Open/close chat window" eca-chat-toggle-window)
-    ("a" "Accept all pending tool calls" eca-chat-tool-call-accept-all)
-    ("!" "Accept all pending tool calls and remember" eca-chat-tool-call-accept-all-and-remember)
-    ("s" "Add to system prompt" eca-chat-add-context-to-system-prompt)
-    ("u" "Add to user prompt" eca-chat-add-context-to-user-prompt)
-    ("d" "Drop from system prompt" eca-chat-drop-context-from-system-prompt)
-    ("A" "Accept next pending tool call" eca-chat-tool-call-accept-next)]
+(with-eval-after-load 'transient
+  (transient-define-prefix eca--transient-menu-prefix ()
+    "ECA transient menu."
+    [["Chat"
+      ("n" "New" eca-chat-new)
+      ("f" "Select" eca-chat-select)
+      ("c" "Clear" eca-chat-clear)
+      ("r" "Reset" eca-chat-reset)
+      ("R" "Rename" eca-chat-rename)
+      ("t" "Talk" eca-chat-talk)
+      ("p" "Repeat prompt" eca-chat-repeat-prompt)
+      ("C" "Clear prompt" eca-chat-clear-prompt)
+      ("m" "Select model" eca-chat-select-model)
+      ("v" "Select variant" eca-chat-select-variant)
+      ("b" "Change agent" eca-chat-select-agent)
+      ("o" "Open/close chat window" eca-chat-toggle-window)
+      ("a" "Accept all pending tool calls" eca-chat-tool-call-accept-all)
+      ("!" "Accept all pending tool calls and remember" eca-chat-tool-call-accept-all-and-remember)
+      ("s" "Add to system prompt" eca-chat-add-context-to-system-prompt)
+      ("u" "Add to user prompt" eca-chat-add-context-to-user-prompt)
+      ("d" "Drop from system prompt" eca-chat-drop-context-from-system-prompt)
+      ("A" "Accept next pending tool call" eca-chat-tool-call-accept-next)]
 
-   ["Navigation"
-    ("N h" "Message history" eca-chat-timeline)
-    ("N c" "Chat" eca)
-    ("N m" "MCP details" eca-mcp-details)
-    ("N e" "Show stderr (logs)" eca-show-stderr)
-    ("N E" "Show emacs errors" eca-show-errors)]
+     ["Navigation"
+      ("N h" "Message history" eca-chat-timeline)
+      ("N c" "Chat" eca)
+      ("N m" "MCP details" eca-mcp-details)
+      ("N e" "Show stderr (logs)" eca-show-stderr)
+      ("N E" "Show emacs errors" eca-show-errors)]
 
-   ["Server"
-    ("S r" "Restart" eca-restart)
-    ("S s" "Stop" eca-stop)]])
+     ["Server"
+      ("S r" "Restart" eca-restart)
+      ("S s" "Stop" eca-stop)]]))
+
+(defun eca-transient-menu ()
+  "Open the ECA transient menu.
+Requires the `transient' package."
+  (interactive)
+  (unless (featurep 'transient)
+    (user-error "Install the `transient' package to use the ECA menu"))
+  (condition-case err
+      (transient-setup 'eca--transient-menu-prefix)
+    (error
+     (user-error
+      "ECA menu failed: %s. Try: M-x package-reinstall RET transient"
+      (error-message-string err)))))
 
 (provide 'eca-util)
 ;;; eca-util.el ends here
