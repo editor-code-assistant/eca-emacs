@@ -81,6 +81,18 @@
   "Create the eca mcp details buffer for SESSION."
   (get-buffer-create (generate-new-buffer-name (eca-mcp-details-buffer-name session))))
 
+(defun eca-mcp--status-emoji (status)
+  "Return a colored emoji circle for STATUS."
+  (pcase status
+    ("running" "🟢")
+    ("starting" "🟡")
+    ("failed" "🔴")
+    ("stopped" "⚪")
+    ("stopping" "⚪")
+    ("disabled" "⚫")
+    ("requires-auth" "🟠")
+    (_ "⚪")))
+
 (defun eca-mcp--refresh-server-details (session)
   "Refresh the MCP server details for SESSION."
   (when (buffer-live-p (get-buffer (eca-mcp-details-buffer-name session)))
@@ -93,19 +105,13 @@
                                                  (plist-get b :name)))
                                  (eca-vals (eca--session-tool-servers session))))
         (-let (((&plist :name name :command command :args args
-                        :status status :tools tools) server))
-          (insert (propertize name 'font-lock-face 'bold))
-          (insert " - ")
-          (insert (propertize status
-                              'font-lock-face (pcase status
-                                                ("running" 'success)
-                                                ("starting" 'warning)
-                                                ("failed" 'error)
-                                                ("stopped" 'default)
-                                                ("stopping" 'default)
-                                                ("disabled" 'shadow)
-                                                ("requires-auth" 'eca-mcp-details-requires-auth-face))))
+                        :url url :status status :tools tools) server))
+          (insert (propertize (eca-mcp--status-emoji status)
+                              'eca-mcp-status status
+                              'help-echo status))
           (insert " ")
+          (insert (propertize name 'font-lock-face 'bold))
+          (insert "   ")
           (pcase status
             ("requires-auth"
              (insert (eca-buttonize
@@ -170,6 +176,11 @@
             (insert (propertize "Command: " 'font-lock-face font-lock-doc-face))
             (insert (propertize (concat command " " (string-join args " "))
                                'font-lock-face 'eca-mcp-details-command-value-face)))
+          (when-let* ((url (plist-get server :url)))
+            (insert "\n")
+            (insert (propertize "URL: " 'font-lock-face font-lock-doc-face))
+            (insert (propertize url
+                               'font-lock-face 'eca-mcp-details-command-value-face)))
           (when (string= "failed" status)
             (insert "\n")
             (insert (propertize (format "Failed to start, check %s for details"
@@ -201,21 +212,27 @@
 
 (defun eca-mcp--eldoc-function (cb &rest _ignored)
   "Eldoc function for MCP details buffer.
-When point is on a tool name, call CB with its description and arguments."
-  (when-let* ((tool (get-text-property (point) 'eca-mcp-tool)))
-    (let* ((name (plist-get tool :name))
-           (description (plist-get tool :description))
-           (input-schema (plist-get tool :inputSchema))
-           (args (eca-mcp--format-input-schema-args input-schema))
-           (doc (concat (propertize name 'face 'bold)
-                        (when description
-                          (concat ": " description))
-                        (when args
-                          (concat "\n"
-                                  (propertize "Args:" 'face 'font-lock-keyword-face)
-                                  "\n  "
-                                  (string-join args "\n  "))))))
-      (funcall cb doc))))
+When point is on a tool or status emoji, call CB with docs."
+  (cond
+   ((when-let* ((status (get-text-property (point) 'eca-mcp-status)))
+      (funcall cb (concat (propertize "Status: " 'face 'bold)
+                          status))
+      t))
+   ((when-let* ((tool (get-text-property (point) 'eca-mcp-tool)))
+      (let* ((name (plist-get tool :name))
+             (description (plist-get tool :description))
+             (input-schema (plist-get tool :inputSchema))
+             (args (eca-mcp--format-input-schema-args input-schema))
+             (doc (concat (propertize name 'face 'bold)
+                          (when description
+                            (concat ": " description))
+                          (when args
+                            (concat "\n"
+                                    (propertize "Args:" 'face 'font-lock-keyword-face)
+                                    "\n  "
+                                    (string-join args "\n  "))))))
+        (funcall cb doc)
+        t)))))
 
 ;; Public
 

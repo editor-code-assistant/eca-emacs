@@ -95,8 +95,6 @@ ECA chat opens in a regular buffer that follows standard
   :type 'string
   :group 'eca)
 
-
-
 (defcustom eca-chat-mcp-tool-call-loading-symbol "⏳"
   "The string used in eca chat buffer for mcp tool calls while loading."
   :type 'string
