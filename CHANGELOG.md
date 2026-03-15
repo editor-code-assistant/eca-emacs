@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Add `eca-chat-mode-line-format` for customizable chat mode line layout. #184
+
 ## 0.6.0
 
 - Add `eca-chat-save-to-file` command. #95 

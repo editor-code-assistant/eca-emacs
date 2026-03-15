@@ -156,6 +156,42 @@ Must be a valid model supported by server, check `eca-chat-select-model`."
            (const :tag "Last message cost" :last-message-cost)))
   :group 'eca)
 
+(defcustom eca-chat-mode-line-format
+  '(:workspace-folders :add-workspace-button :spacer :elapsed-time "   " :usage)
+  "Format for the ECA chat mode line.
+
+When set to a list, each element is a module keyword or a
+literal string.  Modules are rendered in order; use `:spacer'
+to separate left-aligned and right-aligned content.
+
+Available modules:
+  `:workspace-folders' - project root paths
+  `:add-workspace-button' - clickable [+] button
+  `:title' - chat title
+  `:elapsed-time' - turn duration timer
+  `:usage' - token/cost info (see `eca-chat-usage-string-format')
+  `:server-version' - shows \"ECA <version>\"
+  `:spacer' - elastic space that right-aligns everything after it
+
+When set to a function, it receives the session as its sole
+argument and should return a valid `mode-line-format' value.
+The function is called once at buffer creation; include
+`:eval' forms in the result for dynamic content.
+This gives full control for powerline or doom-modeline users."
+  :type '(choice
+          (repeat
+           (choice
+            (string :tag "Literal string")
+            (const :tag "Workspace folders" :workspace-folders)
+            (const :tag "Add workspace button" :add-workspace-button)
+            (const :tag "Chat title" :title)
+            (const :tag "Elapsed time" :elapsed-time)
+            (const :tag "Usage info" :usage)
+            (const :tag "ECA server version" :server-version)
+            (const :tag "Right-align spacer" :spacer)))
+          (function :tag "Custom function (receives session)"))
+  :group 'eca)
+
 (defcustom eca-chat-diff-tool 'smerge
   "Select the method for displaying file-change diffs in ECA chat."
   :type '(choice (const :tag "Side-by-side Ediff" ediff)
@@ -436,6 +472,9 @@ works normally."
 (defvar-local eca-chat--subagent-usage (make-hash-table :test 'equal)
   "Hash table mapping tool-call-id to a plist (:session-tokens N :context-limit N).
 Stores the latest usage data received for each running subagent.")
+
+(defvar-local eca-chat--server-version nil
+  "Cached ECA server version string for mode-line display.")
 
 (defvar-local eca-chat--task-state nil
   "Current task state plist with :goal and :tasks.
@@ -1421,38 +1460,67 @@ E is the mouse event."
     map)
   "Keymap for the modeline [+] workspace button.")
 
+(defun eca-chat--mode-line-module (session keyword)
+  "Return mode-line string segment for module KEYWORD in SESSION."
+  (pcase keyword
+    (:workspace-folders
+     (let ((home (expand-file-name "~")))
+       (string-join
+        (mapcar (lambda (f)
+                  (if (string-prefix-p home f)
+                      (concat "~" (substring f (length home)))
+                    f))
+                (eca--session-workspace-folders session))
+        ", ")))
+    (:add-workspace-button
+     (propertize " [+]"
+                 'face 'shadow
+                 'mouse-face 'highlight
+                 'help-echo "Add workspace folder"
+                 'local-map eca-chat--add-workspace-map))
+    (:title
+     (eca-chat-title))
+    (:elapsed-time
+     (when-let* ((str (eca-chat--turn-duration-str)))
+       (propertize str 'font-lock-face 'eca-chat-elapsed-time-face)))
+    (:usage
+     (eca-chat--usage-str))
+    (:server-version
+     (when eca-chat--server-version
+       (concat "ECA " eca-chat--server-version)))
+    ((pred stringp) keyword)
+    (_ "")))
+
 (defun eca-chat--mode-line-string (session)
-  "Update chat mode line for SESSION."
-  (let* ((usage-str (eca-chat--usage-str))
-         (total-time-str (eca-chat--turn-duration-str))
-         (right-str (if (and usage-str total-time-str)
-                        (concat (propertize total-time-str 'font-lock-face 'eca-chat-elapsed-time-face)
-                                (propertize "   " 'font-lock-face 'eca-chat-usage-string-face)
-                                usage-str)
-                      (or (when total-time-str
-                            (propertize total-time-str 'font-lock-face 'eca-chat-elapsed-time-face))
-                          usage-str)))
-         (fill-space (propertize " "
-                                 'display `((space :align-to (- right ,(+ 1 (length right-str)))))))
-         (home (expand-file-name "~"))
-         (root (string-join
-                (mapcar (lambda (f)
-                          (if (string-prefix-p home f)
-                              (concat "~" (substring f (length home)))
-                            f))
-                        (eca--session-workspace-folders session))
-                ", "))
-         (add-btn (propertize " [+]"
-                              'face 'shadow
-                              'mouse-face 'highlight
-                              'help-echo "Add workspace folder"
-                              'local-map eca-chat--add-workspace-map)))
-    (concat
-     (if eca-chat--closed
-         (propertize "*Closed session*" 'font-lock-face 'eca-chat-system-messages-face)
-       (concat root add-btn))
-     fill-space
-     right-str)))
+  "Build mode-line string for SESSION from `eca-chat-mode-line-format'."
+  (if eca-chat--closed
+      (propertize "*Closed session*"
+                  'font-lock-face 'eca-chat-system-messages-face)
+    (let* ((fmt eca-chat-mode-line-format)
+           (spacer-pos (-elem-index :spacer fmt))
+           (left-modules (if spacer-pos (-take spacer-pos fmt) fmt))
+           (right-modules (when spacer-pos
+                            (-drop (1+ spacer-pos) fmt)))
+           (left (string-join
+                  (-non-nil
+                   (-map (lambda (m)
+                           (eca-chat--mode-line-module session m))
+                         left-modules))
+                  ""))
+           (right (string-trim
+                   (string-join
+                    (-non-nil
+                     (-map (lambda (m)
+                             (eca-chat--mode-line-module session m))
+                           right-modules))
+                    "")))
+           (fill (if (string-empty-p right)
+                     ""
+                   (propertize
+                    " " 'display
+                    `((space :align-to
+                             (- right ,(1+ (length right)))))))))
+      (concat left fill right))))
 
 (defun eca-chat--select-window ()
   "Select the Window."
@@ -1764,7 +1832,12 @@ CHILD, NAME, DOCSTRING and BODY are passed down."
                          company-minimum-prefix-length 0))
            (when (fboundp 'corfu-mode)
              (setq-local corfu-auto-prefix 0))
-           (setq-local mode-line-format `(t (:eval (eca-chat--mode-line-string ,session))))
+           (setq-local eca-chat--server-version
+                        (eca-process--get-current-server-version))
+           (setq-local mode-line-format
+                        (if (functionp eca-chat-mode-line-format)
+                            (funcall eca-chat-mode-line-format session)
+                          `(t (:eval (eca-chat--mode-line-string ,session)))))
 
            ;; Tab-line: show a tab for each open chat
            (when eca-chat-tab-line

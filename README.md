@@ -147,6 +147,7 @@ Chat
 - `eca-chat-custom-model`: Override the model used for chat (nil = server default).
 - `eca-chat-custom-agent`: Override the chat agent (nil = server default).
 - `eca-chat-usage-string-format`: Controls what usage information (tokens/costs/limits) is shown in the mode-line.
+- `eca-chat-mode-line-format`: Controls the layout of the chat mode line. Can be a list of module keywords and literal strings, or a function for full control.
 - `eca-chat-diff-tool`: How to show file diffs from chat (`smerge` or `ediff`).
 - `eca-chat-tool-call-prepare-throttle`: Throttle strategy for `toolCallPrepare` events (`all` or `smart`).
 - `eca-chat-tool-call-prepare-update-interval`: When using `smart` throttle, process every Nth `toolCallPrepare` update.
