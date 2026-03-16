@@ -594,16 +594,29 @@ Each task is a plist with :id, :content, :status, :priority, etc.")
   (setq eca-chat--spinner-string ""))
 
 (defun eca-chat--time->presentable-time (ms)
-  "Return a presentable time for MS."
-  (let ((secs (/ (float ms) 1000)))
-    (propertize (format "%.2f s" secs) 'font-lock-face 'eca-chat-time-face)))
+  "Return a propertized presentable time for MS."
+  (let ((secs (/ ms 1000)))
+    (propertize (eca-chat--format-duration secs)
+                'font-lock-face 'eca-chat-time-face)))
+
+(defun eca-chat--format-duration (seconds)
+  "Format SECONDS into a human-readable duration string.
+Returns \"Xs\" for < 60s, \"Xm Ys\" for >= 60s."
+  (if (< seconds 60)
+      (format "%ds" seconds)
+    (let ((mins (/ seconds 60))
+          (secs (% seconds 60)))
+      (if (zerop secs)
+          (format "%dm" mins)
+        (format "%dm %ds" mins secs)))))
 
 (defun eca-chat--elapsed-time-string (start-time)
   "Return a propertized elapsed-time string since START-TIME.
-The result looks like \" 1s\", \" 2s\", etc. with `eca-chat-time-face' and
-a `eca-chat--elapsed-time' text property so the timer can locate it."
+Uses `eca-chat--format-duration' for display, with
+`eca-chat-time-face' and a `eca-chat--elapsed-time' text
+property so the timer can locate it."
   (let* ((elapsed (floor (float-time (time-subtract (current-time) start-time))))
-         (str (concat " " (propertize (format "%ds" elapsed)
+         (str (concat " " (propertize (eca-chat--format-duration elapsed)
                                       'font-lock-face 'eca-chat-time-face))))
     (propertize str 'eca-chat--elapsed-time t)))
 

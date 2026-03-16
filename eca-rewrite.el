@@ -113,9 +113,15 @@
            (overlays-in (point-min) (point-max))))
 
 (defun eca-rewrite--time->presentable-time (ms)
-  "Return a presentable time for MS."
-  (let ((secs (/ (float ms) 1000)))
-    (format "%.2f s" secs)))
+  "Return a presentable time string for MS."
+  (let ((secs (/ ms 1000)))
+    (if (< secs 60)
+        (format "%ds" secs)
+      (let ((mins (/ secs 60))
+            (rem  (% secs 60)))
+        (if (zerop rem)
+            (format "%dm" mins)
+          (format "%dm %ds" mins rem))))))
 
 (defun eca-rewrite--normalize-start-region (start)
   "Normalize START region.
