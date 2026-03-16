@@ -599,17 +599,6 @@ Each task is a plist with :id, :content, :status, :priority, etc.")
     (propertize (eca-chat--format-duration secs)
                 'font-lock-face 'eca-chat-time-face)))
 
-(defun eca-chat--format-duration (seconds)
-  "Format SECONDS into a human-readable duration string.
-Returns \"Xs\" for < 60s, \"Xm Ys\" for >= 60s."
-  (if (< seconds 60)
-      (format "%ds" seconds)
-    (let ((mins (/ seconds 60))
-          (secs (% seconds 60)))
-      (if (zerop secs)
-          (format "%dm" mins)
-        (format "%dm %ds" mins secs)))))
-
 (defun eca-chat--elapsed-time-string (start-time)
   "Return a propertized elapsed-time string since START-TIME.
 Uses `eca-chat--format-duration' for display, with
@@ -1341,25 +1330,28 @@ Returns a string like \"31.5K / 200K\" or \"\" if no usage data."
               eca-chat-usage-string-format)
         (string-join ""))))
 
-(defun eca-chat--format-duration (secs &optional in-progress)
-  "Format SECS as a human-readable duration string.
-When IN-PROGRESS is non-nil, append an ellipsis."
-  (let* ((mins (/ secs 60))
-         (remaining-secs (mod secs 60))
-         (time-str (if (>= mins 1)
-                       (format "%dm %ds" mins remaining-secs)
-                     (format "%ds" secs))))
-    (concat "⏱ " time-str (when in-progress "…"))))
+(defun eca-chat--format-duration (secs)
+  "Format SECS into a human-readable duration string.
+Returns \"Xs\" for < 60s, \"Xm Ys\" for >= 60s,
+or \"Xm\" when seconds are zero."
+  (let ((mins (/ secs 60))
+        (remaining-secs (mod secs 60)))
+    (cond
+     ((< secs 60)          (format "%ds" secs))
+     ((zerop remaining-secs) (format "%dm" mins))
+     (t                      (format "%dm %ds" mins remaining-secs)))))
 
 (defun eca-chat--turn-duration-str ()
-  "Return formatted turn duration string, or nil if no data available."
-  (cond
-   (eca-chat--prompt-start-time
-    (eca-chat--format-duration
-     (floor (float-time (time-subtract (current-time) eca-chat--prompt-start-time)))
-     t))
-   (eca-chat--turn-duration-secs
-    (eca-chat--format-duration eca-chat--turn-duration-secs))))
+  "Return formatted turn duration string, or nil."
+  (when-let* ((dur (cond
+                    (eca-chat--prompt-start-time
+                     (floor (float-time
+                             (time-subtract (current-time)
+                                            eca-chat--prompt-start-time))))
+                    (eca-chat--turn-duration-secs
+                     eca-chat--turn-duration-secs))))
+    (concat (eca-chat--format-duration dur)
+            (when eca-chat--prompt-start-time "…"))))
 
 (defun eca-chat--has-pending-approvals-p ()
   "Return non-nil if current buffer has any pending approval tool call."
@@ -1495,7 +1487,7 @@ E is the mouse event."
      (eca-chat-title))
     (:elapsed-time
      (when-let* ((str (eca-chat--turn-duration-str)))
-       (propertize str 'font-lock-face 'eca-chat-elapsed-time-face)))
+       (propertize (concat "⏱ " str) 'font-lock-face 'eca-chat-elapsed-time-face)))
     (:usage
      (eca-chat--usage-str))
     (:server-version
