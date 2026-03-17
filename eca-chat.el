@@ -144,6 +144,11 @@ Must be a valid model supported by server, check `eca-chat-select-model`."
   :type 'string
   :group 'eca)
 
+(defcustom eca-chat-trust-enable nil
+  "When non-nil, auto-accept all tool calls."
+  :type 'boolean
+  :group 'eca)
+
 (defcustom eca-chat-usage-string-format '(:session-tokens " / " :context-limit " (" :session-cost ")")
   "Format to show about chat usage tokens/costs."
   :type '(repeat
@@ -157,7 +162,7 @@ Must be a valid model supported by server, check `eca-chat-select-model`."
   :group 'eca)
 
 (defcustom eca-chat-mode-line-format
-  '(:workspace-folders :add-workspace-button :spacer :elapsed-time "   " :usage)
+  '(:workspace-folders :add-workspace-button :spacer :elapsed-time "   " :usage " " :trust)
   "Format for the ECA chat mode line.
 
 When set to a list, each element is a module keyword or a
@@ -171,6 +176,7 @@ Available modules:
   `:elapsed-time' - turn duration timer
   `:usage' - token/cost info (see `eca-chat-usage-string-format')
   `:server-version' - shows \"ECA <version>\"
+  `:trust' - trust mode indicator (● red/gray)
   `:spacer' - elastic space that right-aligns everything after it
 
 When set to a function, it receives the session as its sole
@@ -188,6 +194,7 @@ This gives full control for powerline or doom-modeline users."
             (const :tag "Elapsed time" :elapsed-time)
             (const :tag "Usage info" :usage)
             (const :tag "ECA server version" :server-version)
+            (const :tag "Trust mode indicator" :trust)
             (const :tag "Right-align spacer" :spacer)))
           (function :tag "Custom function (receives session)"))
   :group 'eca)
@@ -414,6 +421,16 @@ works normally."
   "Face for the option values in header-line of the chat."
   :group 'eca)
 
+(defface eca-chat-trust-on-face
+  '((t :weight bold :inherit 'error))
+  "Face for trust mode when on in mode-line."
+  :group 'eca)
+
+(defface eca-chat-trust-off-face
+  '((t :inherit default))
+  "Face for trust mode when off in mode-line."
+  :group 'eca)
+
 (defface eca-chat-usage-string-face
   '((t :height 0.9 :inherit font-lock-doc-face))
   "Face for the strings segments in usage string in mode-line of the chat."
@@ -440,6 +457,7 @@ works normally."
 (defvar-local eca-chat--selected-model nil)
 (defvar-local eca-chat--selected-agent nil)
 (defvar-local eca-chat--selected-variant nil)
+(defvar-local eca-chat--selected-trust nil)
 (defvar-local eca-chat--last-request-id 0)
 (defvar-local eca-chat--spinner-string "")
 (defvar-local eca-chat--spinner-timer nil)
@@ -507,7 +525,8 @@ Each task is a plist with :id, :content, :status, :priority, etc.")
     (define-key map (kbd "TAB") #'eca-chat--key-pressed-tab)
     (define-key map (kbd "C-c C-k") #'eca-chat-reset)
     (define-key map (kbd "C-c C-l") #'eca-chat-clear)
-    (define-key map (kbd "C-c C-t") #'eca-chat-talk)
+    (define-key map (kbd "C-c C-t") #'eca-chat-toggle-trust)
+    (define-key map (kbd "C-c C-S-t") #'eca-chat-talk)
     (define-key map (kbd "C-c C-S-b") #'eca-chat-select-agent)
     (define-key map (kbd "C-c C-b") #'eca-chat-cycle-agent)
     (define-key map (kbd "C-c C-m") #'eca-chat-select-model)
@@ -690,6 +709,11 @@ Cancels the shared timer when no more tool calls are being tracked."
   "The chat variant for the current model."
   (or eca-chat--selected-variant
       eca-chat--last-known-variant))
+
+(defun eca-chat--trust ()
+  "Non-nil when trust mode is on, auto-accepts tool call."
+  (or eca-chat-trust-enable
+      eca-chat--selected-trust))
 
 (defun eca-chat--mcps-summary (session)
   "The summary of MCP servers for SESSION."
@@ -1121,7 +1145,9 @@ Resteps a list of context plists found in the prompt field."
                           :contexts (vconcat refined-contexts))
                      (when-let* ((variant (eca-chat--variant)))
                        (unless (string= variant "-")
-                         (list :variant variant))))
+                         (list :variant variant)))
+                     (when (eca-chat--trust)
+                       (list :trust t)))
      :success-callback (-lambda (res)
                          (setq-local eca-chat--id (plist-get res :chatId))))))
 
@@ -1465,6 +1491,13 @@ E is the mouse event."
     map)
   "Keymap for the modeline [+] workspace button.")
 
+(defvar eca-chat--trust-toggle-map
+  (let ((map (make-sparse-keymap)))
+    (define-key map [mode-line mouse-1]
+                #'eca-chat-toggle-trust)
+    map)
+  "Keymap for the modeline trust indicator.")
+
 (defun eca-chat--mode-line-module (session keyword)
   "Return mode-line string segment for module KEYWORD in SESSION."
   (pcase keyword
@@ -1493,6 +1526,16 @@ E is the mouse event."
     (:server-version
      (when eca-chat--server-version
        (concat "ECA " eca-chat--server-version)))
+    (:trust
+     (propertize "⬤"
+                 'face (if (eca-chat--trust)
+                           'eca-chat-trust-on-face
+                         'eca-chat-trust-off-face)
+                 'mouse-face 'highlight
+                 'help-echo (if (eca-chat--trust)
+                                "Trust ON - auto-accepting tool calls"
+                              "Trust OFF")
+                 'local-map eca-chat--trust-toggle-map))
     ((pred stringp) keyword)
     (_ "")))
 
@@ -1928,6 +1971,14 @@ the last chat buffer of SESSION."
   (eca-api-notify session
                   :method "chat/selectedAgentChanged"
                   :params (list :agent new-agent)))
+
+(defun eca-chat--set-trust (session value &optional buffer)
+  "Set trust mode to VALUE for SESSION.
+When BUFFER is provided, set in that buffer instead of
+the last chat buffer of SESSION."
+  (eca-chat--with-current-buffer (or buffer (eca-chat--get-last-buffer session))
+    (setq-local eca-chat--selected-trust value)
+    (force-mode-line-update)))
 
 (defun eca-chat--tool-call-file-change-details
     (content label approval-text time status tool-call-next-line-spacing roots &optional parent-id)
@@ -2689,6 +2740,16 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
          (next-agent (or (nth (1+ current-agent-index) all-agents)
                          (nth 0 all-agents))))
     (eca-chat--set-agent session next-agent (current-buffer))))
+
+;;;###autoload
+(defun eca-chat-toggle-trust ()
+  "Toggle trust mode (auto-accept all tool call)."
+  (interactive)
+  (let ((new-value (not (eca-chat--trust))))
+    (eca-chat--set-trust (eca-session) new-value)
+    (eca-info (if new-value
+                  "Enabled trust-mode (Auto accept tool calls)"
+                "Disabled trust-mode (Auto accept tool calls)"))))
 
 ;;;###autoload
 (defun eca-chat-tool-call-accept-all ()
