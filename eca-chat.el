@@ -1148,8 +1148,11 @@ Resteps a list of context plists found in the prompt field."
                          (list :variant variant)))
                      (when (eca-chat--trust)
                        (list :trust t)))
-     :success-callback (-lambda (res)
-                         (setq-local eca-chat--id (plist-get res :chatId))))))
+     :success-callback (let ((chat-buffer (current-buffer)))
+                         (-lambda (res)
+                           (when (buffer-live-p chat-buffer)
+                             (with-current-buffer chat-buffer
+                               (setq-local eca-chat--id (plist-get res :chatId)))))))))
 
 (defun eca-chat--queued-prompt-display-string (text)
   "Return a display string for queued prompt TEXT, truncated to 40 chars."
