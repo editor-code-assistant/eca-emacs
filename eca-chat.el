@@ -1896,11 +1896,6 @@ CHILD, NAME, DOCSTRING and BODY are passed down."
              (setq-local tab-line-separator "")
              (setq-local tab-line-tab-face-functions '(eca-chat--tab-line-face))
              (face-remap-add-relative 'tab-line :height 0.9)
-             (let ((fallback-bg (face-background 'default nil t)))
-               (face-remap-add-relative 'tab-line-tab :box `(:line-width 4 :color ,(or (face-background 'tab-line-tab nil t) fallback-bg)))
-               (face-remap-add-relative 'tab-line-tab-current :box `(:line-width 4 :color ,(or (face-background 'tab-line-tab-current nil t) fallback-bg)))
-               (face-remap-add-relative 'tab-line-tab-inactive :box `(:line-width 4 :color ,(or (face-background 'tab-line-tab-inactive nil t) fallback-bg)))
-)
              ;; Use text × instead of XPM image so it inherits the tab background
              (setq-local tab-line-close-button
                          (propertize " × "
