@@ -221,7 +221,9 @@ when the error occurred."
           ('notification (eca--handle-server-notification session json-data))
           ('request (let ((response (eca--handle-server-request session json-data)))
                       (eca-api-send-request-response session json-data response))))
-      (error (eca--log-error session err "handle-message")))))
+      (error
+       (eca--log-error session err "handle-message")
+       (signal (car err) (cdr err))))))
 
 (defun eca--initialize (session)
   "Send the initialize request for SESSION."
