@@ -1183,6 +1183,26 @@ Resteps a list of context plists found in the prompt field."
     (setq-local eca-chat--queued-prompt nil)
     (eca-chat--update-queued-area)))
 
+(defun eca-chat--completion-active-p ()
+  "Return non-nil if a completion popup is active."
+  (or (and (bound-and-true-p completion-in-region-mode))
+      (and (bound-and-true-p corfu--frame)
+           (frame-visible-p corfu--frame))
+      (bound-and-true-p company-candidates)))
+
+(defun eca-chat--completion-accept ()
+  "Accept the current completion candidate."
+  (cond
+   ((and (bound-and-true-p corfu--frame)
+         (frame-visible-p corfu--frame)
+         (fboundp 'corfu-insert))
+    (corfu-insert))
+   ((and (bound-and-true-p company-candidates)
+         (fboundp 'company-complete-selection))
+    (company-complete-selection))
+   ((bound-and-true-p completion-in-region-mode)
+    (completion-at-point))))
+
 (defun eca-chat--key-pressed-return ()
   "Send the current prompt to eca process if in prompt."
   (interactive)
@@ -1190,6 +1210,10 @@ Resteps a list of context plists found in the prompt field."
    (let* ((session (eca-session))
           (prompt (eca-chat--prompt-content)))
      (cond
+      ;; check if completion popup is active
+      ((eca-chat--completion-active-p)
+       (eca-chat--completion-accept))
+
       ;; check it's an actionable text
       ((-some->> (thing-at-point 'symbol) (get-text-property 0 'eca-button-on-action))
        (-some->> (thing-at-point 'symbol)
