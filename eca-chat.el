@@ -712,8 +712,7 @@ Cancels the shared timer when no more tool calls are being tracked."
 
 (defun eca-chat--trust ()
   "Non-nil when trust mode is on, auto-accepts tool call."
-  (or eca-chat-trust-enable
-      eca-chat--selected-trust))
+  eca-chat--selected-trust)
 
 (defun eca-chat--mcps-summary (session)
   "The summary of MCP servers for SESSION."
@@ -2655,18 +2654,22 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
 
 (defun eca-chat-status-changed (session params)
   "Handle chat status changed notification for SESSION with PARAMS.
-Synthesizes progress content-received events to update the spinner."
-  (let ((chat-id (plist-get params :chatId))
-        (status (plist-get params :status)))
-    (pcase status
-      ("running"
-       (eca-chat-content-received session
-        (list :chatId chat-id :role "system"
-              :content (list :type "progress" :state "running" :text "Running..."))))
-      ("idle"
-       (eca-chat-content-received session
-        (list :chatId chat-id :role "system"
-              :content (list :type "progress" :state "finished")))))))
+Synthesizes progress content-received events to update the
+spinner.  Subagent chats (which have no dedicated buffer) are
+silently ignored."
+  (let* ((chat-id (plist-get params :chatId))
+         (status (plist-get params :status))
+         (chat-buffer (eca-get (eca--session-chats session) chat-id)))
+    (when (and chat-buffer (buffer-live-p chat-buffer))
+      (pcase status
+        ("running"
+         (eca-chat-content-received session
+          (list :chatId chat-id :role "system"
+                :content (list :type "progress" :state "running" :text "Running..."))))
+        ("idle"
+         (eca-chat-content-received session
+          (list :chatId chat-id :role "system"
+                :content (list :type "progress" :state "finished"))))))))
 
 (defun eca-chat-open (session)
   "Open or create dedicated eca chat window for SESSION."
@@ -2680,6 +2683,7 @@ Synthesizes progress content-received events to update the spinner."
       (setq-local eca-chat--selected-agent eca-chat--last-known-agent)
       (setq-local eca-chat--selected-model eca-chat--last-known-model)
       (setq-local eca-chat--selected-variant eca-chat--last-known-variant)
+      (setq-local eca-chat--selected-trust eca-chat-trust-enable)
       (eca-chat--track-cursor-position-schedule)
       (when eca-chat-auto-add-cursor
         (eca-chat--add-context (list :type "cursor")))
@@ -2793,7 +2797,7 @@ Synthesizes progress content-received events to update the spinner."
   "Toggle trust mode (auto-accept all tool call)."
   (interactive)
   (let ((new-value (not (eca-chat--trust))))
-    (eca-chat--set-trust (eca-session) new-value)
+    (eca-chat--set-trust (eca-session) new-value (current-buffer))
     (eca-info (if new-value
                   "Enabled trust-mode (Auto accept tool calls)"
                 "Disabled trust-mode (Auto accept tool calls)"))))
