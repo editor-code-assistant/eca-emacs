@@ -183,6 +183,31 @@ when the error occurred."
   (eca-chat--handle-mcp-server-updated session server)
   (eca-mcp--handle-mcp-server-updated session server))
 
+(defun eca-chat-deleted (session params)
+  "Handle chat deleted notification for SESSION with PARAMS."
+  (let* ((chat-id (plist-get params :chatId))
+         (chat-buffer (eca-get (eca--session-chats session) chat-id)))
+    (when chat-buffer
+      (setf (eca--session-chats session)
+            (eca-dissoc (eca--session-chats session) chat-id))
+      (when (buffer-live-p chat-buffer)
+        (kill-buffer chat-buffer)))))
+
+(defun eca-chat-status-changed (session params)
+  "Handle chat status changed notification for SESSION with PARAMS.
+Synthesizes progress content-received events to update the spinner."
+  (let ((chat-id (plist-get params :chatId))
+        (status (plist-get params :status)))
+    (pcase status
+      ("running"
+       (eca-chat-content-received session
+        (list :chatId chat-id :role "system"
+              :content (list :type "progress" :state "running" :text "Running..."))))
+      ("idle"
+       (eca-chat-content-received session
+        (list :chatId chat-id :role "system"
+              :content (list :type "progress" :state "finished")))))))
+
 (defun eca--handle-server-notification (session notification)
   "Handle NOTIFICATION sent by server for SESSION."
   (let ((method (plist-get notification :method))
@@ -191,6 +216,8 @@ when the error occurred."
       ("config/updated" (eca-config-updated session params))
       ("chat/contentReceived" (eca-chat-content-received session params))
       ("chat/cleared" (eca-chat-cleared session params))
+      ("chat/deleted" (eca-chat-deleted session params))
+      ("chat/statusChanged" (eca-chat-status-changed session params))
       ("rewrite/contentReceived" (eca-rewrite-content-received session params))
       ("tool/serverUpdated" (eca--tool-server-updated session params))
       ("$/showMessage" (eca--handle-show-message params))
