@@ -2643,6 +2643,31 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
           (setq eca-chat--last-known-variant new-variant)))
       (force-mode-line-update))))
 
+(defun eca-chat-deleted (session params)
+  "Handle chat deleted notification for SESSION with PARAMS."
+  (let* ((chat-id (plist-get params :chatId))
+         (chat-buffer (eca-get (eca--session-chats session) chat-id)))
+    (when chat-buffer
+      (setf (eca--session-chats session)
+            (eca-dissoc (eca--session-chats session) chat-id))
+      (when (buffer-live-p chat-buffer)
+        (kill-buffer chat-buffer)))))
+
+(defun eca-chat-status-changed (session params)
+  "Handle chat status changed notification for SESSION with PARAMS.
+Synthesizes progress content-received events to update the spinner."
+  (let ((chat-id (plist-get params :chatId))
+        (status (plist-get params :status)))
+    (pcase status
+      ("running"
+       (eca-chat-content-received session
+        (list :chatId chat-id :role "system"
+              :content (list :type "progress" :state "running" :text "Running..."))))
+      ("idle"
+       (eca-chat-content-received session
+        (list :chatId chat-id :role "system"
+              :content (list :type "progress" :state "finished")))))))
+
 (defun eca-chat-open (session)
   "Open or create dedicated eca chat window for SESSION."
   (eca-assert-session-running session)
