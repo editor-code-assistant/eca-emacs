@@ -20,6 +20,7 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'backtrace)
 (require 'hierarchy)
 (require 'tree-widget)
 (require 'smerge-mode)
