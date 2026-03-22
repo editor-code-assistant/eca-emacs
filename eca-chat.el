@@ -1222,6 +1222,13 @@ Resteps a list of context plists found in the prompt field."
          (get-text-property 0 'eca-button-on-action)
          (funcall)))
 
+      ;; follow markdown link [text](url)
+      ((let ((face (get-text-property (point) 'face)))
+         (or (eq face 'markdown-link-face)
+             (eq face 'markdown-url-face)
+             (eq face 'markdown-plain-url-face)))
+       (markdown-follow-thing-at-point nil))
+
       ;; check is inside a expandable text
       ((eca-chat--expandable-content-at-point)
        (let ((ov (eca-chat--expandable-content-at-point)))
@@ -1938,6 +1945,12 @@ CHILD, NAME, DOCSTRING and BODY are passed down."
 
   (face-remap-add-relative 'markdown-line-break-face
                            '(:underline nil))
+
+  ;; Ensure markdown links look clickable regardless of theme.
+  (face-remap-add-relative 'markdown-link-face
+                           '(:underline t))
+  (face-remap-add-relative 'markdown-plain-url-face
+                           '(:underline t))
 
   ;; Ensure tables use a monospace font for proper alignment.
   (face-remap-add-relative 'markdown-table-face
