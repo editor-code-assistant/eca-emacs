@@ -446,6 +446,12 @@ works normally."
   "Face for the descriptions in chat command completion."
   :group 'eca)
 
+(defface eca-chat-approval-modeline-face
+  '((((background dark))  :background "#4a4000")
+    (((background light)) :background "#fff8dc"))
+  "Face for modeline when approval is pending."
+  :group 'eca)
+
 ;; Internal
 
 (defvar-local eca-chat--closed nil)
@@ -497,7 +503,6 @@ Stores the latest usage data received for each running subagent.")
 (defvar-local eca-chat--task-state nil
   "Current task state plist with :goal and :tasks.
 Each task is a plist with :id, :content, :status, :priority, etc.")
-
 
 
 (defvar eca-chat--new-chat-id 0)
@@ -1553,7 +1558,9 @@ E is the mouse event."
      (eca-chat-title))
     (:elapsed-time
      (when-let* ((str (eca-chat--turn-duration-str)))
-       (propertize (concat "⏱ " str) 'font-lock-face 'eca-chat-elapsed-time-face)))
+       (let ((icon (if (eca-chat--has-pending-approvals-p) "🚧" "⏱")))
+         (propertize (concat icon " " str)
+                     'font-lock-face 'eca-chat-elapsed-time-face))))
     (:usage
      (eca-chat--usage-str))
     (:server-version
@@ -1601,7 +1608,11 @@ E is the mouse event."
                     " " 'display
                     `((space :align-to
                              (- right ,(1+ (length right)))))))))
-      (concat left fill right))))
+      (let ((result (concat left fill right)))
+        (if (eca-chat--has-pending-approvals-p)
+            (propertize result 'face
+                        'eca-chat-approval-modeline-face)
+          result)))))
 
 (defun eca-chat--select-window ()
   "Select the Window."
