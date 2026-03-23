@@ -427,7 +427,7 @@ works normally."
   :group 'eca)
 
 (defface eca-chat-trust-off-face
-  '((t :inherit default))
+  '((t nil))
   "Face for trust mode when off in mode-line."
   :group 'eca)
 
