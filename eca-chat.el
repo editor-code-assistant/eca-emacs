@@ -13,7 +13,6 @@
 
 (require 'f)
 (require 'markdown-mode)
-(require 'tab-line)
 (require 'compat)
 
 (require 'eca-util)
@@ -1933,6 +1932,7 @@ CHILD, NAME, DOCSTRING and BODY are passed down."
 
            ;; Tab-line: show a tab for each open chat
            (when eca-chat-tab-line
+             (require 'tab-line)
              (setq-local tab-line-tabs-function #'eca-chat--tab-line-tabs)
              (setq-local tab-line-new-button-show t)
              (setq-local tab-line-close-button-show t)
@@ -2688,6 +2688,7 @@ silently ignored."
     (when (and chat-buffer (buffer-live-p chat-buffer))
       (pcase status
         ("running"
+         (eca-chat--set-chat-loading session t)
          (eca-chat-content-received session
           (list :chatId chat-id :role "system"
                 :content (list :type "progress" :state "running" :text "Running..."))))

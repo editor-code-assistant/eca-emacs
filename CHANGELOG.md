@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Add `eca-chat-mode-line-format` for customizable chat mode line layout. #184
+- Fix top-level `(require 'tab-line)` causing side effects when `eca-chat-tab-line` is nil. #195
 
 ## 0.6.0
 
