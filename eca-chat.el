@@ -2628,7 +2628,8 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
             (when-let* ((tool-call-id (gethash chat-id eca-chat--subagent-chat-id->tool-call-id)))
               (eca-chat--render-content session parent-buffer role content roots tool-call-id chat-id))))
       ;; Normal content
-      (let ((chat-buffer (eca-chat--get-chat-buffer session chat-id)))
+      (when-let* ((chat-buffer (eca-chat--get-chat-buffer session chat-id))
+                  ((buffer-live-p chat-buffer)))
         (eca-chat--with-current-buffer chat-buffer
           (eca-chat--render-content session chat-buffer role content roots))))))
 
