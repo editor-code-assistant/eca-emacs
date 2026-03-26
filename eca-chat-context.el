@@ -476,7 +476,7 @@ Add text property to prompt text to match context."
           (eca-chat--insert " ")
           (let ((arg-text (read-string (format "Arg: %s\nDescription: %s\nValue%s: "
                                                name
-                                               description
+                                               (or description "")
                                                (if required "" " (leave blank for default)")))))
             (if (and arg-text (string-match-p " " arg-text))
                 (eca-chat--insert (format "\"%s\"" arg-text))
