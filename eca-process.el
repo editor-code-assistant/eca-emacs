@@ -422,6 +422,11 @@ Call HANDLE-MSG for new msgs processed."
                                          :filter (eca-process--make-filter handle-msg)
                                          :sentinel (lambda (process exit-str)
                                                      (unless (process-live-p process)
+                                                       (when-let* ((name (eca-process--stderr-buffer-name session))
+                                                                    (buf (get-buffer name)))
+                                                         (with-current-buffer buf
+                                                           (rename-buffer (concat (buffer-name) ":closed") t)
+                                                           (setq-local mode-line-format '("*Closed session*"))))
                                                        (eca-delete-session session)
                                                        (eca-info "process has exited (%s)" (s-trim exit-str))))
                                          :file-handler t
@@ -459,20 +464,22 @@ Call HANDLE-MSG for new msgs processed."
           (when-let ((win (get-buffer-window (current-buffer))))
             (quit-window nil win))
           ;; Keep only the most recently closed stderr buffer; kill older ones.
+          ;; Only kill :closed buffers — never non-closed ones which belong
+          ;; to active sessions.
           (let ((current (current-buffer)))
             (dolist (b (buffer-list))
               (when (and (not (eq b current))
-                         (or
-                          (string-match-p "^<eca:stderr:.*>:closed$" (buffer-name b))
-                          (string-match-p "^<eca:stderr:.*>$" (buffer-name b))))
+                         (string-match-p "^<eca:stderr:.*>:closed" (buffer-name b)))
                 (kill-buffer b)))))))))
 
 (defun eca-process-show-stderr (session)
-  "Open the eca process stderr buffer for SESSION if running."
-  (with-current-buffer (eca-process--stderr-buffer-name session)
-    (if (window-live-p (get-buffer-window (buffer-name)))
-        (select-window (get-buffer-window (buffer-name)))
-      (display-buffer (current-buffer)))))
+  "Open the eca process stderr buffer for SESSION."
+  (if-let ((buf (get-buffer (eca-process--stderr-buffer-name session))))
+      (if (window-live-p (get-buffer-window buf))
+          (select-window (get-buffer-window buf))
+        (display-buffer buf))
+    (message "No stderr buffer for session %d"
+             (eca--session-id session))))
 
 (defun eca-process--server-version ()
   "Return the server version by running the eca binary with --version."
