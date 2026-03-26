@@ -112,7 +112,10 @@
   (chat-variants '())
 
   ;; The welcome message for new chats.
-  (chat-welcome-message ""))
+  (chat-welcome-message "")
+
+  ;; Init progress tasks alist: (taskId . plist) where plist has :title :type
+  (init-tasks nil))
 
 (defun eca-find-root-for-buffer ()
   "Return the path that first matches the following:

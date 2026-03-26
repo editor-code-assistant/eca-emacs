@@ -161,7 +161,7 @@ Must be a valid model supported by server, check `eca-chat-select-model`."
   :group 'eca)
 
 (defcustom eca-chat-mode-line-format
-  '(:workspace-folders :add-workspace-button :spacer :elapsed-time "   " :usage " " :trust)
+  '(:workspace-folders :add-workspace-button :spacer :init-progress "  " :elapsed-time "   " :usage " " :trust)
   "Format for the ECA chat mode line.
 
 When set to a list, each element is a module keyword or a
@@ -175,6 +175,7 @@ Available modules:
   `:elapsed-time' - turn duration timer
   `:usage' - token/cost info (see `eca-chat-usage-string-format')
   `:server-version' - shows \"ECA <version>\"
+  `:init-progress' - init progress (auto-hides when done)
   `:trust' - trust mode indicator (● red/gray)
   `:spacer' - elastic space that right-aligns everything after it
 
@@ -193,6 +194,7 @@ This gives full control for powerline or doom-modeline users."
             (const :tag "Elapsed time" :elapsed-time)
             (const :tag "Usage info" :usage)
             (const :tag "ECA server version" :server-version)
+            (const :tag "Init progress" :init-progress)
             (const :tag "Trust mode indicator" :trust)
             (const :tag "Right-align spacer" :spacer)))
           (function :tag "Custom function (receives session)"))
@@ -1570,6 +1572,24 @@ E is the mouse event."
     map)
   "Keymap for the modeline trust indicator.")
 
+(defun eca-chat--init-progress-str (session)
+  "Return init progress string for the mode-line, or nil when done.
+Shows \"⏳ finished/total · latest-title\" while tasks are in progress."
+  (when-let* ((tasks (eca--session-init-tasks session)))
+    (let* ((total (length tasks))
+           (finished (length (seq-filter
+                              (lambda (entry)
+                                (equal "finish" (plist-get (cdr entry) :type)))
+                              tasks)))
+           (active (seq-filter
+                    (lambda (entry)
+                      (equal "start" (plist-get (cdr entry) :type)))
+                    tasks)))
+      (when (> (length active) 0)
+        (let ((latest-title (plist-get (cdr (car active)) :title)))
+          (propertize (format "⏳ %d/%d · %s" finished total latest-title)
+                      'face 'shadow))))))
+
 (defun eca-chat--mode-line-module (session keyword)
   "Return mode-line string segment for module KEYWORD in SESSION."
   (pcase keyword
@@ -1600,6 +1620,8 @@ E is the mouse event."
     (:server-version
      (when eca-chat--server-version
        (concat "ECA " eca-chat--server-version)))
+    (:init-progress
+     (eca-chat--init-progress-str session))
     (:trust
      (propertize "⬤"
                  'face (if (eca-chat--trust)
@@ -2038,6 +2060,11 @@ Returns the task plist or nil."
 (defun eca-chat--handle-mcp-server-updated (session _server)
   "Handle mcp SERVER updated for SESSION."
   ;; TODO do for all chats
+  (eca-chat--with-current-buffer (eca-chat--get-last-buffer session)
+    (force-mode-line-update)))
+
+(defun eca-chat--handle-init-progress (session)
+  "Handle init progress update for SESSION."
   (eca-chat--with-current-buffer (eca-chat--get-last-buffer session)
     (force-mode-line-update)))
 

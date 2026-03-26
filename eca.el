@@ -191,6 +191,17 @@ frames captured via `backtrace-get-frames'."
   (eca-chat--handle-mcp-server-updated session server)
   (eca-mcp--handle-mcp-server-updated session server))
 
+(defun eca--handle-progress (session params)
+  "Handle $/progress notification with PARAMS for SESSION."
+  (let ((task-id (plist-get params :taskId))
+        (type (plist-get params :type))
+        (title (plist-get params :title)))
+    (setf (eca--session-init-tasks session)
+          (eca-assoc (eca--session-init-tasks session)
+                     task-id
+                     (list :title title :type type)))
+    (eca-chat--handle-init-progress session)))
+
 (defun eca--handle-server-notification (session notification)
   "Handle NOTIFICATION sent by server for SESSION."
   (let ((method (plist-get notification :method))
@@ -204,6 +215,7 @@ frames captured via `backtrace-get-frames'."
       ("rewrite/contentReceived" (eca-rewrite-content-received session params))
       ("tool/serverUpdated" (eca--tool-server-updated session params))
       ("$/showMessage" (eca--handle-show-message params))
+      ("$/progress" (eca--handle-progress session params))
       (_ 'ignore))))
 
 (defun eca--handle-server-request (session request)
