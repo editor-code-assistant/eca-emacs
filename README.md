@@ -117,6 +117,7 @@ Core / session
 - `eca-before-initialize-hook`: Functions called before an ECA session is initialized.
 - `eca-after-initialize-hook`: Functions called after an ECA session is initialized.
 - `eca-find-root-for-buffer-function`: Function used to determine the workspace root for the current buffer.
+- `eca-worktree-mode`: How ECA handles git worktrees of the same repository (`merged` or `isolated`).
 
 Chat
 

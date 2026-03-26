@@ -28,6 +28,22 @@
   :type 'function
   :group 'eca)
 
+(defcustom eca-worktree-mode 'merged
+  "How ECA handles git worktrees of the same repository.
+
+- `merged': all worktrees share one ECA session and chat history.
+  New worktrees are dynamically added to the running session when
+  a file inside them is visited.  This is the default since 0.110.0
+  and is efficient when you want a unified AI context across branches.
+
+- `isolated': each worktree gets its own independent ECA session,
+  chat history, and cache.  Toggle-window, resume, and agent context
+  all scope to the individual worktree.  This matches the behaviour
+  prior to 0.110.0 and is preferred for parallel worktree workflows."
+  :type '(choice (const :tag "Merged (shared session per repo)" merged)
+                 (const :tag "Isolated (independent session per worktree)" isolated))
+  :group 'eca)
+
 (defun eca-assoc (map key val)
   "Return a new MAP with KEY associated to flat plist VAL, replacing any existing."
   (cons (cons key val)
@@ -175,10 +191,13 @@ workspace folders. Returns nil otherwise."
                                     (--first (string= it root)
                                              (eca--session-workspace-folders session)))
                                   (eca-vals eca--sessions))
-                          ;; Worktree fallback: find session sharing the same git repo
-                          (when-let* ((worktree-session (eca--session-for-worktree root)))
-                            (eca--session-add-workspace-folder worktree-session root)
-                            worktree-session))))
+                          ;; Worktree fallback: only in merged mode, find a session
+                          ;; sharing the same git repo and add this worktree to it.
+                          ;; In isolated mode each worktree gets its own session.
+                          (when (eq eca-worktree-mode 'merged)
+                            (when-let* ((worktree-session (eca--session-for-worktree root)))
+                              (eca--session-add-workspace-folder worktree-session root)
+                              worktree-session)))))
         (when session
           (setq-local eca--session-id-cache (eca--session-id session)))
         session)))
