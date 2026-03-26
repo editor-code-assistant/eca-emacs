@@ -840,11 +840,11 @@ request, useful for subagent tool calls."
 
 (defun eca-chat--stop-prompt (session)
   "Stop the running chat prompt for SESSION."
-  (when eca-chat--chat-loading
+  (when (eq eca-chat--chat-loading t)
     (eca-api-notify session
                     :method "chat/promptStop"
                     :params (list :chatId eca-chat--id))
-    (eca-chat--set-chat-loading session nil)))
+    (eca-chat--set-chat-loading session 'stopping)))
 
 (defun eca-chat--rollback (session content-id)
   "Rollback chat messages for SESSION to before CONTENT-ID."
@@ -872,46 +872,81 @@ request, useful for subagent tool calls."
                                               :contentId content-id
                                               :include include)))))))
 
+(defvar-local eca-chat--stopping-safety-timer nil
+  "Safety timer to force-clear 'stopping state if server never responds.")
+
+(defvar-local eca-chat--stop-button-inserted nil
+  "Non-nil when the stop button text is currently inserted in the loading area.")
+
 (defun eca-chat--set-chat-loading (session loading)
-  "Set the SESSION chat to a loading state if LOADING is non nil.
-Otherwise to a not loading state."
+  "Set the SESSION chat loading state.
+LOADING can be t (loading), \\='stopping (stop in progress), or nil (idle)."
   (unless (eq eca-chat--chat-loading loading)
     (setq-local eca-chat--chat-loading loading)
-    (if loading
-        (progn
-          (setq-local eca-chat--prompt-start-time (current-time))
-          (let ((buf (current-buffer)))
-            (setq-local eca-chat--modeline-timer
-                        (run-with-timer 1 1
-                                        (lambda ()
-                                          (when (buffer-live-p buf)
-                                            (with-current-buffer buf
-                                              (eca-chat--force-tab-line-update))))))))
-      (when eca-chat--prompt-start-time
-        (setq-local eca-chat--turn-duration-secs
-                    (floor (float-time (time-subtract (current-time) eca-chat--prompt-start-time))))
-        (setq-local eca-chat--prompt-start-time nil))
-      (when eca-chat--modeline-timer
-        (cancel-timer eca-chat--modeline-timer)
-        (setq-local eca-chat--modeline-timer nil))
-      (eca-chat--force-tab-line-update))
-    ;; (setq-local buffer-read-only loading)
+    (pcase loading
+      ('t
+       (setq-local eca-chat--prompt-start-time (current-time))
+       (let ((buf (current-buffer)))
+         (setq-local eca-chat--modeline-timer
+                     (run-with-timer 1 1
+                                     (lambda ()
+                                       (when (buffer-live-p buf)
+                                         (with-current-buffer buf
+                                           (eca-chat--force-tab-line-update)))))))
+       ;; Cancel any leftover stopping safety timer
+       (when eca-chat--stopping-safety-timer
+         (cancel-timer eca-chat--stopping-safety-timer)
+         (setq-local eca-chat--stopping-safety-timer nil)))
+      ('stopping
+       ;; Clear visual indicators (looks idle) but stay logically loading
+       ;; so new prompts are queued until server confirms finish.
+       (when eca-chat--modeline-timer
+         (cancel-timer eca-chat--modeline-timer)
+         (setq-local eca-chat--modeline-timer nil))
+       (eca-chat--force-tab-line-update)
+       ;; Safety timeout: force-clear if server never sends finished
+       (let ((buf (current-buffer)))
+         (setq-local eca-chat--stopping-safety-timer
+                     (run-with-timer 10 nil
+                                     (lambda ()
+                                       (when (buffer-live-p buf)
+                                         (with-current-buffer buf
+                                           (when (eq eca-chat--chat-loading 'stopping)
+                                             (eca-chat--set-chat-loading session nil)))))))))
+      (_
+       ;; nil — full stop
+       (when eca-chat--stopping-safety-timer
+         (cancel-timer eca-chat--stopping-safety-timer)
+         (setq-local eca-chat--stopping-safety-timer nil))
+       (when eca-chat--prompt-start-time
+         (setq-local eca-chat--turn-duration-secs
+                     (floor (float-time (time-subtract (current-time) eca-chat--prompt-start-time))))
+         (setq-local eca-chat--prompt-start-time nil))
+       (when eca-chat--modeline-timer
+         (cancel-timer eca-chat--modeline-timer)
+         (setq-local eca-chat--modeline-timer nil))
+       (eca-chat--force-tab-line-update)))
     (let ((loading-area-ov (eca-chat--loading-area-ov))
           (stop-text (eca-buttonize
                       eca-chat-mode-map
                       (propertize "stop" 'font-lock-face 'eca-chat-prompt-stop-face)
                       (lambda () (eca-chat--stop-prompt session)))))
-      (if eca-chat--chat-loading
+      (if (eq eca-chat--chat-loading t)
+          ;; Show loading prefix and stop button
           (progn
             (overlay-put loading-area-ov 'before-string (propertize eca-chat-prompt-prefix-loading 'font-lock-face 'default))
-            (save-excursion
-              (goto-char (overlay-start loading-area-ov))
-              (eca-chat--insert stop-text)))
-        (progn
-          (overlay-put loading-area-ov 'before-string "")
+            (unless eca-chat--stop-button-inserted
+              (save-excursion
+                (goto-char (overlay-start loading-area-ov))
+                (eca-chat--insert stop-text))
+              (setq-local eca-chat--stop-button-inserted t)))
+        ;; Not loading (stopping or nil) — clear prefix and remove button if present
+        (overlay-put loading-area-ov 'before-string "")
+        (when eca-chat--stop-button-inserted
           (save-excursion
             (goto-char (overlay-start loading-area-ov))
-            (delete-region (point) (+ (point) (length stop-text)))))))))
+            (delete-region (point) (+ (point) (length stop-text))))
+          (setq-local eca-chat--stop-button-inserted nil))))))
 
 (defun eca-chat--set-prompt (text)
   "Set the chat prompt to be TEXT."
@@ -2583,16 +2618,29 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
                  (eca-chat--refresh-progress chat-buffer))))
             (eca-chat--refresh-progress chat-buffer))
            ("finished"
-            (setq-local eca-chat--progress-text "")
-            (eca-chat--spinner-stop)
-            (eca-chat--tool-call-elapsed-stop-all)
-            (eca-chat--add-text-content "\n")
-            (eca-chat--align-tables (point-min))
-            (eca-chat--beautify-tables (point-min))
-            (eca-chat--set-chat-loading session nil)
-            (eca-chat--refresh-progress chat-buffer)
-            (eca-chat--send-queued-prompt session)
-            (run-hooks 'eca-chat-finished-hook)))))
+            (pcase eca-chat--chat-loading
+              ('stopping
+               ;; Stopped prompt confirmed — minimal cleanup, no trailing newline
+               (setq-local eca-chat--progress-text "")
+               (eca-chat--spinner-stop)
+               (eca-chat--tool-call-elapsed-stop-all)
+               (eca-chat--set-chat-loading session nil)
+               (eca-chat--refresh-progress chat-buffer)
+               (eca-chat--send-queued-prompt session)
+               (run-hooks 'eca-chat-finished-hook))
+              ('t
+               ;; Normal completion
+               (setq-local eca-chat--progress-text "")
+               (eca-chat--spinner-stop)
+               (eca-chat--tool-call-elapsed-stop-all)
+               (eca-chat--add-text-content "\n")
+               (eca-chat--align-tables (point-min))
+               (eca-chat--beautify-tables (point-min))
+               (eca-chat--set-chat-loading session nil)
+               (eca-chat--refresh-progress chat-buffer)
+               (eca-chat--send-queued-prompt session)
+               (run-hooks 'eca-chat-finished-hook))
+              (_ nil))))))
       ("usage"
        (progn
          (if parent-tool-call-id
@@ -2687,16 +2735,17 @@ silently ignored."
          (status (plist-get params :status))
          (chat-buffer (eca-get (eca--session-chats session) chat-id)))
     (when (and chat-buffer (buffer-live-p chat-buffer))
-      (pcase status
-        ("running"
-         (eca-chat--set-chat-loading session t)
-         (eca-chat-content-received session
-          (list :chatId chat-id :role "system"
-                :content (list :type "progress" :state "running" :text "Running..."))))
-        ("idle"
-         (eca-chat-content-received session
-          (list :chatId chat-id :role "system"
-                :content (list :type "progress" :state "finished"))))))))
+      (eca-chat--with-current-buffer chat-buffer
+        (pcase status
+          ("running"
+           (eca-chat--set-chat-loading session t)
+           (eca-chat-content-received session
+            (list :chatId chat-id :role "system"
+                  :content (list :type "progress" :state "running" :text "Running..."))))
+          ("idle"
+           (eca-chat-content-received session
+            (list :chatId chat-id :role "system"
+                  :content (list :type "progress" :state "finished")))))))))
 
 (defun eca-chat-open (session)
   "Open or create dedicated eca chat window for SESSION."
