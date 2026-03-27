@@ -832,6 +832,15 @@ request, useful for subagent tool calls."
   (erase-buffer)
   (remove-overlays (point-min) (point-max))
   (setq-local eca-chat--task-state nil)
+  ;; Cancel loading-related timers and reset state
+  (when eca-chat--stopping-safety-timer
+    (cancel-timer eca-chat--stopping-safety-timer)
+    (setq-local eca-chat--stopping-safety-timer nil))
+  (when eca-chat--modeline-timer
+    (cancel-timer eca-chat--modeline-timer)
+    (setq-local eca-chat--modeline-timer nil))
+  (setq-local eca-chat--chat-loading nil)
+  (setq-local eca-chat--stop-button-inserted nil)
   (clrhash eca-chat--subagent-chat-id->tool-call-id)
   (clrhash eca-chat--subagent-usage)
   (eca-chat--insert "\n")
@@ -888,13 +897,16 @@ LOADING can be t (loading), \\='stopping (stop in progress), or nil (idle)."
     (pcase loading
       ('t
        (setq-local eca-chat--prompt-start-time (current-time))
-       (let ((buf (current-buffer)))
-         (setq-local eca-chat--modeline-timer
-                     (run-with-timer 1 1
-                                     (lambda ()
-                                       (when (buffer-live-p buf)
-                                         (with-current-buffer buf
-                                           (eca-chat--force-tab-line-update)))))))
+       (let ((buf (current-buffer))
+             (timer nil))
+         (setq timer
+               (run-with-timer 1 1
+                               (lambda ()
+                                 (if (buffer-live-p buf)
+                                     (with-current-buffer buf
+                                       (eca-chat--force-tab-line-update))
+                                   (cancel-timer timer)))))
+         (setq-local eca-chat--modeline-timer timer))
        ;; Cancel any leftover stopping safety timer
        (when eca-chat--stopping-safety-timer
          (cancel-timer eca-chat--stopping-safety-timer)
@@ -2813,9 +2825,15 @@ silently ignored."
             (let ((chat-buffer (cdr title+buffer)))
               (when (buffer-live-p chat-buffer)
                 (eca-chat--with-current-buffer chat-buffer
-                  ;; Cancel spinner timer if chat was still loading.
+                  ;; Cancel all timers if chat was still loading/stopping.
                   (eca-chat--spinner-stop)
                   (eca-chat--tool-call-elapsed-stop-all)
+                  (when eca-chat--modeline-timer
+                    (cancel-timer eca-chat--modeline-timer)
+                    (setq-local eca-chat--modeline-timer nil))
+                  (when eca-chat--stopping-safety-timer
+                    (cancel-timer eca-chat--stopping-safety-timer)
+                    (setq-local eca-chat--stopping-safety-timer nil))
                   (setq eca-chat--closed t)
                   (force-mode-line-update)
                   (goto-char (point-max))
