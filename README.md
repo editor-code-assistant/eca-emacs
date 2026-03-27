@@ -62,6 +62,7 @@ Server / process
 - `eca-stop`: Stop eca server/session
 - `eca-restart`: Restart eca server/session
 - `eca-workspaces`: show a view with all worskpaces and chats
+- `eca-settings`: Open the centralized settings panel (MCP servers, and more in the future)
 - `eca-open-global-config`: Open ECA global config file
 
 Chat
@@ -167,9 +168,13 @@ Rewrite
 - `eca-rewrite-finished-action`: Action to take when a rewrite finishes (`show-overlay-actions`, `accept`, `diff`, `merge`).
 - `eca-rewrite-on-finished-hook`: Hook run after a rewrite finishes, receiving the overlay as argument.
 
+Settings
+
+- `eca-settings-display-params`: Display parameters for the settings panel side window.
+
 MCP
 
-- `eca-mcp-details-position-params`: Display parameters for the MCP details side window.
+- `eca-mcp-details-position-params`: Display parameters for the standalone MCP details side window (legacy).
 
 API / requests
 
@@ -213,9 +218,11 @@ You can access the transient menu with common commands via `M-x eca-transient-me
 | Chat: go to next user message                 | <kbd>C-c</kbd> <kbd>C-↓</kbd>      |
 | Chat: toggle expandable content at point      | <kbd>C-c</kbd> <kbd>Tab</kbd>      |
 | Chat: open transient menu                     | <kbd>C-c</kbd> <kbd>.</kbd>        |
-| Chat: go to MCP details                       | <kbd>C-c</kbd> <kbd>C-,</kbd>      |
-| MCP: go to chat (from MCP details buffer)     | <kbd>C-c</kbd> <kbd>C-,</kbd>      |
-| MCP: open transient menu (from MCP details)   | <kbd>C-c</kbd> <kbd>.</kbd>        |
+| Chat: go to settings                          | <kbd>C-c</kbd> <kbd>C-,</kbd>      |
+| Settings: go to chat                          | <kbd>C-c</kbd> <kbd>C-,</kbd>      |
+| Settings: refresh current tab                 | <kbd>g</kbd>                        |
+| Settings: quit                                | <kbd>q</kbd>                        |
+| Settings: open transient menu                 | <kbd>C-c</kbd> <kbd>.</kbd>        |
 
 ## Features
 

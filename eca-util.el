@@ -304,6 +304,7 @@ Inheirits BASE-MAP."
      ["Navigation"
       ("N h" "Message history" eca-chat-timeline)
       ("N c" "Chat" eca)
+      ("N s" "Settings" eca-settings)
       ("N m" "MCP details" eca-mcp-details)
       ("N e" "Show stderr (logs)" eca-show-stderr)
       ("N E" "Show emacs errors" eca-show-errors)]

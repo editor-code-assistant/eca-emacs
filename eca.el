@@ -28,6 +28,7 @@
 (require 'eca-util)
 (require 'eca-process)
 (require 'eca-api)
+(require 'eca-settings)
 (require 'eca-chat)
 (require 'eca-mcp)
 (require 'eca-editor)
@@ -189,7 +190,8 @@ frames captured via `backtrace-get-frames'."
                    (plist-get server :name)
                    server))
   (eca-chat--handle-mcp-server-updated session server)
-  (eca-mcp--handle-mcp-server-updated session server))
+  (eca-mcp--handle-mcp-server-updated session server)
+  (eca-settings-refresh-tab "mcps" session))
 
 (defun eca--handle-progress (session params)
   "Handle $/progress notification with PARAMS for SESSION."
@@ -374,6 +376,7 @@ When ARG is current prefix, ask for workspace roots to use."
       (eca-process-stop session)
       (eca-chat-exit session)
       (eca-mcp-details-exit session)
+      (eca-settings-exit session)
       (eca--emacs-errors-exit session)
       (eca-delete-session session))))
 

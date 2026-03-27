@@ -15,6 +15,7 @@
 
 (require 'eca-util)
 (require 'eca-process)
+(require 'eca-settings)
 
 (defcustom eca-mcp-details-position-params `((display-buffer-in-side-window)
                                              (side . right)
@@ -53,6 +54,11 @@
   "Face for logout button in mcp details buffer."
   :group 'eca)
 
+(defface eca-mcp-details-button-disable-face
+  '((t (:foreground "orange" :underline t)))
+  "Face for disable button in mcp details buffer."
+  :group 'eca)
+
 (defface eca-mcp-details-command-value-face
   '((t (:inherit font-lock-doc-face :height 0.9)))
   "Face for command value in mcp details."
@@ -64,7 +70,7 @@
 
 (defvar eca-mcp-details-mode-map
   (let ((map (make-sparse-keymap)))
-    (define-key map (kbd "C-c C-,") (lambda () (interactive) (eca)))
+    (define-key map (kbd "C-c C-,") (lambda () (interactive) (eca-settings)))
     (define-key map (kbd "C-c .") #'eca-transient-menu)
     map)
   "Keymap used by `eca-mcp-details-mode'.")
@@ -93,102 +99,128 @@
     ("requires-auth" "🟠")
     (_ "⚪")))
 
-(defun eca-mcp--refresh-server-details (session)
-  "Refresh the MCP server details for SESSION."
-  (when (buffer-live-p (get-buffer (eca-mcp-details-buffer-name session)))
-    (with-current-buffer (eca-mcp--get-details-buffer session)
-      (erase-buffer)
-      (insert (propertize "MCP servers" 'font-lock-face 'helpful-heading))
-      (insert "\n\n")
-      (seq-doseq (server (-sort  (lambda (a b)
-                                   (string-lessp (plist-get a :name)
-                                                 (plist-get b :name)))
-                                 (eca-vals (eca--session-tool-servers session))))
-        (-let (((&plist :name name :command command :args args
-                        :url url :status status :tools tools) server))
-          (insert (propertize (eca-mcp--status-emoji status)
-                              'eca-mcp-status status
-                              'help-echo status))
-          (insert " ")
-          (insert (propertize name 'font-lock-face 'bold))
-          (insert "   ")
-          (pcase status
-            ("requires-auth"
-             (insert (eca-buttonize
-                      eca-mcp-details-mode-map
-                      (propertize "connect"
-                                  'font-lock-face 'eca-mcp-details-button-face)
-                      (lambda () (eca-api-notify session
-                                                  :method "mcp/connectServer"
-                                                  :params (list :name name))))))
-            ((or "running" "starting")
-             (insert (eca-buttonize
-                      eca-mcp-details-mode-map
-                      (propertize "stop"
-                                  'font-lock-face 'eca-mcp-details-button-stop-face)
-                      (lambda () (eca-api-notify session
-                                                  :method "mcp/stopServer"
-                                                  :params (list :name name)))))
-             (when (plist-get server :hasAuth)
+(defun eca-mcp--render-server-details (session buffer)
+  "Render MCP server details for SESSION into BUFFER.
+Works with both standalone and settings panel buffers."
+  (when (buffer-live-p buffer)
+    (with-current-buffer buffer
+      (let ((inhibit-read-only t)
+            (keymap (or (current-local-map)
+                        eca-mcp-details-mode-map)))
+        (erase-buffer)
+        (insert "\n")
+        (insert (propertize "All MCP servers configured in ECA" 'font-lock-face 'helpful-heading))
+        (insert "\n\n")
+        (seq-doseq (server (-sort  (lambda (a b)
+                                     (string-lessp (plist-get a :name)
+                                                   (plist-get b :name)))
+                                   (eca-vals (eca--session-tool-servers session))))
+          (-let (((&plist :name name :command command :args args
+                          :status status :tools tools) server))
+            (insert (propertize (eca-mcp--status-emoji status)
+                                'eca-mcp-status status
+                                'help-echo status))
+            (insert " ")
+            (insert (propertize name 'font-lock-face 'bold))
+            (insert "   ")
+            (pcase status
+              ("requires-auth"
+               (insert (eca-buttonize
+                        keymap
+                        (propertize "connect"
+                                    'font-lock-face 'eca-mcp-details-button-face)
+                        (lambda () (eca-api-notify session
+                                                    :method "mcp/connectServer"
+                                                    :params (list :name name))))))
+              ((or "running" "starting")
+               (insert (eca-buttonize
+                        keymap
+                        (propertize "stop"
+                                    'font-lock-face 'eca-mcp-details-button-stop-face)
+                        (lambda () (eca-api-notify session
+                                                    :method "mcp/stopServer"
+                                                    :params (list :name name)))))
                (insert " "
                        (eca-buttonize
-                        eca-mcp-details-mode-map
-                        (propertize "logout"
-                                    'font-lock-face 'eca-mcp-details-button-logout-face)
+                        keymap
+                        (propertize "disable"
+                                    'font-lock-face 'eca-mcp-details-button-disable-face)
                         (lambda () (eca-api-notify session
-                                                    :method "mcp/logoutServer"
+                                                    :method "mcp/disableServer"
+                                                    :params (list :name name)))))
+               (when (plist-get server :hasAuth)
+                 (insert " "
+                         (eca-buttonize
+                          keymap
+                          (propertize "logout"
+                                      'font-lock-face 'eca-mcp-details-button-logout-face)
+                          (lambda () (eca-api-notify session
+                                                      :method "mcp/logoutServer"
+                                                      :params (list :name name)))))))
+              ("disabled"
+               (insert (eca-buttonize
+                        keymap
+                        (propertize "enable"
+                                    'font-lock-face 'eca-mcp-details-button-face)
+                        (lambda () (eca-api-notify session
+                                                    :method "mcp/enableServer"
+                                                    :params (list :name name))))))
+              (_
+               (insert (eca-buttonize
+                        keymap
+                        (propertize "start"
+                                    'font-lock-face 'eca-mcp-details-button-face)
+                        (lambda () (eca-api-notify session
+                                                    :method "mcp/startServer"
                                                     :params (list :name name)))))))
-            (_
-             (insert (eca-buttonize
-                      eca-mcp-details-mode-map
-                      (propertize "start"
-                                  'font-lock-face 'eca-mcp-details-button-face)
-                      (lambda () (eca-api-notify session
-                                                  :method "mcp/startServer"
-                                                  :params (list :name name)))))))
-          (insert "\n")
-          (if (seq-empty-p tools)
-              (insert (propertize "No tools available" 'font-lock-face font-lock-doc-face))
-            (progn
-              (insert (propertize "Tools: " 'font-lock-face font-lock-doc-face))
-              (seq-doseq (tool tools)
-                (insert (propertize (plist-get tool :name)
-                                    'eca-mcp-tool tool
-                                    'font-lock-face (if (plist-get tool :disabled)
-                                                        'eca-mcp-details-tool-disabled-face
-                                                      'eca-mcp-details-tool-face)) " "))))
-          (when-let* ((prompts (plist-get server :prompts))
-                      (_ (not (seq-empty-p prompts))))
             (insert "\n")
-            (insert (propertize "Prompts: " 'font-lock-face font-lock-doc-face))
-            (seq-doseq (prompt prompts)
-              (insert (propertize (plist-get prompt :name)
-                                  'font-lock-face 'eca-mcp-details-tool-face) " ")))
-          (when-let* ((resources (plist-get server :resources))
-                      (_ (not (seq-empty-p resources))))
-            (insert "\n")
-            (insert (propertize "Resources: " 'font-lock-face font-lock-doc-face))
-            (seq-doseq (resource resources)
-              (insert (propertize (plist-get resource :name)
-                                  'font-lock-face 'eca-mcp-details-tool-face) " ")))
-          (when command
-            (insert "\n")
-            (insert (propertize "Command: " 'font-lock-face font-lock-doc-face))
-            (insert (propertize (concat command " " (string-join args " "))
-                               'font-lock-face 'eca-mcp-details-command-value-face)))
-          (when-let* ((url (plist-get server :url)))
-            (insert "\n")
-            (insert (propertize "URL: " 'font-lock-face font-lock-doc-face))
-            (insert (propertize url
-                               'font-lock-face 'eca-mcp-details-command-value-face)))
-          (when (string= "failed" status)
-            (insert "\n")
-            (insert (propertize (format "Failed to start, check %s for details"
-                                        (buttonize
-                                         "eca stderr buffer"
-                                         (lambda(_) (eca-process-show-stderr session))))
-                                'font-lock-face 'error))))
-        (insert "\n\n")))))
+            (if (seq-empty-p tools)
+                (insert (propertize "No tools available" 'font-lock-face font-lock-doc-face))
+              (progn
+                (insert (propertize "Tools: " 'font-lock-face font-lock-doc-face))
+                (seq-doseq (tool tools)
+                  (insert (propertize (plist-get tool :name)
+                                      'eca-mcp-tool tool
+                                      'font-lock-face (if (plist-get tool :disabled)
+                                                          'eca-mcp-details-tool-disabled-face
+                                                        'eca-mcp-details-tool-face)) " "))))
+            (when-let* ((prompts (plist-get server :prompts))
+                        (_ (not (seq-empty-p prompts))))
+              (insert "\n")
+              (insert (propertize "Prompts: " 'font-lock-face font-lock-doc-face))
+              (seq-doseq (prompt prompts)
+                (insert (propertize (plist-get prompt :name)
+                                    'font-lock-face 'eca-mcp-details-tool-face) " ")))
+            (when-let* ((resources (plist-get server :resources))
+                        (_ (not (seq-empty-p resources))))
+              (insert "\n")
+              (insert (propertize "Resources: " 'font-lock-face font-lock-doc-face))
+              (seq-doseq (resource resources)
+                (insert (propertize (plist-get resource :name)
+                                    'font-lock-face 'eca-mcp-details-tool-face) " ")))
+            (when command
+              (insert "\n")
+              (insert (propertize "Command: " 'font-lock-face font-lock-doc-face))
+              (insert (propertize (concat command " " (string-join args " "))
+                                 'font-lock-face 'eca-mcp-details-command-value-face)))
+            (when-let* ((url (plist-get server :url)))
+              (insert "\n")
+              (insert (propertize "URL: " 'font-lock-face font-lock-doc-face))
+              (insert (propertize url
+                                 'font-lock-face 'eca-mcp-details-command-value-face)))
+            (when (string= "failed" status)
+              (insert "\n")
+              (insert (propertize (format "Failed to start, check %s for details"
+                                          (buttonize
+                                           "eca stderr buffer"
+                                           (lambda(_) (eca-process-show-stderr session))))
+                                  'font-lock-face 'error))))
+          (insert "\n\n"))))))
+
+(defun eca-mcp--refresh-server-details (session)
+  "Refresh the standalone MCP details buffer for SESSION."
+  (when-let* ((buf (eca-mcp--get-details-buffer session)))
+    (eca-mcp--render-server-details session buf)))
 
 (defun eca-mcp--format-input-schema-args (input-schema)
   "Format INPUT-SCHEMA properties into a list of readable arg description strings."
@@ -243,7 +275,7 @@ When point is on a tool or status emoji, call CB with docs."
   (visual-line-mode)
   (add-hook 'eldoc-documentation-functions #'eca-mcp--eldoc-function nil t)
   (eldoc-mode 1)
-  (eca-mcp--refresh-server-details (eca-session)))
+  (eca-mcp--render-server-details (eca-session) (current-buffer)))
 
 (defun eca-mcp-servers (session)
   "Return all servers that are not from eca server SESSION, the MCP servers."
@@ -265,20 +297,30 @@ When point is on a tool or status emoji, call CB with docs."
 
 ;;;###autoload
 (defun eca-mcp-details ()
-  "List MCP servers with their status and options."
+  "List MCP servers with their status and options.
+Opens the settings panel focused on the MCPs tab."
   (interactive)
-  (let ((session (eca-session)))
-    (eca-assert-session-running session)
-    (unless (buffer-live-p (eca-mcp--get-details-buffer session))
-      (eca-mcp--create-details-buffer session))
-    (with-current-buffer (eca-mcp--get-details-buffer session)
-      (unless (derived-mode-p 'eca-mcp-details-mode)
-        (eca-mcp-details-mode))
-      (if (window-live-p (get-buffer-window (buffer-name)))
-          (select-window (get-buffer-window (buffer-name)))
-        (display-buffer (current-buffer) eca-mcp-details-position-params)
-        (select-window (get-buffer-window (current-buffer)))
-        (set-window-buffer (get-buffer-window (current-buffer)) (current-buffer))))))
+  (eca-settings "mcps"))
+
+;; Settings tab
+
+(defun eca-mcp--create-settings-buffer (session)
+  "Create the MCP settings tab buffer for SESSION."
+  (let ((buf (eca-settings--create-buffer "mcps" session)))
+    (with-current-buffer buf
+      (eca-settings-mode)
+      (visual-line-mode)
+      (add-hook 'eldoc-documentation-functions
+                #'eca-mcp--eldoc-function nil t)
+      (eldoc-mode 1)
+      (eca-settings--setup-tab-line "mcps")
+      (eca-mcp--render-server-details session buf))
+    buf))
+
+(eca-settings-register-tab
+ "mcps" "MCPs"
+ #'eca-mcp--create-settings-buffer
+ #'eca-mcp--render-server-details)
 
 (provide 'eca-mcp)
 ;;; eca-mcp.el ends here
