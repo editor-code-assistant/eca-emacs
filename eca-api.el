@@ -150,27 +150,34 @@ Waits until there is no input."
                              eca-api-response-timeout
                              (+ send-time eca-api-response-timeout)))
              resp-result resp-error)
-        (unwind-protect
-            (progn
-              (eca-api-request-async
-               session
-               :method method
-               :params params
-               :success-callback (lambda (res) (setf resp-result (or res :finished)) (throw 'eca-done '_))
-               :error-callback (lambda (err) (setf resp-error err) (throw 'eca-done '_)))
-              (while (not (or resp-error resp-result (input-pending-p)))
-                (catch 'eca-done
-                  (sit-for
-                   (if expected-time (- expected-time send-time) 1)))
-                (setq send-time (float-time))
-                (when (and expected-time (< expected-time send-time))
-                  (error "Timeout while waiting for response.  Method: %s" method)))
-              (cond
-               ((eq resp-result :finished) nil)
-               (resp-result resp-result)
-               (resp-error (error "%s" resp-error))))
-          (when (and (input-pending-p) eca-api--throw-on-input)
-            (throw 'input :interrupted))))
+        (eca-api-request-async
+         session
+         :method method
+         :params params
+         :success-callback (lambda (res) (setf resp-result (or res :finished)) (throw 'eca-done '_))
+         :error-callback (lambda (err) (setf resp-error err) (throw 'eca-done '_)))
+        (let ((req-id eca--last-id))
+          (unwind-protect
+              (progn
+                (while (not (or resp-error resp-result (input-pending-p)))
+                  (catch 'eca-done
+                    (sit-for
+                     (if expected-time (- expected-time send-time) 1)))
+                  (setq send-time (float-time))
+                  (when (and expected-time (< expected-time send-time))
+                    (error "Timeout while waiting for response.  Method: %s" method)))
+                (cond
+                 ((eq resp-result :finished) nil)
+                 (resp-result resp-result)
+                 (resp-error (error "%s" resp-error))))
+            ;; Cleanup: remove stale handler on non-local exit
+            ;; (input interrupt, timeout, C-g, etc.)
+            (unless (or resp-result resp-error)
+              (setf (eca--session-response-handlers session)
+                    (plist-put (eca--session-response-handlers session)
+                               req-id nil)))
+            (when (and (input-pending-p) eca-api--throw-on-input)
+              (throw 'input :interrupted)))))
     (eca-api-request-sync session :method method :params params)))
 
 (cl-defun eca-api-notify (session &key method params)
