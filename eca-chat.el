@@ -2765,6 +2765,28 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
       (when (buffer-live-p chat-buffer)
         (kill-buffer chat-buffer)))))
 
+(defun eca-chat-opened (session params)
+  "Handle chat/opened notification for SESSION with PARAMS.
+Creates a new chat buffer for a server-initiated chat (e.g. /fork).
+The buffer is registered with the real chat-id so subsequent
+`chat/contentReceived' notifications render into it."
+  (let ((chat-id (plist-get params :chatId))
+        (title (plist-get params :title)))
+    (cl-incf eca-chat--new-chat-id)
+    (let ((new-buffer (eca-chat--create-buffer session)))
+      (with-current-buffer new-buffer
+        (let ((eca--chat-init-session session))
+          (eca-chat-mode))
+        (setq-local eca-chat--id chat-id)
+        (setq-local eca-chat--title title)
+        (setq-local eca-chat--selected-agent eca-chat--last-known-agent)
+        (setq-local eca-chat--selected-model eca-chat--last-known-model)
+        (setq-local eca-chat--selected-variant eca-chat--last-known-variant)
+        (setq-local eca-chat--selected-trust eca-chat-trust-enable))
+      (setf (eca--session-chats session)
+            (eca-assoc (eca--session-chats session) chat-id new-buffer))
+      (eca-chat--force-tab-line-update))))
+
 (defun eca-chat-status-changed (session params)
   "Handle chat status changed notification for SESSION with PARAMS.
 Synthesizes progress content-received events to update the

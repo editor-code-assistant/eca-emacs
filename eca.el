@@ -211,6 +211,7 @@ frames captured via `backtrace-get-frames'."
       ("chat/contentReceived" (eca-chat-content-received session params))
       ("chat/cleared" (eca-chat-cleared session params))
       ("chat/deleted" (eca-chat-deleted session params))
+      ("chat/opened" (eca-chat-opened session params))
       ("chat/statusChanged" (eca-chat-status-changed session params))
       ("rewrite/contentReceived" (eca-rewrite-content-received session params))
       ("tool/serverUpdated" (eca--tool-server-updated session params))
