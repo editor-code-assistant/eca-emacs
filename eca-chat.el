@@ -2122,7 +2122,7 @@ Append STATUS, TOOL-CALL-NEXT-LINE-SPACING, ROOTS and optional PARENT-ID."
              " " (eca-chat--file-change-details-label details)
              " " status time
              (when view-diff-btn
-               (concat "\n" (propertize view-diff-btn 'line-prefix tool-call-next-line-spacing)))
+               (concat " " view-diff-btn))
              approval-text)
      (concat "Tool: `" name "`\n"
              (eca-chat--file-change-diff path diff roots))
