@@ -184,20 +184,32 @@ If URI is non-nil, filter to that uri."
 
 (defun eca-editor--ensure-diagnostics-fresh (uri)
   "Ensure diagnostics for URI are fresh.
-Visits the buffer if needed and waits for checkers."
+Visits the buffer if needed, reverts if the file
+changed on disk, and waits for checkers to finish."
   (when uri
     (let* ((file (eca--uri-to-path uri))
            (buf (or (find-buffer-visiting file)
                     (find-file-noselect file))))
       (with-current-buffer buf
+        ;; Revert if file on disk is newer than buffer
+        (when (and (buffer-file-name)
+                   (not (verify-visited-file-modtime buf)))
+          (revert-buffer t t t))
         (font-lock-ensure)
         (cond
+         ;; lsp-mode: diagnostics are pushed async by
+         ;; the server, we can only wait.
+         ((bound-and-true-p lsp-mode)
+          (sit-for 2))
+         ;; flycheck: trigger and poll for completion
          ((bound-and-true-p flycheck-mode)
           (flycheck-buffer)
           (eca-editor--wait-for-flycheck 3.0))
+         ;; flymake: trigger and wait
          ((bound-and-true-p flymake-mode)
           (flymake-start)
           (sit-for 2))
+         ;; fallback: wait for mode hooks to settle
          (t
           (sit-for 2)))))))
 
