@@ -453,6 +453,25 @@ works normally."
   "Face for modeline when approval is pending."
   :group 'eca)
 
+(defface eca-tab-inactive-face
+  '((t :inherit shadow))
+  "Face for non-selected idle tab-line tabs."
+  :group 'eca)
+
+(defface eca-chat-tab-active-face
+  '((t :inherit warning))
+  "Face for selected active chat tabs.
+Active means loading or pending approval."
+  :group 'eca)
+
+(defface eca-chat-tab-inactive-active-face
+  '((((background dark))  :foreground "#b8860b")
+    (((background light)) :foreground "#8b6914"))
+  "Face for non-selected active chat tabs.
+A dimmer yellow for loading/approval tabs that
+are not currently selected."
+  :group 'eca)
+
 ;; Internal
 
 (defvar-local eca-chat--closed nil)
@@ -1489,13 +1508,26 @@ Shows 🚧 prefix for pending approvals."
       (concat " " (when pending "🚧 ") title " "))))
 
 (defun eca-chat--tab-line-face (tab _tabs face _selected-p _buffer)
-  "Apply warning face to loading chat tabs considering TAB.
-Merges `warning' with the default tab FACE via inheritance."
-  (let ((buf (cdr (assq 'buffer tab))))
-    (if (and buf (buffer-live-p buf)
-             (buffer-local-value 'eca-chat--chat-loading buf))
-        `(:inherit (warning ,face))
-      face)))
+  "Style chat tabs per selection and activity state.
+Uses `eca-tab-inactive-face' for non-selected idle
+tabs, `eca-chat-tab-active-face' for selected active
+tabs, and `eca-chat-tab-inactive-active-face' for
+non-selected active (loading/approval) tabs."
+  (let* ((buf (cdr (assq 'buffer tab)))
+         (selectedp (cdr (assq 'selected tab)))
+         (activep (and buf (buffer-live-p buf)
+                       (or (buffer-local-value
+                            'eca-chat--chat-loading buf)
+                           (with-current-buffer buf
+                             (eca-chat--has-pending-approvals-p))))))
+    (cond
+     ((and activep (not selectedp))
+      `(:inherit (eca-chat-tab-inactive-active-face ,face)))
+     (activep
+      `(:inherit (eca-chat-tab-active-face ,face)))
+     ((not selectedp)
+      `(:inherit (eca-tab-inactive-face ,face)))
+     (t face))))
 
 (defun eca-chat--tab-line-tabs ()
   "Return tab descriptors for all chats in the current session.

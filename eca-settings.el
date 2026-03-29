@@ -110,11 +110,21 @@ When creating, calls the tab's registered :create-fn."
                (selected . ,(string= key current-key))))))
        eca-settings--tabs))))
 
+(defun eca-settings--tab-line-face (tab _tabs face _selected-p _buffer)
+  "Dim non-selected settings tabs.
+Applies `eca-tab-inactive-face' to non-selected TAB,
+preserving the base FACE."
+  (if (cdr (assq 'selected tab))
+      face
+    `(:inherit (eca-tab-inactive-face ,face))))
+
 (defun eca-settings--setup-tab-line (tab-key)
   "Setup tab-line in current buffer for TAB-KEY."
   (setq-local eca-settings--tab-key tab-key)
   (setq-local tab-line-tabs-function
               #'eca-settings--tab-line-tabs)
+  (setq-local tab-line-tab-face-functions
+              '(eca-settings--tab-line-face))
   (setq-local tab-line-new-button-show nil)
   (setq-local tab-line-close-button-show nil)
   (setq-local tab-line-separator "")

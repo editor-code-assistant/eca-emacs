@@ -32,6 +32,7 @@
 (require 'eca-chat)
 (require 'eca-mcp)
 (require 'eca-providers)
+(require 'eca-config)
 (require 'eca-editor)
 (require 'eca-completion)
 (require 'eca-rewrite)
