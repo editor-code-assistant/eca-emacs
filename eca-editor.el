@@ -16,6 +16,7 @@
 
 (require 'lsp-mode nil t)
 (require 'flymake nil t)
+(require 'flycheck nil t)
 (require 'ht nil t)
 
 (require 'eca-util)
@@ -24,6 +25,17 @@
 (declare-function lsp-get "lsp-mode" (from key))
 (declare-function ht-select "ht" (function table))
 (declare-function flymake-diagnostic-code "flymake" (diagnostic))
+(declare-function flycheck-running-p "flycheck" ())
+(declare-function flycheck-buffer "flycheck" ())
+(declare-function flycheck-error-filename "flycheck" (err))
+(declare-function flycheck-error-line "flycheck" (err))
+(declare-function flycheck-error-column "flycheck" (err))
+(declare-function flycheck-error-end-line "flycheck" (err))
+(declare-function flycheck-error-end-column "flycheck" (err))
+(declare-function flycheck-error-level "flycheck" (err))
+(declare-function flycheck-error-message "flycheck" (err))
+(declare-function flycheck-error-id "flycheck" (err))
+(declare-function flycheck-error-checker "flycheck" (err))
 
 (defun eca-editor--lsp-to-eca-severity (severity)
   "Convert lsp SEVERITY to eca one."
@@ -40,6 +52,14 @@
     ((or 'flymake-error ':error 'eglot-error) "error")
     ((or 'flymake-warning ':warning 'eglot-warning) "warning")
     ((or 'flymake-note ':note 'eglot-note) "information")
+    (_ "unknown")))
+
+(defun eca-editor--flycheck-to-eca-severity (level)
+  "Convert flycheck LEVEL to eca severity."
+  (pcase level
+    ('error "error")
+    ('warning "warning")
+    ('info "information")
     (_ "unknown")))
 
 (defun eca-editor--lsp-mode-diagnostics (uri workspace)
@@ -113,22 +133,109 @@ If URI is nil find all diagnostics otherwise filter to that uri."
                  :message (flymake-diagnostic-text it)))))
      (flymake--project-diagnostics))))
 
-(defun eca-editor--get-lsp-diagnostics (uri workspaces)
-  "Return lsp diagnostics for URI in WORKSPACES.
-If URI is nil, return all workspaces diagnostics."
-  (let ((eca-diagnostics '()))
-    (seq-doseq (workspace workspaces)
-      (cond
-       ((featurep 'lsp-mode) (setq eca-diagnostics (append eca-diagnostics (eca-editor--lsp-mode-diagnostics uri workspace))))
-       ((featurep 'flymake) (setq eca-diagnostics (append eca-diagnostics (eca-editor--flymake-diagnostics uri workspace))))
-       (t nil)))
-    eca-diagnostics))
+(defun eca-editor--flycheck-diagnostics (uri workspaces)
+  "Collect flycheck diagnostics from buffers in WORKSPACES.
+Skips buffers where `lsp-mode' is active to avoid duplicates.
+If URI is non-nil, filter to that uri."
+  (let ((diagnostics '()))
+    (dolist (buf (buffer-list))
+      (when-let ((file (buffer-file-name buf)))
+        (let ((file-uri (eca--path-to-uri file)))
+          (when (and (or (null uri) (string= uri file-uri))
+                     (seq-some (lambda (ws)
+                                 (f-ancestor-of? ws file))
+                               workspaces))
+            (with-current-buffer buf
+              (when (and (bound-and-true-p flycheck-mode)
+                         (not (bound-and-true-p lsp-mode)))
+                (dolist (err flycheck-current-errors)
+                  (let* ((err-file (or (flycheck-error-filename err)
+                                       file))
+                         (err-uri (eca--path-to-uri err-file))
+                         (line (flycheck-error-line err))
+                         (col (flycheck-error-column err))
+                         (end-line (flycheck-error-end-line err))
+                         (end-col (flycheck-error-end-column err))
+                         (start-line (max 0 (1- (or line 1))))
+                         (start-char (max 0 (1- (or col 1))))
+                         (e-line (max 0 (1- (or end-line line 1))))
+                         (e-char (max 0 (1- (or end-col col 1)))))
+                    (push (list :uri err-uri
+                                :severity (eca-editor--flycheck-to-eca-severity
+                                           (flycheck-error-level err))
+                                :code (when-let ((id (flycheck-error-id err)))
+                                        (format "%s" id))
+                                :range (list :start (list :line start-line
+                                                          :character start-char)
+                                             :end (list :line e-line
+                                                        :character e-char))
+                                :source (when-let ((checker (flycheck-error-checker err)))
+                                          (symbol-name checker))
+                                :message (flycheck-error-message err))
+                          diagnostics)))))))))
+    diagnostics))
+
+(defun eca-editor--wait-for-flycheck (timeout)
+  "Wait for flycheck to finish, up to TIMEOUT seconds."
+  (let ((deadline (+ (float-time) timeout)))
+    (while (and (flycheck-running-p)
+                (< (float-time) deadline))
+      (sit-for 0.2))))
+
+(defun eca-editor--ensure-diagnostics-fresh (uri)
+  "Ensure diagnostics for URI are fresh.
+Visits the buffer if needed and waits for checkers."
+  (when uri
+    (let* ((file (eca--uri-to-path uri))
+           (buf (or (find-buffer-visiting file)
+                    (find-file-noselect file))))
+      (with-current-buffer buf
+        (font-lock-ensure)
+        (cond
+         ((bound-and-true-p flycheck-mode)
+          (flycheck-buffer)
+          (eca-editor--wait-for-flycheck 3.0))
+         ((bound-and-true-p flymake-mode)
+          (flymake-start)
+          (sit-for 2))
+         (t
+          (sit-for 2)))))))
+
+(defun eca-editor--collect-all-diagnostics (uri workspaces)
+  "Collect diagnostics from all backends for WORKSPACES.
+If URI is non-nil, filter to that uri."
+  (let ((diagnostics '()))
+    ;; lsp-mode: workspace-level diagnostics
+    (when (featurep 'lsp-mode)
+      (seq-doseq (workspace workspaces)
+        (setq diagnostics
+              (append diagnostics
+                      (eca-editor--lsp-mode-diagnostics
+                       uri workspace)))))
+    ;; flycheck: buffer-level, non-LSP buffers only
+    (when (featurep 'flycheck)
+      (setq diagnostics
+            (append diagnostics
+                    (eca-editor--flycheck-diagnostics
+                     uri workspaces))))
+    ;; flymake: for eglot users (when lsp-mode is absent)
+    (when (and (featurep 'flymake)
+               (not (featurep 'lsp-mode)))
+      (seq-doseq (workspace workspaces)
+        (setq diagnostics
+              (append diagnostics
+                      (eca-editor--flymake-diagnostics
+                       uri workspace)))))
+    diagnostics))
 
 (defun eca-editor-get-diagnostics (session params)
   "Return all diagnostics for SESSION from PARAMS."
   (let* ((uri (plist-get params :uri))
-         (lsp-diags (eca-editor--get-lsp-diagnostics uri (eca--session-workspace-folders session))))
-    (list :diagnostics (vconcat lsp-diags))))
+         (workspaces (eca--session-workspace-folders session)))
+    (eca-editor--ensure-diagnostics-fresh uri)
+    (list :diagnostics
+          (vconcat (eca-editor--collect-all-diagnostics
+                    uri workspaces)))))
 
 (provide 'eca-editor)
 ;;; eca-editor.el ends here

@@ -524,6 +524,13 @@ Stores the latest usage data received for each running subagent.")
   "Current task state plist with :goal and :tasks.
 Each task is a plist with :id, :content, :status, :priority, etc.")
 
+(defvar-local eca-chat--stopping-safety-timer nil
+  "Safety timer to force-clear \='stopping state.
+Used when server never responds to stop request.")
+
+(defvar-local eca-chat--stop-button-inserted nil
+  "Non-nil when the stop button is inserted in loading area.")
+
 
 (defvar eca-chat--new-chat-id 0)
 (defvar eca-chat--last-known-model nil)
@@ -901,12 +908,6 @@ request, useful for subagent tool calls."
                                 :params (list :chatId eca-chat--id
                                               :contentId content-id
                                               :include include)))))))
-
-(defvar-local eca-chat--stopping-safety-timer nil
-  "Safety timer to force-clear 'stopping state if server never responds.")
-
-(defvar-local eca-chat--stop-button-inserted nil
-  "Non-nil when the stop button text is currently inserted in the loading area.")
 
 (defun eca-chat--set-chat-loading (session loading)
   "Set the SESSION chat loading state.
@@ -1508,7 +1509,7 @@ Shows 🚧 prefix for pending approvals."
       (concat " " (when pending "🚧 ") title " "))))
 
 (defun eca-chat--tab-line-face (tab _tabs face _selected-p _buffer)
-  "Style chat tabs per selection and activity state.
+  "Return FACE for TAB styled by selection and activity.
 Uses `eca-tab-inactive-face' for non-selected idle
 tabs, `eca-chat-tab-active-face' for selected active
 tabs, and `eca-chat-tab-inactive-active-face' for
@@ -1617,8 +1618,9 @@ E is the mouse event."
   "Keymap for the modeline trust indicator.")
 
 (defun eca-chat--init-progress-str (session)
-  "Return init progress string for the mode-line, or nil when done.
-Shows \"⏳ finished/total · latest-title\" while tasks are in progress."
+  "Return init progress string for SESSION, or nil when done.
+Shows \"⏳ finished/total · latest-title\" while tasks
+are in progress."
   (when-let* ((tasks (eca--session-init-tasks session)))
     (let* ((total (length tasks))
            (finished (length (seq-filter
@@ -2132,12 +2134,11 @@ the last chat buffer of SESSION."
     (force-mode-line-update)))
 
 (defun eca-chat--tool-call-file-change-details
-    (content label approval-text time status tool-call-next-line-spacing roots &optional parent-id)
-  "Update tool call UI based showing file change details.
-LABEL is the tool call label.
-CONTENT is the tool call content.
+    (content label approval-text time status _tool-call-next-line-spacing roots &optional parent-id)
+  "Update tool call UI showing file change details.
+CONTENT is the tool call content, LABEL is the label.
 Can include optional APPROVAL-TEXT and TIME.
-Append STATUS, TOOL-CALL-NEXT-LINE-SPACING, ROOTS and optional PARENT-ID."
+Append STATUS, ROOTS and optional PARENT-ID."
   (-let* (((&plist :name name :details details :id id) content)
           (path (plist-get details :path))
           (diff (plist-get details :diff))
