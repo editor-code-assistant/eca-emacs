@@ -318,7 +318,7 @@ Opens the settings panel focused on the MCPs tab."
     buf))
 
 (eca-settings-register-tab
- "mcps" "MCPs"
+ "mcps" "🔌 MCPs"
  #'eca-mcp--create-settings-buffer
  #'eca-mcp--render-server-details)
 

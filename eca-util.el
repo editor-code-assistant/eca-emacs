@@ -115,7 +115,10 @@
   (chat-welcome-message "")
 
   ;; Init progress tasks alist: (taskId . plist) where plist has :title :type
-  (init-tasks nil))
+  (init-tasks nil)
+
+  ;; Provider status list from providers/list response.
+  (providers nil))
 
 (defun eca-find-root-for-buffer ()
   "Return the path that first matches the following:
