@@ -451,18 +451,9 @@ When ARG is current prefix, ask for workspace roots to use."
 
 ;;;###autoload
 (defun eca-open-global-config ()
-  "Open global ECA config file.
-If the file does not exist, create the directory if needed and open a new
-buffer visiting that path with `{}` pre-filled."
+  "Open the global config tab in eca-settings."
   (interactive)
-  (let* ((file (if-let (xdg (getenv "XDG_CONFIG_HOME"))
-                   (f-join xdg "eca" "config.json")
-                 (f-join (f-expand "~") ".config" "eca" "config.json")))
-         (dir (file-name-directory file)))
-    (make-directory dir t)
-    (find-file file)
-    (when (= (buffer-size) 0)
-      (insert "{}\n"))))
+  (eca-settings "global-config"))
 
 (provide 'eca)
 ;;; eca.el ends here

@@ -764,9 +764,10 @@ Cancels the shared timer when no more tool calls are being tracked."
             ("starting" (cl-incf starting))
             ("requires-auth" (cl-incf starting))
             ("failed" (cl-incf failed))))
-        (concat (funcall propertize-fn failed 'error (or (> running 0) (> starting 0)))
-                (funcall propertize-fn starting 'warning (> running 0))
-                (funcall propertize-fn running 'success))))))
+        (let ((result (concat (funcall propertize-fn failed 'error (or (> running 0) (> starting 0)))
+                              (funcall propertize-fn starting 'warning (> running 0))
+                              (funcall propertize-fn running 'success))))
+          (if (string-empty-p result) "0" result))))))
 
 (defun eca-chat--build-tool-call-approval-str-content (session id spacing-line-prefix &optional chat-id)
   "Build the tool call approval string for SESSION, ID and SPACING-LINE-PREFIX.
