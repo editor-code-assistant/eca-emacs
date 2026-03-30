@@ -228,9 +228,9 @@ MODEL is the LLM model used."
                      ov
                      (concat
                       label
-                      (when (fboundp #'rmc--add-key-description) ;; internal fn, not always available
+                      (when (fboundp 'rmc--add-key-description)
                         (mapconcat (lambda (e) (cdr e))
-                                   (mapcar #'rmc--add-key-description choices)
+                                   (mapcar (lambda (c) (funcall 'rmc--add-key-description c)) choices)
                                    ", ")))))))
 
 (defun eca-rewrite--reject (ovs)

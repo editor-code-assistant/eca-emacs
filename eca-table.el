@@ -115,8 +115,8 @@ TRUNCATED-P indicates the current display mode."
          (label (concat
                  (propertize "Table: " 'face 'eca-table-action-bar-face)
                  (propertize (concat "(" mode-label ")  ") 'face 'eca-table-action-key-face)
-                 (if (fboundp #'rmc--add-key-description)
-                     (cdr (rmc--add-key-description (list ?w toggle-label)))
+                 (if (fboundp 'rmc--add-key-description)
+                     (cdr (funcall 'rmc--add-key-description (list ?w toggle-label)))
                    (concat "[w] " toggle-label)))))
     (concat label "\n")))
 

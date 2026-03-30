@@ -567,7 +567,7 @@ Used when server never responds to stop request.")
     (define-key map (kbd "C-c C-f") #'eca-chat-select)
     (define-key map (kbd "C-c C-p") #'eca-chat-repeat-prompt)
     (define-key map (kbd "C-c C-d") #'eca-chat-clear-prompt)
-    (define-key map (kbd "C-c C-h") #'eca-chat-timeline)
+    (define-key map (kbd "C-c C-S-h") #'eca-chat-timeline)
     (define-key map (kbd "C-c C-a") #'eca-chat-tool-call-accept-all)
     (define-key map (kbd "C-c C-S-a") #'eca-chat-tool-call-accept-next)
     (define-key map (kbd "C-c C-y") #'eca-chat-tool-call-accept-all-and-remember)
@@ -1134,8 +1134,7 @@ the prompt/context line."
          ((and cur-ov
                (overlay-get cur-ov 'eca-chat-context-area)
                (and (string= " " (string (char-before (point))))
-                    (not (eolp))))
-          )
+                    (not (eolp)))))
 
          ;; in context area removing a context
          ((and cur-ov
