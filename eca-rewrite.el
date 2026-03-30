@@ -11,6 +11,7 @@
 ;;
 ;;; Code:
 
+(require 'compat)
 (require 'eca-util)
 (require 'eca-api)
 
@@ -227,7 +228,7 @@ MODEL is the LLM model used."
                      ov
                      (concat
                       label
-                      (when (fboundp #'rmc--add-key-description) ;; > Emacs 29
+                      (when (fboundp #'rmc--add-key-description) ;; internal fn, not always available
                         (mapconcat (lambda (e) (cdr e))
                                    (mapcar #'rmc--add-key-description choices)
                                    ", ")))))))

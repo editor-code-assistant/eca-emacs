@@ -18,6 +18,7 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'compat)
 (require 'markdown-mode)
 (require 'seq)
 

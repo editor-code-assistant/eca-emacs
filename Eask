@@ -11,13 +11,12 @@
 
 (files "*.el")
 
-(script "test" "echo \"Error: no test specified\" && exit 1")
-
 (source 'gnu)
 (source 'melpa)
 
 (depends-on "emacs" "28.1")
 (depends-on "dash")
+(depends-on "s")
 (depends-on "f")
 (depends-on "markdown-mode")
 (depends-on "compat")
