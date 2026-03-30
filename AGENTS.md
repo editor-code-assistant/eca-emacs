@@ -1,1 +1,2 @@
 - docstrings should have 80 chars or less, otherwise emacs built-in diagnostics complains.
+- We should support emacs 28.1+

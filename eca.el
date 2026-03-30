@@ -232,15 +232,26 @@ frames captured via `backtrace-get-frames'."
       ("editor/getDiagnostics" (eca-editor-get-diagnostics session params))
       (_ (eca-warn "Unknown server request %s" method)))))
 
+(defmacro eca--with-backtrace (var &rest body)
+  "Execute BODY, capturing backtrace into VAR on error.
+On Emacs 30+ uses `handler-bind' to capture a pre-unwind
+backtrace.  On older Emacs, runs BODY without capture."
+  (declare (indent 1))
+  (if (fboundp 'handler-bind)
+      `(handler-bind
+           ((error (lambda (_err)
+                     (setq ,var
+                           (backtrace-get-frames
+                            'handler-bind)))))
+         ,@body)
+    `(progn ,@body)))
+
 (defun eca--handle-message (session json-data)
   "Handle raw message JSON-DATA for SESSION."
   (let ((id (plist-get json-data :id))
         (result (plist-get json-data :result))
         (backtrace nil))
-    (handler-bind
-        ((error (lambda (_err)
-                  (setq backtrace
-                        (backtrace-get-frames 'handler-bind)))))
+    (eca--with-backtrace backtrace
       (condition-case err
           (pcase (eca--get-message-type json-data)
             ('response (-let [(success-callback) (plist-get (eca--session-response-handlers session) id)]
