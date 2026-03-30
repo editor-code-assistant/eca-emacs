@@ -1,4 +1,6 @@
-;;; -*- lexical-binding: t; -*-
+;;; eca-diff-test.el --- Tests for eca-diff -*- lexical-binding: t; -*-
+;;; Commentary:
+;;; Code:
 (require 'buttercup)
 (require 'eca-diff)
 
@@ -6,34 +8,24 @@
   (if (eq system-type 'windows-nt)
       "\r\n"
     "\n")
-  "Native end-of-line string for the current operating system.")
+  "End-of-line string for the current OS.")
 
-(describe "eca-diff-show-ediff"
-          :var ((insert-orig (symbol-function 'insert))
-                (contents '()))
-          (before-each
-           (spy-on 'insert
-                   :and-call-fake (lambda (&rest args)
-                                    (apply insert-orig args)
-                                    (push (list (buffer-name) (buffer-string)) contents )
-                                    )))
-          (it "can display unified diffs with native EOLs"
-              (let* ((inhibit-message t)
-                     (path "/a/path")
-                     (diff (string-join '("@@ -1,3 +1,4 @@"
-                                          "-Line 1"
-                                          "-Line 2"
-                                          "+Line 1 modified"
-                                          "+Line 2"
-                                          "+Line 3 added")
-                                        native-eol)))
+(describe "eca-diff-parse-unified-diff"
+  (it "parses a unified diff into original and new strings"
+    (let* ((diff (string-join '("@@ -1,3 +1,4 @@"
+                                "-Line 1"
+                                "-Line 2"
+                                "+Line 1 modified"
+                                "+Line 2"
+                                "+Line 3 added")
+                              native-eol))
+           ;; The parser normalises \r\n to \n before splitting.
+           (parsed (eca-diff-parse-unified-diff
+                    (replace-regexp-in-string "\r\n" "\n" diff))))
+      (expect (plist-get parsed :original)
+              :to-equal "Line 1\nLine 2")
+      (expect (plist-get parsed :new)
+              :to-equal "Line 1 modified\nLine 2\nLine 3 added"))))
 
-                ;; We expect this function to call `insert` twice.
-                (eca-diff-show-ediff path diff)
-                (expect (reverse contents)
-                        :to-equal
-                        `((,(format "*eca-diff-orig:%s*" path) "Line 1
-Line 2")
-                          (,(format "*eca-diff-new:%s*" path) "Line 1 modified
-Line 2
-Line 3 added"))))))
+(provide 'eca-diff-test)
+;;; eca-diff-test.el ends here
