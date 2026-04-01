@@ -163,12 +163,14 @@ https://github.com/emacs-lsp/lsp-mode/issues/4746#issuecomment-2957183423"
         (error "Curl failed to download from %s" url))
       output)))
 
+(defconst eca-process--releases-url "https://api.github.com/repos/editor-code-assistant/eca/releases"
+  "Github url for retrieving json files with infos about release binaries.")
+
 (defun eca-process--get-latest-server-version ()
   "Return the latest server version."
   (or eca-process--latest-server-version
       (condition-case err
-          (let* ((releases-url "https://api.github.com/repos/editor-code-assistant/eca/releases")
-                 (json-string (eca--curl-download-string releases-url)))
+          (let* ((json-string (eca--curl-download-string eca-process--releases-url)))
             (with-temp-buffer
               (insert json-string)
               (goto-char (point-min))
@@ -178,6 +180,28 @@ https://github.com/emacs-lsp/lsp-mode/issues/4746#issuecomment-2957183423"
         (error
          (eca-warn "Failed to get latest server version: %s" err)
          nil))))
+
+(defun eca-process--get-property (property &optional version)
+  "Retrieve PROPERTY for server binary VERSION."
+  (condition-case err
+      (let* ((json-string (eca--curl-download-string eca-process--releases-url))
+	     (version-list (with-temp-buffer
+			      (insert json-string)
+			      (goto-char (point-min))
+			      (eca-api--json-read-buffer)))
+	     (props (if version
+			(seq-find (lambda (ver) (string-equal (plist-get ver :tag_name) version)) version-list)
+		      (elt version-list 0))))
+	(plist-get props property))
+    (error
+     (eca-warn "Failed to get %s from %sserver version%s: %s"
+	       property
+	       (if version "" "the latest ")
+	       (if version (format " %s" version) "")
+	       err)
+     nil)))
+;; Test: (eca-process--get-property :tag_name)
+;; Test: (seq-find (lambda (asset) (plist-get asset :browser_download_url)) (eca-process--get-property :assets "0.122.1"))
 
 (defun eca-process--get-current-server-version ()
   "Return the current version of installed server if available."
@@ -224,6 +248,32 @@ clean them up on next startup."
                                     (t arch))))
                   ('windows-nt "windows-amd64"))))))
 
+(defun eca-process--get-file-sha256 (file)
+  "Check whether the checksum of FILE is sha256."
+  (with-temp-buffer
+    (set-buffer-multibyte nil)
+    (insert-file-contents-literally file)
+    (secure-hash 'sha256 (current-buffer))))
+;; Test: (eca-process--get-file-sha256 (buffer-file-name))
+
+(defun eca-process--check-sha256 (download-path url version)
+  "Check sha256 checksum of archive at DOWNLOAD-PATH.
+The archive should be retrieved from URL and have the given VERSION."
+  (if-let* ((asset (seq-find
+		    (lambda (asset)
+		      (let ((asset-url (plist-get asset :browser_download_url)))
+			(and (stringp asset-url) (string-equal url asset-url))))
+		    (eca-process--get-property :assets version)))
+	    (digest (plist-get asset :digest))
+	    (sha256 (and (stringp digest) (string-match "sha256:" digest) (substring digest (match-end 0)))))
+      (unless (string-equal
+	       sha256
+	       (eca-process--get-file-sha256 download-path))
+	(error "The downloaded archive for the eca binary is corrupted"))
+    (error "Cannot retrieve sha256 for the archive with the eca binary")
+    ))
+;; (eca-process--check-sha256 "~/.emacs.d/eca/eca.zip" "https://github.com/editor-code-assistant/eca/releases/download/0.122.1/eca-native-linux-aarch64.zip" "0.122.1")
+
 (defun eca-process--download-server (on-downloaded version)
   "Download eca server of VERSION calling ON-DOWNLOADED when success."
   (-let ((url (eca-process--download-url version))
@@ -248,7 +298,9 @@ clean them up on next startup."
            :url url
            :path download-path
            :on-done (lambda ()
-                      (eca-info "Downloaded eca, unzipping it...")
+                      (eca-info "Downloaded eca. Checking sha256...")
+                      (eca-process--check-sha256 download-path url version)
+                      (eca-info "Unzipping eca...")
                       (unless (and eca-unzip-script (funcall eca-unzip-script))
                         (error "Unable to find `unzip' or `powershell' on the path, please customize `eca-unzip-script'"))
                       ;; Extract to temp directory first
