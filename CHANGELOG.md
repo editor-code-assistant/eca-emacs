@@ -5,6 +5,7 @@
 - Add `eca-chat-mode-line-format` for customizable chat mode line layout. #184
 - Fix top-level `(require 'tab-line)` causing side effects when `eca-chat-tab-line` is nil. #195
 - Add support for `chat/opened` server notification, enabling the `/fork` command to open forked chats as new tabs.
+- Fix `eca--uri-to-path` returning wrong path on Windows (leading slash before drive letter). #200
 
 ## 0.6.0
 

@@ -244,7 +244,8 @@ workspace folders. Returns nil otherwise."
   "Convert a file URI to a file path."
   (cond
    ((string-prefix-p "file:///" uri)
-    (url-unhex-string (substring uri 7)))
+    (url-unhex-string
+     (substring uri (if (eq system-type 'windows-nt) 8 7))))
 
    ((string-prefix-p "file://" uri)
     (url-unhex-string (substring uri 6)))
