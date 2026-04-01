@@ -14,13 +14,26 @@
 ;;; Code:
 
 (require 'compat)
-(require 'tab-line)
 
 (require 'eca-util)
 
 (declare-function eca "eca" (&optional arg))
 
+;; Faces
+
+(defface eca-settings-heading
+  '((t :inherit bold :height 1.2))
+  "Face for headings in ECA settings buffers."
+  :group 'eca)
+
 ;; Customization
+
+(defcustom eca-settings-tab-line t
+  "Whether to show a tab line in settings buffers.
+When non-nil, enables `tab-line-mode' in settings
+buffers with tabs for each registered settings panel."
+  :type 'boolean
+  :group 'eca)
 
 (defcustom eca-settings-display-params
   '((display-buffer-in-side-window)
@@ -40,16 +53,22 @@ Ordered list of plists with :key :label :create-fn :refresh-fn.")
   "Register a settings tab identified by KEY.
 LABEL is the display name shown in the tab-line.
 CREATE-FN is called with (session) to create the buffer.
-REFRESH-FN is called with (session buffer) to re-render."
-  (setq eca-settings--tabs
-        (append (cl-remove-if
-                 (lambda (tab)
-                   (string= (plist-get tab :key) key))
-                 eca-settings--tabs)
-                (list (list :key key
-                            :label label
-                            :create-fn create-fn
-                            :refresh-fn refresh-fn)))))
+REFRESH-FN is called with (session buffer) to re-render.
+Re-registering an existing KEY updates it in place,
+preserving tab order."
+  (let ((new-tab (list :key key
+                       :label label
+                       :create-fn create-fn
+                       :refresh-fn refresh-fn))
+        (pos (cl-position key eca-settings--tabs
+                          :test #'string=
+                          :key (lambda (tab)
+                                 (plist-get tab :key)))))
+    (if pos
+        (setf (nth pos eca-settings--tabs) new-tab)
+      (setq eca-settings--tabs
+            (append eca-settings--tabs
+                    (list new-tab))))))
 
 (defun eca-settings--find-tab (key)
   "Find the registered tab plist for KEY, or nil."
@@ -121,15 +140,17 @@ preserving the base FACE."
 (defun eca-settings--setup-tab-line (tab-key)
   "Setup tab-line in current buffer for TAB-KEY."
   (setq-local eca-settings--tab-key tab-key)
-  (setq-local tab-line-tabs-function
-              #'eca-settings--tab-line-tabs)
-  (setq-local tab-line-tab-face-functions
-              '(eca-settings--tab-line-face))
-  (setq-local tab-line-new-button-show nil)
-  (setq-local tab-line-close-button-show nil)
-  (setq-local tab-line-separator "")
-  (face-remap-add-relative 'tab-line :height 0.9)
-  (tab-line-mode 1))
+  (when eca-settings-tab-line
+    (require 'tab-line)
+    (setq-local tab-line-tabs-function
+                #'eca-settings--tab-line-tabs)
+    (setq-local tab-line-tab-face-functions
+                '(eca-settings--tab-line-face))
+    (setq-local tab-line-new-button-show nil)
+    (setq-local tab-line-close-button-show nil)
+    (setq-local tab-line-separator "")
+    (face-remap-add-relative 'tab-line :height 0.9)
+    (tab-line-mode 1)))
 
 (defun eca-settings--force-tab-line-update ()
   "Force tab-line redraw in all settings windows."

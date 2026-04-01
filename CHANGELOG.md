@@ -6,6 +6,9 @@
 - Fix top-level `(require 'tab-line)` causing side effects when `eca-chat-tab-line` is nil. #195
 - Add support for `chat/opened` server notification, enabling the `/fork` command to open forked chats as new tabs.
 - Fix `eca--uri-to-path` returning wrong path on Windows (leading slash before drive letter). #200
+- Add `eca-settings-tab-line` option to disable `tab-line-mode` in settings buffers. #201
+- Replace `helpful-heading` face dependency with `eca-settings-heading` defface. #201
+- Fix settings tab re-registration reordering tabs. #201
 
 ## 0.6.0
 

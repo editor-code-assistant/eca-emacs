@@ -313,7 +313,7 @@ When all methods are just API key entry, returns nil."
             (providers (eca--session-providers session)))
         (erase-buffer)
         (insert "\n")
-        (insert (propertize "Providers / Models" 'font-lock-face 'helpful-heading))
+        (insert (propertize "Providers / Models" 'font-lock-face 'eca-settings-heading))
         (insert "\n")
         (insert (propertize "For more details check " 'face 'shadow))
         (insert-text-button "https://eca.dev/config/models/"

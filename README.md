@@ -170,6 +170,7 @@ Rewrite
 
 Settings
 
+- `eca-settings-tab-line`: Whether to show a tab line in settings buffers (default `t`).
 - `eca-settings-display-params`: Display parameters for the settings panel side window.
 
 MCP
