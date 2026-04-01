@@ -109,7 +109,7 @@ Works with both standalone and settings panel buffers."
                         eca-mcp-details-mode-map)))
         (erase-buffer)
         (insert "\n")
-        (insert (propertize "All MCP servers configured in ECA" 'font-lock-face 'helpful-heading))
+        (insert (propertize "All MCP servers configured in ECA" 'font-lock-face 'eca-settings-heading))
         (insert "\n\n")
         (seq-doseq (server (-sort  (lambda (a b)
                                      (string-lessp (plist-get a :name)
