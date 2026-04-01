@@ -264,6 +264,11 @@ works normally."
   "Face for the queued prompt indicator."
   :group 'eca)
 
+(defface eca-chat-steer-prompt-face
+  '((t :inherit font-lock-keyword-face :slant italic :underline nil))
+  "Face for the steer prompt indicator."
+  :group 'eca)
+
 (defface eca-chat-tool-call-approval-content-face
   `((t :height ,eca-chat-tool-call-approval-content-size))
   "Face for the MCP tool calls approval content in chat."
@@ -511,6 +516,7 @@ are not currently selected."
 (defvar-local eca-chat--session-limit-context nil)
 (defvar-local eca-chat--session-limit-output nil)
 (defvar-local eca-chat--queued-prompt nil)
+(defvar-local eca-chat--steered-prompt nil)
 (defvar-local eca-chat--subagent-chat-id->tool-call-id (make-hash-table :test 'equal)
   "Hash table mapping subagent chatId to the parent tool call expandable block id.")
 (defvar-local eca-chat--subagent-usage (make-hash-table :test 'equal)
@@ -548,6 +554,7 @@ Used when server never responds to stop request.")
   (let ((map (make-sparse-keymap)))
     (set-keymap-parent map markdown-mode-map)
     (define-key map (kbd "S-<return>") #'eca-chat--key-pressed-newline)
+    (define-key map (kbd "C-<return>") #'eca-chat--key-pressed-queue)
     (define-key map (kbd "C-<up>") #'eca-chat--key-pressed-previous-prompt-history)
     (define-key map (kbd "C-<down>") #'eca-chat--key-pressed-next-prompt-history)
     (define-key map (kbd "<return>") #'eca-chat--key-pressed-return)
@@ -842,6 +849,8 @@ request, useful for subagent tool calls."
     (move-overlay progress-area-ov (overlay-start progress-area-ov) (1- (overlay-end progress-area-ov))))
   (let ((queued-area-ov (make-overlay (line-beginning-position) (1+ (line-beginning-position)) (current-buffer))))
     (overlay-put queued-area-ov 'eca-chat-queued-area t))
+  (let ((steer-area-ov (make-overlay (line-beginning-position) (1+ (line-beginning-position)) (current-buffer))))
+    (overlay-put steer-area-ov 'eca-chat-steer-area t))
   (let ((context-area-ov (make-overlay (line-beginning-position) (line-end-position) (current-buffer) nil t)))
     (overlay-put context-area-ov 'eca-chat-context-area t)
     (eca-chat--insert (propertize eca-chat-context-prefix 'font-lock-face 'eca-chat-context-unlinked-face))
@@ -868,6 +877,8 @@ request, useful for subagent tool calls."
     (setq-local eca-chat--modeline-timer nil))
   (setq-local eca-chat--chat-loading nil)
   (setq-local eca-chat--stop-button-inserted nil)
+  (setq-local eca-chat--steered-prompt nil)
+  (setq-local eca-chat--queued-prompt nil)
   (clrhash eca-chat--subagent-chat-id->tool-call-id)
   (clrhash eca-chat--subagent-usage)
   (eca-chat--insert "\n")
@@ -1013,6 +1024,15 @@ LOADING can be t (loading), \\='stopping (stop in progress), or nil (idle)."
   (when (>= (point) (eca-chat--prompt-field-start-point))
     (eca-chat--insert "\n")))
 
+(defun eca-chat--key-pressed-queue ()
+  "Queue the current prompt to be sent after the running prompt finishes."
+  (interactive)
+  (eca-chat--allow-write
+   (let ((prompt (or (eca-chat--prompt-content) "")))
+     (when (and (not (string-empty-p prompt))
+                eca-chat--chat-loading)
+       (eca-chat--queue-prompt prompt)))))
+
 (defun eca-chat--loading-area-ov ()
   "Return the overlay for the loading area."
   (-first (-lambda (ov) (eq t (overlay-get ov 'eca-chat-loading-area)))
@@ -1050,6 +1070,11 @@ LOADING can be t (loading), \\='stopping (stop in progress), or nil (idle)."
 (defun eca-chat--queued-area-ov ()
   "Return the overlay for the queued prompt area."
   (-first (-lambda (ov) (eq t (overlay-get ov 'eca-chat-queued-area)))
+          (overlays-in (point-min) (point-max))))
+
+(defun eca-chat--steer-area-ov ()
+  "Return the overlay for the steer prompt area."
+  (-first (-lambda (ov) (eq t (overlay-get ov 'eca-chat-steer-area)))
           (overlays-in (point-min) (point-max))))
 
 (defun eca-chat--prompt-area-start-point ()
@@ -1258,6 +1283,48 @@ Resteps a list of context plists found in the prompt field."
     (setq-local eca-chat--queued-prompt nil)
     (eca-chat--update-queued-area)))
 
+(defun eca-chat--steered-prompt-display-string (text)
+  "Return a display string for steered prompt TEXT, truncated to 40 chars."
+  (let* ((single-line (replace-regexp-in-string "\n" " " text))
+         (truncated (if (> (length single-line) 40)
+                        (concat (substring single-line 0 40) "...")
+                      single-line)))
+    (propertize (concat "Steering: " truncated "\n")
+                'face 'eca-chat-steer-prompt-face)))
+
+(defun eca-chat--update-steer-area ()
+  "Update the steer-area overlay to reflect `eca-chat--steered-prompt'."
+  (when-let* ((ov (eca-chat--steer-area-ov)))
+    (overlay-put ov 'before-string
+                 (if eca-chat--steered-prompt
+                     (eca-chat--steered-prompt-display-string eca-chat--steered-prompt)
+                   ""))))
+
+(defun eca-chat--steer-prompt (session prompt)
+  "Steer the running prompt for SESSION by injecting PROMPT at the next LLM turn."
+  (setq-local eca-chat--steered-prompt (if eca-chat--steered-prompt
+                                            (concat eca-chat--steered-prompt "\n" prompt)
+                                          prompt))
+  (eca-chat--update-steer-area)
+  (eca-chat--set-prompt "")
+  (eca-api-notify session
+                  :method "chat/promptSteer"
+                  :params (list :chatId eca-chat--id
+                                :message prompt)))
+
+(defun eca-chat--send-steered-prompt (session)
+  "Merge any unconsumed steered prompt into the queued prompt for SESSION.
+Does not send directly — `eca-chat--send-queued-prompt' handles sending."
+  (ignore session)
+  (when eca-chat--steered-prompt
+    (setq-local eca-chat--queued-prompt
+                (if eca-chat--queued-prompt
+                    (concat eca-chat--steered-prompt "\n" eca-chat--queued-prompt)
+                  eca-chat--steered-prompt))
+    (setq-local eca-chat--steered-prompt nil)
+    (eca-chat--update-steer-area)
+    (eca-chat--update-queued-area)))
+
 (defun eca-chat--completion-active-p ()
   "Return non-nil if a completion popup is active."
   (or (and (bound-and-true-p completion-in-region-mode))
@@ -1315,7 +1382,7 @@ Resteps a list of context plists found in the prompt field."
 
       ((and (not (string-empty-p prompt))
             eca-chat--chat-loading)
-       (eca-chat--queue-prompt prompt))
+       (eca-chat--steer-prompt session prompt))
 
       (t nil)))))
 
@@ -2395,6 +2462,9 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
            ("user"
             (unless parent-tool-call-id
               (progn
+                (when eca-chat--steered-prompt
+                  (setq-local eca-chat--steered-prompt nil)
+                  (eca-chat--update-steer-area))
                 (eca-chat--add-expandable-content
                  content-id
                  (propertize (string-trim text) 'font-lock-face 'eca-chat-user-messages-face)
@@ -2699,6 +2769,7 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
                (eca-chat--tool-call-elapsed-stop-all)
                (eca-chat--set-chat-loading session nil)
                (eca-chat--refresh-progress chat-buffer)
+               (eca-chat--send-steered-prompt session)
                (eca-chat--send-queued-prompt session)
                (run-hooks 'eca-chat-finished-hook))
               ('t
@@ -2711,6 +2782,7 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
                (eca-chat--beautify-tables (point-min))
                (eca-chat--set-chat-loading session nil)
                (eca-chat--refresh-progress chat-buffer)
+               (eca-chat--send-steered-prompt session)
                (eca-chat--send-queued-prompt session)
                (run-hooks 'eca-chat-finished-hook))
               (_ nil))))))
