@@ -1262,6 +1262,7 @@ Resteps a list of context plists found in the prompt field."
   "Return non-nil if a completion popup is active."
   (or (and (bound-and-true-p completion-in-region-mode))
       (and (bound-and-true-p corfu--frame)
+           (frame-live-p corfu--frame)
            (frame-visible-p corfu--frame))
       (bound-and-true-p company-candidates)))
 
