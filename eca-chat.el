@@ -2005,6 +2005,13 @@ CHILD, NAME, DOCSTRING and BODY are passed down."
   ;; visual-line-mode wraps all lines including tables, breaking their layout.
   (setq-local word-wrap t)
   (setq-local truncate-lines nil)
+  ;; Prevent `balance-windows' from resizing the chat window.
+  ;; Left/right windows have their width fixed; top/bottom their height.
+  (when eca-chat-use-side-window
+    (setq-local window-size-fixed
+                (if (memq eca-chat-window-side '(left right))
+                    'width
+                  'height)))
   (hl-line-mode -1)
   (setq-local eca-chat--history '())
   (setq-local eca-chat--history-index -1)
