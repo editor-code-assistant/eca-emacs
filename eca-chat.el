@@ -2542,44 +2542,44 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
                (eca-chat--add-expandable-content
                 eca-chat--task-block-id label "" nil
                 (overlay-start (eca-chat--task-area-ov)))))
-         (let* ((id (plist-get content :id))
-                (name (plist-get content :name))
-                (server (plist-get content :server))
-                (argsText (plist-get content :argumentsText))
-                (details (plist-get content :details))
-                (subagent? (string= "subagent" (plist-get details :type)))
-                (label (or (plist-get content :summary)
-                           (format "Preparing tool: %s__%s" server name)))
-                (current-count (gethash id eca-chat--tool-call-prepare-counters 0))
-                (cached-content (gethash id eca-chat--tool-call-prepare-content-cache ""))
-                (new-content (concat cached-content argsText))
-                (should-update-ui-p
-                 (pcase eca-chat-tool-call-prepare-throttle
-                   ('all t)
-                   ('smart (or (= current-count 0)
-                               (= (mod current-count eca-chat-tool-call-prepare-update-interval) 0))))))
-           ;; Always cache the metadata and content
-           (puthash id (1+ current-count) eca-chat--tool-call-prepare-counters)
-           (puthash id new-content eca-chat--tool-call-prepare-content-cache)
-           ;; Only update UI when throttling permits
-           (when should-update-ui-p
-             (let* ((label-face (if subagent?
-                                    'eca-chat-subagent-tool-call-label-face
-                                  'eca-chat-mcp-tool-call-label-face))
-                    (label (concat (propertize label 'font-lock-face label-face)
-                                   " " eca-chat-mcp-tool-call-loading-symbol))
-                    (body (if subagent?
-                              (eca-chat--content-table `())
-                            (eca-chat--content-table
-                             `(("Tool" . ,name)
-                               ("Server" . ,server)
-                               ("Arguments" . ,new-content))))))
-               (if (eca-chat--get-expandable-content id)
-                   ;; Update with accumulated content, not just this chunk
-                   (eca-chat--update-expandable-content
-                    id label (if subagent? body new-content) nil parent-tool-call-id)
-                 (eca-chat--add-expandable-content
-                  id label body parent-tool-call-id)))))))
+         (when-let* ((id (plist-get content :id))
+                     (name (plist-get content :name))
+                     (server (plist-get content :server)))
+           (let* ((argsText (plist-get content :argumentsText))
+                  (details (plist-get content :details))
+                  (subagent? (string= "subagent" (plist-get details :type)))
+                  (label (or (plist-get content :summary)
+                             (format "Preparing tool: %s__%s" server name)))
+                  (current-count (gethash id eca-chat--tool-call-prepare-counters 0))
+                  (cached-content (gethash id eca-chat--tool-call-prepare-content-cache ""))
+                  (new-content (concat cached-content argsText))
+                  (should-update-ui-p
+                   (pcase eca-chat-tool-call-prepare-throttle
+                     ('all t)
+                     ('smart (or (= current-count 0)
+                                 (= (mod current-count eca-chat-tool-call-prepare-update-interval) 0))))))
+             ;; Always cache the metadata and content
+             (puthash id (1+ current-count) eca-chat--tool-call-prepare-counters)
+             (puthash id new-content eca-chat--tool-call-prepare-content-cache)
+             ;; Only update UI when throttling permits
+             (when should-update-ui-p
+               (let* ((label-face (if subagent?
+                                      'eca-chat-subagent-tool-call-label-face
+                                    'eca-chat-mcp-tool-call-label-face))
+                      (label (concat (propertize label 'font-lock-face label-face)
+                                     " " eca-chat-mcp-tool-call-loading-symbol))
+                      (body (if subagent?
+                                (eca-chat--content-table `())
+                              (eca-chat--content-table
+                               `(("Tool" . ,name)
+                                 ("Server" . ,server)
+                                 ("Arguments" . ,new-content))))))
+                 (if (eca-chat--get-expandable-content id)
+                     ;; Update with accumulated content, not just this chunk
+                     (eca-chat--update-expandable-content
+                      id label (if subagent? body new-content) nil parent-tool-call-id)
+                   (eca-chat--add-expandable-content
+                    id label body parent-tool-call-id))))))))
       ("toolCallRun"
        (unless (eca-chat--task-tool-call-p content)
          (let* ((id (plist-get content :id))
