@@ -89,6 +89,14 @@ Tries git info first, then package.el version, then file modification date."
   :type 'hook
   :group 'eca)
 
+(defcustom eca-send-process-id t
+  "Whether to send the Emacs process ID to the ECA server.
+When non-nil, the server uses it to detect when Emacs exits and
+shut down automatically.  Set to nil to omit it, e.g. when running
+the server independently of Emacs."
+  :type 'boolean
+  :group 'eca)
+
 (defface eca-workspaces-tree-chat-idle-face
   '((t :underline t))
   "Face for idle chat entries in eca-workspaces buffer."
@@ -280,18 +288,20 @@ backtrace.  On older Emacs, runs BODY without capture."
   (eca-api-request-async
    session
    :method "initialize"
-   :params (list :processId (unless (-some-> (buffer-file-name)
-                                      (file-remote-p))
-                              (emacs-pid))
-                 :clientInfo (list :name "emacs"
-                                   :version (emacs-version))
-                 :capabilities (list :codeAssistant (list :chat t
-                                                          :editor (list :diagnostics t)))
-                 :initializationOptions (list :chatAgent eca-chat-custom-agent)
-                 :workspaceFolders (vconcat (-map (lambda (folder)
-                                                    (list :uri (eca--path-to-uri folder)
-                                                          :name (file-name-nondirectory (directory-file-name folder))))
-                                                  (eca--session-workspace-folders session))))
+   :params (append (when-let* ((pid (and eca-send-process-id
+                                        (unless (-some-> (buffer-file-name)
+                                                  (file-remote-p))
+                                          (emacs-pid)))))
+                     (list :processId pid))
+                   (list :clientInfo (list :name "emacs"
+                                          :version (emacs-version))
+                         :capabilities (list :codeAssistant (list :chat t
+                                                                  :editor (list :diagnostics t)))
+                         :initializationOptions (list :chatAgent eca-chat-custom-agent)
+                         :workspaceFolders (vconcat (-map (lambda (folder)
+                                                           (list :uri (eca--path-to-uri folder)
+                                                                 :name (file-name-nondirectory (directory-file-name folder))))
+                                                         (eca--session-workspace-folders session)))))
    :success-callback (-lambda (res)
                        (setf (eca--session-status session) 'started)
                        (setf (eca--session-chat-welcome-message session) (plist-get res :chatWelcomeMessage))
