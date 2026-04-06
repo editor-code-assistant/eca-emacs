@@ -242,7 +242,7 @@ overlay, remove it from the internal tracking list
 No confirmation is asked; a nil OVS is ignored. Returns nil."
   (when eca-rewrite--restore-paren-mode-after-clean
     (setq eca-rewrite--restore-paren-mode-after-clean nil)
-    (show-paren-mode 1))
+    (show-paren-local-mode 1))
   (dolist (ov (ensure-list ovs))
     (setq eca-rewrite--overlays (delq ov eca-rewrite--overlays))
     (when (eq ov eca-rewrite--hovered-ov)
@@ -256,7 +256,7 @@ No confirmation is asked; a nil OVS is ignored. Returns nil."
   "Accept rewrite overlay OV."
   (when eca-rewrite--restore-paren-mode-after-clean
     (setq eca-rewrite--restore-paren-mode-after-clean nil)
-    (show-paren-mode 1))
+    (show-paren-local-mode 1))
   (let ((ov-buf (overlay-buffer ov)))
     (with-current-buffer ov-buf
       (goto-char (overlay-start ov))
@@ -365,6 +365,9 @@ MODEL is the model used."
 
 (defun eca-rewrite--diff (ov)
   "Show diff between original text and rewrite overlay OV."
+  (when eca-rewrite--restore-paren-mode-after-clean
+    (setq eca-rewrite--restore-paren-mode-after-clean nil)
+    (show-paren-local-mode 1))
   (pcase eca-rewrite-diff-tool
     ('simple-diff (eca-rewrite--simple-diff ov))
     ('ediff (eca-rewrite--ediff ov))
@@ -428,9 +431,9 @@ so shorter rewrites don't leave leftover original text in the overlay."
          (acc (concat (overlay-get ov 'eca-rewrite--new-text-acc) text)))
     (overlay-put ov 'eca-rewrite--new-text-acc acc)
     (with-current-buffer ov-buf
-      (setq eca-rewrite--restore-paren-mode-after-clean t)
       (when show-paren-mode
-        (show-paren-mode -1)))
+        (setq eca-rewrite--restore-paren-mode-after-clean t)
+        (show-paren-local-mode -1)))
     (with-current-buffer temp-buf
       (let ((inhibit-read-only t)
             (inhibit-modification-hooks t))
