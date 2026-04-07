@@ -477,6 +477,11 @@ A dimmer yellow for loading/approval tabs that
 are not currently selected."
   :group 'eca)
 
+(defface eca-chat-flag-face
+  '((t :inherit font-lock-number-face))
+  "Face for flag markers in chat."
+  :group 'eca)
+
 ;; Internal
 
 (defvar-local eca-chat--closed nil)
@@ -920,6 +925,21 @@ request, useful for subagent tool calls."
                                 :params (list :chatId eca-chat--id
                                               :contentId content-id
                                               :include include)))))))
+
+(defun eca-chat--remove-flag (session content-id)
+  "Remove a flag identified by CONTENT-ID from the chat via SESSION."
+  (eca-api-request-sync session
+                        :method "chat/removeFlag"
+                        :params (list :chatId eca-chat--id
+                                      :contentId content-id))
+  (eca-chat--remove-expandable-content content-id))
+
+(defun eca-chat--fork-from-flag (session content-id)
+  "Fork the chat from a flag identified by CONTENT-ID via SESSION."
+  (eca-api-request-sync session
+                        :method "chat/fork"
+                        :params (list :chatId eca-chat--id
+                                      :contentId content-id)))
 
 (defun eca-chat--set-chat-loading (session loading)
   "Set the SESSION chat loading state.
@@ -2498,6 +2518,24 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
                    (plist-get content :title)
                    (lambda () (browse-url (plist-get content :url))))
                   "\n\n"))))
+      ("flag"
+       (let* ((flag-text (plist-get content :text))
+              (flag-content-id (plist-get content :contentId))
+              (flag-str (propertize (concat "🚩️️ " flag-text)
+                                     'font-lock-face 'eca-chat-flag-face))
+              (fork-btn (eca-buttonize
+                         eca-chat-mode-map
+                         (propertize "Fork from here" 'font-lock-face 'eca-chat-rollback-face)
+                         (lambda () (eca-chat--fork-from-flag session flag-content-id))))
+              (remove-btn (eca-buttonize
+                           eca-chat-mode-map
+                           (propertize "Remove flag" 'font-lock-face 'eca-chat-rollback-face)
+                           (lambda () (eca-chat--remove-flag session flag-content-id))))
+              (actions (concat fork-btn "\n" remove-btn)))
+         (eca-chat--add-expandable-content flag-content-id flag-str actions)
+         (when-let* ((ov (eca-chat--get-expandable-content flag-content-id)))
+           (overlay-put ov 'eca-chat--flag-text flag-text)
+           (overlay-put ov 'eca-chat--timestamp (float-time)))))
       ("reasonStarted"
        (let ((id (plist-get content :id))
              (label (propertize "Thinking..." 'font-lock-face 'eca-chat-reason-label-face)))
@@ -3042,6 +3080,31 @@ silently ignored."
     (eca-chat--set-agent session next-agent (current-buffer))))
 
 ;;;###autoload
+(defun eca-chat-add-flag ()
+  "Add a named flag to the current chat.
+The flag is placed after the nearest message block at or before
+point.  Works with any message type (user, tool call, etc)."
+  (interactive)
+  (eca-assert-session-running (eca-session))
+  (let ((nearest-id nil)
+        (nearest-pos -1))
+    (dolist (ov (overlays-in (point-min) (1+ (point))))
+      (when-let* ((id (overlay-get ov 'eca-chat--expandable-content-id))
+                  (pos (overlay-start ov)))
+        (when (and (> pos nearest-pos)
+                   (not (overlay-get ov 'eca-chat--flag-text)))
+          (setq nearest-id id nearest-pos pos))))
+    (if nearest-id
+        (when-let* ((flag-text (read-string "Flag: ")))
+          (unless (string-empty-p flag-text)
+            (eca-api-request-sync (eca-session)
+                                  :method "chat/addFlag"
+                                  :params (list :chatId eca-chat--id
+                                                :contentId nearest-id
+                                                :text flag-text))))
+      (message "No message found before point"))))
+
+;;;###autoload
 (defun eca-chat-toggle-trust ()
   "Toggle trust mode (auto-accept all tool call)."
   (interactive)
@@ -3447,6 +3510,25 @@ Resteps empty list if session is not running or buffer is not available."
                     messages))))
         messages))))
 
+(defun eca-chat--get-flags (&optional buffer)
+  "Extract all flags from the chat BUFFER.
+If BUFFER is nil, use the last chat buffer from current session.
+Returns a list of plists ordered newest to oldest."
+  (when-let* ((session (eca-session))
+              (chat-buffer (or buffer (eca-chat--get-last-buffer session)))
+              ((buffer-live-p chat-buffer)))
+    (with-current-buffer chat-buffer
+      (let ((flags '()))
+        (dolist (ov (overlays-in (point-min) (point-max)))
+          (when-let* ((flag-text (overlay-get ov 'eca-chat--flag-text))
+                      (start (overlay-start ov)))
+            (push (list :text (concat "🚩️️ " flag-text)
+                        :start start
+                        :timestamp (or (overlay-get ov 'eca-chat--timestamp)
+                                       (float-time)))
+                  flags)))
+        flags))))
+
 (defun eca-chat--select-message-from-completion (prompt)
   "Show completion with user messages using PROMPT.
 Resteps selected message plist or nil if no messages or cancelled."
@@ -3465,17 +3547,31 @@ Resteps selected message plist or nil if no messages or cancelled."
 
 ;;;###autoload
 (defun eca-chat-timeline ()
-  "Navigate to a user message via completion."
+  "Navigate to a user message or flag via completion."
   (interactive)
-  (if-let* ((selected-msg (eca-chat--select-message-from-completion "Timeline: "))
-            (pos (plist-get selected-msg :start))
-            (chat-buffer (eca-chat--get-last-buffer (eca-session))))
-      (progn
-        (eca-chat--display-buffer chat-buffer)
-        (with-current-buffer chat-buffer
-          (goto-char pos)
-          (recenter)))
-    (message "No user messages found")))
+  (let* ((messages (or (eca-chat--get-user-messages) '()))
+         (flags (or (eca-chat--get-flags) '()))
+         (all-entries (append messages flags)))
+    (if (null all-entries)
+        (message "No user messages or flags found")
+      (let ((table (make-hash-table :test 'equal)))
+        (dolist (entry (sort all-entries
+                             (lambda (a b) (< (plist-get a :start) (plist-get b :start)))))
+          (puthash (eca-chat--format-message-for-completion entry) entry table))
+        (when-let* ((choice (completing-read
+                             "Timeline: "
+                             (lambda (string pred action)
+                               (if (eq action 'metadata)
+                                   `(metadata (display-sort-function . identity))
+                                 (complete-with-action action (hash-table-keys table) string pred)))
+                             nil t))
+                    (selected (gethash choice table))
+                    (pos (plist-get selected :start))
+                    (chat-buffer (eca-chat--get-last-buffer (eca-session))))
+          (eca-chat--display-buffer chat-buffer)
+          (with-current-buffer chat-buffer
+            (goto-char pos)
+            (recenter)))))))
 
 ;;;###autoload
 (defun eca-chat-clear-prompt ()
