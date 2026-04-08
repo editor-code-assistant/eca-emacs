@@ -84,7 +84,7 @@ preserving tab order."
 
 (defun eca-settings--buffer-name (tab-key session)
   "Return buffer name for TAB-KEY in SESSION."
-  (format "<eca-settings[%s]:%s:%s>"
+  (format " *eca-settings[%s]:%s:%s*"
           (eca--session-project-name session)
           tab-key
           (eca--session-id session)))

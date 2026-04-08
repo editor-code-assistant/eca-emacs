@@ -56,8 +56,8 @@ system (it ignores those popup rules for the generated ediff buffers)."
          (parsed        (eca-diff-parse-unified-diff diff))
          (orig          (plist-get parsed :original))
          (new           (plist-get parsed :new))
-         (buf-orig      (generate-new-buffer (format "*eca-diff-orig:%s*" path)))
-         (buf-new       (generate-new-buffer (format "*eca-diff-new:%s*" path)))
+         (buf-orig      (generate-new-buffer (format " *eca-diff-orig:%s*" path)))
+         (buf-new       (generate-new-buffer (format " *eca-diff-new:%s*" path)))
          (chat-buf      chat-buf)
          (redisplay-fn  (or redisplay-fn #'eca-diff--default-redisplay-fn))
          ;; Doom-specific: Check if we're in a popup context
@@ -80,7 +80,7 @@ system (it ignores those popup rules for the generated ediff buffers)."
     (when in-doom-p
       (when (fboundp 'set-popup-rule!)
         ;; Prevent ECA diff buffers from being managed by Doom's popup system
-        (set-popup-rule! "^\\*eca-diff-" :ignore t)
+        (set-popup-rule! "^ \\*eca-diff-" :ignore t)
         (set-popup-rule! "^\\*Ediff Control Panel" :ignore t)))
 
     ;; Fill temporary buffers
@@ -222,7 +222,7 @@ to re-show the chat window when the smerge buffer is killed."
   (let* ((parsed (eca-diff-parse-unified-diff diff))
          (orig   (plist-get parsed :original))
          (new    (plist-get parsed :new))
-         (buf    (generate-new-buffer (format "*eca-smerge:%s*" path)))
+         (buf    (generate-new-buffer (format " *eca-smerge:%s*" path)))
          (cwc    (current-window-configuration))
          (orig-selected (selected-window))
          (frame  (selected-frame))

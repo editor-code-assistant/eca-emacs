@@ -114,11 +114,11 @@ the server independently of Emacs."
 
 ;; Internal
 
-(defvar eca-workspaces-buffer-name "*eca-workspaces*")
+(defvar eca-workspaces-buffer-name " *eca-workspaces*")
 
 (defun eca--emacs-errors-buffer-name (session)
   "Return the Emacs errors buffer name for SESSION."
-  (format "<eca:emacs-errors[%s]:%s>"
+  (format " *eca:emacs-errors[%s]:%s*"
           (eca--session-project-name session)
           (eca--session-id session)))
 
@@ -171,8 +171,8 @@ frames captured via `backtrace-get-frames'."
           (dolist (b (buffer-list))
             (when (and (not (eq b current))
                        (or
-                        (string-match-p "^<eca:emacs-errors:.*>:closed$" (buffer-name b))
-                        (string-match-p "^<eca:emacs-errors:.*>$" (buffer-name b))))
+                        (string-match-p "^ \\*eca:emacs-errors.*\\*:closed$" (buffer-name b))
+                        (string-match-p "^ \\*eca:emacs-errors.*\\*$" (buffer-name b))))
               (kill-buffer b))))))))
 
 (defun eca--get-message-type (json-data)

@@ -199,7 +199,7 @@ MODEL is the LLM model used."
     (overlay-put ov 'eca-rewrite--original-text text)
     (overlay-put ov 'eca-rewrite--new-text nil)
     (overlay-put ov 'eca-rewrite--new-text-acc "")
-    (overlay-put ov 'eca-rewrite--temp-buffer (generate-new-buffer "*eca-rewrite*"))
+    (overlay-put ov 'eca-rewrite--temp-buffer (generate-new-buffer " *eca-rewrite*"))
     (overlay-put ov 'eca-rewrite--path path)
     (overlay-put ov 'eca-rewrite--prompt prompt)
     (overlay-put ov 'eca-rewrite--model model)
@@ -337,7 +337,7 @@ MODEL is the model used."
 (defun eca-rewrite--simple-diff (ov)
   "Show diff between original text and rewrite overlay OV."
   (let* ((ov-buf (overlay-buffer ov))
-         (newbuf (eca-rewrite--clone-buffer-with-rewrite ov "*eca-rewrite-diff*"))
+         (newbuf (eca-rewrite--clone-buffer-with-rewrite ov " *eca-rewrite-diff*"))
          (diff-buf (diff-no-select ov-buf newbuf)))
     (with-current-buffer diff-buf
       (setq-local diff-jump-to-old-file t))
@@ -346,7 +346,7 @@ MODEL is the model used."
 (defun eca-rewrite--ediff (ov)
   "Show diff between original text and rewrite overlay OV."
   (letrec ((ov-buf (overlay-buffer ov))
-           (newbuf (eca-rewrite--clone-buffer-with-rewrite ov "*eca-rewrite-ediff*"))
+           (newbuf (eca-rewrite--clone-buffer-with-rewrite ov " *eca-rewrite-ediff*"))
            (orig-win (current-window-configuration))
            (hide-show-fn (lambda (&optional restore)
                            (let ((disp (overlay-get ov 'display))

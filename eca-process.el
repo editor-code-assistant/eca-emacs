@@ -102,13 +102,13 @@ If current `gc-cons-threshold` is lower use that on filter server messages.'"
 
 (defun eca-process--buffer-name (session)
   "Return the process buffer name for SESSION."
-  (format "<eca[%s]:%s>"
+  (format " *eca[%s]:%s*"
           (eca--session-project-name session)
           (eca--session-id session)))
 
 (defun eca-process--stderr-buffer-name (session)
   "Return the stderr buffer name for SESSION."
-  (format "<eca:stderr[%s]:%s>"
+  (format " *eca:stderr[%s]:%s*"
           (eca--session-project-name session)
           (eca--session-id session)))
 
@@ -524,7 +524,7 @@ Call HANDLE-MSG for new msgs processed."
           (let ((current (current-buffer)))
             (dolist (b (buffer-list))
               (when (and (not (eq b current))
-                         (string-match-p "^<eca:stderr:.*>:closed" (buffer-name b)))
+                         (string-match-p "^ \\*eca:stderr.*\\*:closed" (buffer-name b)))
                 (kill-buffer b)))))))))
 
 (defun eca-process-show-stderr (session)
