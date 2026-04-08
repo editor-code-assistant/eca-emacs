@@ -17,13 +17,6 @@
 (require 'eca-process)
 (require 'eca-settings)
 
-(defcustom eca-mcp-details-position-params `((display-buffer-in-side-window)
-                                             (side . right)
-                                             (window-width . 0.35))
-  "Position params for mcp details display."
-  :type 'alist
-  :group 'eca)
-
 (defface eca-mcp-details-tool-face
   '((t (:inherit hl-line :slant italic)))
   "Face for tools showed in mcp details buffer."
@@ -102,27 +95,6 @@ With EVENT, show a mouse popup.  Without it, prompt in minibuffer."
     (when choice
       (eca-mcp--open-menu-choice choice))))
 
-(defvar eca-mcp-details-mode-map
-  (let ((map (make-sparse-keymap)))
-    (define-key map (kbd "C-c C-,") (lambda () (interactive) (eca-settings)))
-    (define-key map (kbd "C-c .") #'eca-transient-menu)
-    map)
-  "Keymap used by `eca-mcp-details-mode'.")
-
-(defun eca-mcp-details-buffer-name (session)
-  "Return the MCP details buffer name for SESSION."
-  (format "<eca-mcp-details[%s]:%s>"
-          (eca--session-project-name session)
-          (eca--session-id session)))
-
-(defun eca-mcp--get-details-buffer (session)
-  "Get the eca mcp buffer for SESSION."
-  (get-buffer (eca-mcp-details-buffer-name session)))
-
-(defun eca-mcp--create-details-buffer (session)
-  "Create the eca mcp details buffer for SESSION."
-  (get-buffer-create (generate-new-buffer-name (eca-mcp-details-buffer-name session))))
-
 (defun eca-mcp--status-emoji (status)
   "Return a colored emoji circle for STATUS."
   (pcase status
@@ -142,7 +114,7 @@ Works with both standalone and settings panel buffers."
     (with-current-buffer buffer
       (let ((inhibit-read-only t)
             (keymap (or (current-local-map)
-                        eca-mcp-details-mode-map)))
+                        eca-settings-mode-map)))
         (erase-buffer)
         (insert "\n")
         (insert (propertize "All MCP servers configured in ECA" 'font-lock-face 'eca-settings-heading))
@@ -253,11 +225,6 @@ Works with both standalone and settings panel buffers."
                                   'font-lock-face 'error))))
           (insert "\n\n"))))))
 
-(defun eca-mcp--refresh-server-details (session)
-  "Refresh the standalone MCP details buffer for SESSION."
-  (when-let* ((buf (eca-mcp--get-details-buffer session)))
-    (eca-mcp--render-server-details session buf)))
-
 (defun eca-mcp--format-input-schema-args (input-schema)
   "Format INPUT-SCHEMA properties into a list of readable arg description strings."
   (when-let* ((properties (plist-get input-schema :properties)))
@@ -304,32 +271,13 @@ When point is on a tool or status emoji, call CB with docs."
 
 ;; Public
 
-(define-derived-mode eca-mcp-details-mode fundamental-mode "eca-mcp-details"
-  "Major mode for ECA mcp details.
-\\{eca-mcp-details-mode-map}"
-  :group 'eca
-  (visual-line-mode)
-  (add-hook 'eldoc-documentation-functions #'eca-mcp--eldoc-function nil t)
-  (eldoc-mode 1)
-  (eca-mcp--render-server-details (eca-session) (current-buffer)))
-
 (defun eca-mcp-servers (session)
   "Return all servers that are not from eca server SESSION, the MCP servers."
   (eca-vals (eca-dissoc (eca--session-tool-servers session) "ECA")))
 
 (defun eca-mcp--handle-mcp-server-updated (session _server)
   "Handle mcp SERVER updated for SESSION."
-  (eca-mcp--refresh-server-details session))
-
-(defun eca-mcp-details-exit (session)
-  "Exit the ECA mcp details for SESSION."
-  (when (buffer-live-p (get-buffer (eca-mcp-details-buffer-name session)))
-    (with-current-buffer (eca-mcp--get-details-buffer session)
-      (goto-char (point-max))
-      (setq-local mode-line-format '("*Closed session*"))
-      (rename-buffer (concat (buffer-name) ":closed") t)
-      (when-let* ((window (get-buffer-window (eca-mcp--get-details-buffer session))))
-        (quit-window nil window)))))
+  (eca-settings-refresh-tab "mcps" session))
 
 ;;;###autoload
 (defun eca-mcp-details ()

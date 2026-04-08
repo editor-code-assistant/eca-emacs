@@ -176,8 +176,6 @@ Settings
 
 MCP
 
-- `eca-mcp-details-position-params`: Display parameters for the standalone MCP details side window (legacy).
-
 API / requests
 
 - `eca-api-response-timeout`: Maximum time to wait (seconds) for synchronous API responses.

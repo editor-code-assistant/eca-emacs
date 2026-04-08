@@ -405,7 +405,6 @@ When ARG is current prefix, ask for workspace roots to use."
       (eca-api-notify session :method "exit")
       (eca-process-stop session)
       (eca-chat-exit session)
-      (eca-mcp-details-exit session)
       (eca-settings-exit session)
       (eca--emacs-errors-exit session)
       (eca-delete-session session))))
