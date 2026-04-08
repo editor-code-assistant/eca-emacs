@@ -18,6 +18,7 @@
 (require 'eca-util)
 
 (declare-function eca "eca" (&optional arg))
+(declare-function tab-line-format "tab-line")
 
 ;; Faces
 
@@ -155,7 +156,7 @@ preserving the base FACE."
   "Render tab-line with an appended close button."
   (list (tab-line-format)
         (propertize " × "
-                    'face '(:inherit tab-line)
+                    'face '(:inherit (shadow tab-line))
                     'mouse-face 'highlight
                     'pointer 'hand
                     'help-echo "Return to ECA chat"

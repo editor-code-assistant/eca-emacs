@@ -86,7 +86,7 @@ SESSION is the current ECA session.  PATH is the config file."
 ;; Refresh
 
 (defun eca-config--refresh (session buffer)
-  "Refresh config BUFFER by reverting from disk."
+  "Refresh config BUFFER for SESSION by reverting from disk."
   (when (buffer-live-p buffer)
     (with-current-buffer buffer
       (let ((tab-key eca-settings--tab-key))
