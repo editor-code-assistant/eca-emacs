@@ -3429,10 +3429,10 @@ title, and elapsed time annotation."
       (setq-local eca-chat--title new-name)
       ;; Clear any custom title since we now have an official title
       (setq-local eca-chat--custom-title nil)
-      ;; Notify server to persist and broadcast to other clients
-      (eca-api-notify (eca-session)
-                      :method "chat/update"
-                      :params (list :chatId eca-chat--id :title new-name)))))
+      ;; Request server to persist and broadcast to other clients
+      (eca-api-request-sync (eca-session)
+                            :method "chat/update"
+                            :params (list :chatId eca-chat--id :title new-name)))))
 
 ;;;###autoload
 (defun eca-chat-new ()
