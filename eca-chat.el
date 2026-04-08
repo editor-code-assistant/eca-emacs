@@ -1440,11 +1440,13 @@ Does not send directly — `eca-chat--send-queued-prompt' handles sending."
     (let ((model-keymap (make-sparse-keymap))
           (agent-keymap (make-sparse-keymap))
           (variant-keymap (make-sparse-keymap))
-          (mcp-keymap (make-sparse-keymap)))
+          (mcp-keymap (make-sparse-keymap))
+          (gear-keymap (make-sparse-keymap)))
       (define-key model-keymap (kbd "<header-line> <mouse-1>") #'eca-chat-select-model)
       (define-key agent-keymap (kbd "<header-line> <mouse-1>") #'eca-chat-select-agent)
       (define-key variant-keymap (kbd "<header-line> <mouse-1>") #'eca-chat-select-variant)
       (define-key mcp-keymap (kbd "<header-line> <mouse-1>") #'eca-mcp-details)
+      (define-key gear-keymap (kbd "<header-line> <mouse-1>") #'eca-mcp-open-menu)
       (append
        (list (propertize "model:"
                          'font-lock-face 'eca-chat-option-key-face
@@ -1480,7 +1482,14 @@ Does not send directly — `eca-chat--send-queued-prompt' handles sending."
                          'keymap mcp-keymap)
              (propertize (eca-chat--mcps-summary session)
                          'pointer 'hand
-                         'keymap mcp-keymap))))))
+                         'keymap mcp-keymap)
+             (propertize
+              " "
+              'display '(space :align-to (- right 2)))
+             (propertize "⚙"
+                         'font-lock-face 'eca-chat-option-key-face
+                         'pointer 'hand
+                         'keymap gear-keymap))))))
 
 (defun eca-chat--number->friendly-number (n)
   "Format N as `x.yM` for |N| >= 1M, `x.yK` for |N| >= 1K.

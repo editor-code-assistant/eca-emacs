@@ -73,7 +73,7 @@ SESSION is the current ECA session.  PATH is the config file."
       (setq-local mode-line-buffer-identification
                   (list (propertize (abbreviate-file-name abs-path)
                                     'face 'mode-line-buffer-id)))
-      (eca-settings--setup-tab-line tab-key))
+      (eca-settings--setup-tab-line tab-key session))
     buf))
 
 ;; Create functions
@@ -85,8 +85,8 @@ SESSION is the current ECA session.  PATH is the config file."
 
 ;; Refresh
 
-(defun eca-config--refresh (_session buffer)
-  "Refresh config BUFFER by reverting from disk."
+(defun eca-config--refresh (session buffer)
+  "Refresh config BUFFER for SESSION by reverting from disk."
   (when (buffer-live-p buffer)
     (with-current-buffer buffer
       (let ((tab-key eca-settings--tab-key))
@@ -95,7 +95,7 @@ SESSION is the current ECA session.  PATH is the config file."
         (local-set-key (kbd "C-c C-,")
                        (lambda () (interactive) (eca)))
         (local-set-key (kbd "C-c .") #'eca-transient-menu)
-        (eca-settings--setup-tab-line tab-key)))))
+        (eca-settings--setup-tab-line tab-key session)))))
 
 ;; Registration
 
