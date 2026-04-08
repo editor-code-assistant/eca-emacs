@@ -67,6 +67,40 @@
 ;; Internal
 
 (declare-function eca "eca.el" args)
+(declare-function eca-open-global-config "eca" ())
+(declare-function eca-providers "eca-providers" ())
+
+(defconst eca-mcp-menu-items
+  '(("mcps" . mcps)
+    ("providers" . providers)
+    ("global config" . global-config))
+  "Entries shown in the MCP header popup menu.")
+
+(defun eca-mcp--open-menu-choice (choice)
+  "Open the settings view selected by CHOICE."
+  (pcase choice
+    ('mcps (eca-mcp-details))
+    ('providers (eca-providers))
+    ('global-config (eca-open-global-config))))
+
+(defun eca-mcp-open-menu (&optional event)
+  "Open a popup menu for MCP-related settings.
+With EVENT, show a mouse popup.  Without it, prompt in minibuffer."
+  (interactive (list (when (mouse-event-p last-input-event)
+                       last-input-event)))
+  (eca-assert-session-running (eca-session))
+  (let ((choice
+         (if (and event (display-popup-menus-p))
+             (x-popup-menu
+              event
+              (list "Config"
+                    (cons "MCPs" eca-mcp-menu-items)))
+           (let* ((labels (mapcar #'car eca-mcp-menu-items))
+                  (label (completing-read "Open MCP settings: "
+                                          labels nil t)))
+             (cdr (assoc label eca-mcp-menu-items))))))
+    (when choice
+      (eca-mcp--open-menu-choice choice))))
 
 (defvar eca-mcp-details-mode-map
   (let ((map (make-sparse-keymap)))
@@ -313,7 +347,7 @@ Opens the settings panel focused on the MCPs tab."
       (add-hook 'eldoc-documentation-functions
                 #'eca-mcp--eldoc-function nil t)
       (eldoc-mode 1)
-      (eca-settings--setup-tab-line "mcps")
+      (eca-settings--setup-tab-line "mcps" session)
       (eca-mcp--render-server-details session buf))
     buf))
 

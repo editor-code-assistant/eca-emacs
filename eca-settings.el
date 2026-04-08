@@ -137,9 +137,38 @@ preserving the base FACE."
       face
     `(:inherit (eca-tab-inactive-face ,face))))
 
-(defun eca-settings--setup-tab-line (tab-key)
-  "Setup tab-line in current buffer for TAB-KEY."
+(defun eca-settings--tab-line-close (&optional _event)
+  "Close settings panel and return to ECA chat."
+  (interactive "e")
+  (when-let* ((session (eca-session)))
+    (eca-settings-exit session))
+  (ignore-errors (eca)))
+
+(defvar eca-settings--close-keymap
+  (let ((map (make-sparse-keymap)))
+    (define-key map [tab-line mouse-1]
+                #'eca-settings--tab-line-close)
+    map)
+  "Keymap for the close button in the tab-line.")
+
+(defun eca-settings--tab-line-with-close ()
+  "Render tab-line with an appended close button."
+  (list (tab-line-format)
+        (propertize " × "
+                    'face '(:inherit tab-line)
+                    'mouse-face 'highlight
+                    'pointer 'hand
+                    'help-echo "Return to ECA chat"
+                    'keymap eca-settings--close-keymap)))
+
+(defun eca-settings--setup-tab-line (tab-key &optional session)
+  "Setup tab-line in current buffer for TAB-KEY.
+When SESSION is provided, cache its ID so that
+`eca-session' can find it from this buffer."
   (setq-local eca-settings--tab-key tab-key)
+  (when session
+    (setq-local eca--session-id-cache
+                (eca--session-id session)))
   (when eca-settings-tab-line
     (require 'tab-line)
     (setq-local tab-line-tabs-function
@@ -150,7 +179,9 @@ preserving the base FACE."
     (setq-local tab-line-close-button-show nil)
     (setq-local tab-line-separator "")
     (face-remap-add-relative 'tab-line :height 0.9)
-    (tab-line-mode 1)))
+    (tab-line-mode 1)
+    (setq-local tab-line-format
+                '(:eval (eca-settings--tab-line-with-close)))))
 
 (defun eca-settings--force-tab-line-update ()
   "Force tab-line redraw in all settings windows."
@@ -242,17 +273,15 @@ Optional TAB-KEY focuses a specific tab."
       (eca-settings--force-tab-line-update))))
 
 (defun eca-settings-exit (session)
-  "Clean up all settings buffers for SESSION."
+  "Kill all settings buffers for SESSION."
   (dolist (tab eca-settings--tabs)
     (let* ((key (plist-get tab :key))
            (buf (eca-settings--get-buffer key session)))
       (when (and buf (buffer-live-p buf))
-        (with-current-buffer buf
-          (rename-buffer (concat (buffer-name) ":closed") t)
-          (setq-local mode-line-format
-                      '("*Closed session*"))
-          (when-let* ((win (get-buffer-window buf)))
-            (quit-window nil win)))))))
+        (when-let* ((win (get-buffer-window buf)))
+          (quit-window t win))
+        (when (buffer-live-p buf)
+          (kill-buffer buf))))))
 
 (provide 'eca-settings)
 ;;; eca-settings.el ends here

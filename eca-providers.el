@@ -514,7 +514,7 @@ When all methods are just API key entry, returns nil."
       (eca-settings-mode)
       (use-local-map eca-providers-mode-map)
       (visual-line-mode)
-      (eca-settings--setup-tab-line "providers")
+      (eca-settings--setup-tab-line "providers" session)
       (eca-providers--render session buf)
       (eca-providers--fetch-and-render session buf))
     buf))
