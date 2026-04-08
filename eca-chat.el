@@ -553,7 +553,10 @@ Used when server never responds to stop request.")
 
 (defun eca-chat-new-buffer-name (session)
   "Return the chat buffer name for SESSION."
-  (format "<eca-chat:%s:%s>" (eca--session-id session) eca-chat--new-chat-id))
+  (format "<eca-chat[%s]:%s:%s>"
+          (eca--session-project-name session)
+          (eca--session-id session)
+          eca-chat--new-chat-id))
 
 (defvar eca-chat-mode-map
   (let ((map (make-sparse-keymap)))

@@ -118,7 +118,9 @@ the server independently of Emacs."
 
 (defun eca--emacs-errors-buffer-name (session)
   "Return the Emacs errors buffer name for SESSION."
-  (format "<eca:emacs-errors:%s>" (eca--session-id session)))
+  (format "<eca:emacs-errors[%s]:%s>"
+          (eca--session-project-name session)
+          (eca--session-id session)))
 
 (defun eca--log-error (session err &optional context backtrace)
   "Log error ERR to the Emacs errors buffer for SESSION.

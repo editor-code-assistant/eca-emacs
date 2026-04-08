@@ -102,11 +102,15 @@ If current `gc-cons-threshold` is lower use that on filter server messages.'"
 
 (defun eca-process--buffer-name (session)
   "Return the process buffer name for SESSION."
-  (format  "<eca:%s>" (eca--session-id session)))
+  (format "<eca[%s]:%s>"
+          (eca--session-project-name session)
+          (eca--session-id session)))
 
 (defun eca-process--stderr-buffer-name (session)
   "Return the stderr buffer name for SESSION."
-  (format  "<eca:stderr:%s>" (eca--session-id session)))
+  (format "<eca:stderr[%s]:%s>"
+          (eca--session-project-name session)
+          (eca--session-id session)))
 
 (defvar eca-process--releases-cache nil
   "Cached parsed releases list from GitHub API.")

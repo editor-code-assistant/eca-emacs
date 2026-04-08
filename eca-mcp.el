@@ -110,8 +110,10 @@ With EVENT, show a mouse popup.  Without it, prompt in minibuffer."
   "Keymap used by `eca-mcp-details-mode'.")
 
 (defun eca-mcp-details-buffer-name (session)
-  "Return the chat buffer name for SESSION."
-  (format  "<eca-mcp-details:%s>" (eca--session-id session)))
+  "Return the MCP details buffer name for SESSION."
+  (format "<eca-mcp-details[%s]:%s>"
+          (eca--session-project-name session)
+          (eca--session-id session)))
 
 (defun eca-mcp--get-details-buffer (session)
   "Get the eca mcp buffer for SESSION."

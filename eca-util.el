@@ -217,6 +217,15 @@ workspace folders. Returns nil otherwise."
     (setq eca--sessions (eca-assoc eca--sessions id session))
     session))
 
+(defun eca--session-project-name (session)
+  "Return the project name for SESSION.
+Extracts the last directory component from the first
+workspace folder. Falls back to \"unknown\"."
+  (if-let* ((roots (eca--session-workspace-folders session))
+            (root (car roots)))
+      (file-name-nondirectory (directory-file-name root))
+    "unknown"))
+
 (defun eca-delete-session (session)
   "Delete SESSION from existing sessions."
   (when session
