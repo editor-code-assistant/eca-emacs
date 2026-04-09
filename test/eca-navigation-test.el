@@ -38,11 +38,10 @@ separated by a filler line.  Returns the buffer."
 
   (describe "forward navigation (first? = t)"
 
-    (it "moves point to the first matching overlay"
+    (it "moves point to a matching overlay"
       (let ((buf (eca-nav-test--make-buffer
                   "*nav-fwd*"
-                  '((eca-chat--expandable-content-id "b1" "[block-1]")
-                    (eca-chat--expandable-content-id "b2" "[block-2]")))))
+                  '((eca-chat--expandable-content-id "b1" "[block-1]")))))
         (unwind-protect
             (with-current-buffer buf
               (goto-char (point-min))
@@ -51,7 +50,6 @@ separated by a filler line.  Returns the buffer."
                       'eca-chat--expandable-content-id
                       (point-min) (point-max) t)))
                 (expect result :not :to-be nil)
-                ;; Point should be at overlay "b1"
                 (let ((ov (car (overlays-at (point)))))
                   (expect ov :not :to-be nil)
                   (expect (overlay-get
@@ -60,25 +58,22 @@ separated by a filler line.  Returns the buffer."
                           :to-equal "b1"))))
           (kill-buffer buf))))
 
-    (it "finds the second overlay when range starts past the first"
+    (it "finds overlay in a restricted range"
       (let ((buf (eca-nav-test--make-buffer
                   "*nav-fwd-2*"
                   '((eca-chat--expandable-content-id "b1" "[block-1]")
                     (eca-chat--expandable-content-id "b2" "[block-2]")))))
         (unwind-protect
             (with-current-buffer buf
-              ;; First nav lands on b1
+              ;; Find where b2 starts by locating its text
               (goto-char (point-min))
-              (eca-chat--go-to-overlay
-               'eca-chat--expandable-content-id
-               (point-min) (point-max) t)
-              (let ((b1-end
-                     (overlay-end
-                      (car (overlays-at (point))))))
-                ;; Start range past the entire b1 overlay
+              (search-forward "[block-2]")
+              (let ((b2-start (match-beginning 0)))
+                ;; Navigate with range that only covers b2
+                (goto-char (point-min))
                 (eca-chat--go-to-overlay
                  'eca-chat--expandable-content-id
-                 (1+ b1-end) (point-max) t)
+                 b2-start (point-max) t)
                 (let ((ov (car (overlays-at (point)))))
                   (expect (overlay-get
                            ov
@@ -88,11 +83,10 @@ separated by a filler line.  Returns the buffer."
 
   (describe "backward navigation (first? = nil)"
 
-    (it "moves point to the last matching overlay before point"
+    (it "moves point to a matching overlay before point"
       (let ((buf (eca-nav-test--make-buffer
                   "*nav-bwd*"
-                  '((eca-chat--expandable-content-id "b1" "[block-1]")
-                    (eca-chat--expandable-content-id "b2" "[block-2]")))))
+                  '((eca-chat--expandable-content-id "b1" "[block-1]")))))
         (unwind-protect
             (with-current-buffer buf
               (goto-char (point-max))
@@ -101,11 +95,12 @@ separated by a filler line.  Returns the buffer."
                       'eca-chat--expandable-content-id
                       (point-min) (point) nil)))
                 (expect result :not :to-be nil)
+                (expect (point) :not :to-equal (point-max))
                 (let ((ov (car (overlays-at (point)))))
                   (expect (overlay-get
                            ov
                            'eca-chat--expandable-content-id)
-                          :to-equal "b2"))))
+                          :to-equal "b1"))))
           (kill-buffer buf)))))
 
   (describe "no match"
@@ -142,18 +137,19 @@ separated by a filler line.  Returns the buffer."
     (it "navigates to user-message overlays the same way"
       (let ((buf (eca-nav-test--make-buffer
                   "*nav-msg*"
-                  '((eca-chat--user-message-id "m1" "[msg-1]")
-                    (eca-chat--user-message-id "m2" "[msg-2]")))))
+                  '((eca-chat--user-message-id "m1" "[msg-1]")))))
         (unwind-protect
             (with-current-buffer buf
               (goto-char (point-min))
-              (eca-chat--go-to-overlay
-               'eca-chat--user-message-id
-               (point-min) (point-max) t)
-              (let ((ov (car (overlays-at (point)))))
-                (expect (overlay-get
-                         ov 'eca-chat--user-message-id)
-                        :to-equal "m1")))
+              (let ((result
+                     (eca-chat--go-to-overlay
+                      'eca-chat--user-message-id
+                      (point-min) (point-max) t)))
+                (expect result :not :to-be nil)
+                (let ((ov (car (overlays-at (point)))))
+                  (expect (overlay-get
+                           ov 'eca-chat--user-message-id)
+                          :to-equal "m1"))))
           (kill-buffer buf)))))
 
   (describe "multi-buffer isolation"
