@@ -1968,12 +1968,16 @@ Show parent upwards if HIDE-FILENAME? is non nil."
                           eca-chat--spinner-string)))))
 
 (defun eca-chat--go-to-overlay (ov-key range-min range-max first?)
-  "Go to overlay finding from RANGE-MIN to RANGE-MAX if matches OV-KEY."
-  (eca-chat--with-current-buffer (eca-chat--get-last-buffer (eca-session))
-    (let ((get-fn (if first? #'-first #'-last)))
-      (when-let ((ov (funcall get-fn (-lambda (ov) (overlay-get ov ov-key))
-                              (overlays-in range-min range-max))))
-        (goto-char (overlay-start ov))))))
+  "Navigate to overlay matching OV-KEY in RANGE-MIN..RANGE-MAX.
+When FIRST? is non-nil pick the first match, otherwise the last.
+Operates on the current buffer directly — callers pass range
+values from their own buffer, so switching to
+`eca-chat--get-last-buffer' would apply them to the wrong
+buffer when multiple sessions exist."
+  (let ((get-fn (if first? #'-first #'-last)))
+    (when-let ((ov (funcall get-fn (-lambda (ov) (overlay-get ov ov-key))
+                            (overlays-in range-min range-max))))
+      (goto-char (overlay-start ov)))))
 
 (defun eca-chat--parse-unified-diff (diff-text)
   "Compatibility wrapper that delegates to `eca-diff-parse-unified-diff'.
