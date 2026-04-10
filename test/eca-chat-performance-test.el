@@ -14,6 +14,7 @@
   (let ((buf (generate-new-buffer "*eca-chat-performance*")))
     (unwind-protect
         (with-current-buffer buf
+          (gfm-mode)
           (eca-chat--initialize-buffer-state)
           (eca-chat--insert "\n")
           (eca-chat--insert-prompt-string)
@@ -43,6 +44,13 @@
       (while (search-forward "|" nil t)
         (setq count (1+ count))))
     count))
+
+(defun eca-chat-performance-test--buffer-contains-p (needle)
+  "Return non-nil when current buffer text contains NEEDLE."
+  (not (null (string-match-p (regexp-quote needle)
+                             (buffer-substring-no-properties
+                              (point-min)
+                              (point-max))))))
 
 (describe "eca-chat performance helpers"
   (it "stores tool-call prepare content as chunks"
@@ -125,7 +133,8 @@
        (expect (eca-chat--expandable-content-raw "block-1")
                :to-equal "alphabeta")
        (eca-chat--expandable-content-toggle "block-1" t nil)
-       (expect (buffer-string) :to-contain "alphabeta")
+       (expect (eca-chat-performance-test--buffer-contains-p "alphabeta")
+               :to-equal t)
        (eca-chat--expandable-content-toggle "block-1" t t)
        (expect (eca-chat--expandable-content-raw "block-1")
                :to-equal "alphabeta"))))
@@ -148,7 +157,8 @@
        (eca-chat--add-expandable-content "child" "Child" "alpha" "parent")
        (eca-chat--update-expandable-content "child" nil "beta" t "parent")
        (eca-chat--expandable-content-toggle "child" t nil)
-       (expect (buffer-string) :to-contain "alphabeta")
+       (expect (eca-chat-performance-test--buffer-contains-p "alphabeta")
+               :to-equal t)
        (eca-chat--expandable-content-toggle "parent" t t)
        (expect (eca-chat--get-expandable-content "child") :to-be nil)
        (expect (gethash "child" eca-chat--expandable-content-storage)
@@ -159,7 +169,8 @@
        (eca-chat--expandable-content-toggle "child" t nil)
        (expect (eca-chat--expandable-content-raw "child")
                :to-equal "alphabeta")
-       (expect (buffer-string) :to-contain "alphabeta"))))
+       (expect (eca-chat-performance-test--buffer-contains-p "alphabeta")
+               :to-equal t))))
 
   (it "updates hidden nested child specs before they are rendered"
     (eca-chat-performance-test--with-chat-buffer
@@ -174,7 +185,8 @@
        (eca-chat--expandable-content-toggle "child" t nil)
        (expect (eca-chat--expandable-content-raw "child")
                :to-equal "alphabeta")
-       (expect (buffer-string) :to-contain "alphabeta"))))
+       (expect (eca-chat-performance-test--buffer-contains-p "alphabeta")
+               :to-equal t))))
 
   (it "finalizes only the tracked response region"
     (eca-chat-performance-test--with-chat-buffer
@@ -233,9 +245,70 @@
       (expect eca-chat--response-start-marker :to-be nil)
       (expect eca-chat--response-end-marker :to-be nil)))
 
+  (it "activates prompt long-line mitigation for oversized prompt input"
+    (eca-chat-performance-test--with-chat-buffer
+     (lambda (_buf)
+       (cl-letf (((symbol-function 'font-lock-mode)
+                  (lambda (arg)
+                    (setq-local font-lock-mode (> arg 0)))))
+         (let ((eca-chat-prompt-long-line-threshold 10))
+           (setq-local font-lock-mode t)
+           (setq-local truncate-lines nil)
+           (setq-local word-wrap t)
+           (eca-chat--set-prompt "12345678901")
+           (eca-chat--refresh-prompt-long-line-mitigation)
+           (expect eca-chat--prompt-long-line-mitigation-active
+                   :to-equal t)
+           (expect font-lock-mode :to-be nil)
+           (expect truncate-lines :to-equal t)
+           (expect word-wrap :to-be nil))))))
+
+  (it "activates mitigation from prompt after-change hooks"
+    (eca-chat-performance-test--with-chat-buffer
+     (lambda (_buf)
+       (cl-letf (((symbol-function 'font-lock-mode)
+                  (lambda (arg)
+                    (setq-local font-lock-mode (> arg 0)))))
+         (let ((eca-chat-prompt-long-line-threshold 10))
+           (setq-local font-lock-mode t)
+           (setq-local truncate-lines nil)
+           (setq-local word-wrap t)
+           (add-hook 'after-change-functions #'eca-chat--prompt-after-change nil t)
+           (goto-char (point-max))
+           (insert "12345678901")
+           (expect eca-chat--prompt-long-line-mitigation-active
+                   :to-equal t)
+           (expect font-lock-mode :to-be nil)
+           (expect truncate-lines :to-equal t)
+           (expect word-wrap :to-be nil))))))
+
+  (it "restores prompt fontification after prompt becomes short again"
+    (eca-chat-performance-test--with-chat-buffer
+     (lambda (_buf)
+       (cl-letf (((symbol-function 'font-lock-mode)
+                  (lambda (arg)
+                    (setq-local font-lock-mode (> arg 0)))))
+         (let ((eca-chat-prompt-long-line-threshold 10))
+           (setq-local font-lock-mode t)
+           (setq-local truncate-lines nil)
+           (setq-local word-wrap t)
+           (eca-chat--set-prompt "12345678901")
+           (eca-chat--refresh-prompt-long-line-mitigation)
+           (eca-chat--set-prompt "short")
+           (eca-chat--refresh-prompt-long-line-mitigation)
+           (expect eca-chat--prompt-long-line-mitigation-active
+                   :to-be nil)
+           (expect font-lock-mode :to-equal t)
+           (expect truncate-lines :to-be nil)
+           (expect word-wrap :to-equal t))))))
+
   (it "resets performance state and prompt overlays on clear"
     (eca-chat-performance-test--with-chat-buffer
      (lambda (_buf)
+       (let ((eca-chat-prompt-long-line-threshold 10))
+         (setq-local font-lock-mode t)
+         (eca-chat--set-prompt "12345678901")
+         (eca-chat--refresh-prompt-long-line-mitigation))
        (eca-chat--tool-call-prepare-append "tool-1" "alpha")
        (eca-chat--add-expandable-content "block-1" "Tool call" "alpha")
        (eca-chat--schedule-fontify-range 1 2)
@@ -249,9 +322,11 @@
                :to-equal 0)
        (expect eca-chat--fontify-idle-timer :to-be nil)
        (expect eca-chat--response-start-marker :to-be nil)
+       (expect eca-chat--prompt-long-line-mitigation-active :to-be nil)
        (expect (overlayp (eca-chat--prompt-area-ov)) :to-equal t)
        (expect (overlayp (eca-chat--loading-area-ov)) :to-equal t)
-       (expect (buffer-string) :to-contain "hello"))))
+       (expect (eca-chat-performance-test--buffer-contains-p "hello")
+               :to-equal t))))
 
   (it "refreshes structural overlay caches when cached overlays die"
     (eca-chat-performance-test--with-chat-buffer
