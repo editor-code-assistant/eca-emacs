@@ -261,6 +261,16 @@ works normally."
   :type 'boolean
   :group 'eca)
 
+(defcustom eca-chat-prompt-long-line-mitigation t
+  "When non-nil, simplify prompt rendering for very long lines."
+  :type 'boolean
+  :group 'eca)
+
+(defcustom eca-chat-prompt-long-line-threshold 2000
+  "Prompt line length that triggers long-line mitigation."
+  :type 'integer
+  :group 'eca)
+
 ;; Faces
 
 (defface eca-chat-prompt-prefix-face
@@ -569,6 +579,10 @@ Used when server never responds to stop request.")
 (defvar-local eca-chat--pending-fontify-start-marker nil)
 (defvar-local eca-chat--pending-fontify-end-marker nil)
 (defvar-local eca-chat--fontify-idle-timer nil)
+(defvar-local eca-chat--prompt-long-line-mitigation-active nil)
+(defvar-local eca-chat--prompt-long-line-font-lock-was-enabled nil)
+(defvar-local eca-chat--prompt-long-line-truncate-lines nil)
+(defvar-local eca-chat--prompt-long-line-word-wrap nil)
 
 (defvar eca-chat--capture-writes-p nil)
 (defvar eca-chat--capture-write-start nil)
@@ -730,7 +744,81 @@ Used when server never responds to stop request.")
   (setq-local eca-chat--expandable-content-children-index
               (make-hash-table :test 'equal))
   (setq-local eca-chat--expandable-content-storage
-              (make-hash-table :test 'equal)))
+              (make-hash-table :test 'equal))
+  (setq-local eca-chat--prompt-long-line-mitigation-active nil)
+  (setq-local eca-chat--prompt-long-line-font-lock-was-enabled nil)
+  (setq-local eca-chat--prompt-long-line-truncate-lines nil)
+  (setq-local eca-chat--prompt-long-line-word-wrap nil))
+
+(defun eca-chat--max-line-length (beg end)
+  "Return the maximum line length touched between BEG and END."
+  (save-excursion
+    (goto-char beg)
+    (beginning-of-line)
+    (let ((max-len 0)
+          (limit (copy-marker end)))
+      (while (< (point) limit)
+        (setq max-len
+              (max max-len
+                   (- (line-end-position) (line-beginning-position))))
+        (if (< (line-end-position) limit)
+            (forward-line 1)
+          (goto-char limit)))
+      max-len)))
+
+(defun eca-chat--prompt-has-long-line-p ()
+  "Return non-nil when the prompt currently contains a long line."
+  (when-let ((prompt-start (eca-chat--prompt-field-start-point)))
+    (>= (eca-chat--max-line-length prompt-start (point-max))
+        eca-chat-prompt-long-line-threshold)))
+
+(defun eca-chat--activate-prompt-long-line-mitigation ()
+  "Enable long-line mitigation for the prompt area."
+  (unless eca-chat--prompt-long-line-mitigation-active
+    (setq-local eca-chat--prompt-long-line-mitigation-active t)
+    (setq-local eca-chat--prompt-long-line-font-lock-was-enabled
+                font-lock-mode)
+    (setq-local eca-chat--prompt-long-line-truncate-lines truncate-lines)
+    (setq-local eca-chat--prompt-long-line-word-wrap word-wrap)
+    (when font-lock-mode
+      (font-lock-mode -1))
+    (setq-local truncate-lines t)
+    (setq-local word-wrap nil)))
+
+(defun eca-chat--disable-prompt-long-line-mitigation ()
+  "Restore the normal prompt rendering after long-line mitigation."
+  (when eca-chat--prompt-long-line-mitigation-active
+    (setq-local eca-chat--prompt-long-line-mitigation-active nil)
+    (setq-local truncate-lines eca-chat--prompt-long-line-truncate-lines)
+    (setq-local word-wrap eca-chat--prompt-long-line-word-wrap)
+    (when eca-chat--prompt-long-line-font-lock-was-enabled
+      (font-lock-mode 1))
+    (setq-local eca-chat--prompt-long-line-font-lock-was-enabled nil)
+    (setq-local eca-chat--prompt-long-line-truncate-lines nil)
+    (setq-local eca-chat--prompt-long-line-word-wrap nil)))
+
+(defun eca-chat--refresh-prompt-long-line-mitigation (&optional beg end)
+  "Refresh prompt long-line mitigation using optional BEG and END."
+  (when eca-chat-prompt-long-line-mitigation
+    (let ((prompt-start (eca-chat--prompt-field-start-point)))
+      (cond
+       ((null prompt-start)
+        (eca-chat--disable-prompt-long-line-mitigation))
+       (eca-chat--prompt-long-line-mitigation-active
+        (unless (eca-chat--prompt-has-long-line-p)
+          (eca-chat--disable-prompt-long-line-mitigation)))
+       ((and beg end (> end prompt-start)
+             (>= (eca-chat--max-line-length (max beg prompt-start) end)
+                 eca-chat-prompt-long-line-threshold))
+        (eca-chat--activate-prompt-long-line-mitigation))
+       ((and (null beg) (eca-chat--prompt-has-long-line-p))
+        (eca-chat--activate-prompt-long-line-mitigation))))))
+
+(defun eca-chat--prompt-after-change (beg end _old-len)
+  "Update prompt long-line mitigation after a prompt change."
+  (when-let ((prompt-start (eca-chat--prompt-field-start-point)))
+    (when (> end prompt-start)
+      (eca-chat--refresh-prompt-long-line-mitigation beg end))))
 
 (defun eca-chat--reset-response-span ()
   "Clear the tracked response span for the current chat turn."
@@ -776,6 +864,7 @@ Used when server never responds to stop request.")
 
 (defun eca-chat--cleanup-buffer-state ()
   "Cancel active timers and release transient chat state."
+  (eca-chat--disable-prompt-long-line-mitigation)
   (eca-chat--spinner-stop)
   (eca-chat--tool-call-elapsed-stop-all)
   (eca-chat--clear-pending-fontify-range)
@@ -1252,7 +1341,9 @@ LOADING can be t (loading), \\='stopping (stop in progress), or nil (idle)."
   "Set the chat prompt to be TEXT."
   (-some-> (eca-chat--prompt-field-start-point) (goto-char))
   (delete-region (point) (point-max))
-  (eca-chat--insert text))
+  (let ((start (point)))
+    (eca-chat--insert text)
+    (eca-chat--refresh-prompt-long-line-mitigation start (point))))
 
 (defun eca-chat--cycle-history (n)
   "Cycle history by N."
@@ -2330,6 +2421,7 @@ CHILD, NAME, DOCSTRING and BODY are passed down."
     (add-hook 'eldoc-documentation-functions #'eca-chat-eldoc-function nil t)
     (eldoc-mode 1)
 
+    (add-hook 'after-change-functions #'eca-chat--prompt-after-change nil t)
     (add-hook 'kill-buffer-hook #'eca-chat--delete-chat nil t)
     (add-hook 'kill-buffer-hook #'eca-chat--cleanup-buffer-state t t)
 
