@@ -12,6 +12,7 @@
 ;;; Code:
 
 (require 'compat)
+(require 'iso8601)
 
 (require 'eca-util)
 (require 'eca-api)
@@ -58,7 +59,6 @@
 
 (declare-function eca-api-notify "eca-api")
 (declare-function eca-api-request-async "eca-api")
-(declare-function parse-iso8601-time-string "iso8601")
 
 (defvar-local eca-jobs--refresh-timer nil
   "Timer for refreshing elapsed time in the Jobs tab.")
