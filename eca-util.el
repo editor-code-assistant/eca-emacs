@@ -118,7 +118,10 @@
   (init-tasks nil)
 
   ;; Provider status list from providers/list response.
-  (providers nil))
+  (providers nil)
+
+  ;; Background jobs list from jobs/list and jobs/updated.
+  (jobs nil))
 
 (defun eca-find-root-for-buffer ()
   "Return the path that first matches the following:

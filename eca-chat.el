@@ -161,7 +161,7 @@ Must be a valid model supported by server, check `eca-chat-select-model`."
   :group 'eca)
 
 (defcustom eca-chat-mode-line-format
-  '(:workspace-folders :add-workspace-button :spacer :init-progress "  " :elapsed-time "   " :usage " " :trust)
+  '(:workspace-folders :add-workspace-button :spacer :init-progress "  " :bg-jobs " " :elapsed-time "   " :usage " " :trust)
   "Format for the ECA chat mode line.
 
 When set to a list, each element is a module keyword or a
@@ -190,6 +190,7 @@ This gives full control for powerline or doom-modeline users."
             (string :tag "Literal string")
             (const :tag "Workspace folders" :workspace-folders)
             (const :tag "Add workspace button" :add-workspace-button)
+            (const :tag "Background jobs" :bg-jobs)
             (const :tag "Chat title" :title)
             (const :tag "Elapsed time" :elapsed-time)
             (const :tag "Usage info" :usage)
@@ -1754,6 +1755,12 @@ are in progress."
                  'mouse-face 'highlight
                  'help-echo "Add workspace folder"
                  'local-map eca-chat--add-workspace-map))
+    (:bg-jobs
+     (when-let* ((jobs (eca--session-jobs session))
+                 (running (seq-count (lambda (j) (string= "running" (plist-get j :status))) jobs)))
+       (when (> running 0)
+         (propertize (format " [%d %s]" running (if (= running 1) "job" "jobs"))
+                     'face 'shadow))))
     (:title
      (eca-chat-title))
     (:elapsed-time
