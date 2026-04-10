@@ -12,7 +12,6 @@
 ;;; Code:
 
 (require 'compat)
-(require 'iso8601)
 
 (require 'eca-util)
 (require 'eca-api)
@@ -79,17 +78,23 @@
 
 (defun eca-jobs--elapsed-since (started-at)
   "Compute human-readable elapsed time from STARTED-AT ISO 8601 string."
-  (when (and started-at (stringp started-at))
-    (condition-case nil
-        (let* ((start (parse-iso8601-time-string
-                       (replace-regexp-in-string "Z$" "+00:00"
-                                                 (replace-regexp-in-string "\\.[0-9]+" "" started-at))))
-               (secs (floor (float-time (time-subtract nil start)))))
-          (cond
-           ((< secs 60) (format "%ds" secs))
-           ((< secs 3600) (format "%dm%ds" (/ secs 60) (mod secs 60)))
-           (t (format "%dh%dm" (/ secs 3600) (mod (/ secs 60) 60)))))
-      (error nil))))
+  (when (and started-at (stringp started-at)
+             (string-match
+              "\\`\\([0-9]\\{4\\}\\)-\\([0-9]\\{2\\}\\)-\\([0-9]\\{2\\}\\)T\\([0-9]\\{2\\}\\):\\([0-9]\\{2\\}\\):\\([0-9]\\{2\\}\\)"
+              started-at))
+    (let* ((start (encode-time
+                   (list (string-to-number (match-string 6 started-at))
+                         (string-to-number (match-string 5 started-at))
+                         (string-to-number (match-string 4 started-at))
+                         (string-to-number (match-string 3 started-at))
+                         (string-to-number (match-string 2 started-at))
+                         (string-to-number (match-string 1 started-at))
+                         nil nil 0)))
+           (secs (floor (float-time (time-subtract nil start)))))
+      (cond
+       ((< secs 60) (format "%ds" secs))
+       ((< secs 3600) (format "%dm%ds" (/ secs 60) (mod secs 60)))
+       (t (format "%dh%dm" (/ secs 3600) (mod (/ secs 60) 60)))))))
 
 (defun eca-jobs--status-emoji (status)
   "Return a colored emoji circle for STATUS."
