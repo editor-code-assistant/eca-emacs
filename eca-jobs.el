@@ -58,6 +58,7 @@
 
 (declare-function eca-api-notify "eca-api")
 (declare-function eca-api-request-async "eca-api")
+(declare-function eca-chat--update-bg-job-emoji "eca-chat")
 
 (defvar-local eca-jobs--refresh-timer nil
   "Timer for refreshing elapsed time in the Jobs tab.")
@@ -323,12 +324,22 @@
     (when (and (buffer-live-p buf)
                (string-match-p "eca-settings.*:jobs:" (buffer-name buf)))
       (eca-jobs--ensure-timer session buf)))
-  ;; Update modeline in chat buffers
+  ;; Update modeline and bg job emoji in chat buffers
   (dolist (chat-entry (eca--session-chats session))
     (when-let* ((chat-buf (cdr chat-entry)))
       (when (buffer-live-p chat-buf)
         (with-current-buffer chat-buf
-          (force-mode-line-update))))))
+          (force-mode-line-update)
+          ;; Update tool call labels for background jobs
+          (let ((chat-id (car chat-entry)))
+            (dolist (job (eca--session-jobs session))
+              (when-let* ((tc-id (plist-get job :toolCallId))
+                          (job-chat (plist-get job :chatId))
+                          (_ (string= job-chat chat-id))
+                          (emoji (eca-jobs--status-emoji
+                                  (plist-get job :status))))
+                (eca-chat--update-bg-job-emoji
+                 tc-id emoji)))))))))
 
 ;; Settings tab
 

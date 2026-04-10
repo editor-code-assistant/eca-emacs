@@ -741,6 +741,20 @@ Cancels the shared timer when no more tool calls are being tracked."
     (setq eca-chat--tool-call-elapsed-timer nil))
   (clrhash eca-chat--tool-call-elapsed-times))
 
+(defun eca-chat--update-bg-job-emoji (tool-call-id new-emoji)
+  "Update background job emoji in TOOL-CALL-ID label.
+Replace the leading job status emoji with NEW-EMOJI."
+  (when-let* ((ov (eca-chat--get-expandable-content
+                   tool-call-id))
+              (ov-content (overlay-get ov 'eca-chat--expandable-content-ov-content)))
+    (let ((start (overlay-start ov))
+          (end (overlay-start ov-content))
+          (inhibit-read-only t))
+      (save-excursion
+        (goto-char start)
+        (when (re-search-forward "🟡\\|✅\\|🔴\\|⚫" end t)
+          (replace-match new-emoji t t))))))
+
 (defun eca-chat--agent ()
   "The chat agent considering default and user option."
   (or eca-chat-custom-agent
