@@ -22,8 +22,114 @@
 (defvar eca-chat--tool-call-table-key-face)
 (defvar eca-chat--tool-call-argument-key-face)
 (defvar eca-chat--tool-call-argument-value-face)
+(defvar-local eca-chat--expandable-content-index
+    (make-hash-table :test 'equal)
+  "Map expandable block IDs to label overlays.")
+(defvar-local eca-chat--expandable-content-children-index
+    (make-hash-table :test 'equal)
+  "Map parent block IDs to rendered child block IDs.")
+(defvar-local eca-chat--expandable-content-storage
+    (make-hash-table :test 'equal)
+  "Map expandable block IDs to stored content state.")
 (declare-function eca-chat--insert "eca-chat")
 (declare-function eca-chat--content-insertion-point "eca-chat")
+
+(defun eca-chat--expandable-storage-state (id)
+  "Return stored expandable state for ID."
+  (gethash id eca-chat--expandable-content-storage))
+
+(defun eca-chat--expandable-storage-put (id state)
+  "Persist expandable STATE for ID."
+  (puthash id state eca-chat--expandable-content-storage))
+
+(defun eca-chat--expandable-storage-clear (id)
+  "Drop any stored expandable state for ID."
+  (remhash id eca-chat--expandable-content-storage))
+
+(defun eca-chat--expandable-state-content (state)
+  "Return STATE content as a single string."
+  (mapconcat #'identity
+             (nreverse (copy-sequence
+                        (plist-get state :chunks-reversed)))
+             ""))
+
+(defun eca-chat--expandable-state-has-content-p (state)
+  "Return non-nil when STATE stores visible content."
+  (not (string-empty-p (eca-chat--expandable-state-content state))))
+
+(defun eca-chat--expandable-state-set-content (state content)
+  "Return STATE updated to contain CONTENT only."
+  (let ((chunks (unless (string-empty-p (or content ""))
+                  (list content))))
+    (plist-put state :chunks-reversed chunks)))
+
+(defun eca-chat--expandable-state-append-content (state content)
+  "Return STATE with CONTENT appended efficiently."
+  (if (string-empty-p (or content ""))
+      state
+    (plist-put state :chunks-reversed
+               (cons content (plist-get state :chunks-reversed)))))
+
+(defun eca-chat--expandable-content-state (id)
+  "Return expandable content state for ID."
+  (or (eca-chat--expandable-storage-state id) '(:chunks-reversed nil)))
+
+(defun eca-chat--expandable-content-raw (id)
+  "Return raw expandable content for ID."
+  (eca-chat--expandable-state-content
+   (eca-chat--expandable-content-state id)))
+
+(defun eca-chat--expandable-content-set (id content)
+  "Replace stored expandable content for ID with CONTENT."
+  (eca-chat--expandable-storage-put
+   id
+   (eca-chat--expandable-state-set-content
+    (eca-chat--expandable-content-state id)
+    content)))
+
+(defun eca-chat--expandable-content-append (id content)
+  "Append CONTENT to the stored expandable content for ID."
+  (eca-chat--expandable-storage-put
+   id
+   (eca-chat--expandable-state-append-content
+    (eca-chat--expandable-content-state id)
+    content)))
+
+(defun eca-chat--expandable-content-render (id indent)
+  "Return stored expandable content for ID with INDENT applied."
+  (mapconcat (lambda (chunk)
+               (propertize chunk 'line-prefix indent))
+             (nreverse
+              (copy-sequence
+               (plist-get (eca-chat--expandable-content-state id)
+                          :chunks-reversed)))
+             ""))
+
+(defun eca-chat--child-spec-content (child-spec)
+  "Return CHILD-SPEC content as a single string."
+  (mapconcat #'identity
+             (nreverse (copy-sequence
+                        (plist-get child-spec :chunks-reversed)))
+             ""))
+
+(defun eca-chat--child-spec-has-content-p (child-spec)
+  "Return non-nil when CHILD-SPEC stores visible content."
+  (not (string-empty-p (eca-chat--child-spec-content child-spec))))
+
+(defun eca-chat--child-spec-set-content (child-spec content)
+  "Return CHILD-SPEC updated to contain CONTENT only."
+  (plist-put child-spec
+             :chunks-reversed
+             (unless (string-empty-p (or content ""))
+               (list content))))
+
+(defun eca-chat--child-spec-append-content (child-spec content)
+  "Return CHILD-SPEC with CONTENT appended efficiently."
+  (if (string-empty-p (or content ""))
+      child-spec
+    (plist-put child-spec
+               :chunks-reversed
+               (cons content (plist-get child-spec :chunks-reversed)))))
 
 ;;;; Macros
 
@@ -102,6 +208,39 @@ Background is computed dynamically from the current theme by
 
 ;;;; Functions
 
+(defun eca-chat--index-expandable-content (ov-label)
+  "Index OV-LABEL for fast expandable block lookup."
+  (when-let* ((id (overlay-get ov-label 'eca-chat--expandable-content-id)))
+    (puthash id ov-label eca-chat--expandable-content-index)
+    (when-let* ((parent-id
+                 (overlay-get ov-label
+                              'eca-chat--expandable-content-parent-id)))
+      (let ((children (gethash parent-id
+                               eca-chat--expandable-content-children-index)))
+        (unless (member id children)
+          (puthash parent-id
+                   (append children (list id))
+                   eca-chat--expandable-content-children-index))))))
+
+(defun eca-chat--unindex-expandable-content (ov-label)
+  "Remove OV-LABEL from expandable block indexes."
+  (when-let* ((id (overlay-get ov-label 'eca-chat--expandable-content-id)))
+    (remhash id eca-chat--expandable-content-index)
+    (remhash id eca-chat--expandable-content-children-index)
+    (eca-chat--expandable-storage-clear id)
+    (when-let* ((parent-id
+                 (overlay-get ov-label
+                              'eca-chat--expandable-content-parent-id)))
+      (let ((children (delete id
+                              (copy-sequence
+                               (gethash parent-id
+                                        eca-chat--expandable-content-children-index)))))
+        (if children
+            (puthash parent-id
+                     children
+                     eca-chat--expandable-content-children-index)
+          (remhash parent-id eca-chat--expandable-content-children-index))))))
+
 (defun eca-chat--update-expandable-block-faces ()
   "Recompute expandable-block background faces from the current theme.
 Shift percentages are controlled by `eca-chat-expandable-block-bg-shift-1'
@@ -132,35 +271,39 @@ innermost block whose content region contains point."
                                      (append (overlays-at pos)
                                              (overlays-in (line-beginning-position) pos))))))
     (or
-     ;; If point is on a block label line, toggle that block.
      (car (sort label-candidates
                 (lambda (a b)
                   (> (overlay-start a) (overlay-start b)))))
-     ;; Otherwise, toggle the innermost block whose content contains point.
      (let ((best-ov nil)
            (best-span nil)
            (best-start nil))
-       (dolist (ov (overlays-in (point-min) (point-max)))
-         (when-let* ((id (overlay-get ov 'eca-chat--expandable-content-id))
-                     (_ id)
-                     (ov-content (overlay-get ov 'eca-chat--expandable-content-ov-content))
-                     (start (overlay-start ov-content))
-                     (end (overlay-end ov-content))
-                     (_ (and start end (<= start pos) (< pos end))))
-           (let ((span (- end start)))
-             (when (or (null best-ov)
-                       (< span best-span)
-                       (and (= span best-span)
-                            (> start best-start)))
-               (setq best-ov ov
-                     best-span span
-                     best-start start)))))
+       (maphash
+        (lambda (_id ov)
+          (when (overlay-buffer ov)
+            (when-let* ((ov-content
+                         (overlay-get ov 'eca-chat--expandable-content-ov-content))
+                        (start (overlay-start ov-content))
+                        (end (overlay-end ov-content))
+                        (_ (and start end (<= start pos) (< pos end))))
+              (let ((span (- end start)))
+                (when (or (null best-ov)
+                          (< span best-span)
+                          (and (= span best-span)
+                               (> start best-start)))
+                  (setq best-ov ov
+                        best-span span
+                        best-start start))))))
+        eca-chat--expandable-content-index)
        best-ov))))
 
 (defun eca-chat--get-expandable-content (id)
-  "Return the overlay if there is a expandable content for ID."
-  (-first (-lambda (ov) (string= id (overlay-get ov 'eca-chat--expandable-content-id)))
-          (overlays-in (point-min) (point-max))))
+  "Return the overlay if there is expandable content for ID."
+  (let ((ov (gethash id eca-chat--expandable-content-index)))
+    (when ov
+      (if (overlay-buffer ov)
+          ov
+        (remhash id eca-chat--expandable-content-index)
+        nil))))
 
 (defun eca-chat--propertize-only-first-word (str &rest properties)
   "Return a new string propertizing PROPERTIES to the first word of STR.
@@ -231,67 +374,94 @@ Does nothing for top-level blocks or when parent has no face set."
         (goto-char (overlay-start ov-label))
         (eca-chat--apply-face-to-line-prefixes (point) (line-end-position) parent-face)))))
 
-(defun eca-chat--insert-expandable-block (id label content open-icon close-icon content-indent &optional nested-props)
-  "Insert an expandable block with ID, LABEL, CONTENT, icons and indent.
+(defun eca-chat--insert-expandable-block (id label content open-icon close-icon
+                                             content-indent
+                                             &optional nested-props)
+  "Insert an expandable block with ID, LABEL, and stored CONTENT.
 OPEN-ICON and CLOSE-ICON are the toggle icons.
-CONTENT-INDENT is the `line-prefix` for content.
-NESTED-PROPS is a plist with :parent-id and :label-indent for nested blocks."
+CONTENT-INDENT is the `line-prefix' for rendered content.
+NESTED-PROPS is a plist with parent metadata for nested blocks."
   (let ((ov-label (make-overlay (point) (point) (current-buffer)))
         (label-indent (plist-get nested-props :label-indent)))
+    (eca-chat--expandable-content-set id content)
     (overlay-put ov-label 'eca-chat--expandable-content-id id)
     (overlay-put ov-label 'eca-chat--expandable-content-open-icon open-icon)
     (overlay-put ov-label 'eca-chat--expandable-content-close-icon close-icon)
     (overlay-put ov-label 'eca-chat--expandable-content-toggle nil)
     (when nested-props
       (overlay-put ov-label 'eca-chat--expandable-content-nested t)
-      (overlay-put ov-label 'eca-chat--expandable-content-parent-id (plist-get nested-props :parent-id)))
+      (overlay-put ov-label 'eca-chat--expandable-content-parent-id
+                   (plist-get nested-props :parent-id)))
     (unless nested-props
       (overlay-put ov-label 'eca-chat--expandable-content-segments nil))
-    (eca-chat--insert (propertize (eca-chat--propertize-only-first-word label
-                                                                        'line-prefix (cond
-                                                                                      ((not (string-empty-p content)) open-icon)
-                                                                                      (label-indent (concat label-indent
-                                                                                                            (make-string (length eca-chat-expandable-block-open-symbol) ?\s)))))
-                                  'keymap (let ((km (make-sparse-keymap)))
-                                            (define-key km (kbd "<mouse-1>") (lambda () (interactive) (eca-chat--expandable-content-toggle id)))
-                                            (define-key km (kbd "<tab>") (lambda () (interactive) (eca-chat--expandable-content-toggle id)))
-                                            km)
-                                  'help-echo "mouse-1 / tab / RET: expand/collapse"))
+    (eca-chat--insert
+     (propertize
+      (eca-chat--propertize-only-first-word
+       label
+       'line-prefix
+       (cond
+        ((not (string-empty-p (or content ""))) open-icon)
+        (label-indent
+         (concat label-indent
+                 (make-string (length eca-chat-expandable-block-open-symbol)
+                              ?\s)))))
+      'keymap (let ((km (make-sparse-keymap)))
+                (define-key km (kbd "<mouse-1>")
+                            (lambda ()
+                              (interactive)
+                              (eca-chat--expandable-content-toggle id)))
+                (define-key km (kbd "<tab>")
+                            (lambda ()
+                              (interactive)
+                              (eca-chat--expandable-content-toggle id)))
+                km)
+      'help-echo "mouse-1 / tab / RET: expand/collapse"))
     (eca-chat--insert "\n")
     (let* ((start-point (point))
            (_ (eca-chat--insert "\n"))
-           (ov-content (make-overlay start-point start-point (current-buffer) nil t))
+           (ov-content (make-overlay start-point start-point
+                                     (current-buffer) nil t))
            (nested? (plist-get nested-props :parent-id)))
-      (overlay-put ov-content 'eca-chat--expandable-content-content (propertize content 'line-prefix content-indent))
+      (overlay-put ov-content 'eca-chat--expandable-content-indent content-indent)
       (overlay-put ov-content 'eca-chat--expandable-block-nested nested?)
       (overlay-put ov-content 'priority (if nested? 1 0))
-      (overlay-put ov-label 'eca-chat--expandable-content-ov-content ov-content))))
+      (overlay-put ov-label 'eca-chat--expandable-content-ov-content ov-content)
+      (eca-chat--index-expandable-content ov-label)
+      ov-label)))
 
 (defun eca-chat--render-nested-block (parent-ov child-spec)
-  "Render a nested block CHILD-SPEC within PARENT-OV's content area."
-  (-let* (((&plist :id id :label label :content content :icon-face icon-face) child-spec)
-          (parent-content-ov (overlay-get parent-ov 'eca-chat--expandable-content-ov-content))
+  "Render CHILD-SPEC within PARENT-OV's content area."
+  (-let* (((&plist :id id :label label :icon-face icon-face) child-spec)
+          (content (eca-chat--child-spec-content child-spec))
+          (parent-content-ov (overlay-get parent-ov
+                                          'eca-chat--expandable-content-ov-content))
           (label-indent eca-chat--expandable-content-base-indent)
           (icons (eca-chat--make-expandable-icons icon-face label-indent)))
     (save-excursion
       (goto-char (overlay-end parent-content-ov))
       (unless (bolp) (eca-chat--insert "\n"))
-      (eca-chat--insert-expandable-block id label content
-                                         (car icons) (cdr icons)
-                                         eca-chat--expandable-content-nested-indent
-                                         (list :parent-id (overlay-get parent-ov 'eca-chat--expandable-content-id)
-                                               :label-indent label-indent))
-      ;; Paint label's line-prefix with parent's background when parent is open
+      (eca-chat--insert-expandable-block
+       id label content
+       (car icons) (cdr icons)
+       eca-chat--expandable-content-nested-indent
+       (list :parent-id (overlay-get parent-ov 'eca-chat--expandable-content-id)
+             :label-indent label-indent))
       (when-let* ((child-ov (eca-chat--get-expandable-content id)))
         (eca-chat--paint-nested-label child-ov)))))
 
 (defun eca-chat--destroy-nested-blocks (parent-id)
   "Remove all nested block overlays that belong to PARENT-ID."
-  (dolist (ov (overlays-in (point-min) (point-max)))
-    (when (string= parent-id (overlay-get ov 'eca-chat--expandable-content-parent-id))
-      (when-let* ((content-ov (overlay-get ov 'eca-chat--expandable-content-ov-content)))
+  (dolist (child-id
+           (copy-sequence
+            (gethash parent-id eca-chat--expandable-content-children-index)))
+    (when-let* ((ov (eca-chat--get-expandable-content child-id)))
+      (eca-chat--destroy-nested-blocks child-id)
+      (when-let* ((content-ov
+                   (overlay-get ov 'eca-chat--expandable-content-ov-content)))
         (delete-overlay content-ov))
-      (delete-overlay ov))))
+      (eca-chat--unindex-expandable-content ov)
+      (delete-overlay ov)))
+  (remhash parent-id eca-chat--expandable-content-children-index))
 
 (defun eca-chat--segments-total-text (segments)
   "Return the concatenation of all text segment contents in SEGMENTS."
@@ -306,38 +476,40 @@ NESTED-PROPS is a plist with :parent-id and :label-indent for nested blocks."
   "Return all child specs from SEGMENTS."
   (-filter (lambda (seg) (eq 'child (plist-get seg :type))) segments))
 
-(defun eca-chat--add-expandable-content (id label content &optional parent-id at-point)
-  "Add LABEL to the chat current position for ID as a interactive text.
+(defun eca-chat--add-expandable-content (id label content
+                                             &optional parent-id at-point)
+  "Add interactive LABEL content for ID at the current chat position.
 When expanded, shows CONTENT.
-Applies ICON-FACE to open/close icons.
-If PARENT-ID is provided, adds as a nested block under that parent.
-If AT-POINT is provided, inserts at that buffer position instead of
-the default content insertion point."
+If PARENT-ID is non-nil, add the block under that parent.
+If AT-POINT is non-nil, insert there instead of the default point."
   (if parent-id
       (when-let* ((parent-ov (eca-chat--get-expandable-content parent-id)))
-        (let* ((segments (overlay-get parent-ov 'eca-chat--expandable-content-segments))
-               (existing-spec (-first (lambda (s) (and (eq 'child (plist-get s :type))
-                                                       (string= id (plist-get s :id))))
+        (let* ((segments (overlay-get parent-ov
+                                      'eca-chat--expandable-content-segments))
+               (existing-spec (-first (lambda (seg)
+                                        (and (eq 'child (plist-get seg :type))
+                                             (string= id (plist-get seg :id))))
                                       segments)))
           (if existing-spec
-              ;; Child spec already exists (e.g. parent was collapsed destroying
-              ;; the overlay but keeping the spec); delegate to update to avoid
-              ;; duplicating the entry.
               (eca-chat--update-expandable-content id label content nil parent-id)
             (let* ((icon-face (get-text-property 0 'font-lock-face label))
-                   (child-spec (list :type 'child :id id :label label :content content :icon-face icon-face))
-                   ;; Capture any unsegmented text that was appended to content
-                   ;; since the last segment, and add it as a text segment first
-                   (ov-content (overlay-get parent-ov 'eca-chat--expandable-content-ov-content))
-                   (full-content (overlay-get ov-content 'eca-chat--expandable-content-content))
+                   (child-spec (list :type 'child
+                                     :id id
+                                     :label label
+                                     :icon-face icon-face))
+                   (child-spec (eca-chat--child-spec-set-content child-spec content))
+                   (full-content (eca-chat--expandable-content-raw parent-id))
                    (segmented-text (eca-chat--segments-total-text segments))
-                   (unsegmented-text (when (> (length full-content) (length segmented-text))
-                                       (substring full-content (length segmented-text))))
-                   (new-segments (append segments
-                                         (when unsegmented-text
-                                           (list (list :type 'text :content unsegmented-text)))
-                                         (list child-spec))))
-              (overlay-put parent-ov 'eca-chat--expandable-content-segments new-segments)
+                   (unsegmented-text
+                    (when (> (length full-content) (length segmented-text))
+                      (substring full-content (length segmented-text))))
+                   (new-segments
+                    (append segments
+                            (when unsegmented-text
+                              (list (list :type 'text :content unsegmented-text)))
+                            (list child-spec))))
+              (overlay-put parent-ov 'eca-chat--expandable-content-segments
+                           new-segments)
               (when (overlay-get parent-ov 'eca-chat--expandable-content-toggle)
                 (eca-chat--render-nested-block parent-ov child-spec))))))
     (save-excursion
@@ -346,9 +518,10 @@ the default content insertion point."
              (icons (eca-chat--make-expandable-icons icon-face)))
         (goto-char start-point)
         (unless (bolp) (eca-chat--insert "\n"))
-        (eca-chat--insert-expandable-block id label content
-                                           (car icons) (cdr icons)
-                                           eca-chat--expandable-content-base-indent)))))
+        (eca-chat--insert-expandable-block
+         id label content
+         (car icons) (cdr icons)
+         eca-chat--expandable-content-base-indent)))))
 
 (defun eca-chat--remove-expandable-content (id)
   "Remove the expandable block with ID from the buffer.
@@ -376,177 +549,208 @@ any text they covered, including surrounding newlines added during insertion."
       (eca-chat--destroy-nested-blocks id)
       ;; Delete overlays
       (when ov-content (delete-overlay ov-content))
+      (eca-chat--unindex-expandable-content ov-label)
       (delete-overlay ov-label)
       ;; Remove the text region
       (let ((inhibit-read-only t))
         (delete-region start end)))))
 
-(defun eca-chat--update-expandable-content (id label content &optional append-content? parent-id)
-  "Update to LABEL and CONTENT the expandable content of id ID.
-If LABEL is nil, the existing label is preserved.
-If APPEND-CONTENT? is non-nil, append CONTENT to existing content.
-If PARENT-ID is provided and block doesn't exist yet, updates the spec
-in parent."
+(defun eca-chat--update-expandable-content (id label content
+                                                &optional append-content?
+                                                parent-id)
+  "Update expandable block ID with LABEL and CONTENT.
+If LABEL is nil, keep the current label.
+If APPEND-CONTENT? is non-nil, append CONTENT efficiently.
+If PARENT-ID is non-nil and ID is not rendered, update the parent spec."
   (if-let* ((ov-label (eca-chat--get-expandable-content id)))
-      ;; Block exists (rendered), update it directly
-      (let* ((ov-content (overlay-get ov-label 'eca-chat--expandable-content-ov-content))
+      (let* ((ov-content (overlay-get ov-label
+                                      'eca-chat--expandable-content-ov-content))
              (nested? (overlay-get ov-label 'eca-chat--expandable-content-nested))
-             (indent (if nested?
-                         eca-chat--expandable-content-nested-indent
-                       eca-chat--expandable-content-base-indent))
-             (existing (overlay-get ov-content 'eca-chat--expandable-content-content))
-             (delta (propertize content 'line-prefix indent))
-             (new-content (if append-content?
-                              (concat existing delta)
-                            delta))
-             (open? (overlay-get ov-label 'eca-chat--expandable-content-toggle)))
-        (overlay-put ov-content 'eca-chat--expandable-content-content new-content)
+             (indent (or (overlay-get ov-content 'eca-chat--expandable-content-indent)
+                         (if nested?
+                             eca-chat--expandable-content-nested-indent
+                           eca-chat--expandable-content-base-indent)))
+             (open? (overlay-get ov-label 'eca-chat--expandable-content-toggle))
+             (updated-raw
+              (progn
+                (if append-content?
+                    (eca-chat--expandable-content-append id content)
+                  (eca-chat--expandable-content-set id content))
+                (eca-chat--expandable-content-raw id))))
         (save-excursion
           (when label
-            ;; Update stored icons when the label face changes
             (let* ((new-icon-face (get-text-property 0 'font-lock-face label))
-                   (label-indent (when nested? eca-chat--expandable-content-base-indent))
-                   (new-icons (eca-chat--make-expandable-icons new-icon-face label-indent)))
-              (overlay-put ov-label 'eca-chat--expandable-content-open-icon (car new-icons))
-              (overlay-put ov-label 'eca-chat--expandable-content-close-icon (cdr new-icons)))
-            (goto-char (overlay-start ov-label))
-            (delete-region (point) (1- (overlay-start ov-content)))
-            (let* ((children (eca-chat--segments-children
-                              (overlay-get ov-label 'eca-chat--expandable-content-segments)))
-                   (has-content? (or (not (string-empty-p new-content)) children))
-                   (label-prefix (cond
-                                  (has-content?
-                                   (if open?
-                                       (overlay-get ov-label 'eca-chat--expandable-content-close-icon)
-                                     (overlay-get ov-label 'eca-chat--expandable-content-open-icon)))
-                                  (nested?
-                                   (concat eca-chat--expandable-content-base-indent
-                                           (make-string (length eca-chat-expandable-block-open-symbol) ?\s))))))
-              (eca-chat--insert (propertize (eca-chat--propertize-only-first-word label
-                                                                                  'line-prefix label-prefix)
-                                            'help-echo "mouse-1 / RET / tab: expand/collapse")))
-            ;; Repaint nested label's line-prefix after label replacement
-            (eca-chat--paint-nested-label ov-label))
+                   (label-indent (when nested?
+                                   eca-chat--expandable-content-base-indent))
+                   (new-icons (eca-chat--make-expandable-icons new-icon-face
+                                                               label-indent))
+                   (children (eca-chat--segments-children
+                              (overlay-get ov-label
+                                           'eca-chat--expandable-content-segments)))
+                   (has-content? (or (not (string-empty-p updated-raw)) children))
+                   (label-prefix
+                    (cond
+                     (has-content?
+                      (if open?
+                          (overlay-get ov-label
+                                       'eca-chat--expandable-content-close-icon)
+                        (overlay-get ov-label
+                                     'eca-chat--expandable-content-open-icon)))
+                     (nested?
+                      (concat
+                       eca-chat--expandable-content-base-indent
+                       (make-string
+                        (length eca-chat-expandable-block-open-symbol)
+                        ?\s))))))
+              (overlay-put ov-label 'eca-chat--expandable-content-open-icon
+                           (car new-icons))
+              (overlay-put ov-label 'eca-chat--expandable-content-close-icon
+                           (cdr new-icons))
+              (goto-char (overlay-start ov-label))
+              (delete-region (point) (1- (overlay-start ov-content)))
+              (eca-chat--insert
+               (propertize
+                (eca-chat--propertize-only-first-word label
+                                                     'line-prefix label-prefix)
+                'help-echo "mouse-1 / RET / tab: expand/collapse"))
+              (eca-chat--paint-nested-label ov-label)))
           (when open?
             (let ((block-face (overlay-get ov-content 'face)))
               (if append-content?
-                  (let ((insert-start (overlay-end ov-content)))
+                  (let ((insert-start (overlay-end ov-content))
+                        (delta (propertize (or content "") 'line-prefix indent)))
                     (goto-char insert-start)
                     (eca-chat--insert delta)
                     (when block-face
                       (eca-chat--apply-face-to-line-prefixes
                        insert-start (overlay-end ov-content) block-face)))
-                (progn
-                  (delete-region (overlay-start ov-content) (overlay-end ov-content))
-                  (goto-char (overlay-start ov-content))
-                  (eca-chat--insert new-content)
-                  (when block-face
-                    (eca-chat--apply-face-to-line-prefixes
-                     (overlay-start ov-content) (overlay-end ov-content) block-face)))))))
-        ;; When nested, sync updated label/content back to parent's child spec
-        ;; so that toggling the parent closed and reopened preserves latest state
+                (delete-region (overlay-start ov-content) (overlay-end ov-content))
+                (goto-char (overlay-start ov-content))
+                (eca-chat--insert
+                 (eca-chat--expandable-content-render id indent))
+                (when block-face
+                  (eca-chat--apply-face-to-line-prefixes
+                   (overlay-start ov-content) (overlay-end ov-content)
+                   block-face))))))
         (when nested?
-          (when-let* ((parent-id (overlay-get ov-label 'eca-chat--expandable-content-parent-id))
-                      (parent-ov (eca-chat--get-expandable-content parent-id))
-                      (segments (overlay-get parent-ov 'eca-chat--expandable-content-segments))
-                      (spec (-first (lambda (s) (and (eq 'child (plist-get s :type))
-                                                     (string= id (plist-get s :id))))
+          (when-let* ((owner-id (overlay-get ov-label
+                                             'eca-chat--expandable-content-parent-id))
+                      (parent-ov (eca-chat--get-expandable-content owner-id))
+                      (segments (overlay-get parent-ov
+                                             'eca-chat--expandable-content-segments))
+                      (spec (-first (lambda (seg)
+                                      (and (eq 'child (plist-get seg :type))
+                                           (string= id (plist-get seg :id))))
                                     segments)))
-            (when label (plist-put spec :label label))
-            (plist-put spec :content new-content))))
-    ;; Block not rendered yet
+            (when label
+              (plist-put spec :label label)
+              (plist-put spec :icon-face (get-text-property 0 'font-lock-face
+                                                            label)))
+            (if append-content?
+                (eca-chat--child-spec-append-content spec content)
+              (eca-chat--child-spec-set-content spec content)))))
     (if parent-id
-        ;; Nested: update spec in parent
         (when-let* ((parent-ov (eca-chat--get-expandable-content parent-id)))
-          (let* ((segments (overlay-get parent-ov 'eca-chat--expandable-content-segments))
-                 (existing-spec (-first (lambda (spec) (and (eq 'child (plist-get spec :type))
-                                                            (string= id (plist-get spec :id))))
+          (let* ((segments (overlay-get parent-ov
+                                        'eca-chat--expandable-content-segments))
+                 (existing-spec (-first (lambda (spec)
+                                          (and (eq 'child (plist-get spec :type))
+                                               (string= id (plist-get spec :id))))
                                         segments)))
             (if existing-spec
-                (let* ((old-content (plist-get existing-spec :content))
-                       (new-content (if append-content?
-                                        (concat old-content content)
-                                      content)))
+                (progn
                   (when label
                     (plist-put existing-spec :label label)
-                    (plist-put existing-spec :icon-face (get-text-property 0 'font-lock-face label)))
-                  (plist-put existing-spec :content new-content))
-              (let ((child-spec (list :type 'child :id id :label label :content content
-                                     :icon-face (get-text-property 0 'font-lock-face label))))
+                    (plist-put existing-spec :icon-face
+                               (get-text-property 0 'font-lock-face label)))
+                  (if append-content?
+                      (eca-chat--child-spec-append-content existing-spec content)
+                    (eca-chat--child-spec-set-content existing-spec content)))
+              (let ((child-spec (list :type 'child
+                                     :id id
+                                     :label label
+                                     :icon-face
+                                     (get-text-property 0 'font-lock-face label))))
+                (setq child-spec
+                      (eca-chat--child-spec-set-content child-spec content))
                 (overlay-put parent-ov 'eca-chat--expandable-content-segments
                              (append segments (list child-spec)))
                 (when (overlay-get parent-ov 'eca-chat--expandable-content-toggle)
                   (eca-chat--render-nested-block parent-ov child-spec))))))
-      ;; Top-level: create the block so toolCallRun et al. don't
-      ;; silently lose content when no toolCallPrepare preceded them.
       (eca-chat--add-expandable-content id label (or content "")))))
 
 (defun eca-chat--expandable-content-toggle (id &optional force? close?)
   "Toggle the expandable-content of ID.
-If FORCE? decide to CLOSE? or not."
-  (when-let* ((ov-label (-first (-lambda (ov) (string= id (overlay-get ov 'eca-chat--expandable-content-id)))
-                                (overlays-in (point-min) (point-max)))))
-    (let* ((ov-content (overlay-get ov-label 'eca-chat--expandable-content-ov-content))
-           (content (overlay-get ov-content 'eca-chat--expandable-content-content))
+If FORCE? is non-nil, use CLOSE? as the target state."
+  (when-let* ((ov-label (eca-chat--get-expandable-content id)))
+    (let* ((ov-content (overlay-get ov-label
+                                    'eca-chat--expandable-content-ov-content))
+           (indent (or (overlay-get ov-content 'eca-chat--expandable-content-indent)
+                       eca-chat--expandable-content-base-indent))
+           (content (eca-chat--expandable-content-raw id))
            (segments (overlay-get ov-label 'eca-chat--expandable-content-segments))
            (children (eca-chat--segments-children segments))
            (has-content? (or (not (string-empty-p content)) children))
-           (currently-open? (overlay-get ov-label 'eca-chat--expandable-content-toggle))
-           (close? (if force?
-                       close?
-                     currently-open?))
-           ;; Skip when force-toggling to a state we're already in
+           (currently-open? (overlay-get ov-label
+                                         'eca-chat--expandable-content-toggle))
+           (close? (if force? close? currently-open?))
            (already-in-state? (and force?
-                                   (if close? (not currently-open?) currently-open?))))
+                                   (if close?
+                                       (not currently-open?)
+                                     currently-open?))))
       (unless already-in-state?
         (eca-chat--with-preserved-scroll
-          (save-excursion
-            (goto-char (overlay-start ov-label))
-            (if (or close? (not has-content?))
-                (progn
-                  (put-text-property (point) (line-end-position)
-                                     'line-prefix (when has-content?
-                                                    (overlay-get ov-label 'eca-chat--expandable-content-open-icon)))
-                  (goto-char (1+ (line-end-position)))
-                  ;; Destroy nested blocks first (they are within content region)
-                  (eca-chat--destroy-nested-blocks id)
-                  (delete-region (overlay-start ov-content) (overlay-end ov-content))
-                  (overlay-put ov-content 'face nil)
-                  (overlay-put ov-label 'eca-chat--expandable-content-toggle nil))
-              (progn
-                (put-text-property (point) (line-end-position)
-                                   'line-prefix (overlay-get ov-label 'eca-chat--expandable-content-close-icon))
-                (goto-char (overlay-start ov-content))
-                (if segments
-                    ;; Segments-aware rendering: interleave text and children in order
-                    (let* ((full-content content)
-                           (segmented-text (eca-chat--segments-total-text segments))
-                           (trailing-text (when (> (length full-content) (length segmented-text))
-                                            (substring full-content (length segmented-text)))))
-                      (dolist (seg segments)
-                        (pcase (plist-get seg :type)
-                          ('text (eca-chat--insert (plist-get seg :content)))
-                          ('child
-                           (eca-chat--render-nested-block ov-label seg)
-                           ;; render-nested-block uses save-excursion so point stays
-                           ;; before the child; advance past it to maintain order
-                           (goto-char (overlay-end ov-content)))))
-                      ;; Insert any trailing text not yet captured in segments
-                      (when (and trailing-text (not (string-empty-p trailing-text)))
-                        (eca-chat--insert trailing-text))
-                      (eca-chat--insert "\n"))
-                  ;; Legacy path: no segments, insert content then children
-                  (eca-chat--insert content "\n")
-                  (dolist (child-spec children)
-                    (eca-chat--render-nested-block ov-label child-spec)))
-                (let ((block-face (eca-chat--expandable-block-face
-                                  (overlay-get ov-content 'eca-chat--expandable-block-nested))))
-                  (overlay-put ov-content 'face block-face)
-                  (eca-chat--apply-face-to-line-prefixes
-                   (overlay-start ov-content) (overlay-end ov-content) block-face))
-                (overlay-put ov-label 'eca-chat--expandable-content-toggle t)))
-            ;; Repaint nested label's line-prefix after icon swap
-            (eca-chat--paint-nested-label ov-label))))
+         (save-excursion
+           (goto-char (overlay-start ov-label))
+           (if (or close? (not has-content?))
+               (progn
+                 (put-text-property
+                  (point) (line-end-position)
+                  'line-prefix
+                  (when has-content?
+                    (overlay-get ov-label
+                                 'eca-chat--expandable-content-open-icon)))
+                 (goto-char (1+ (line-end-position)))
+                 (eca-chat--destroy-nested-blocks id)
+                 (delete-region (overlay-start ov-content) (overlay-end ov-content))
+                 (overlay-put ov-content 'face nil)
+                 (overlay-put ov-label 'eca-chat--expandable-content-toggle nil))
+             (put-text-property
+              (point) (line-end-position)
+              'line-prefix
+              (overlay-get ov-label 'eca-chat--expandable-content-close-icon))
+             (goto-char (overlay-start ov-content))
+             (if segments
+                 (let* ((full-content content)
+                        (segmented-text (eca-chat--segments-total-text segments))
+                        (trailing-text
+                         (when (> (length full-content) (length segmented-text))
+                           (substring full-content (length segmented-text)))))
+                   (dolist (seg segments)
+                     (pcase (plist-get seg :type)
+                       ('text
+                        (eca-chat--insert
+                         (propertize (plist-get seg :content)
+                                     'line-prefix indent)))
+                       ('child
+                        (eca-chat--render-nested-block ov-label seg)
+                        (goto-char (overlay-end ov-content)))))
+                   (when (and trailing-text (not (string-empty-p trailing-text)))
+                     (eca-chat--insert
+                      (propertize trailing-text 'line-prefix indent)))
+                   (eca-chat--insert "\n"))
+               (eca-chat--insert (eca-chat--expandable-content-render id indent)
+                                 "\n")
+               (dolist (child-spec children)
+                 (eca-chat--render-nested-block ov-label child-spec)))
+             (let ((block-face
+                    (eca-chat--expandable-block-face
+                     (overlay-get ov-content 'eca-chat--expandable-block-nested))))
+               (overlay-put ov-content 'face block-face)
+               (eca-chat--apply-face-to-line-prefixes
+                (overlay-start ov-content) (overlay-end ov-content) block-face))
+             (overlay-put ov-label 'eca-chat--expandable-content-toggle t))
+           (eca-chat--paint-nested-label ov-label))))
       close?)))
 
 (defun eca-chat--content-table (key-vals)

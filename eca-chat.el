@@ -222,8 +222,23 @@ Must be a positive integer."
 (defvar-local eca-chat--tool-call-prepare-counters (make-hash-table :test 'equal)
   "Hash table mapping toolCall ID to message count.")
 
-(defvar-local eca-chat--tool-call-prepare-content-cache (make-hash-table :test 'equal)
-  "Hash table mapping toolCall ID to accumulated argument text.")
+(defvar-local eca-chat--tool-call-prepare-content-cache
+    (make-hash-table :test 'equal)
+  "Hash table mapping toolCall ID to reversed argument chunks.")
+
+(defun eca-chat--tool-call-prepare-content (id)
+  "Return accumulated prepare content for tool-call ID."
+  (mapconcat #'identity
+             (nreverse (copy-sequence
+                        (gethash id eca-chat--tool-call-prepare-content-cache)))
+             ""))
+
+(defun eca-chat--tool-call-prepare-append (id chunk)
+  "Append prepare CHUNK for tool-call ID with constant-time storage."
+  (unless (string-empty-p (or chunk ""))
+    (puthash id
+             (cons chunk (gethash id eca-chat--tool-call-prepare-content-cache))
+             eca-chat--tool-call-prepare-content-cache)))
 
 (defcustom eca-chat-tool-call-approval-content-size 0.9
   "The size of font of tool call approval."
@@ -541,7 +556,23 @@ Used when server never responds to stop request.")
 
 (defvar-local eca-chat--stop-button-inserted nil
   "Non-nil when the stop button is inserted in loading area.")
+(defvar-local eca-chat--loading-area-overlay nil)
+(defvar-local eca-chat--prompt-field-overlay nil)
+(defvar-local eca-chat--prompt-progress-overlay nil)
+(defvar-local eca-chat--prompt-context-overlay nil)
+(defvar-local eca-chat--prompt-area-overlay nil)
+(defvar-local eca-chat--task-area-overlay nil)
+(defvar-local eca-chat--queued-area-overlay nil)
+(defvar-local eca-chat--steer-area-overlay nil)
+(defvar-local eca-chat--response-start-marker nil)
+(defvar-local eca-chat--response-end-marker nil)
+(defvar-local eca-chat--pending-fontify-start-marker nil)
+(defvar-local eca-chat--pending-fontify-end-marker nil)
+(defvar-local eca-chat--fontify-idle-timer nil)
 
+(defvar eca-chat--capture-writes-p nil)
+(defvar eca-chat--capture-write-start nil)
+(defvar eca-chat--capture-write-end nil)
 
 (defvar eca-chat--new-chat-id 0)
 (defvar eca-chat--last-known-model nil)
@@ -634,9 +665,179 @@ Used when server never responds to stop request.")
                           :params (list :chatId eca-chat--id))))
 
 (defun eca-chat--insert (&rest contents)
-  "Insert CONTENTS reseting undo-list to avoid buffer inconsistencies."
-  (apply #'insert contents)
-  (setq-local buffer-undo-list nil))
+  "Insert CONTENTS without recording undo for chat rendering."
+  (let ((start (point))
+        (buffer-undo-list t))
+    (apply #'insert contents)
+    (when eca-chat--capture-writes-p
+      (setq eca-chat--capture-write-start
+            (if eca-chat--capture-write-start
+                (min eca-chat--capture-write-start start)
+              start))
+      (setq eca-chat--capture-write-end
+            (if eca-chat--capture-write-end
+                (max eca-chat--capture-write-end (point))
+              (point))))))
+
+(defmacro eca-chat--with-write-capture (range-var &rest body)
+  "Execute BODY and bind RANGE-VAR to the inserted range."
+  (declare (indent 1) (debug t))
+  `(let ((eca-chat--capture-writes-p t)
+         (eca-chat--capture-write-start nil)
+         (eca-chat--capture-write-end nil))
+     (prog1 (progn ,@body)
+       (setq ,range-var
+             (when (and eca-chat--capture-write-start
+                        eca-chat--capture-write-end)
+               (cons eca-chat--capture-write-start
+                     eca-chat--capture-write-end))))))
+
+(defun eca-chat--structural-overlay (cached-var overlay-key)
+  "Return cached structural overlay from CACHED-VAR with OVERLAY-KEY."
+  (let ((ov (symbol-value cached-var)))
+    (if (and (overlayp ov) (overlay-buffer ov))
+        ov
+      (set cached-var
+           (-first (-lambda (candidate)
+                     (eq t (overlay-get candidate overlay-key)))
+                   (overlays-in (point-min) (point-max)))))))
+
+(defun eca-chat--clear-structural-overlays ()
+  "Reset cached structural overlays for the current chat buffer."
+  (setq-local eca-chat--loading-area-overlay nil)
+  (setq-local eca-chat--prompt-field-overlay nil)
+  (setq-local eca-chat--prompt-progress-overlay nil)
+  (setq-local eca-chat--prompt-context-overlay nil)
+  (setq-local eca-chat--prompt-area-overlay nil)
+  (setq-local eca-chat--task-area-overlay nil)
+  (setq-local eca-chat--queued-area-overlay nil)
+  (setq-local eca-chat--steer-area-overlay nil))
+
+(defun eca-chat--initialize-buffer-state ()
+  "Create fresh mutable chat state for the current buffer."
+  (setq-local eca-chat--tool-call-prepare-counters
+              (make-hash-table :test 'equal))
+  (setq-local eca-chat--tool-call-prepare-content-cache
+              (make-hash-table :test 'equal))
+  (setq-local eca-chat--tool-call-elapsed-times
+              (make-hash-table :test 'equal))
+  (setq-local eca-chat--subagent-chat-id->tool-call-id
+              (make-hash-table :test 'equal))
+  (setq-local eca-chat--subagent-usage
+              (make-hash-table :test 'equal))
+  (setq-local eca-chat--expandable-content-index
+              (make-hash-table :test 'equal))
+  (setq-local eca-chat--expandable-content-children-index
+              (make-hash-table :test 'equal))
+  (setq-local eca-chat--expandable-content-storage
+              (make-hash-table :test 'equal)))
+
+(defun eca-chat--reset-response-span ()
+  "Clear the tracked response span for the current chat turn."
+  (when (markerp eca-chat--response-start-marker)
+    (set-marker eca-chat--response-start-marker nil))
+  (when (markerp eca-chat--response-end-marker)
+    (set-marker eca-chat--response-end-marker nil))
+  (setq-local eca-chat--response-start-marker nil)
+  (setq-local eca-chat--response-end-marker nil))
+
+(defun eca-chat--record-response-range (beg end)
+  "Expand the tracked response span to cover BEG and END."
+  (when (< beg end)
+    (unless (markerp eca-chat--response-start-marker)
+      (setq-local eca-chat--response-start-marker (copy-marker beg)))
+    (unless (markerp eca-chat--response-end-marker)
+      (setq-local eca-chat--response-end-marker (copy-marker end t)))
+    (when (< beg (marker-position eca-chat--response-start-marker))
+      (set-marker eca-chat--response-start-marker beg))
+    (when (> end (marker-position eca-chat--response-end-marker))
+      (set-marker eca-chat--response-end-marker end))))
+
+(defun eca-chat--response-span ()
+  "Return the current tracked response span as a cons cell."
+  (when (and (markerp eca-chat--response-start-marker)
+             (markerp eca-chat--response-end-marker)
+             (marker-buffer eca-chat--response-start-marker)
+             (marker-buffer eca-chat--response-end-marker))
+    (cons (marker-position eca-chat--response-start-marker)
+          (marker-position eca-chat--response-end-marker))))
+
+(defun eca-chat--clear-pending-fontify-range ()
+  "Clear any deferred fontification range and timer."
+  (when (timerp eca-chat--fontify-idle-timer)
+    (cancel-timer eca-chat--fontify-idle-timer))
+  (setq-local eca-chat--fontify-idle-timer nil)
+  (when (markerp eca-chat--pending-fontify-start-marker)
+    (set-marker eca-chat--pending-fontify-start-marker nil))
+  (when (markerp eca-chat--pending-fontify-end-marker)
+    (set-marker eca-chat--pending-fontify-end-marker nil))
+  (setq-local eca-chat--pending-fontify-start-marker nil)
+  (setq-local eca-chat--pending-fontify-end-marker nil))
+
+(defun eca-chat--cleanup-buffer-state ()
+  "Cancel active timers and release transient chat state."
+  (eca-chat--spinner-stop)
+  (eca-chat--tool-call-elapsed-stop-all)
+  (eca-chat--clear-pending-fontify-range)
+  (eca-chat--reset-response-span)
+  (when (timerp eca-chat--table-resize-timer)
+    (cancel-timer eca-chat--table-resize-timer)
+    (setq-local eca-chat--table-resize-timer nil))
+  (when (timerp eca-chat--modeline-timer)
+    (cancel-timer eca-chat--modeline-timer)
+    (setq-local eca-chat--modeline-timer nil))
+  (when (timerp eca-chat--stopping-safety-timer)
+    (cancel-timer eca-chat--stopping-safety-timer)
+    (setq-local eca-chat--stopping-safety-timer nil)))
+
+(defun eca-chat--flush-fontify-range (beg end)
+  "Flush and fontify BEG..END when font-lock is active."
+  (when (and font-lock-mode (< beg end))
+    (font-lock-flush beg end)
+    (font-lock-ensure beg end)))
+
+(defun eca-chat--run-pending-fontify ()
+  "Run the deferred regional fontification for the current buffer."
+  (let ((beg (and (markerp eca-chat--pending-fontify-start-marker)
+                  (marker-position eca-chat--pending-fontify-start-marker)))
+        (end (and (markerp eca-chat--pending-fontify-end-marker)
+                  (marker-position eca-chat--pending-fontify-end-marker))))
+    (eca-chat--clear-pending-fontify-range)
+    (when (and beg end)
+      (eca-chat--flush-fontify-range beg end))))
+
+(defun eca-chat--schedule-fontify-range (beg end)
+  "Defer regional fontification for BEG..END until Emacs is idle."
+  (when (< beg end)
+    (unless (markerp eca-chat--pending-fontify-start-marker)
+      (setq-local eca-chat--pending-fontify-start-marker (copy-marker beg)))
+    (unless (markerp eca-chat--pending-fontify-end-marker)
+      (setq-local eca-chat--pending-fontify-end-marker (copy-marker end t)))
+    (when (< beg (marker-position eca-chat--pending-fontify-start-marker))
+      (set-marker eca-chat--pending-fontify-start-marker beg))
+    (when (> end (marker-position eca-chat--pending-fontify-end-marker))
+      (set-marker eca-chat--pending-fontify-end-marker end))
+    (unless (timerp eca-chat--fontify-idle-timer)
+      (let ((buf (current-buffer)))
+        (setq-local eca-chat--fontify-idle-timer
+                    (run-with-idle-timer
+                     0.05 nil
+                     (lambda (chat-buffer)
+                       (when (buffer-live-p chat-buffer)
+                         (with-current-buffer chat-buffer
+                           (eca-chat--run-pending-fontify))))
+                     buf))))))
+
+(defun eca-chat--finalize-response-region ()
+  "Finalize the current response span and run bounded post-processing."
+  (when-let* ((span (eca-chat--response-span)))
+    (let ((from (car span))
+          (to (eca-chat--prompt-area-start-point)))
+      (when (< from to)
+        (eca-chat--flush-fontify-range from to)
+        (eca-chat--align-tables from)
+        (eca-chat--beautify-tables from))))
+  (eca-chat--reset-response-span))
 
 (defun eca-chat--spinner-start (callback)
   "Start modeline spinner calling CALLBACK when updating."
@@ -843,52 +1044,78 @@ request, useful for subagent tool calls."
                         'font-lock-face 'eca-chat-tool-call-keybinding-face))))
 
 (defun eca-chat--insert-prompt-string ()
-  "Insert the prompt and context string adding overlay metadatas."
-  (let ((prompt-area-ov (make-overlay (line-beginning-position) (1+ (line-beginning-position)) (current-buffer))))
-    (overlay-put prompt-area-ov 'eca-chat-prompt-area t))
+  "Insert the prompt and context areas and cache their overlays."
+  (setq-local eca-chat--prompt-area-overlay
+              (make-overlay (line-beginning-position)
+                            (1+ (line-beginning-position))
+                            (current-buffer)))
+  (overlay-put eca-chat--prompt-area-overlay 'eca-chat-prompt-area t)
   (eca-chat--insert eca-chat-prompt-separator)
-  (let ((task-area-ov (make-overlay (1+ (point)) (line-end-position) (current-buffer) nil t)))
-    (overlay-put task-area-ov 'eca-chat-task-area t)
-    (eca-chat--insert " ")
-    (move-overlay task-area-ov (overlay-start task-area-ov) (1- (overlay-end task-area-ov))))
-  (let ((progress-area-ov (make-overlay (1+ (point)) (line-end-position) (current-buffer) nil t)))
-    (overlay-put progress-area-ov 'eca-chat-progress-area t)
-    (eca-chat--insert "\n")
-    (move-overlay progress-area-ov (overlay-start progress-area-ov) (1- (overlay-end progress-area-ov))))
-  (let ((queued-area-ov (make-overlay (line-beginning-position) (1+ (line-beginning-position)) (current-buffer))))
-    (overlay-put queued-area-ov 'eca-chat-queued-area t))
-  (let ((steer-area-ov (make-overlay (line-beginning-position) (1+ (line-beginning-position)) (current-buffer))))
-    (overlay-put steer-area-ov 'eca-chat-steer-area t))
-  (let ((context-area-ov (make-overlay (line-beginning-position) (line-end-position) (current-buffer) nil t)))
-    (overlay-put context-area-ov 'eca-chat-context-area t)
-    (eca-chat--insert (propertize eca-chat-context-prefix 'font-lock-face 'eca-chat-context-unlinked-face))
-    (eca-chat--insert "\n")
-    (move-overlay context-area-ov (overlay-start context-area-ov) (1- (overlay-end context-area-ov))))
-  (let ((loading-area-ov (make-overlay (line-beginning-position) (1+ (line-beginning-position)) (current-buffer))))
-    (overlay-put loading-area-ov 'eca-chat-loading-area t))
+  (setq-local eca-chat--task-area-overlay
+              (make-overlay (1+ (point)) (line-end-position)
+                            (current-buffer) nil t))
+  (overlay-put eca-chat--task-area-overlay 'eca-chat-task-area t)
+  (eca-chat--insert " ")
+  (move-overlay eca-chat--task-area-overlay
+                (overlay-start eca-chat--task-area-overlay)
+                (1- (overlay-end eca-chat--task-area-overlay)))
+  (setq-local eca-chat--prompt-progress-overlay
+              (make-overlay (1+ (point)) (line-end-position)
+                            (current-buffer) nil t))
+  (overlay-put eca-chat--prompt-progress-overlay 'eca-chat-progress-area t)
   (eca-chat--insert "\n")
-  (let ((prompt-field-ov (make-overlay (line-beginning-position) (1+ (line-beginning-position)) (current-buffer))))
-    (overlay-put prompt-field-ov 'eca-chat-prompt-field t)
-    (overlay-put prompt-field-ov 'before-string (propertize eca-chat-prompt-prefix 'font-lock-face 'eca-chat-prompt-prefix-face))))
+  (move-overlay eca-chat--prompt-progress-overlay
+                (overlay-start eca-chat--prompt-progress-overlay)
+                (1- (overlay-end eca-chat--prompt-progress-overlay)))
+  (setq-local eca-chat--queued-area-overlay
+              (make-overlay (line-beginning-position)
+                            (1+ (line-beginning-position))
+                            (current-buffer)))
+  (overlay-put eca-chat--queued-area-overlay 'eca-chat-queued-area t)
+  (setq-local eca-chat--steer-area-overlay
+              (make-overlay (line-beginning-position)
+                            (1+ (line-beginning-position))
+                            (current-buffer)))
+  (overlay-put eca-chat--steer-area-overlay 'eca-chat-steer-area t)
+  (setq-local eca-chat--prompt-context-overlay
+              (make-overlay (line-beginning-position) (line-end-position)
+                            (current-buffer) nil t))
+  (overlay-put eca-chat--prompt-context-overlay 'eca-chat-context-area t)
+  (eca-chat--insert
+   (propertize eca-chat-context-prefix
+               'font-lock-face 'eca-chat-context-unlinked-face))
+  (eca-chat--insert "\n")
+  (move-overlay eca-chat--prompt-context-overlay
+                (overlay-start eca-chat--prompt-context-overlay)
+                (1- (overlay-end eca-chat--prompt-context-overlay)))
+  (setq-local eca-chat--loading-area-overlay
+              (make-overlay (line-beginning-position)
+                            (1+ (line-beginning-position))
+                            (current-buffer)))
+  (overlay-put eca-chat--loading-area-overlay 'eca-chat-loading-area t)
+  (eca-chat--insert "\n")
+  (setq-local eca-chat--prompt-field-overlay
+              (make-overlay (line-beginning-position)
+                            (1+ (line-beginning-position))
+                            (current-buffer)))
+  (overlay-put eca-chat--prompt-field-overlay 'eca-chat-prompt-field t)
+  (overlay-put eca-chat--prompt-field-overlay
+               'before-string
+               (propertize eca-chat-prompt-prefix
+                           'font-lock-face 'eca-chat-prompt-prefix-face)))
 
 (defun eca-chat--clear (&optional new-prompt-content)
-  "Clear the chat for SESSION and then insert NEW-PROMPT-CONTENT."
+  "Clear the chat and optionally insert NEW-PROMPT-CONTENT."
+  (eca-chat--cleanup-buffer-state)
   (erase-buffer)
   (remove-overlays (point-min) (point-max))
+  (eca-chat--clear-structural-overlays)
+  (eca-chat--initialize-buffer-state)
   (setq-local eca-chat--task-state nil)
-  ;; Cancel loading-related timers and reset state
-  (when eca-chat--stopping-safety-timer
-    (cancel-timer eca-chat--stopping-safety-timer)
-    (setq-local eca-chat--stopping-safety-timer nil))
-  (when eca-chat--modeline-timer
-    (cancel-timer eca-chat--modeline-timer)
-    (setq-local eca-chat--modeline-timer nil))
   (setq-local eca-chat--chat-loading nil)
   (setq-local eca-chat--stop-button-inserted nil)
   (setq-local eca-chat--steered-prompt nil)
   (setq-local eca-chat--queued-prompt nil)
-  (clrhash eca-chat--subagent-chat-id->tool-call-id)
-  (clrhash eca-chat--subagent-usage)
   (eca-chat--insert "\n")
   (eca-chat--insert-prompt-string)
   (eca-chat--refresh-context)
@@ -951,6 +1178,8 @@ LOADING can be t (loading), \\='stopping (stop in progress), or nil (idle)."
     (setq-local eca-chat--chat-loading loading)
     (pcase loading
       ('t
+       (eca-chat--reset-response-span)
+       (eca-chat--clear-pending-fontify-range)
        (setq-local eca-chat--prompt-start-time (current-time))
        (let ((buf (current-buffer))
              (timer nil))
@@ -984,6 +1213,8 @@ LOADING can be t (loading), \\='stopping (stop in progress), or nil (idle)."
                                              (eca-chat--set-chat-loading session nil)))))))))
       (_
        ;; nil — full stop
+       (eca-chat--clear-pending-fontify-range)
+       (eca-chat--reset-response-span)
        (when eca-chat--stopping-safety-timer
          (cancel-timer eca-chat--stopping-safety-timer)
          (setq-local eca-chat--stopping-safety-timer nil))
@@ -1058,13 +1289,13 @@ LOADING can be t (loading), \\='stopping (stop in progress), or nil (idle)."
 
 (defun eca-chat--loading-area-ov ()
   "Return the overlay for the loading area."
-  (-first (-lambda (ov) (eq t (overlay-get ov 'eca-chat-loading-area)))
-          (overlays-in (point-min) (point-max))))
+  (eca-chat--structural-overlay 'eca-chat--loading-area-overlay
+                                'eca-chat-loading-area))
 
 (defun eca-chat--prompt-field-ov ()
   "Return the overlay for the prompt field."
-  (-first (-lambda (ov) (eq t (overlay-get ov 'eca-chat-prompt-field)))
-          (overlays-in (point-min) (point-max))))
+  (eca-chat--structural-overlay 'eca-chat--prompt-field-overlay
+                                'eca-chat-prompt-field))
 
 (defun eca-chat--prompt-field-start-point ()
   "Return the metadata overlay for the prompt field start point."
@@ -1072,33 +1303,33 @@ LOADING can be t (loading), \\='stopping (stop in progress), or nil (idle)."
 
 (defun eca-chat--prompt-progress-field-ov ()
   "Return the overlay for the progress field."
-  (-first (-lambda (ov) (eq t (overlay-get ov 'eca-chat-progress-area)))
-          (overlays-in (point-min) (point-max))))
+  (eca-chat--structural-overlay 'eca-chat--prompt-progress-overlay
+                                'eca-chat-progress-area))
 
 (defun eca-chat--prompt-context-field-ov ()
   "Return the overlay for the context field."
-  (-first (-lambda (ov) (eq t (overlay-get ov 'eca-chat-context-area)))
-          (overlays-in (point-min) (point-max))))
+  (eca-chat--structural-overlay 'eca-chat--prompt-context-overlay
+                                'eca-chat-context-area))
 
 (defun eca-chat--prompt-area-ov ()
   "Return the overlay for the prompt area."
-  (-first (-lambda (ov) (eq t (overlay-get ov 'eca-chat-prompt-area)))
-          (overlays-in (point-min) (point-max))))
+  (eca-chat--structural-overlay 'eca-chat--prompt-area-overlay
+                                'eca-chat-prompt-area))
 
 (defun eca-chat--task-area-ov ()
   "Return the overlay for the task area."
-  (-first (-lambda (ov) (eq t (overlay-get ov 'eca-chat-task-area)))
-          (overlays-in (point-min) (point-max))))
+  (eca-chat--structural-overlay 'eca-chat--task-area-overlay
+                                'eca-chat-task-area))
 
 (defun eca-chat--queued-area-ov ()
   "Return the overlay for the queued prompt area."
-  (-first (-lambda (ov) (eq t (overlay-get ov 'eca-chat-queued-area)))
-          (overlays-in (point-min) (point-max))))
+  (eca-chat--structural-overlay 'eca-chat--queued-area-overlay
+                                'eca-chat-queued-area))
 
 (defun eca-chat--steer-area-ov ()
   "Return the overlay for the steer prompt area."
-  (-first (-lambda (ov) (eq t (overlay-get ov 'eca-chat-steer-area)))
-          (overlays-in (point-min) (point-max))))
+  (eca-chat--structural-overlay 'eca-chat--steer-area-overlay
+                                'eca-chat-steer-area))
 
 (defun eca-chat--prompt-area-start-point ()
   "Return the metadata overlay for the prompt area start point."
@@ -1114,19 +1345,16 @@ Returns the position just before the prompt area start."
   (1- (eca-chat--prompt-area-start-point)))
 
 (defun eca-chat--ensure-prompt-visible ()
-  "Scroll the chat window so the prompt area stays visible.
-Only acts when the user is currently viewing the bottom of the
-buffer.  When the user has scrolled up to read earlier content,
-scrolling is suppressed so the view does not jump."
+  "Keep the prompt visible when the user is already following the end."
   (when-let* ((win (get-buffer-window (current-buffer))))
     (let* ((prompt-start (eca-chat--prompt-area-start-point))
            (win-end (window-end win t)))
-      ;; Only auto-scroll when the prompt separator was already
-      ;; visible — meaning the user is at the bottom of the chat.
       (when (and prompt-start (>= win-end prompt-start))
-        (with-selected-window win
-          (goto-char (point-max))
-          (recenter -1))))))
+        (set-window-point win (point-max))
+        (when (< (window-end win t) prompt-start)
+          (with-selected-window win
+            (goto-char (point-max))
+            (recenter -1)))))))
 
 (defun eca-chat--new-context-start-point ()
   "Return the metadata overlay for the new context area start point."
@@ -2044,6 +2272,7 @@ CHILD, NAME, DOCSTRING and BODY are passed down."
   (hl-line-mode -1)
   (setq-local eca-chat--history '())
   (setq-local eca-chat--history-index -1)
+  (eca-chat--initialize-buffer-state)
 
   ;; Show diff blocks in markdown-mode with colors.
   (setq-local markdown-fontify-code-blocks-natively t)
@@ -2102,6 +2331,7 @@ CHILD, NAME, DOCSTRING and BODY are passed down."
     (eldoc-mode 1)
 
     (add-hook 'kill-buffer-hook #'eca-chat--delete-chat nil t)
+    (add-hook 'kill-buffer-hook #'eca-chat--cleanup-buffer-state t t)
 
     ;; Paste image from clipboard support
     (when (fboundp 'yank-media-handler)
@@ -2322,7 +2552,7 @@ Append STATUS symbol.  Optional PARENT-ID for nested rendering."
         ;; step count / status, preserving all rendered children.
         (let* ((ov-content (overlay-get existing-ov 'eca-chat--expandable-content-ov-content))
                (open? (overlay-get existing-ov 'eca-chat--expandable-content-toggle))
-               (content (overlay-get ov-content 'eca-chat--expandable-content-content))
+               (content (eca-chat--expandable-content-raw id))
                (has-content? (or (and content (not (string-empty-p content)))
                                  has-children?))
                (new-icon-face (get-text-property 0 'font-lock-face new-label))
@@ -2378,7 +2608,7 @@ Rebuilds the steps-info string with current usage and updates the overlay."
            (new-label (concat (propertize label 'font-lock-face 'eca-chat-subagent-tool-call-label-face)
                               steps-info " " status time))
            (open? (overlay-get ov-label 'eca-chat--expandable-content-toggle))
-           (content (overlay-get ov-content 'eca-chat--expandable-content-content))
+           (content (eca-chat--expandable-content-raw tool-call-id))
            (has-content? (and content (not (string-empty-p content)))))
       (overlay-put ov-label 'eca-chat--tool-call-steps-info steps-info)
       (save-excursion
@@ -2405,7 +2635,7 @@ Only updates the label line, preserving all nested child content."
            (new-label (concat (propertize label 'font-lock-face 'eca-chat-subagent-tool-call-label-face)
                               steps-info " " new-status time))
            (open? (overlay-get ov-label 'eca-chat--expandable-content-toggle))
-           (content (overlay-get ov-content 'eca-chat--expandable-content-content))
+           (content (eca-chat--expandable-content-raw parent-tool-call-id))
            (has-content? (and content (not (string-empty-p content)))))
       (save-excursion
         (goto-char (overlay-start ov-label))
@@ -2487,8 +2717,16 @@ CHAT-ID is the chat session the content belongs to, used for tool call
 approval requests.  Falls back to the buffer-local `eca-chat--id'.
 Must be called with `eca-chat--with-current-buffer' or equivalent."
   (let* ((content-id (plist-get content :contentId))
-         (tool-call-next-line-spacing (make-string (1+ (length eca-chat-expandable-block-open-symbol)) ?\s)))
-    (pcase (plist-get content :type)
+         (content-type (plist-get content :type))
+         (tool-call-next-line-spacing
+          (make-string (1+ (length eca-chat-expandable-block-open-symbol)) ?\s))
+         (inserted-range nil)
+         (track-response?
+          (and (not parent-tool-call-id)
+               (not (equal role "user"))
+               (not (member content-type '("metadata" "progress" "usage"))))))
+    (eca-chat--with-write-capture inserted-range
+      (pcase content-type
       ("metadata"
        (unless parent-tool-call-id
          (setq-local eca-chat--title (plist-get content :title))))
@@ -2511,8 +2749,7 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
                 (when-let* ((ov (eca-chat--get-expandable-content content-id)))
                   (overlay-put ov 'eca-chat--user-message-id content-id)
                   (overlay-put ov 'eca-chat--timestamp (float-time)))
-                (eca-chat--mark-header)
-                (font-lock-ensure))))
+                (eca-chat--mark-header))))
            ("system"
             (eca-chat--add-text-content
              (propertize text
@@ -2523,8 +2760,7 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
                 ;; Subagent: append assistant text to the parent tool call content
                 (eca-chat--update-expandable-content
                  parent-tool-call-id nil text t)
-              (eca-chat--add-text-content text)
-              (font-lock-ensure))))))
+              (eca-chat--add-text-content text))))))
       ("url"
        (unless parent-tool-call-id
          (eca-chat--add-header
@@ -2599,27 +2835,28 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
          (when-let* ((id (plist-get content :id))
                      (name (plist-get content :name))
                      (server (plist-get content :server)))
-           (let* ((argsText (plist-get content :argumentsText))
+           (let* ((args-text (plist-get content :argumentsText))
                   (details (plist-get content :details))
                   (subagent? (string= "subagent" (plist-get details :type)))
                   (label (or (plist-get content :summary)
                              (format "Preparing tool: %s__%s" server name)))
                   (current-count (gethash id eca-chat--tool-call-prepare-counters 0))
-                  (cached-content (gethash id eca-chat--tool-call-prepare-content-cache ""))
-                  (new-content (concat cached-content argsText))
                   (should-update-ui-p
                    (pcase eca-chat-tool-call-prepare-throttle
                      ('all t)
                      ('smart (or (= current-count 0)
-                                 (= (mod current-count eca-chat-tool-call-prepare-update-interval) 0))))))
-             ;; Always cache the metadata and content
+                                 (= (mod current-count
+                                         eca-chat-tool-call-prepare-update-interval)
+                                    0))))))
+             ;; Always cache the metadata and content.
              (puthash id (1+ current-count) eca-chat--tool-call-prepare-counters)
-             (puthash id new-content eca-chat--tool-call-prepare-content-cache)
-             ;; Only update UI when throttling permits
+             (eca-chat--tool-call-prepare-append id args-text)
+             ;; Only update UI when throttling permits.
              (when should-update-ui-p
                (let* ((label-face (if subagent?
                                       'eca-chat-subagent-tool-call-label-face
                                     'eca-chat-mcp-tool-call-label-face))
+                      (arguments-text (eca-chat--tool-call-prepare-content id))
                       (label (concat (propertize label 'font-lock-face label-face)
                                      " " eca-chat-mcp-tool-call-loading-symbol))
                       (body (if subagent?
@@ -2627,11 +2864,11 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
                               (eca-chat--content-table
                                `(("Tool" . ,name)
                                  ("Server" . ,server)
-                                 ("Arguments" . ,new-content))))))
+                                 ("Arguments" . ,arguments-text))))))
                  (if (eca-chat--get-expandable-content id)
-                     ;; Update with accumulated content, not just this chunk
                      (eca-chat--update-expandable-content
-                      id label (if subagent? body new-content) nil parent-tool-call-id)
+                      id label (if subagent? body arguments-text)
+                      nil parent-tool-call-id)
                    (eca-chat--add-expandable-content
                     id label body parent-tool-call-id))))))))
       ("toolCallRun"
@@ -2832,8 +3069,7 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
                (eca-chat--spinner-stop)
                (eca-chat--tool-call-elapsed-stop-all)
                (eca-chat--add-text-content "\n")
-               (eca-chat--align-tables (point-min))
-               (eca-chat--beautify-tables (point-min))
+               (eca-chat--finalize-response-region)
                (eca-chat--set-chat-loading session nil)
                (eca-chat--refresh-progress chat-buffer)
                (eca-chat--send-steered-prompt session)
@@ -2858,7 +3094,13 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
            (setq-local eca-chat--message-cost          (plist-get content :messageCost))
            (setq-local eca-chat--session-cost          (plist-get content :sessionCost)))
          (force-mode-line-update)))
-      (_ nil))))
+      (_ nil)))
+    (when inserted-range
+      (eca-chat--schedule-fontify-range (car inserted-range)
+                                        (cdr inserted-range))
+      (when track-response?
+        (eca-chat--record-response-range (car inserted-range)
+                                         (cdr inserted-range))))))
 
 (defun eca-chat-content-received (session params)
   "Handle the content received notification with PARAMS for SESSION."
@@ -3007,15 +3249,7 @@ silently ignored."
             (let ((chat-buffer (cdr title+buffer)))
               (when (buffer-live-p chat-buffer)
                 (eca-chat--with-current-buffer chat-buffer
-                  ;; Cancel all timers if chat was still loading/stopping.
-                  (eca-chat--spinner-stop)
-                  (eca-chat--tool-call-elapsed-stop-all)
-                  (when eca-chat--modeline-timer
-                    (cancel-timer eca-chat--modeline-timer)
-                    (setq-local eca-chat--modeline-timer nil))
-                  (when eca-chat--stopping-safety-timer
-                    (cancel-timer eca-chat--stopping-safety-timer)
-                    (setq-local eca-chat--stopping-safety-timer nil))
+                  (eca-chat--cleanup-buffer-state)
                   (setq eca-chat--closed t)
                   (force-mode-line-update)
                   (goto-char (point-max))

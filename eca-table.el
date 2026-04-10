@@ -142,19 +142,40 @@ TRUNCATED-P indicates the current display mode."
 
 ;; Overlay management -----------------------------------------------------
 
+(defun eca-table--remove-pipe-properties (beg end)
+  "Remove table pipe text properties between BEG and END."
+  (save-excursion
+    (goto-char beg)
+    (while (search-forward "|" end t)
+      (when (get-text-property (1- (point)) 'eca-table-pipe-face)
+        (remove-text-properties (1- (point)) (point)
+                                '(face nil
+                                  font-lock-face nil
+                                  eca-table-pipe-face nil))))))
+
 (defun eca-table-remove-overlays (beg end)
-  "Remove all table-beautify overlays between BEG and END."
+  "Remove all table-beautify overlays and pipe props between BEG and END."
+  (eca-table--remove-pipe-properties beg end)
   (dolist (ov (overlays-in beg end))
     (when (overlay-get ov 'eca-table-overlay)
       (delete-overlay ov))))
+
+(defun eca-table--apply-pipe-face (beg end)
+  "Dim pipe characters between BEG and END using text properties."
+  (save-excursion
+    (goto-char beg)
+    (while (search-forward "|" end t)
+      (put-text-property (1- (point)) (point)
+                         'font-lock-face 'eca-table-pipe-face)
+      (put-text-property (1- (point)) (point)
+                         'eca-table-pipe-face t))))
 
 (defun eca-table--beautify-at-point ()
   "Apply visual overlays to the markdown table at point.
 Point must be inside a table.  Adds header highlighting, dims the
 separator row and pipe characters, and applies zebra striping to
 data rows.  For tables wider than the window, an action bar is shown
-allowing the user to toggle between wrapped and scrollable display.
-All changes are overlay-only — buffer text is untouched."
+allowing the user to toggle between wrapped and scrollable display."
   (let* ((tbl-beg (markdown-table-begin))
          (tbl-end (markdown-table-end))
          (row-num 0)
@@ -162,9 +183,7 @@ All changes are overlay-only — buffer text is untouched."
          (window-width (when-let* ((win (get-buffer-window (current-buffer))))
                          (window-body-width win)))
          (wide-p (and window-width (> max-width window-width))))
-    ;; Clean any previous overlays in this table region
     (eca-table-remove-overlays tbl-beg tbl-end)
-    ;; Add action bar for wide tables
     (when wide-p
       (let ((action-ov (make-overlay tbl-beg tbl-end)))
         (overlay-put action-ov 'eca-table-overlay t)
@@ -179,33 +198,23 @@ All changes are overlay-only — buffer text is untouched."
         (let ((line-beg (line-beginning-position))
               (line-end (line-end-position)))
           (cond
-           ;; Row 0: header row
            ((= row-num 0)
             (let ((ov (make-overlay line-beg (1+ line-end))))
               (overlay-put ov 'eca-table-overlay t)
               (overlay-put ov 'face 'eca-table-header-face)
               (overlay-put ov 'evaporate t)))
-           ;; Row 1: separator row (|---|---|)
            ((= row-num 1)
             (let ((ov (make-overlay line-beg (1+ line-end))))
               (overlay-put ov 'eca-table-overlay t)
               (overlay-put ov 'face 'eca-table-separator-face)
               (overlay-put ov 'evaporate t)))
-           ;; Data rows: zebra stripe even rows (row 2 = first data row = even)
            (t
             (when (cl-evenp row-num)
               (let ((ov (make-overlay line-beg (1+ line-end))))
                 (overlay-put ov 'eca-table-overlay t)
                 (overlay-put ov 'face 'eca-table-row-even-face)
                 (overlay-put ov 'evaporate t)))))
-          ;; Dim pipe characters on this line
-          (save-excursion
-            (goto-char line-beg)
-            (while (search-forward "|" line-end t)
-              (let ((ov (make-overlay (1- (point)) (point))))
-                (overlay-put ov 'eca-table-overlay t)
-                (overlay-put ov 'face 'eca-table-pipe-face)
-                (overlay-put ov 'evaporate t)))))
+          (eca-table--apply-pipe-face line-beg line-end))
         (setq row-num (1+ row-num))
         (forward-line 1)))))
 
