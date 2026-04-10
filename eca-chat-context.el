@@ -26,6 +26,7 @@
 (declare-function eca-chat--prompt-context-field-ov "eca-chat")
 (declare-function eca-chat--point-at-new-context-p "eca-chat")
 (declare-function eca-chat--point-at-prompt-field-p "eca-chat")
+(declare-function eca-chat--prepare-prompt-for-paste "eca-chat")
 (declare-function eca-chat--new-context-start-point "eca-chat")
 (declare-function eca-chat--select-window "eca-chat")
 (declare-function eca-chat--get-last-buffer "eca-chat")
@@ -335,6 +336,8 @@ DATA is the binary image data as a string."
 (defun eca-chat--yank-considering-image (orig-fun &rest args)
   "Around advice for paste commands to use `yank-media' for images.
 Call ORIG-FUN with ARGS if not media."
+  (when (derived-mode-p 'eca-chat-mode)
+    (eca-chat--prepare-prompt-for-paste))
   (if (and (display-graphic-p)
            (derived-mode-p 'eca-chat-mode)
            (fboundp 'yank-media)

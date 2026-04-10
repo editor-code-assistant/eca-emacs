@@ -797,6 +797,12 @@ Used when server never responds to stop request.")
     (setq-local eca-chat--prompt-long-line-truncate-lines nil)
     (setq-local eca-chat--prompt-long-line-word-wrap nil)))
 
+(defun eca-chat--prepare-prompt-for-paste ()
+  "Preemptively simplify prompt rendering before a paste operation."
+  (when (and eca-chat-prompt-long-line-mitigation
+             (eca-chat--point-at-prompt-field-p))
+    (eca-chat--activate-prompt-long-line-mitigation)))
+
 (defun eca-chat--refresh-prompt-long-line-mitigation (&optional beg end)
   "Refresh prompt long-line mitigation using optional BEG and END."
   (when eca-chat-prompt-long-line-mitigation
@@ -2435,6 +2441,10 @@ CHILD, NAME, DOCSTRING and BODY are passed down."
       (yank-media-handler "image/gif" #'eca-chat--yank-image-handler)
       (yank-media-handler "image/webp" #'eca-chat--yank-image-handler)
       (advice-add 'yank :around #'eca-chat--yank-considering-image)
+      (when (fboundp 'clipboard-yank)
+        (advice-add 'clipboard-yank :around #'eca-chat--yank-considering-image))
+      (when (fboundp 'mouse-yank-primary)
+        (advice-add 'mouse-yank-primary :around #'eca-chat--yank-considering-image))
       (when (featurep 'evil)
         (advice-add 'evil-paste-after :around #'eca-chat--yank-considering-image)
         (advice-add 'evil-paste-before :around #'eca-chat--yank-considering-image)))
