@@ -156,17 +156,22 @@
                                'font-lock-face 'bold))
             (if (and lines (> (length lines) 0))
                 (dolist (line (append lines nil))
-                  (insert line "\n"))
+                  (let ((text (or (plist-get line :text) ""))
+                        (stream (or (plist-get line :stream) "stdout")))
+                    (insert (if (string= stream "stderr")
+                                (propertize text 'font-lock-face 'eca-jobs-status-failed-face)
+                              text))
+                    (insert "\n")))
               (insert (propertize "No output" 'font-lock-face 'shadow))))
-                        (special-mode)
-                        (goto-char (point-max)))
-                      (let ((win (display-buffer buf '((display-buffer-reuse-window
-                                                        display-buffer-below-selected)
-                                                       (window-height . 0.4)))))
-                        (when win
-                          (with-selected-window win
-                            (goto-char (point-max))
-                            (recenter -1))))))
+          (special-mode)
+          (goto-char (point-max)))
+        (let ((win (display-buffer buf '((display-buffer-reuse-window
+                                          display-buffer-below-selected)
+                                         (window-height . 0.4)))))
+          (when win
+            (with-selected-window win
+              (goto-char (point-max))
+              (recenter -1))))))
     :error-callback
     (lambda (_err)
       (user-error "Failed to read output for job %s" job-id))))
