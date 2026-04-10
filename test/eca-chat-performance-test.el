@@ -7,7 +7,12 @@
 
 (require 'buttercup)
 (require 'cl-lib)
-(require 'eca-chat)
+
+(let ((root (expand-file-name ".."
+                              (file-name-directory
+                               (or load-file-name buffer-file-name)))))
+  (add-to-list 'load-path root)
+  (load-file (expand-file-name "eca-chat.el" root)))
 
 (defun eca-chat-performance-test--with-chat-buffer (fn)
   "Create a temporary chat buffer and call FN inside it."
@@ -281,6 +286,23 @@
            (expect font-lock-mode :to-be nil)
            (expect truncate-lines :to-equal t)
            (expect word-wrap :to-be nil))))))
+
+  (it "prepares prompt mitigation before paste work begins"
+    (eca-chat-performance-test--with-chat-buffer
+     (lambda (_buf)
+       (cl-letf (((symbol-function 'font-lock-mode)
+                  (lambda (arg)
+                    (setq-local font-lock-mode (> arg 0)))))
+         (setq-local font-lock-mode t)
+         (setq-local truncate-lines nil)
+         (setq-local word-wrap t)
+         (goto-char (point-max))
+         (eca-chat--prepare-prompt-for-paste)
+         (expect eca-chat--prompt-long-line-mitigation-active
+                 :to-equal t)
+         (expect font-lock-mode :to-be nil)
+         (expect truncate-lines :to-equal t)
+         (expect word-wrap :to-be nil)))))
 
   (it "restores prompt fontification after prompt becomes short again"
     (eca-chat-performance-test--with-chat-buffer
