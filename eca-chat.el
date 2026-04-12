@@ -157,7 +157,8 @@ Must be a valid model supported by server, check `eca-chat-select-model`."
            (const :tag "Total session cost" :session-cost)
            (const :tag "The context limit" :context-limit)
            (const :tag "The output limit" :output-limit)
-           (const :tag "Last message cost" :last-message-cost)))
+           (const :tag "Last message cost" :last-message-cost)
+           (const :tag "The percentage of context limt used in the current session" :session-tokens-percentage)))
   :group 'eca)
 
 (defcustom eca-chat-mode-line-format
@@ -1557,6 +1558,8 @@ Returns a string like \"31.5K / 200K\" or \"\" if no usage data."
                    (:session-cost (concat "$" eca-chat--session-cost))
                    (:context-limit (eca-chat--number->friendly-number eca-chat--session-limit-context))
                    (:output-limit (eca-chat--number->friendly-number eca-chat--session-limit-output))
+                   (:session-tokens-percentage (format "%.2f%%%%"
+                                                       (* 100 (/ (float eca-chat--session-tokens) eca-chat--session-limit-context))))
                    (_ segment))
                  'font-lock-face 'eca-chat-usage-string-face))
               eca-chat-usage-string-format)
