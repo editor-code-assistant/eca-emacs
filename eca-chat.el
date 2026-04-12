@@ -742,8 +742,8 @@ Cancels the shared timer when no more tool calls are being tracked."
   (clrhash eca-chat--tool-call-elapsed-times))
 
 (defun eca-chat--update-bg-job-emoji (tool-call-id new-emoji)
-  "Update background job emoji in TOOL-CALL-ID label.
-Replace the leading job status emoji with NEW-EMOJI."
+  "Update background job status emoji in TOOL-CALL-ID.
+Replace the job status emoji with NEW-EMOJI."
   (when-let* ((ov (eca-chat--get-expandable-content
                    tool-call-id))
               (ov-content (overlay-get ov 'eca-chat--expandable-content-ov-content)))
@@ -2756,9 +2756,12 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
                 (details (plist-get content :details))
                 (time (when-let ((ms (plist-get content :totalTimeMs)))
                         (concat " " (eca-chat--time->presentable-time ms))))
-                (status (if (plist-get content :error)
-                            eca-chat-mcp-tool-call-error-symbol
-                          eca-chat-mcp-tool-call-success-symbol)))
+                (bg? (plist-get details :background))
+                (status (cond
+                         ((plist-get content :error)
+                          eca-chat-mcp-tool-call-error-symbol)
+                         (bg? "🟡")
+                         (t eca-chat-mcp-tool-call-success-symbol))))
            ;; Cleanup counters for this tool-call id to avoid unbounded growth
            (remhash id eca-chat--tool-call-prepare-counters)
            (remhash id eca-chat--tool-call-prepare-content-cache)
