@@ -202,6 +202,12 @@ This gives full control for powerline or doom-modeline users."
           (function :tag "Custom function (receives session)"))
   :group 'eca)
 
+(defcustom eca-chat-override-mode-line t
+  "When non-nil, ECA chat sets a custom mode line for chat buffers.
+Set this to nil to keep the default Emacs mode line (including buffer name)."
+  :type 'boolean
+  :group 'eca)
+
 (defcustom eca-chat-diff-tool 'smerge
   "Select the method for displaying file-change diffs in ECA chat."
   :type '(choice (const :tag "Side-by-side Ediff" ediff)
@@ -2156,10 +2162,11 @@ CHILD, NAME, DOCSTRING and BODY are passed down."
              (setq-local corfu-auto-prefix 0))
            (setq-local eca-chat--server-version
                         (eca-process--get-current-server-version))
-           (setq-local mode-line-format
-                        (if (functionp eca-chat-mode-line-format)
-                            (funcall eca-chat-mode-line-format session)
-                          `(t (:eval (eca-chat--mode-line-string ,session)))))
+           (when eca-chat-override-mode-line
+             (setq-local mode-line-format
+                         (if (functionp eca-chat-mode-line-format)
+                             (funcall eca-chat-mode-line-format session)
+                           `(t (:eval (eca-chat--mode-line-string ,session))))))
 
            ;; Tab-line: show a tab for each open chat
            (when eca-chat-tab-line
