@@ -196,6 +196,21 @@ are used as `line-prefix' values, where `font-lock-face' is not rendered."
         (cons (concat label-prefix open-icon) (concat label-prefix close-icon))
       (cons open-icon close-icon))))
 
+(defun eca-chat--make-expandable-toggle-prefix (id prefix)
+  "Return PREFIX with mouse/keyboard toggle bindings for expandable block ID."
+  (let ((result (copy-sequence prefix))
+        (km (make-sparse-keymap)))
+    (define-key km (kbd "<mouse-1>") (lambda () (interactive) (eca-chat--expandable-content-toggle id)))
+    (define-key km (kbd "<tab>") (lambda () (interactive) (eca-chat--expandable-content-toggle id)))
+    (define-key km (kbd "RET") (lambda () (interactive) (eca-chat--expandable-content-toggle id)))
+    (add-text-properties
+     0 (length result)
+     '(mouse-face highlight
+       help-echo "mouse-1 / tab / RET: expand/collapse")
+     result)
+    (put-text-property 0 (length result) 'keymap km result)
+    result))
+
 (defun eca-chat--expandable-block-face (nested?)
   "Return the appropriate background face for an expandable block.
 When NESTED? is non-nil, return the level-2 face; otherwise level-1."
@@ -238,6 +253,8 @@ CONTENT-INDENT is the `line-prefix` for content.
 NESTED-PROPS is a plist with :parent-id and :label-indent for nested blocks."
   (let ((ov-label (make-overlay (point) (point) (current-buffer)))
         (label-indent (plist-get nested-props :label-indent)))
+    (setq open-icon (eca-chat--make-expandable-toggle-prefix id open-icon))
+    (setq close-icon (eca-chat--make-expandable-toggle-prefix id close-icon))
     (overlay-put ov-label 'eca-chat--expandable-content-id id)
     (overlay-put ov-label 'eca-chat--expandable-content-open-icon open-icon)
     (overlay-put ov-label 'eca-chat--expandable-content-close-icon close-icon)
@@ -407,8 +424,10 @@ in parent."
             (let* ((new-icon-face (get-text-property 0 'font-lock-face label))
                    (label-indent (when nested? eca-chat--expandable-content-base-indent))
                    (new-icons (eca-chat--make-expandable-icons new-icon-face label-indent)))
-              (overlay-put ov-label 'eca-chat--expandable-content-open-icon (car new-icons))
-              (overlay-put ov-label 'eca-chat--expandable-content-close-icon (cdr new-icons)))
+              (overlay-put ov-label 'eca-chat--expandable-content-open-icon
+                           (eca-chat--make-expandable-toggle-prefix id (car new-icons)))
+              (overlay-put ov-label 'eca-chat--expandable-content-close-icon
+                           (eca-chat--make-expandable-toggle-prefix id (cdr new-icons))))
             (goto-char (overlay-start ov-label))
             (delete-region (point) (1- (overlay-start ov-content)))
             (let* ((children (eca-chat--segments-children
