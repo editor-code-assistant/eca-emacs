@@ -259,7 +259,6 @@ NESTED-PROPS is a plist with :parent-id and :label-indent for nested blocks."
                                   'help-echo "mouse-1 / tab / RET: expand/collapse"))
     (eca-chat--insert "\n")
     (let* ((start-point (point))
-           (_ (eca-chat--insert "\n"))
            (ov-content (make-overlay start-point start-point (current-buffer) nil t))
            (nested? (plist-get nested-props :parent-id)))
       (overlay-put ov-content 'eca-chat--expandable-content-content (propertize content 'line-prefix content-indent))
