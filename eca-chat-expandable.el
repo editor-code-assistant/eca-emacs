@@ -22,6 +22,7 @@
 (defvar eca-chat--tool-call-table-key-face)
 (defvar eca-chat--tool-call-argument-key-face)
 (defvar eca-chat--tool-call-argument-value-face)
+(defvar eca-buttons-allow-mouse)
 (declare-function eca-chat--insert "eca-chat")
 (declare-function eca-chat--content-insertion-point "eca-chat")
 
@@ -182,6 +183,17 @@ space, tab, or newline."
 (defconst eca-chat--expandable-content-base-indent (make-string 3 ?\s))
 (defconst eca-chat--expandable-content-nested-indent (make-string 6 ?\s))
 
+(defun eca-chat--make-expandable-toggle-keymap (id &optional include-mouse)
+  "Create keymap to toggle expandable block ID.
+When INCLUDE-MOUSE is non-nil and `eca-buttons-allow-mouse' is non-nil,
+bind `mouse-1' as well."
+  (let ((km (make-sparse-keymap)))
+    (when (and include-mouse eca-buttons-allow-mouse)
+      (define-key km (kbd "<mouse-1>") (lambda () (interactive) (eca-chat--expandable-content-toggle id))))
+    (define-key km (kbd "<tab>") (lambda () (interactive) (eca-chat--expandable-content-toggle id)))
+    (define-key km (kbd "RET") (lambda () (interactive) (eca-chat--expandable-content-toggle id)))
+    km))
+
 (defun eca-chat--make-expandable-icons (icon-face &optional label-prefix)
   "Create open/close icons with ICON-FACE and optional LABEL-PREFIX.
 Uses the `face' property (not `font-lock-face') because these strings
@@ -199,15 +211,13 @@ are used as `line-prefix' values, where `font-lock-face' is not rendered."
 (defun eca-chat--make-expandable-toggle-prefix (id prefix)
   "Return PREFIX with mouse/keyboard toggle bindings for expandable block ID."
   (let ((result (copy-sequence prefix))
-        (km (make-sparse-keymap)))
-    (define-key km (kbd "<mouse-1>") (lambda () (interactive) (eca-chat--expandable-content-toggle id)))
-    (define-key km (kbd "<tab>") (lambda () (interactive) (eca-chat--expandable-content-toggle id)))
-    (define-key km (kbd "RET") (lambda () (interactive) (eca-chat--expandable-content-toggle id)))
-    (add-text-properties
-     0 (length result)
-     '(mouse-face highlight
-       help-echo "mouse-1 / tab / RET: expand/collapse")
-     result)
+        (km (eca-chat--make-expandable-toggle-keymap id t)))
+    (when eca-buttons-allow-mouse
+      (add-text-properties
+       0 (length result)
+       '(mouse-face highlight
+         help-echo "mouse-1: expand/collapse")
+       result))
     (put-text-property 0 (length result) 'keymap km result)
     result))
 
@@ -269,11 +279,8 @@ NESTED-PROPS is a plist with :parent-id and :label-indent for nested blocks."
                                                                                       ((not (string-empty-p content)) open-icon)
                                                                                       (label-indent (concat label-indent
                                                                                                             (make-string (length eca-chat-expandable-block-open-symbol) ?\s)))))
-                                  'keymap (let ((km (make-sparse-keymap)))
-                                            (define-key km (kbd "<mouse-1>") (lambda () (interactive) (eca-chat--expandable-content-toggle id)))
-                                            (define-key km (kbd "<tab>") (lambda () (interactive) (eca-chat--expandable-content-toggle id)))
-                                            km)
-                                  'help-echo "mouse-1 / tab / RET: expand/collapse"))
+                                  'keymap (eca-chat--make-expandable-toggle-keymap id t)
+                                  'help-echo "TAB / RET / mouse-1: expand/collapse"))
     (eca-chat--insert "\n")
     (let* ((start-point (point))
            (_ (eca-chat--insert "\n"))
@@ -443,6 +450,7 @@ in parent."
                                            (make-string (length eca-chat-expandable-block-open-symbol) ?\s))))))
               (eca-chat--insert (propertize (eca-chat--propertize-only-first-word label
                                                                                   'line-prefix label-prefix)
+                                            'keymap (eca-chat--make-expandable-toggle-keymap id t)
                                             'help-echo "mouse-1 / RET / tab: expand/collapse")))
             ;; Repaint nested label's line-prefix after label replacement
             (eca-chat--paint-nested-label ov-label))
