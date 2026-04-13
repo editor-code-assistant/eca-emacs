@@ -3156,10 +3156,16 @@ point.  Works with any message type (user, tool call, etc)."
 
 ;;;###autoload
 (defun eca-chat-toggle-trust ()
-  "Toggle trust mode (auto-accept all tool call)."
+  "Toggle trust mode (auto-accept all tool call).
+Sends chat/update to server so trust applies immediately to the next tool call."
   (interactive)
   (let ((new-value (not (eca-chat--trust))))
     (eca-chat--set-trust (eca-session) new-value (current-buffer))
+    (when eca-chat--id
+      (eca-api-request-sync (eca-session)
+                            :method "chat/update"
+                            :params (list :chatId eca-chat--id
+                                          :trust (if new-value t :json-false))))
     (eca-info (if new-value
                   "Enabled trust-mode (Auto accept tool calls)"
                 "Disabled trust-mode (Auto accept tool calls)"))))
