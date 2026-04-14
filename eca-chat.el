@@ -496,7 +496,7 @@ are not currently selected."
   :group 'eca)
 
 (defface eca-chat-question-face
-  '((t :inherit font-lock-keyword-face :weight bold))
+  '((t :inherit font-lock-string-face :weight bold))
   "Face for the question text in ask-question blocks."
   :group 'eca)
 
