@@ -944,6 +944,8 @@ request, useful for subagent tool calls."
 (defun eca-chat--stop-prompt (session)
   "Stop the running chat prompt for SESSION."
   (when (eq eca-chat--chat-loading t)
+    (when eca-chat--pending-question
+      (eca-chat--cancel-question))
     (eca-api-notify session
                     :method "chat/promptStop"
                     :params (list :chatId eca-chat--id))
