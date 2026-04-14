@@ -246,6 +246,7 @@ frames captured via `backtrace-get-frames'."
         (params (plist-get request :params)))
     (pcase method
       ("editor/getDiagnostics" (eca-editor-get-diagnostics session params))
+      ("chat/askQuestion" (eca-chat-handle-ask-question session request params))
       (_ (eca-warn "Unknown server request %s" method)))))
 
 (defmacro eca--with-backtrace (var &rest body)
@@ -280,7 +281,8 @@ backtrace.  On older Emacs, runs BODY without capture."
                                  (funcall error-callback (plist-get json-data :error)))))
             ('notification (eca--handle-server-notification session json-data))
             ('request (let ((response (eca--handle-server-request session json-data)))
-                        (eca-api-send-request-response session json-data response))))
+                        (unless (eq response :async)
+                          (eca-api-send-request-response session json-data response)))))
         (error
          (eca--log-error session err "handle-message" backtrace)
          (signal (car err) (cdr err)))))))
@@ -300,6 +302,7 @@ backtrace.  On older Emacs, runs BODY without capture."
                    (list :clientInfo (list :name "emacs"
                                           :version (emacs-version))
                          :capabilities (list :codeAssistant (list :chat t
+                                                                  :chatCapabilities (list :askQuestion t)
                                                                   :editor (list :diagnostics t)))
                          :initializationOptions (list :chatAgent eca-chat-custom-agent)
                          :workspaceFolders (vconcat (-map (lambda (folder)
