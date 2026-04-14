@@ -572,7 +572,7 @@ Used when server never responds to stop request.")
 
 (defvar-local eca-chat--pending-question nil
   "When non-nil, holds the active question state.
-A plist with :session :request :question :options.")
+A plist with :session :request :question :options :tool-call-id :allow-freeform.")
 
 
 (defvar eca-chat--new-chat-id 0)
@@ -3048,25 +3048,27 @@ the user answers or cancels."
          (tool-call-id (plist-get params :toolCallId))
          (allow-freeform (plist-get params :allowFreeform))
          (chat-buffer (eca-chat--get-chat-buffer session chat-id)))
-    (when (and chat-buffer (buffer-live-p chat-buffer))
-      (eca-chat--with-current-buffer chat-buffer
-        (setq eca-chat--pending-question
-              (list :session session :request request
-                    :question question :options options
-                    :tool-call-id tool-call-id
-                    :allow-freeform allow-freeform))
-        (if tool-call-id
-            (progn
-              (eca-chat--update-expandable-content
-               tool-call-id
-               (propertize (concat "Q: " question)
-                           'font-lock-face 'eca-chat-question-face)
-               (eca-chat--build-question-options-content options))
-              (eca-chat--expandable-content-toggle tool-call-id t nil))
-          (eca-chat--render-ask-question-standalone question options))
-        (when allow-freeform
-          (eca-chat--set-question-prompt-prefix t)))))
-  :async)
+    (if (and chat-buffer (buffer-live-p chat-buffer))
+        (progn
+          (eca-chat--with-current-buffer chat-buffer
+            (setq eca-chat--pending-question
+                  (list :session session :request request
+                        :question question :options options
+                        :tool-call-id tool-call-id
+                        :allow-freeform allow-freeform))
+            (if tool-call-id
+                (progn
+                  (eca-chat--update-expandable-content
+                   tool-call-id
+                   (propertize (concat "Q: " question)
+                               'font-lock-face 'eca-chat-question-face)
+                   (eca-chat--build-question-options-content options))
+                  (eca-chat--expandable-content-toggle tool-call-id t nil))
+              (eca-chat--render-ask-question-standalone question options))
+            (when allow-freeform
+              (eca-chat--set-question-prompt-prefix t)))
+          :async)
+      (list :answer nil :cancelled t))))
 
 (defun eca-chat--build-question-options-content (options)
   "Build expandable block content string with OPTIONS and a cancel button."
