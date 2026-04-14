@@ -81,6 +81,41 @@ Sets subtle background tints on header and even-row faces."
   :doc "Keymap active on table overlays with an action bar."
   "w" #'eca-table-toggle-wrap)
 
+;; Markdown display width ------------------------------------------------
+
+(defvar eca-table--fontlock-buffer nil
+  "Reusable buffer for font-lock based width measurement.")
+
+(defun eca-table--get-fontlock-buffer ()
+  "Return a reusable buffer configured for width measurement.
+Uses the chat parent mode and markdown-hide-markup to match
+the actual display rendering."
+  (let ((buf (or (and (buffer-live-p eca-table--fontlock-buffer)
+                      eca-table--fontlock-buffer)
+                 (setq eca-table--fontlock-buffer
+                       (generate-new-buffer " *eca-table-width*")))))
+    (with-current-buffer buf
+      (unless (derived-mode-p eca-chat-parent-mode)
+        (funcall eca-chat-parent-mode)
+        (setq-local markdown-hide-markup t)
+        (add-to-invisibility-spec 'markdown-markup)))
+    buf))
+
+(defun eca-table--display-width (str)
+  "Return the display width of STR as rendered by the chat mode.
+Uses font-lock with `markdown-hide-markup' to determine which
+characters are invisible, then sums the widths of visible ones."
+  (with-current-buffer (eca-table--get-fontlock-buffer)
+    (erase-buffer)
+    (insert str)
+    (font-lock-ensure)
+    (let ((width 0))
+      (dotimes (i (- (point-max) (point-min)))
+        (let ((pos (+ (point-min) i)))
+          (unless (invisible-p pos)
+            (setq width (+ width (char-width (char-after pos)))))))
+      width)))
+
 ;; Helpers ----------------------------------------------------------------
 
 (defun eca-table--action-overlay-at-point ()
@@ -128,50 +163,6 @@ Matches **text** (4 chars) and *text* (2 chars)."
                                   (match-string 1 text)))))
       (setq start (match-end 0)))
     count))
-
-(defun eca-table--compensate-hidden-markup ()
-  "Add padding overlays for hidden markup in table at point.
-For each cell containing bold/italic delimiters, places an
-overlay with an `after-string' of spaces to restore the
-column width that `markdown-table-align' computed for the
-raw (unhidden) text.  Must be called after alignment."
-  (let ((tbl-beg (markdown-table-begin))
-        (tbl-end (markdown-table-end)))
-    ;; Remove any previous compensation overlays
-    (dolist (ov (overlays-in tbl-beg tbl-end))
-      (when (overlay-get ov 'eca-table-markup-pad)
-        (delete-overlay ov)))
-    (save-excursion
-      (goto-char tbl-beg)
-      (while (< (point) tbl-end)
-        (let ((line-beg (line-beginning-position))
-              (line-end (line-end-position)))
-          ;; Skip separator rows (|---|---|)
-          (unless (string-match-p
-                   "^|[-:|[:space:]]+|$"
-                   (buffer-substring-no-properties
-                    line-beg line-end))
-            (goto-char line-beg)
-            (while (re-search-forward
-                    "|\\([^|\n]+\\)" line-end t)
-              (let* ((cell-end (match-end 1))
-                     (cell-text
-                      (buffer-substring-no-properties
-                       (match-beginning 1) cell-end))
-                     (hidden
-                      (eca-table--count-markup-chars
-                       cell-text)))
-                (when (> hidden 0)
-                  (let ((ov (make-overlay
-                             (1- cell-end) cell-end)))
-                    (overlay-put ov 'eca-table-markup-pad t)
-                    (overlay-put
-                     ov 'after-string
-                     (propertize
-                      (make-string hidden ?\s)
-                      'face 'markdown-table-face))
-                    (overlay-put ov 'evaporate t)))))))
-        (forward-line 1)))))
 
 (defun eca-table--action-bar-string (truncated-p)
   "Build the action bar before-string.
@@ -275,6 +266,103 @@ All changes are overlay-only — buffer text is untouched."
         (setq row-num (1+ row-num))
         (forward-line 1)))))
 
+;; Table parsing and alignment -------------------------------------------
+
+(defun eca-table--parse-row (line)
+  "Parse LINE into a list of cell contents.
+Handles escaped pipes and code spans correctly."
+  (with-temp-buffer
+    (insert line)
+    (goto-char (point-min))
+    (let ((cells '())
+          (in-code nil)
+          (cell-start nil))
+      ;; Skip leading whitespace and first pipe
+      (when (looking-at "[ \t]*|")
+        (goto-char (match-end 0))
+        (setq cell-start (point)))
+      (while (< (point) (point-max))
+        (cond
+         ;; Toggle code span state on backtick
+         ((eq (char-after) ?\`)
+          (setq in-code (not in-code))
+          (forward-char 1))
+         ;; Escaped character - skip next char
+         ((eq (char-after) ?\\)
+          (forward-char 2))
+         ;; Pipe outside code span - end of cell
+         ((and (eq (char-after) ?|) (not in-code))
+          (push (string-trim (buffer-substring-no-properties
+                              cell-start (point)))
+                cells)
+          (forward-char 1)
+          (setq cell-start (point)))
+         (t (forward-char 1))))
+      (nreverse cells))))
+
+(defun eca-table--separator-row-p (line)
+  "Return non-nil if LINE is a separator row (e.g. |---|---|)."
+  (and (string-match-p "^[ \t]*|" line)
+       (string-match-p "^[ \t|:-]+$" line)
+       (string-match-p "-" line)))
+
+(defun eca-table--align-at-point ()
+  "Align markdown table at point using display-width-aware calculation.
+This handles markdown syntax like links and code spans correctly."
+  (let* ((tbl-beg (markdown-table-begin))
+         (tbl-end (markdown-table-end))
+         (indent (save-excursion
+                   (goto-char tbl-beg)
+                   (if (looking-at "[ \t]*") (match-string 0) "")))
+         (lines (split-string (buffer-substring-no-properties tbl-beg tbl-end)
+                              "\n" t))
+         (parsed-rows '())
+         (separator-indices '())
+         (row-idx 0)
+         (max-cols 0)
+         (col-max-display '()))
+    ;; Parse all rows and track separator rows
+    (dolist (line lines)
+      (if (eca-table--separator-row-p line)
+          (progn
+            (push row-idx separator-indices)
+            (push nil parsed-rows))
+        (let ((cells (eca-table--parse-row line)))
+          (push cells parsed-rows)
+          (setq max-cols (max max-cols (length cells)))))
+      (setq row-idx (1+ row-idx)))
+    (setq parsed-rows (nreverse parsed-rows))
+    (setq separator-indices (nreverse separator-indices))
+    ;; Calculate max display width for each column
+    (dotimes (col max-cols)
+      (let ((max-disp 1))
+        (dolist (row parsed-rows)
+          (when row
+            (let* ((cell (or (nth col row) ""))
+                   (disp-w (eca-table--display-width cell)))
+              (setq max-disp (max max-disp disp-w)))))
+        (push max-disp col-max-display)))
+    (setq col-max-display (nreverse col-max-display))
+    ;; Rebuild the table
+    (delete-region tbl-beg tbl-end)
+    (goto-char tbl-beg)
+    (let ((row-idx 0))
+      (dolist (row parsed-rows)
+        (insert indent "|")
+        (if (member row-idx separator-indices)
+            ;; Separator row uses max display width (what user sees)
+            (dotimes (col max-cols)
+              (insert (make-string (+ 2 (nth col col-max-display)) ?-) "|"))
+          ;; Content row: pad so display width equals col-max-display
+          (dotimes (col max-cols)
+            (let* ((cell (or (nth col row) ""))
+                   (disp-w (eca-table--display-width cell))
+                   (target-disp (nth col col-max-display))
+                   (padding (- target-disp disp-w)))
+              (insert " " cell (make-string (+ 1 padding) ?\s) "|"))))
+        (insert "\n")
+        (setq row-idx (1+ row-idx))))))
+
 ;; Public API -------------------------------------------------------------
 
 (defun eca-table-align (from end)
@@ -287,7 +375,7 @@ markup so columns stay visually aligned."
                 (re-search-forward markdown-table-line-regexp end t))
       (when (markdown-table-at-point-p)
         (markdown-table-align)
-        (eca-table--compensate-hidden-markup)
+        (eca-table--align-at-point)
         ;; Move past this table to avoid re-processing
         (goto-char (markdown-table-end))))))
 
