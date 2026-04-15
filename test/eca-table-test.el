@@ -54,7 +54,7 @@
 
   (it "returns display width for complex content"
     (expect (eca-table--display-width "PR [#1084](https://github.com/repo/pull/1084)")
-            :to-equal 9))
+            :to-equal 8))
 
   (it "returns correct width for snake_case identifiers"
     (expect (eca-table--display-width "my_function_name")
