@@ -24,6 +24,7 @@
 
 ;; Forward-declare defcustom defined in eca-chat.el.
 (defvar eca-chat-table-beautify)
+(defvar eca-chat-parent-mode)
 
 ;; Faces ------------------------------------------------------------------
 
@@ -93,10 +94,11 @@ the actual display rendering."
   (let ((buf (or (and (buffer-live-p eca-table--fontlock-buffer)
                       eca-table--fontlock-buffer)
                  (setq eca-table--fontlock-buffer
-                       (generate-new-buffer " *eca-table-width*")))))
+                       (generate-new-buffer " *eca-table-width*"))))
+        (mode (or eca-chat-parent-mode 'gfm-mode)))
     (with-current-buffer buf
-      (unless (derived-mode-p eca-chat-parent-mode)
-        (funcall eca-chat-parent-mode)
+      (unless (derived-mode-p mode)
+        (funcall mode)
         (setq-local markdown-hide-markup t)
         (add-to-invisibility-spec 'markdown-markup)))
     buf))
