@@ -314,10 +314,20 @@ Supports rows with or without leading/trailing pipes."
       (nreverse cells))))
 
 (defun eca-table--separator-row-p (line)
-  "Return non-nil if LINE is a separator row (e.g. |---|---|)."
-  (and (string-match-p "^[ \t]*|" line)
-       (string-match-p "^[ \t|:-]+$" line)
-       (string-match-p "-" line)))
+  "Return non-nil if LINE is a markdown table separator row.
+Each cell must match the separator grammar: optional colons
+around one or more dashes (e.g. ---, :---, ---:, :---:)."
+  (when (string-match-p "^[ \t]*|" line)
+    (let ((cells (split-string
+                  (replace-regexp-in-string
+                   "^[ \t]*|\\||[ \t]*$" "" line)
+                  "|" t)))
+      (and cells
+           (cl-every (lambda (cell)
+                       (string-match-p
+                        "^[ \t]*:?--+:?[ \t]*$"
+                        cell))
+                     cells)))))
 
 (defun eca-table--align-at-point ()
   "Align markdown table at point using display-width-aware calculation.

@@ -120,6 +120,10 @@
 
   (it "rejects header row"
     (expect (eca-table--separator-row-p "| Header | Another |")
+            :not :to-be-truthy))
+
+  (it "rejects row with only single dashes"
+    (expect (eca-table--separator-row-p "| - | - |")
             :not :to-be-truthy)))
 
 (provide 'eca-table-test)
