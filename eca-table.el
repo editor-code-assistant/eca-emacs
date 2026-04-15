@@ -272,16 +272,20 @@ All changes are overlay-only — buffer text is untouched."
 
 (defun eca-table--parse-row (line)
   "Parse LINE into a list of cell contents.
-Handles escaped pipes and code spans correctly."
+Handles escaped pipes and code spans correctly.
+Supports rows with or without leading/trailing pipes."
   (with-temp-buffer
     (insert line)
     (goto-char (point-min))
     (let ((cells '())
           (in-code nil)
           (cell-start nil))
-      ;; Skip leading whitespace and first pipe
-      (when (looking-at "[ \t]*|")
-        (goto-char (match-end 0))
+      ;; Skip leading whitespace and optional first pipe
+      (if (looking-at "[ \t]*|")
+          (progn
+            (goto-char (match-end 0))
+            (setq cell-start (point)))
+        (skip-chars-forward " \t")
         (setq cell-start (point)))
       (while (< (point) (point-max))
         (cond
@@ -289,9 +293,9 @@ Handles escaped pipes and code spans correctly."
          ((eq (char-after) ?\`)
           (setq in-code (not in-code))
           (forward-char 1))
-         ;; Escaped character - skip next char
+         ;; Escaped character - skip next char (guard end of buffer)
          ((eq (char-after) ?\\)
-          (forward-char 2))
+          (forward-char (min 2 (- (point-max) (point)))))
          ;; Pipe outside code span - end of cell
          ((and (eq (char-after) ?|) (not in-code))
           (push (string-trim (buffer-substring-no-properties
@@ -300,6 +304,13 @@ Handles escaped pipes and code spans correctly."
           (forward-char 1)
           (setq cell-start (point)))
          (t (forward-char 1))))
+      ;; Push trailing content if row lacks a trailing pipe
+      (when (and cell-start (< cell-start (point-max)))
+        (let ((trailing (string-trim
+                         (buffer-substring-no-properties
+                          cell-start (point-max)))))
+          (unless (string-empty-p trailing)
+            (push trailing cells))))
       (nreverse cells))))
 
 (defun eca-table--separator-row-p (line)

@@ -87,7 +87,19 @@
 
   (it "handles pipes inside code spans"
     (expect (eca-table--parse-row "| `a|b` | c |")
-            :to-equal '("`a|b`" "c"))))
+            :to-equal '("`a|b`" "c")))
+
+  (it "handles row without trailing pipe"
+    (expect (eca-table--parse-row "| a | b | c")
+            :to-equal '("a" "b" "c")))
+
+  (it "handles row without leading pipe"
+    (expect (eca-table--parse-row "a | b | c |")
+            :to-equal '("a" "b" "c")))
+
+  (it "handles trailing backslash without error"
+    (expect (eca-table--parse-row "| a\\ |")
+            :to-equal '("a\\"))))
 
 (describe "eca-table--separator-row-p"
   (it "recognizes simple separator"
