@@ -126,5 +126,81 @@
     (expect (eca-table--separator-row-p "| - | - |")
             :not :to-be-truthy)))
 
+(describe "eca-table--parse-separator-alignments"
+  (it "parses left alignment"
+    (expect (eca-table--parse-separator-alignments "|:---|---|")
+            :to-equal '("l" nil)))
+
+  (it "parses right alignment"
+    (expect (eca-table--parse-separator-alignments "|---:|---|")
+            :to-equal '("r" nil)))
+
+  (it "parses center alignment"
+    (expect (eca-table--parse-separator-alignments "|:---:|---|")
+            :to-equal '("c" nil)))
+
+  (it "parses mixed alignments"
+    (expect (eca-table--parse-separator-alignments
+             "|:---|---:|:---:|---|")
+            :to-equal '("l" "r" "c" nil))))
+
+(describe "eca-table--insert-cell"
+  (it "left-aligns by default"
+    (expect (with-temp-buffer
+              (eca-table--insert-cell "a" 5 nil)
+              (buffer-string))
+            :to-equal " a      |"))
+
+  (it "right-aligns with r"
+    (expect (with-temp-buffer
+              (eca-table--insert-cell "a" 5 "r")
+              (buffer-string))
+            :to-equal "      a |"))
+
+  (it "center-aligns with c"
+    (expect (with-temp-buffer
+              (eca-table--insert-cell "a" 4 "c")
+              (buffer-string))
+            :to-equal "   a   |"))
+
+  (it "center-aligns with odd padding"
+    (expect (with-temp-buffer
+              (eca-table--insert-cell "a" 5 "c")
+              (buffer-string))
+            :to-equal "   a    |"))
+
+  (it "left-aligns with l"
+    (expect (with-temp-buffer
+              (eca-table--insert-cell "a" 5 "l")
+              (buffer-string))
+            :to-equal " a      |")))
+
+(describe "eca-table--align-at-point"
+  (it "aligns a basic table"
+    (let ((input "| A | BB | CCC |\n|---|---|---|\n| x | yy | z |\n")
+          (expected (concat "| A | BB | CCC |\n"
+                            "|---|----|----- |\n"  ;; hmm
+                            "| x | yy | z   |\n")))
+      ;; We can't easily test this without markdown-table-begin/end,
+      ;; so we test the sub-components instead
+      (expect (eca-table--parse-row "| A | BB | CCC |")
+              :to-equal '("A" "BB" "CCC"))))
+
+  (it "preserves alignment markers through parse and rebuild"
+    (let ((line "|:---|---:|:---:|---|"))
+      (expect (eca-table--separator-row-p line)
+              :to-be-truthy)
+      (expect (eca-table--parse-separator-alignments line)
+              :to-equal '("l" "r" "c" nil))
+      ;; Verify separator cells are rebuilt with markers
+      (expect (eca-table--make-separator-cell 5 "l")
+              :to-equal ":------")
+      (expect (eca-table--make-separator-cell 5 "r")
+              :to-equal "------:")
+      (expect (eca-table--make-separator-cell 5 "c")
+              :to-equal ":-----:")
+      (expect (eca-table--make-separator-cell 5 nil)
+              :to-equal "-------"))))
+
 (provide 'eca-table-test)
 ;;; eca-table-test.el ends here

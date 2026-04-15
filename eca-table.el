@@ -329,9 +329,53 @@ around one or more dashes (e.g. ---, :---, ---:, :---:)."
                         cell))
                      cells)))))
 
+(defun eca-table--parse-separator-alignments (line)
+  "Parse alignment markers from separator LINE.
+Returns a list of alignment specs per column: \"l\" for left
+\(:---\), \"r\" for right \(---:\), \"c\" for center \(:---:\),
+or nil for default."
+  (let ((cells (split-string
+                (replace-regexp-in-string
+                 "^[ \t]*|\\||[ \t]*$" "" line)
+                "|" t)))
+    (mapcar (lambda (cell)
+              (let ((s (string-trim cell)))
+                (cond
+                 ((and (string-prefix-p ":" s)
+                       (string-suffix-p ":" s))
+                  "c")
+                 ((string-prefix-p ":" s) "l")
+                 ((string-suffix-p ":" s) "r")
+                 (t nil))))
+            cells)))
+
+(defun eca-table--make-separator-cell (width alignment)
+  "Build a separator cell of WIDTH dashes with ALIGNMENT markers.
+ALIGNMENT is \"l\", \"r\", \"c\", or nil for plain dashes."
+  (pcase alignment
+    ("c" (concat ":" (make-string (max 1 width) ?-) ":"))
+    ("l" (concat ":" (make-string (max 1 (1+ width)) ?-)))
+    ("r" (concat (make-string (max 1 (1+ width)) ?-) ":"))
+    (_ (make-string (+ 2 width) ?-))))
+
+(defun eca-table--insert-cell (cell padding alignment)
+  "Insert CELL content with PADDING extra spaces using ALIGNMENT.
+ALIGNMENT is \"l\", \"r\", \"c\", or nil (left-aligned)."
+  (pcase alignment
+    ("r"
+     (insert (make-string (+ 1 padding) ?\s) cell " |"))
+    ("c"
+     (let* ((left (/ padding 2))
+            (right (- padding left)))
+       (insert (make-string (+ 1 left) ?\s) cell
+               (make-string (+ 1 right) ?\s) "|")))
+    (_
+     (insert " " cell (make-string (+ 1 padding) ?\s) "|"))))
+
 (defun eca-table--align-at-point ()
-  "Align markdown table at point using display-width-aware calculation.
-This handles markdown syntax like links and code spans correctly."
+  "Align markdown table at point.
+Uses display-width-aware calculation, preserves separator
+alignment markers, and pads content cells accordingly."
   (let* ((tbl-beg (markdown-table-begin))
          (tbl-end (markdown-table-end))
          (indent (save-excursion
@@ -341,6 +385,7 @@ This handles markdown syntax like links and code spans correctly."
                               "\n" t))
          (parsed-rows '())
          (separator-indices '())
+         (separator-alignments '())
          (row-idx 0)
          (max-cols 0)
          (col-max-display '()))
@@ -349,6 +394,8 @@ This handles markdown syntax like links and code spans correctly."
       (if (eca-table--separator-row-p line)
           (progn
             (push row-idx separator-indices)
+            (push (eca-table--parse-separator-alignments line)
+                  separator-alignments)
             (push nil parsed-rows))
         (let ((cells (eca-table--parse-row line)))
           (push cells parsed-rows)
@@ -356,35 +403,45 @@ This handles markdown syntax like links and code spans correctly."
       (setq row-idx (1+ row-idx)))
     (setq parsed-rows (nreverse parsed-rows))
     (setq separator-indices (nreverse separator-indices))
-    ;; Calculate max display width for each column
-    (dotimes (col max-cols)
-      (let ((max-disp 1))
+    (setq separator-alignments (nreverse separator-alignments))
+    ;; Use first separator row for column alignments
+    (let ((col-aligns (car separator-alignments)))
+      ;; Calculate max display width for each column
+      (dotimes (col max-cols)
+        (let ((max-disp 1))
+          (dolist (row parsed-rows)
+            (when row
+              (let* ((cell (or (nth col row) ""))
+                     (disp-w (eca-table--display-width cell)))
+                (setq max-disp (max max-disp disp-w)))))
+          (push max-disp col-max-display)))
+      (setq col-max-display (nreverse col-max-display))
+      ;; Rebuild the table
+      (delete-region tbl-beg tbl-end)
+      (goto-char tbl-beg)
+      (let ((row-idx 0)
+            (sep-idx 0))
         (dolist (row parsed-rows)
-          (when row
-            (let* ((cell (or (nth col row) ""))
-                   (disp-w (eca-table--display-width cell)))
-              (setq max-disp (max max-disp disp-w)))))
-        (push max-disp col-max-display)))
-    (setq col-max-display (nreverse col-max-display))
-    ;; Rebuild the table
-    (delete-region tbl-beg tbl-end)
-    (goto-char tbl-beg)
-    (let ((row-idx 0))
-      (dolist (row parsed-rows)
-        (insert indent "|")
-        (if (member row-idx separator-indices)
-            ;; Separator row uses max display width (what user sees)
+          (insert indent "|")
+          (if (member row-idx separator-indices)
+              ;; Separator row: preserve alignment markers
+              (let ((aligns (nth sep-idx separator-alignments)))
+                (dotimes (col max-cols)
+                  (let ((align (nth col aligns)))
+                    (insert (eca-table--make-separator-cell
+                             (nth col col-max-display) align)
+                            "|")))
+                (setq sep-idx (1+ sep-idx)))
+            ;; Content row: pad using column alignment
             (dotimes (col max-cols)
-              (insert (make-string (+ 2 (nth col col-max-display)) ?-) "|"))
-          ;; Content row: pad so display width equals col-max-display
-          (dotimes (col max-cols)
-            (let* ((cell (or (nth col row) ""))
-                   (disp-w (eca-table--display-width cell))
-                   (target-disp (nth col col-max-display))
-                   (padding (- target-disp disp-w)))
-              (insert " " cell (make-string (+ 1 padding) ?\s) "|"))))
-        (insert "\n")
-        (setq row-idx (1+ row-idx))))))
+              (let* ((cell (or (nth col row) ""))
+                     (disp-w (eca-table--display-width cell))
+                     (target-disp (nth col col-max-display))
+                     (padding (- target-disp disp-w))
+                     (align (nth col col-aligns)))
+                (eca-table--insert-cell cell padding align))))
+          (insert "\n")
+          (setq row-idx (1+ row-idx)))))))
 
 ;; Public API -------------------------------------------------------------
 
