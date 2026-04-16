@@ -118,7 +118,10 @@
   (init-tasks nil)
 
   ;; Provider status list from providers/list response.
-  (providers nil))
+  (providers nil)
+
+  ;; Background jobs list from jobs/list and jobs/updated.
+  (jobs nil))
 
 (defun eca-find-root-for-buffer ()
   "Return the path that first matches the following:
@@ -216,6 +219,15 @@ workspace folders. Returns nil otherwise."
     (setf (eca--session-workspace-folders session) workspace-roots)
     (setq eca--sessions (eca-assoc eca--sessions id session))
     session))
+
+(defun eca--session-project-name (session)
+  "Return the project name for SESSION.
+Extracts the last directory component from the first
+workspace folder. Falls back to \"unknown\"."
+  (if-let* ((roots (eca--session-workspace-folders session))
+            (root (car roots)))
+      (file-name-nondirectory (directory-file-name root))
+    "unknown"))
 
 (defun eca-delete-session (session)
   "Delete SESSION from existing sessions."

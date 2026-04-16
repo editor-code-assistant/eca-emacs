@@ -80,6 +80,7 @@ Chat
 - `eca-chat-add-context-to-user-prompt`: Add file/dirs to user prompt checking multiple modes with range support
 - `eca-chat-add-filepath-to-user-prompt`: Add filepath mention only to user prompt checking multiple modes with range support
 - `eca-chat-drop-context-from-system-prompt`: Drop a context from system prompt
+- `eca-chat-add-flag`: Add a named flag after the nearest message block at or before point
 - `eca-chat-send-prompt`: Send a prompt in chat interactively
 - `eca-chat-send-prompt-at-chat` Open chat and send any prompt written there
 - `eca-chat-clear-prompt`: Clear written prompt in chat
@@ -174,8 +175,6 @@ Settings
 - `eca-settings-display-params`: Display parameters for the settings panel side window.
 
 MCP
-
-- `eca-mcp-details-position-params`: Display parameters for the standalone MCP details side window (legacy).
 
 API / requests
 

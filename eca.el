@@ -37,6 +37,7 @@
 (require 'eca-mcp)
 (require 'eca-providers)
 (require 'eca-config)
+(require 'eca-jobs)
 (require 'eca-editor)
 (require 'eca-completion)
 (require 'eca-rewrite)
@@ -118,7 +119,9 @@ the server independently of Emacs."
 
 (defun eca--emacs-errors-buffer-name (session)
   "Return the Emacs errors buffer name for SESSION."
-  (format "<eca:emacs-errors:%s>" (eca--session-id session)))
+  (format "<eca:emacs-errors[%s]:%s>"
+          (eca--session-project-name session)
+          (eca--session-id session)))
 
 (defun eca--log-error (session err &optional context backtrace)
   "Log error ERR to the Emacs errors buffer for SESSION.
@@ -232,6 +235,7 @@ frames captured via `backtrace-get-frames'."
       ("rewrite/contentReceived" (eca-rewrite-content-received session params))
       ("tool/serverUpdated" (eca--tool-server-updated session params))
       ("providers/updated" (eca-providers--handle-provider-updated session params))
+      ("jobs/updated" (eca-jobs--handle-jobs-updated session params))
       ("$/showMessage" (eca--handle-show-message params))
       ("$/progress" (eca--handle-progress session params))
       (_ 'ignore))))
@@ -242,6 +246,7 @@ frames captured via `backtrace-get-frames'."
         (params (plist-get request :params)))
     (pcase method
       ("editor/getDiagnostics" (eca-editor-get-diagnostics session params))
+      ("chat/askQuestion" (eca-chat-handle-ask-question session request params))
       (_ (eca-warn "Unknown server request %s" method)))))
 
 (defmacro eca--with-backtrace (var &rest body)
@@ -276,7 +281,8 @@ backtrace.  On older Emacs, runs BODY without capture."
                                  (funcall error-callback (plist-get json-data :error)))))
             ('notification (eca--handle-server-notification session json-data))
             ('request (let ((response (eca--handle-server-request session json-data)))
-                        (eca-api-send-request-response session json-data response))))
+                        (unless (eq response :async)
+                          (eca-api-send-request-response session json-data response)))))
         (error
          (eca--log-error session err "handle-message" backtrace)
          (signal (car err) (cdr err)))))))
@@ -296,6 +302,7 @@ backtrace.  On older Emacs, runs BODY without capture."
                    (list :clientInfo (list :name "emacs"
                                           :version (emacs-version))
                          :capabilities (list :codeAssistant (list :chat t
+                                                                  :chatCapabilities (list :askQuestion t)
                                                                   :editor (list :diagnostics t)))
                          :initializationOptions (list :chatAgent eca-chat-custom-agent)
                          :workspaceFolders (vconcat (-map (lambda (folder)
@@ -403,7 +410,6 @@ When ARG is current prefix, ask for workspace roots to use."
       (eca-api-notify session :method "exit")
       (eca-process-stop session)
       (eca-chat-exit session)
-      (eca-mcp-details-exit session)
       (eca-settings-exit session)
       (eca--emacs-errors-exit session)
       (eca-delete-session session))))

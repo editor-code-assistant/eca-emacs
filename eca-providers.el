@@ -18,6 +18,7 @@
 (require 'eca-util)
 (require 'eca-api)
 (require 'eca-settings)
+(require 'text-property-search)
 
 ;; Faces
 
@@ -355,7 +356,7 @@ When all methods are just API key entry, returns nil."
       (eca-warn "Login failed: %s" err))))
 
 (defun eca-providers--collect-fields (fields)
-  "Collect input for FIELDS via minibuffer prompts. Returns a plist."
+  "Collect input for FIELDS via minibuffer prompt. Return a plist."
   (let ((data '()))
     (seq-doseq (field fields)
       (let* ((key (plist-get field :key))
@@ -514,7 +515,7 @@ When all methods are just API key entry, returns nil."
       (eca-settings-mode)
       (use-local-map eca-providers-mode-map)
       (visual-line-mode)
-      (eca-settings--setup-tab-line "providers")
+      (eca-settings--setup-tab-line "providers" session)
       (eca-providers--render session buf)
       (eca-providers--fetch-and-render session buf))
     buf))

@@ -46,7 +46,7 @@ Shows CHAT-BUF using `display-buffer' if it's still alive."
   "Show DIFF for file at PATH using Ediff side-by-side in windows.
 If CHAT-BUF is provided it will be used to attempt to re-display the
 chat buffer after Ediff quits.  If REDISPLAY-FN is provided it will be
-called with CHAT-BUF to perform that re-display (default: display-buffer).
+called with CHAT-BUF to perform that re-display (default: `display-buffer').
 ROOTS may be passed for path relativization if desired.
 
 This function tries to be Doom-compatible when Emacs runs Doom popup

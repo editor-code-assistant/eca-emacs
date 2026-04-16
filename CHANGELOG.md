@@ -9,6 +9,7 @@
 - Add `eca-settings-tab-line` option to disable `tab-line-mode` in settings buffers. #201
 - Replace `helpful-heading` face dependency with `eca-settings-heading` defface. #201
 - Fix settings tab re-registration reordering tabs. #201
+- Add support for `chat/askQuestion` server request, enabling tools to ask users questions with selectable options in the chat buffer. #338
 
 ## 0.6.0
 

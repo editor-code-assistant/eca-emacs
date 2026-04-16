@@ -94,6 +94,11 @@ ECA chat opens in a regular buffer that follows standard
   :type 'string
   :group 'eca)
 
+(defcustom eca-chat-prompt-prefix-question "Answer> "
+  "The prompt prefix string used when a question is pending."
+  :type 'string
+  :group 'eca)
+
 (defcustom eca-chat-mcp-tool-call-loading-symbol "⏳"
   "The string used in eca chat buffer for mcp tool calls while loading."
   :type 'string
@@ -157,11 +162,12 @@ Must be a valid model supported by server, check `eca-chat-select-model`."
            (const :tag "Total session cost" :session-cost)
            (const :tag "The context limit" :context-limit)
            (const :tag "The output limit" :output-limit)
-           (const :tag "Last message cost" :last-message-cost)))
+           (const :tag "Last message cost" :last-message-cost)
+           (const :tag "The percentage of context limt used in the current session" :session-tokens-percentage)))
   :group 'eca)
 
 (defcustom eca-chat-mode-line-format
-  '(:workspace-folders :add-workspace-button :spacer :init-progress "  " :elapsed-time "   " :usage " " :trust)
+  '(:workspace-folders :add-workspace-button :spacer :init-progress "  " :bg-jobs " " :elapsed-time "   " :usage " " :trust)
   "Format for the ECA chat mode line.
 
 When set to a list, each element is a module keyword or a
@@ -190,6 +196,7 @@ This gives full control for powerline or doom-modeline users."
             (string :tag "Literal string")
             (const :tag "Workspace folders" :workspace-folders)
             (const :tag "Add workspace button" :add-workspace-button)
+            (const :tag "Background jobs" :bg-jobs)
             (const :tag "Chat title" :title)
             (const :tag "Elapsed time" :elapsed-time)
             (const :tag "Usage info" :usage)
@@ -198,6 +205,12 @@ This gives full control for powerline or doom-modeline users."
             (const :tag "Trust mode indicator" :trust)
             (const :tag "Right-align spacer" :spacer)))
           (function :tag "Custom function (receives session)"))
+  :group 'eca)
+
+(defcustom eca-chat-override-mode-line t
+  "When non-nil, ECA chat sets a custom mode line for chat buffers.
+Set this to nil to keep the default Emacs mode line (including buffer name)."
+  :type 'boolean
   :group 'eca)
 
 (defcustom eca-chat-diff-tool 'smerge
@@ -477,6 +490,26 @@ A dimmer yellow for loading/approval tabs that
 are not currently selected."
   :group 'eca)
 
+(defface eca-chat-flag-face
+  '((t :inherit font-lock-number-face))
+  "Face for flag markers in chat."
+  :group 'eca)
+
+(defface eca-chat-question-face
+  '((t :inherit font-lock-string-face :weight bold))
+  "Face for the question text in ask-question blocks."
+  :group 'eca)
+
+(defface eca-chat-question-option-face
+  '((t :inherit font-lock-function-name-face :underline t))
+  "Face for selectable option labels in ask-question blocks."
+  :group 'eca)
+
+(defface eca-chat-question-description-face
+  '((t :inherit font-lock-comment-face))
+  "Face for option descriptions in ask-question blocks."
+  :group 'eca)
+
 ;; Internal
 
 (defvar-local eca-chat--closed nil)
@@ -537,6 +570,10 @@ Used when server never responds to stop request.")
 (defvar-local eca-chat--stop-button-inserted nil
   "Non-nil when the stop button is inserted in loading area.")
 
+(defvar-local eca-chat--pending-question nil
+  "When non-nil, holds the active question state.
+A plist with :session :request :question :options :tool-call-id :allow-freeform.")
+
 
 (defvar eca-chat--new-chat-id 0)
 (defvar eca-chat--last-known-model nil)
@@ -548,7 +585,10 @@ Used when server never responds to stop request.")
 
 (defun eca-chat-new-buffer-name (session)
   "Return the chat buffer name for SESSION."
-  (format "<eca-chat:%s:%s>" (eca--session-id session) eca-chat--new-chat-id))
+  (format "<eca-chat[%s]:%s:%s>"
+          (eca--session-project-name session)
+          (eca--session-id session)
+          eca-chat--new-chat-id))
 
 (defvar eca-chat-mode-map
   (let ((map (make-sparse-keymap)))
@@ -732,6 +772,20 @@ Cancels the shared timer when no more tool calls are being tracked."
     (setq eca-chat--tool-call-elapsed-timer nil))
   (clrhash eca-chat--tool-call-elapsed-times))
 
+(defun eca-chat--update-bg-job-emoji (tool-call-id new-emoji)
+  "Update background job status emoji in TOOL-CALL-ID.
+Replace the job status emoji with NEW-EMOJI."
+  (when-let* ((ov (eca-chat--get-expandable-content
+                   tool-call-id))
+              (ov-content (overlay-get ov 'eca-chat--expandable-content-ov-content)))
+    (let ((start (overlay-start ov))
+          (end (overlay-start ov-content))
+          (inhibit-read-only t))
+      (save-excursion
+        (goto-char start)
+        (when (re-search-forward "🟡\\|✅\\|🔴\\|⚫" end t)
+          (replace-match new-emoji t t))))))
+
 (defun eca-chat--agent ()
   "The chat agent considering default and user option."
   (or eca-chat-custom-agent
@@ -890,6 +944,8 @@ request, useful for subagent tool calls."
 (defun eca-chat--stop-prompt (session)
   "Stop the running chat prompt for SESSION."
   (when (eq eca-chat--chat-loading t)
+    (when eca-chat--pending-question
+      (eca-chat--cancel-question))
     (eca-api-notify session
                     :method "chat/promptStop"
                     :params (list :chatId eca-chat--id))
@@ -920,6 +976,21 @@ request, useful for subagent tool calls."
                                 :params (list :chatId eca-chat--id
                                               :contentId content-id
                                               :include include)))))))
+
+(defun eca-chat--remove-flag (session content-id)
+  "Remove a flag identified by CONTENT-ID from the chat via SESSION."
+  (eca-api-request-sync session
+                        :method "chat/removeFlag"
+                        :params (list :chatId eca-chat--id
+                                      :contentId content-id))
+  (eca-chat--remove-expandable-content content-id))
+
+(defun eca-chat--fork-from-flag (session content-id)
+  "Fork the chat from a flag identified by CONTENT-ID via SESSION."
+  (eca-api-request-sync session
+                        :method "chat/fork"
+                        :params (list :chatId eca-chat--id
+                                      :contentId content-id)))
 
 (defun eca-chat--set-chat-loading (session loading)
   "Set the SESSION chat loading state.
@@ -1375,6 +1446,15 @@ Does not send directly — `eca-chat--send-queued-prompt' handles sending."
        (let ((ov (eca-chat--expandable-content-at-point)))
          (eca-chat--expandable-content-toggle (overlay-get ov 'eca-chat--expandable-content-id))))
 
+      ;; pending question + freeform allowed — answer with prompt text
+      ((and eca-chat--pending-question
+            (plist-get eca-chat--pending-question :allow-freeform)
+            (not (string-empty-p prompt)))
+       (eca-chat--answer-question prompt))
+
+      ;; pending question — block normal send/steer
+      (eca-chat--pending-question nil)
+
       ;; check prompt
       ((and (not (string-empty-p prompt))
             (not eca-chat--chat-loading))
@@ -1420,11 +1500,13 @@ Does not send directly — `eca-chat--send-queued-prompt' handles sending."
     (let ((model-keymap (make-sparse-keymap))
           (agent-keymap (make-sparse-keymap))
           (variant-keymap (make-sparse-keymap))
-          (mcp-keymap (make-sparse-keymap)))
+          (mcp-keymap (make-sparse-keymap))
+          (gear-keymap (make-sparse-keymap)))
       (define-key model-keymap (kbd "<header-line> <mouse-1>") #'eca-chat-select-model)
       (define-key agent-keymap (kbd "<header-line> <mouse-1>") #'eca-chat-select-agent)
       (define-key variant-keymap (kbd "<header-line> <mouse-1>") #'eca-chat-select-variant)
       (define-key mcp-keymap (kbd "<header-line> <mouse-1>") #'eca-mcp-details)
+      (define-key gear-keymap (kbd "<header-line> <mouse-1>") #'eca-mcp-open-menu)
       (append
        (list (propertize "model:"
                          'font-lock-face 'eca-chat-option-key-face
@@ -1460,7 +1542,14 @@ Does not send directly — `eca-chat--send-queued-prompt' handles sending."
                          'keymap mcp-keymap)
              (propertize (eca-chat--mcps-summary session)
                          'pointer 'hand
-                         'keymap mcp-keymap))))))
+                         'keymap mcp-keymap)
+             (propertize
+              " "
+              'display '(space :align-to (- right 2)))
+             (propertize "⚙"
+                         'font-lock-face 'eca-chat-option-key-face
+                         'pointer 'hand
+                         'keymap gear-keymap))))))
 
 (defun eca-chat--number->friendly-number (n)
   "Format N as `x.yM` for |N| >= 1M, `x.yK` for |N| >= 1K.
@@ -1525,6 +1614,8 @@ Returns a string like \"31.5K / 200K\" or \"\" if no usage data."
                    (:session-cost (concat "$" eca-chat--session-cost))
                    (:context-limit (eca-chat--number->friendly-number eca-chat--session-limit-context))
                    (:output-limit (eca-chat--number->friendly-number eca-chat--session-limit-output))
+                   (:session-tokens-percentage (format "%.2f%%%%"
+                                                       (* 100 (/ (float eca-chat--session-tokens) eca-chat--session-limit-context))))
                    (_ segment))
                  'font-lock-face 'eca-chat-usage-string-face))
               eca-chat-usage-string-format)
@@ -1722,6 +1813,12 @@ are in progress."
                  'mouse-face 'highlight
                  'help-echo "Add workspace folder"
                  'local-map eca-chat--add-workspace-map))
+    (:bg-jobs
+     (when-let* ((jobs (eca--session-jobs session))
+                 (running (seq-count (lambda (j) (string= "running" (plist-get j :status))) jobs)))
+       (when (> running 0)
+         (propertize (format " [%d %s]" running (if (= running 1) "job" "jobs"))
+                     'face 'shadow))))
     (:title
      (eca-chat-title))
     (:elapsed-time
@@ -1936,12 +2033,16 @@ Show parent upwards if HIDE-FILENAME? is non nil."
                           eca-chat--spinner-string)))))
 
 (defun eca-chat--go-to-overlay (ov-key range-min range-max first?)
-  "Go to overlay finding from RANGE-MIN to RANGE-MAX if matches OV-KEY."
-  (eca-chat--with-current-buffer (eca-chat--get-last-buffer (eca-session))
-    (let ((get-fn (if first? #'-first #'-last)))
-      (when-let ((ov (funcall get-fn (-lambda (ov) (overlay-get ov ov-key))
-                              (overlays-in range-min range-max))))
-        (goto-char (overlay-start ov))))))
+  "Navigate to overlay matching OV-KEY in RANGE-MIN..RANGE-MAX.
+When FIRST? is non-nil pick the first match, otherwise the last.
+Operates on the current buffer directly — callers pass range
+values from their own buffer, so switching to
+`eca-chat--get-last-buffer' would apply them to the wrong
+buffer when multiple sessions exist."
+  (let ((get-fn (if first? #'-first #'-last)))
+    (when-let ((ov (funcall get-fn (-lambda (ov) (overlay-get ov ov-key))
+                            (overlays-in range-min range-max))))
+      (goto-char (overlay-start ov)))))
 
 (defun eca-chat--parse-unified-diff (diff-text)
   "Compatibility wrapper that delegates to `eca-diff-parse-unified-diff'.
@@ -2096,10 +2197,11 @@ CHILD, NAME, DOCSTRING and BODY are passed down."
              (setq-local corfu-auto-prefix 0))
            (setq-local eca-chat--server-version
                         (eca-process--get-current-server-version))
-           (setq-local mode-line-format
-                        (if (functionp eca-chat-mode-line-format)
-                            (funcall eca-chat-mode-line-format session)
-                          `(t (:eval (eca-chat--mode-line-string ,session)))))
+           (when eca-chat-override-mode-line
+             (setq-local mode-line-format
+                         (if (functionp eca-chat-mode-line-format)
+                             (funcall eca-chat-mode-line-format session)
+                           `(t (:eval (eca-chat--mode-line-string ,session))))))
 
            ;; Tab-line: show a tab for each open chat
            (when eca-chat-tab-line
@@ -2498,6 +2600,24 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
                    (plist-get content :title)
                    (lambda () (browse-url (plist-get content :url))))
                   "\n\n"))))
+      ("flag"
+       (let* ((flag-text (plist-get content :text))
+              (flag-content-id (plist-get content :contentId))
+              (flag-str (propertize (concat "🚩️️ " flag-text)
+                                     'font-lock-face 'eca-chat-flag-face))
+              (fork-btn (eca-buttonize
+                         eca-chat-mode-map
+                         (propertize "Fork from here" 'font-lock-face 'eca-chat-rollback-face)
+                         (lambda () (eca-chat--fork-from-flag session flag-content-id))))
+              (remove-btn (eca-buttonize
+                           eca-chat-mode-map
+                           (propertize "Remove flag" 'font-lock-face 'eca-chat-rollback-face)
+                           (lambda () (eca-chat--remove-flag session flag-content-id))))
+              (actions (concat fork-btn "\n" remove-btn)))
+         (eca-chat--add-expandable-content flag-content-id flag-str actions)
+         (when-let* ((ov (eca-chat--get-expandable-content flag-content-id)))
+           (overlay-put ov 'eca-chat--flag-text flag-text)
+           (overlay-put ov 'eca-chat--timestamp (float-time)))))
       ("reasonStarted"
        (let ((id (plist-get content :id))
              (label (propertize "Thinking..." 'font-lock-face 'eca-chat-reason-label-face)))
@@ -2681,9 +2801,12 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
                 (details (plist-get content :details))
                 (time (when-let ((ms (plist-get content :totalTimeMs)))
                         (concat " " (eca-chat--time->presentable-time ms))))
-                (status (if (plist-get content :error)
-                            eca-chat-mcp-tool-call-error-symbol
-                          eca-chat-mcp-tool-call-success-symbol)))
+                (bg? (plist-get details :background))
+                (status (cond
+                         ((plist-get content :error)
+                          eca-chat-mcp-tool-call-error-symbol)
+                         (bg? "🟡")
+                         (t eca-chat-mcp-tool-call-success-symbol))))
            ;; Cleanup counters for this tool-call id to avoid unbounded growth
            (remhash id eca-chat--tool-call-prepare-counters)
            (remhash id eca-chat--tool-call-prepare-content-cache)
@@ -2914,6 +3037,183 @@ silently ignored."
             (list :chatId chat-id :role "system"
                   :content (list :type "progress" :state "finished")))))))))
 
+;;; Ask question
+
+(defun eca-chat-handle-ask-question (session request params)
+  "Handle chat/askQuestion REQUEST for SESSION with PARAMS.
+Renders the question in the chat buffer and switches the prompt
+to answer mode.  Returns :async — the response is sent later when
+the user answers or cancels."
+  (let* ((chat-id (plist-get params :chatId))
+         (question (plist-get params :question))
+         (options (append (plist-get params :options) nil))
+         (tool-call-id (plist-get params :toolCallId))
+         (allow-freeform (plist-get params :allowFreeform))
+         (chat-buffer (eca-chat--get-chat-buffer session chat-id)))
+    (if (and chat-buffer (buffer-live-p chat-buffer))
+        (progn
+          (eca-chat--with-current-buffer chat-buffer
+            (setq eca-chat--pending-question
+                  (list :session session :request request
+                        :question question :options options
+                        :tool-call-id tool-call-id
+                        :allow-freeform allow-freeform))
+            (if tool-call-id
+                (progn
+                  (eca-chat--update-expandable-content
+                   tool-call-id
+                   (propertize (concat "Q: " question)
+                               'font-lock-face 'eca-chat-question-face)
+                   (eca-chat--build-question-options-content options))
+                  (eca-chat--expandable-content-toggle tool-call-id t nil))
+              (eca-chat--render-ask-question-standalone question options))
+            (when allow-freeform
+              (eca-chat--set-question-prompt-prefix t)))
+          :async)
+      (list :answer nil :cancelled t))))
+
+(defun eca-chat--build-question-options-content (options)
+  "Build expandable block content string with OPTIONS and a cancel button."
+  (concat
+   (when options
+     (mapconcat
+      (lambda (opt)
+        (let* ((label (plist-get opt :label))
+               (desc (plist-get opt :description))
+               (btn (eca-buttonize
+                     eca-chat-mode-map
+                     (propertize label 'font-lock-face 'eca-chat-question-option-face)
+                     (lambda ()
+                       (eca-chat--answer-question label)))))
+          (concat btn
+                  (when desc
+                    (concat "  " (propertize desc 'font-lock-face 'eca-chat-question-description-face)))
+                  "\n")))
+      options
+      ""))
+   (eca-buttonize
+    eca-chat-mode-map
+    (propertize "Cancel" 'font-lock-face '(error :underline t))
+    #'eca-chat--cancel-question)
+   "\n"))
+
+(defun eca-chat--question-block-ov ()
+  "Return the overlay marking the standalone question block."
+  (-first (lambda (ov) (overlay-get ov 'eca-chat--question-block))
+          (overlays-in (point-min) (point-max))))
+
+(defun eca-chat--render-ask-question-standalone (question options)
+  "Insert a standalone question block with QUESTION and OPTIONS.
+Used as fallback when no toolCallId is available."
+  (save-excursion
+    (goto-char (eca-chat--content-insertion-point))
+    (eca-chat--insert
+     (concat "\n"
+             (propertize (concat "Q: " question)
+                         'font-lock-face 'eca-chat-question-face)
+             "\n"))
+    (let ((block-start (point)))
+      (eca-chat--insert
+       (concat
+        (when options
+          (concat
+           "\n"
+           (mapconcat
+            (lambda (opt)
+              (let* ((label (plist-get opt :label))
+                     (desc (plist-get opt :description))
+                     (btn (eca-buttonize
+                           eca-chat-mode-map
+                           (propertize label 'font-lock-face 'eca-chat-question-option-face)
+                           (lambda ()
+                             (eca-chat--answer-question label)))))
+                (concat "  " btn
+                        (when desc
+                          (concat "  " (propertize desc 'font-lock-face 'eca-chat-question-description-face)))
+                        "\n")))
+            options
+            "")))
+        "\n  "
+        (eca-buttonize
+         eca-chat-mode-map
+         (propertize "Cancel" 'font-lock-face '(error :underline t))
+         #'eca-chat--cancel-question)
+        "\n\n"))
+      (let ((ov (make-overlay block-start (point))))
+        (overlay-put ov 'eca-chat--question-block t)))))
+
+(defun eca-chat--collapse-question-block (text)
+  "Replace the standalone question block with TEXT."
+  (when-let* ((ov (eca-chat--question-block-ov)))
+    (let ((start (overlay-start ov))
+          (end (overlay-end ov)))
+      (delete-overlay ov)
+      (save-excursion
+        (goto-char start)
+        (delete-region start end)
+        (eca-chat--insert text)))))
+
+(defun eca-chat--answer-question (answer)
+  "Send ANSWER for the pending question and restore normal prompt."
+  (when-let* ((pending eca-chat--pending-question))
+    (let ((session (plist-get pending :session))
+          (request (plist-get pending :request))
+          (tool-call-id (plist-get pending :tool-call-id))
+          (allow-freeform (plist-get pending :allow-freeform)))
+      (setq eca-chat--pending-question nil)
+      (when allow-freeform
+        (eca-chat--set-question-prompt-prefix nil))
+      (eca-chat--allow-write
+       (if tool-call-id
+           (eca-chat--update-expandable-content
+            tool-call-id nil
+            (concat (propertize (concat "→ " answer)
+                                'font-lock-face 'eca-chat-question-option-face)
+                    "\n"))
+         (eca-chat--collapse-question-block
+          (concat (propertize (concat "→ " answer)
+                              'font-lock-face 'eca-chat-question-option-face)
+                  "\n\n")))
+       (eca-chat--set-prompt ""))
+      (eca-api-send-request-response
+       session request
+       (list :answer answer :cancelled :json-false)))))
+
+(defun eca-chat--cancel-question ()
+  "Cancel the pending question and restore normal prompt."
+  (when-let* ((pending eca-chat--pending-question))
+    (let ((session (plist-get pending :session))
+          (request (plist-get pending :request))
+          (tool-call-id (plist-get pending :tool-call-id))
+          (allow-freeform (plist-get pending :allow-freeform)))
+      (setq eca-chat--pending-question nil)
+      (when allow-freeform
+        (eca-chat--set-question-prompt-prefix nil))
+      (eca-chat--allow-write
+       (if tool-call-id
+           (eca-chat--update-expandable-content
+            tool-call-id nil
+            (concat (propertize "✗ Cancelled"
+                                'font-lock-face 'font-lock-comment-face)
+                    "\n"))
+         (eca-chat--collapse-question-block
+          (concat (propertize "✗ Cancelled"
+                              'font-lock-face 'font-lock-comment-face)
+                  "\n\n"))))
+      (eca-api-send-request-response
+       session request
+       (list :answer nil :cancelled t)))))
+
+(defun eca-chat--set-question-prompt-prefix (active)
+  "Toggle the prompt prefix for question mode.
+When ACTIVE is non-nil, show the question prefix; otherwise restore normal."
+  (when-let* ((ov (eca-chat--prompt-field-ov)))
+    (overlay-put ov 'before-string
+                 (propertize (if active
+                                 eca-chat-prompt-prefix-question
+                               eca-chat-prompt-prefix)
+                             'font-lock-face 'eca-chat-prompt-prefix-face))))
+
 (defun eca-chat-open (session)
   "Open or create dedicated eca chat window for SESSION."
   (eca-assert-session-running session)
@@ -3042,11 +3342,42 @@ silently ignored."
     (eca-chat--set-agent session next-agent (current-buffer))))
 
 ;;;###autoload
+(defun eca-chat-add-flag ()
+  "Add a named flag to the current chat.
+The flag is placed after the nearest message block at or before
+point.  Works with any message type (user, tool call, etc)."
+  (interactive)
+  (eca-assert-session-running (eca-session))
+  (let ((nearest-id nil)
+        (nearest-pos -1))
+    (dolist (ov (overlays-in (point-min) (1+ (point))))
+      (when-let* ((id (overlay-get ov 'eca-chat--expandable-content-id))
+                  (pos (overlay-start ov)))
+        (when (and (> pos nearest-pos)
+                   (not (overlay-get ov 'eca-chat--flag-text)))
+          (setq nearest-id id nearest-pos pos))))
+    (if nearest-id
+        (when-let* ((flag-text (read-string "Flag: ")))
+          (unless (string-empty-p flag-text)
+            (eca-api-request-sync (eca-session)
+                                  :method "chat/addFlag"
+                                  :params (list :chatId eca-chat--id
+                                                :contentId nearest-id
+                                                :text flag-text))))
+      (message "No message found before point"))))
+
+;;;###autoload
 (defun eca-chat-toggle-trust ()
-  "Toggle trust mode (auto-accept all tool call)."
+  "Toggle trust mode (auto-accept all tool call).
+Sends chat/update to server so trust applies immediately to the next tool call."
   (interactive)
   (let ((new-value (not (eca-chat--trust))))
     (eca-chat--set-trust (eca-session) new-value (current-buffer))
+    (when eca-chat--id
+      (eca-api-request-sync (eca-session)
+                            :method "chat/update"
+                            :params (list :chatId eca-chat--id
+                                          :trust (if new-value t :json-false))))
     (eca-info (if new-value
                   "Enabled trust-mode (Auto accept tool calls)"
                 "Disabled trust-mode (Auto accept tool calls)"))))
@@ -3350,7 +3681,14 @@ title, and elapsed time annotation."
   (let ((new-name (read-string "Inform the new chat title: ")))
     (eca-assert-session-running (eca-session))
     (with-current-buffer (eca-chat--get-last-buffer (eca-session))
-      (setq eca-chat--custom-title new-name))))
+      ;; Update local title immediately for responsiveness
+      (setq-local eca-chat--title new-name)
+      ;; Clear any custom title since we now have an official title
+      (setq-local eca-chat--custom-title nil)
+      ;; Request server to persist and broadcast to other clients
+      (eca-api-request-sync (eca-session)
+                            :method "chat/update"
+                            :params (list :chatId eca-chat--id :title new-name)))))
 
 ;;;###autoload
 (defun eca-chat-new ()
@@ -3447,6 +3785,25 @@ Resteps empty list if session is not running or buffer is not available."
                     messages))))
         messages))))
 
+(defun eca-chat--get-flags (&optional buffer)
+  "Extract all flags from the chat BUFFER.
+If BUFFER is nil, use the last chat buffer from current session.
+Returns a list of plists ordered newest to oldest."
+  (when-let* ((session (eca-session))
+              (chat-buffer (or buffer (eca-chat--get-last-buffer session)))
+              ((buffer-live-p chat-buffer)))
+    (with-current-buffer chat-buffer
+      (let ((flags '()))
+        (dolist (ov (overlays-in (point-min) (point-max)))
+          (when-let* ((flag-text (overlay-get ov 'eca-chat--flag-text))
+                      (start (overlay-start ov)))
+            (push (list :text (concat "🚩️️ " flag-text)
+                        :start start
+                        :timestamp (or (overlay-get ov 'eca-chat--timestamp)
+                                       (float-time)))
+                  flags)))
+        flags))))
+
 (defun eca-chat--select-message-from-completion (prompt)
   "Show completion with user messages using PROMPT.
 Resteps selected message plist or nil if no messages or cancelled."
@@ -3465,17 +3822,31 @@ Resteps selected message plist or nil if no messages or cancelled."
 
 ;;;###autoload
 (defun eca-chat-timeline ()
-  "Navigate to a user message via completion."
+  "Navigate to a user message or flag via completion."
   (interactive)
-  (if-let* ((selected-msg (eca-chat--select-message-from-completion "Timeline: "))
-            (pos (plist-get selected-msg :start))
-            (chat-buffer (eca-chat--get-last-buffer (eca-session))))
-      (progn
-        (eca-chat--display-buffer chat-buffer)
-        (with-current-buffer chat-buffer
-          (goto-char pos)
-          (recenter)))
-    (message "No user messages found")))
+  (let* ((messages (or (eca-chat--get-user-messages) '()))
+         (flags (or (eca-chat--get-flags) '()))
+         (all-entries (append messages flags)))
+    (if (null all-entries)
+        (message "No user messages or flags found")
+      (let ((table (make-hash-table :test 'equal)))
+        (dolist (entry (sort all-entries
+                             (lambda (a b) (< (plist-get a :start) (plist-get b :start)))))
+          (puthash (eca-chat--format-message-for-completion entry) entry table))
+        (when-let* ((choice (completing-read
+                             "Timeline: "
+                             (lambda (string pred action)
+                               (if (eq action 'metadata)
+                                   `(metadata (display-sort-function . identity))
+                                 (complete-with-action action (hash-table-keys table) string pred)))
+                             nil t))
+                    (selected (gethash choice table))
+                    (pos (plist-get selected :start))
+                    (chat-buffer (eca-chat--get-last-buffer (eca-session))))
+          (eca-chat--display-buffer chat-buffer)
+          (with-current-buffer chat-buffer
+            (goto-char pos)
+            (recenter)))))))
 
 ;;;###autoload
 (defun eca-chat-clear-prompt ()

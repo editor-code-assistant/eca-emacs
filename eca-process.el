@@ -51,9 +51,9 @@ Test different options if facing issues."
           (if (eq system-type 'windows-nt)
               "eca.exe"
             "eca"))
-  "Directory in which eca will be downloaded."
+  "Path to the eca server binary."
   :risky t
-  :type 'directory
+  :type 'file
   :group 'eca)
 
 (defcustom eca-server-version-file-path
@@ -102,11 +102,15 @@ If current `gc-cons-threshold` is lower use that on filter server messages.'"
 
 (defun eca-process--buffer-name (session)
   "Return the process buffer name for SESSION."
-  (format  "<eca:%s>" (eca--session-id session)))
+  (format "<eca[%s]:%s>"
+          (eca--session-project-name session)
+          (eca--session-id session)))
 
 (defun eca-process--stderr-buffer-name (session)
   "Return the stderr buffer name for SESSION."
-  (format  "<eca:stderr:%s>" (eca--session-id session)))
+  (format "<eca:stderr[%s]:%s>"
+          (eca--session-project-name session)
+          (eca--session-id session)))
 
 (defvar eca-process--releases-cache nil
   "Cached parsed releases list from GitHub API.")
@@ -205,6 +209,21 @@ When VERSION is nil, returns PROPERTY from the latest release."
   "Return the current version of installed server if available."
   (when (f-exists? eca-server-version-file-path)
     (f-read eca-server-version-file-path)))
+
+(defun eca-process--find-extracted-binary (temp-dir name)
+  "Find extracted binary NAME in TEMP-DIR.
+On Windows, handle .exe extension mismatch:
+try alternate name with or without .exe."
+  (let ((primary (f-join temp-dir name)))
+    (if (f-exists? primary)
+        primary
+      (when (eq system-type 'windows-nt)
+        (let ((alt (if (string-suffix-p ".exe" name)
+                       (f-join temp-dir
+                               (file-name-sans-extension name))
+                     (f-join temp-dir
+                             (concat name ".exe")))))
+          (when (f-exists? alt) alt))))))
 
 (defun eca-process--download-and-store-path ()
   "Return the path of the download and store."
@@ -305,9 +324,11 @@ the given VERSION."
                       ;; Extract to temp directory first
                       (mkdir temp-extract-dir t)
                       (shell-command (format (funcall eca-unzip-script) download-path temp-extract-dir))
-                      (let ((new-binary (f-join temp-extract-dir (f-filename store-path))))
-                        (unless (f-exists? new-binary)
-                          (error "Expected binary not found after extraction: %s" new-binary))
+                      (let ((new-binary (eca-process--find-extracted-binary
+                                         temp-extract-dir (f-filename store-path))))
+                        (unless new-binary
+                          (error "Expected binary not found after extraction: %s"
+                                 (f-join temp-extract-dir (f-filename store-path))))
                         ;; Rename old binary to .old if it exists
                         ;; On Windows, running executables can be renamed but not deleted
                         (when (f-exists? store-path)
