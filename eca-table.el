@@ -98,14 +98,80 @@ Sets subtle background tints on header and even-row faces."
     found))
 
 (defun eca-table--max-line-width (beg end)
-  "Return the maximum line width in the region between BEG and END."
+  "Return the maximum display line width between BEG and END.
+Subtracts hidden markup characters so the result reflects
+the visual width when `markdown-hide-markup' is active."
   (let ((max-width 0))
     (save-excursion
       (goto-char beg)
       (while (< (point) end)
-        (setq max-width (max max-width (- (line-end-position) (line-beginning-position))))
+        (let* ((raw (- (line-end-position)
+                       (line-beginning-position)))
+               (hidden (eca-table--count-markup-chars
+                        (buffer-substring-no-properties
+                         (line-beginning-position)
+                         (line-end-position)))))
+          (setq max-width
+                (max max-width (- raw hidden))))
         (forward-line 1)))
     max-width))
+
+(defun eca-table--count-markup-chars (text)
+  "Count hidden bold/italic `*' delimiters in TEXT.
+Matches **text** (4 chars) and *text* (2 chars)."
+  (let ((count 0)
+        (start 0))
+    (while (string-match
+            "\\(\\*\\{1,2\\}\\)\\([^*].*?\\)\\1"
+            text start)
+      (setq count (+ count (* 2 (length
+                                  (match-string 1 text)))))
+      (setq start (match-end 0)))
+    count))
+
+(defun eca-table--compensate-hidden-markup ()
+  "Add padding overlays for hidden markup in table at point.
+For each cell containing bold/italic delimiters, places an
+overlay with an `after-string' of spaces to restore the
+column width that `markdown-table-align' computed for the
+raw (unhidden) text.  Must be called after alignment."
+  (let ((tbl-beg (markdown-table-begin))
+        (tbl-end (markdown-table-end)))
+    ;; Remove any previous compensation overlays
+    (dolist (ov (overlays-in tbl-beg tbl-end))
+      (when (overlay-get ov 'eca-table-markup-pad)
+        (delete-overlay ov)))
+    (save-excursion
+      (goto-char tbl-beg)
+      (while (< (point) tbl-end)
+        (let ((line-beg (line-beginning-position))
+              (line-end (line-end-position)))
+          ;; Skip separator rows (|---|---|)
+          (unless (string-match-p
+                   "^|[-:|[:space:]]+|$"
+                   (buffer-substring-no-properties
+                    line-beg line-end))
+            (goto-char line-beg)
+            (while (re-search-forward
+                    "|\\([^|\n]+\\)" line-end t)
+              (let* ((cell-end (match-end 1))
+                     (cell-text
+                      (buffer-substring-no-properties
+                       (match-beginning 1) cell-end))
+                     (hidden
+                      (eca-table--count-markup-chars
+                       cell-text)))
+                (when (> hidden 0)
+                  (let ((ov (make-overlay
+                             (1- cell-end) cell-end)))
+                    (overlay-put ov 'eca-table-markup-pad t)
+                    (overlay-put
+                     ov 'after-string
+                     (propertize
+                      (make-string hidden ?\s)
+                      'face 'markdown-table-face))
+                    (overlay-put ov 'evaporate t)))))))
+        (forward-line 1)))))
 
 (defun eca-table--action-bar-string (truncated-p)
   "Build the action bar before-string.
@@ -212,13 +278,16 @@ All changes are overlay-only — buffer text is untouched."
 ;; Public API -------------------------------------------------------------
 
 (defun eca-table-align (from end)
-  "Align all markdown tables between FROM and END."
+  "Align all markdown tables between FROM and END.
+After aligning each table, compensates for hidden bold/italic
+markup so columns stay visually aligned."
   (save-excursion
     (goto-char from)
     (while (and (< (point) end)
                 (re-search-forward markdown-table-line-regexp end t))
       (when (markdown-table-at-point-p)
         (markdown-table-align)
+        (eca-table--compensate-hidden-markup)
         ;; Move past this table to avoid re-processing
         (goto-char (markdown-table-end))))))
 
