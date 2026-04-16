@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Add `eca-chat-remove-workspace-root` command and `[-]` mode-line button to remove a workspace folder from a running session. Both 'add' and 'remove' is in the transient menu (`W a` / `W r`).
 - Add `eca-chat-mode-line-format` for customizable chat mode line layout. #184
 - Fix top-level `(require 'tab-line)` causing side effects when `eca-chat-tab-line` is nil. #195
 - Add support for `chat/opened` server notification, enabling the `/fork` command to open forked chats as new tabs.

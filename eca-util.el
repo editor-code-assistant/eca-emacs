@@ -192,6 +192,34 @@ workspace folders. Returns nil otherwise."
                            :removed [])))
       (eca-info "Added workspace folder: %s" folder))))
 
+(defun eca--session-remove-workspace-folder (session folder)
+  "Remove FOLDER from SESSION's workspace-folders and notify the server.
+Refuses to remove the last remaining folder, since the Emacs client
+resolves buffers to sessions by matching against workspace-folders and
+an empty list would make the session unreachable.  In `merged' worktree
+mode, a removed folder whose git-common-dir still matches another
+folder in the session can be auto-re-added by `eca-session' the next
+time a buffer under it is visited."
+  (let* ((folder (expand-file-name folder))
+         (folders (eca--session-workspace-folders session)))
+    (cond
+     ((not (--first (string= it folder) folders))
+      (eca-warn "Workspace folder not found: %s" folder))
+     ((<= (length folders) 1)
+      (user-error "Cannot remove the last workspace folder"))
+     (t
+      (setf (eca--session-workspace-folders session)
+            (cl-remove-if (lambda (it) (string= it folder)) folders))
+      (eca-api-notify
+       session
+       :method "workspace/didChangeWorkspaceFolders"
+       :params (list :event
+                     (list :added []
+                           :removed (vector
+                                     (list :uri (eca--path-to-uri folder)
+                                           :name (file-name-nondirectory (directory-file-name folder)))))))
+      (eca-info "Removed workspace folder: %s" folder)))))
+
 (defun eca-session ()
   "Return the session related to root of current buffer otherwise nil."
   (or (eca-get eca--sessions eca--session-id-cache)
@@ -327,7 +355,11 @@ Inheirits BASE-MAP."
 
      ["Server"
       ("S r" "Restart" eca-restart)
-      ("S s" "Stop" eca-stop)]]))
+      ("S s" "Stop" eca-stop)]
+
+     ["Workspace"
+      ("W a" "Add folder" eca-chat-add-workspace-root)
+      ("W r" "Remove folder" eca-chat-remove-workspace-root)]]))
 
 (defun eca-transient-menu ()
   "Open the ECA transient menu.
