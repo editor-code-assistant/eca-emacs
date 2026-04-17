@@ -167,7 +167,7 @@ Must be a valid model supported by server, check `eca-chat-select-model`."
   :group 'eca)
 
 (defcustom eca-chat-mode-line-format
-  '(:workspace-folders :add-workspace-button :spacer :init-progress "  " :bg-jobs " " :elapsed-time "   " :usage " " :trust)
+  '(:workspace-folders :add-workspace-button :remove-workspace-button :spacer :init-progress "  " :bg-jobs " " :elapsed-time "   " :usage " " :trust)
   "Format for the ECA chat mode line.
 
 When set to a list, each element is a module keyword or a
@@ -177,6 +177,7 @@ to separate left-aligned and right-aligned content.
 Available modules:
   `:workspace-folders' - project root paths
   `:add-workspace-button' - clickable [+] button
+  `:remove-workspace-button' - clickable [-] button
   `:title' - chat title
   `:elapsed-time' - turn duration timer
   `:usage' - token/cost info (see `eca-chat-usage-string-format')
@@ -196,6 +197,7 @@ This gives full control for powerline or doom-modeline users."
             (string :tag "Literal string")
             (const :tag "Workspace folders" :workspace-folders)
             (const :tag "Add workspace button" :add-workspace-button)
+            (const :tag "Remove workspace button" :remove-workspace-button)
             (const :tag "Background jobs" :bg-jobs)
             (const :tag "Chat title" :title)
             (const :tag "Elapsed time" :elapsed-time)
@@ -1762,12 +1764,37 @@ E is the mouse event."
       (eca--session-add-workspace-folder session folder)
       (force-mode-line-update))))
 
+(defun eca-chat-remove-workspace-root ()
+  "Prompt for a workspace folder to remove from the current session.
+Refuses when only one folder remains.  In `merged' worktree mode, a
+removed folder sharing its git-common-dir with another session folder
+may be auto-re-added on the next buffer visit."
+  (interactive)
+  (when-let ((session (eca-session)))
+    (let ((folders (eca--session-workspace-folders session)))
+      (cond
+       ((null folders)
+        (user-error "No workspace folders to remove"))
+       ((<= (length folders) 1)
+        (user-error "Cannot remove the last workspace folder"))
+       (t
+        (let ((folder (completing-read "Remove workspace: " folders nil t)))
+          (eca--session-remove-workspace-folder session folder)
+          (force-mode-line-update)))))))
+
 (defvar eca-chat--add-workspace-map
   (let ((map (make-sparse-keymap)))
     (define-key map [mode-line mouse-1]
                 #'eca-chat-add-workspace-root)
     map)
   "Keymap for the modeline [+] workspace button.")
+
+(defvar eca-chat--remove-workspace-map
+  (let ((map (make-sparse-keymap)))
+    (define-key map [mode-line mouse-1]
+                #'eca-chat-remove-workspace-root)
+    map)
+  "Keymap for the modeline [-] workspace button.")
 
 (defvar eca-chat--trust-toggle-map
   (let ((map (make-sparse-keymap)))
@@ -1813,6 +1840,12 @@ are in progress."
                  'mouse-face 'highlight
                  'help-echo "Add workspace folder"
                  'local-map eca-chat--add-workspace-map))
+    (:remove-workspace-button
+     (propertize " [-]"
+                 'face 'shadow
+                 'mouse-face 'highlight
+                 'help-echo "Remove workspace folder"
+                 'local-map eca-chat--remove-workspace-map))
     (:bg-jobs
      (when-let* ((jobs (eca--session-jobs session))
                  (running (seq-count (lambda (j) (string= "running" (plist-get j :status))) jobs)))
