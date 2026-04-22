@@ -54,6 +54,16 @@
     ((or 'flymake-note ':note 'eglot-note) "information")
     (_ "unknown")))
 
+(defun eca-editor--flycheck-active-in-locus-p (locus)
+  "Return non-nil if LOCUS is a live buffer with `flycheck-mode' on.
+Used to suppress flymake diagnostics for buffers where flycheck is
+already the active diagnostic surface, mirroring how the flycheck
+branch suppresses its own output in lsp-managed buffers.  The
+resulting precedence is: lsp-mode > flycheck > flymake."
+  (and (buffer-live-p locus)
+       (with-current-buffer locus
+         (bound-and-true-p flycheck-mode))))
+
 (defun eca-editor--flycheck-to-eca-severity (level)
   "Convert flycheck LEVEL to eca severity."
   (pcase level
@@ -111,7 +121,8 @@ If URI is nil find all diagnostics otherwise filter to that uri."
             (diag-uri (eca--path-to-uri file-path))
             (beg (flymake-diagnostic-beg it))
             (end (flymake-diagnostic-end it)))
-       (when (or (null uri) (string= uri diag-uri))
+       (when (and (or (null uri) (string= uri diag-uri))
+                  (not (eca-editor--flycheck-active-in-locus-p locus)))
          (let ((range (if buffer-p
                           (with-current-buffer locus
                             (save-excursion
