@@ -119,6 +119,24 @@ ECA chat opens in a regular buffer that follows standard
   :type 'string
   :group 'eca)
 
+(defcustom eca-chat-trust-on-symbol "●"
+  "The string used in eca chat buffer mode-line when trust is ON."
+  :type 'string
+  :group 'eca)
+
+(defcustom eca-chat-trust-off-symbol "○"
+  "The string used in eca chat buffer mode-line when trust is OFF."
+  :type 'string
+  :group 'eca)
+
+(defcustom eca-chat-trust-use-icon-library t
+  "When non-nil, use a shield icon for the mode-line trust indicator.
+Requires `nerd-icons' or `all-the-icons' to be installed; when
+neither is available, falls back to `eca-chat-trust-on-symbol'
+and `eca-chat-trust-off-symbol'."
+  :type 'boolean
+  :group 'eca)
+
 (defcustom eca-chat-expand-pending-approval-tools t
   "Whether to auto expand tool calls when pending approval."
   :type 'boolean
@@ -183,7 +201,7 @@ Available modules:
   `:usage' - token/cost info (see `eca-chat-usage-string-format')
   `:server-version' - shows \"ECA <version>\"
   `:init-progress' - init progress (auto-hides when done)
-  `:trust' - trust mode indicator (● red/gray)
+  `:trust' - trust mode indicator (shield icon if available, else ● / ○)
   `:spacer' - elastic space that right-aligns everything after it
 
 When set to a function, it receives the session as its sole
@@ -448,7 +466,7 @@ works normally."
   :group 'eca)
 
 (defface eca-chat-trust-off-face
-  '((t nil))
+  '((t :inherit shadow))
   "Face for trust mode when off in mode-line."
   :group 'eca)
 
@@ -1822,6 +1840,43 @@ are in progress."
           (propertize (format "⏳ %d/%d · %s" finished total latest-title)
                       'face 'shadow))))))
 
+(defun eca-chat--trust-mode-line-str ()
+  "Return the propertized mode-line string for the trust indicator.
+Prefers `nerd-icons' or `all-the-icons' when available and
+`eca-chat-trust-use-icon-library' is non-nil; otherwise falls back
+to `eca-chat-trust-on-symbol' / `eca-chat-trust-off-symbol'."
+  (let* ((trust? (eca-chat--trust))
+         (face (if trust?
+                   'eca-chat-trust-on-face
+                 'eca-chat-trust-off-face))
+         (help (if trust?
+                   "Trust ON - auto-accepting tool calls"
+                 "Trust OFF - not auto-accepting tool calls"))
+         (glyph
+          (or (and eca-chat-trust-use-icon-library
+                   (require 'nerd-icons nil t)
+                   (fboundp 'nerd-icons-mdicon)
+                   (ignore-errors
+                     (nerd-icons-mdicon
+                      (if trust? "nf-md-shield_check" "nf-md-shield_off")
+                      :face face)))
+              (and eca-chat-trust-use-icon-library
+                   (display-graphic-p)
+                   (require 'all-the-icons nil t)
+                   (fboundp 'all-the-icons-material)
+                   (ignore-errors
+                     (all-the-icons-material
+                      (if trust? "security" "lock_open")
+                      :face face)))
+              (propertize (if trust?
+                              eca-chat-trust-on-symbol
+                            eca-chat-trust-off-symbol)
+                          'face face))))
+    (propertize glyph
+                'mouse-face 'highlight
+                'help-echo help
+                'local-map eca-chat--trust-toggle-map)))
+
 (defun eca-chat--mode-line-module (session keyword)
   "Return mode-line string segment for module KEYWORD in SESSION."
   (pcase keyword
@@ -1867,15 +1922,7 @@ are in progress."
     (:init-progress
      (eca-chat--init-progress-str session))
     (:trust
-     (propertize "⬤"
-                 'face (if (eca-chat--trust)
-                           'eca-chat-trust-on-face
-                         'eca-chat-trust-off-face)
-                 'mouse-face 'highlight
-                 'help-echo (if (eca-chat--trust)
-                                "Trust ON - auto-accepting tool calls"
-                              "Trust OFF")
-                 'local-map eca-chat--trust-toggle-map))
+     (eca-chat--trust-mode-line-str))
     ((pred stringp) keyword)
     (_ "")))
 

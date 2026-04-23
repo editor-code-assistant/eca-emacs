@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Improve mode-line trust indicator: uses a shield icon from `nerd-icons` or `all-the-icons` when installed, falling back to `●` / `○`. Toggle via `eca-chat-trust-use-icon-library`; customize the fallback glyphs via `eca-chat-trust-on-symbol` / `eca-chat-trust-off-symbol`.
 - Add `eca-chat-remove-workspace-root` command and `[-]` mode-line button to remove a workspace folder from a running session. Both 'add' and 'remove' is in the transient menu (`W a` / `W r`).
 - Add `eca-chat-mode-line-format` for customizable chat mode line layout. #184
 - Fix top-level `(require 'tab-line)` causing side effects when `eca-chat-tab-line` is nil. #195
