@@ -244,6 +244,20 @@ Must be a positive integer."
   :type 'integer
   :group 'eca)
 
+(defcustom eca-chat-fontify-debounce-interval 0.15
+  "Idle delay in seconds before a deferred fontify runs during streaming.
+Instead of calling `font-lock-ensure' on every streamed chunk,
+`eca-chat--render-content' schedules it via an idle timer with this
+delay.  A single guaranteed `font-lock-ensure' always runs when the
+response finishes, before table alignment.
+
+When nil, no intermediate fontify is scheduled and the buffer is
+only fontified at end-of-stream (jit-lock still handles visible-area
+updates during streaming)."
+  :type '(choice (const :tag "Disabled (final ensure only)" nil)
+                 (number :tag "Seconds"))
+  :group 'eca)
+
 (defvar-local eca-chat--tool-call-prepare-counters (make-hash-table :test 'equal)
   "Hash table mapping toolCall ID to message count.")
 
@@ -550,6 +564,8 @@ are not currently selected."
   "Repeating timer that updates elapsed-time display for running tool calls.")
 
 (defvar-local eca-chat--table-resize-timer nil)
+(defvar-local eca-chat--fontify-timer nil
+  "Idle timer that defers `font-lock-ensure' during streaming.")
 (defvar-local eca-chat--progress-text "")
 (defvar-local eca-chat--last-user-message-pos nil)
 (defvar-local eca-chat--chat-loading nil)
@@ -2019,6 +2035,26 @@ FRAME is the resized frame."
                          (setq-local word-wrap t)))))
                  buf)))))))
 
+(defun eca-chat--schedule-fontify ()
+  "Schedule a deferred `font-lock-ensure' for the current chat buffer.
+Cancels any previously scheduled timer.  Does nothing when
+`eca-chat-fontify-debounce-interval' is nil, letting jit-lock cover
+visible-area fontification and relying on the final ensure at
+end-of-stream for correctness."
+  (when (timerp eca-chat--fontify-timer)
+    (cancel-timer eca-chat--fontify-timer))
+  (setq eca-chat--fontify-timer nil)
+  (when (numberp eca-chat-fontify-debounce-interval)
+    (let ((buf (current-buffer)))
+      (setq eca-chat--fontify-timer
+            (run-with-idle-timer
+             eca-chat-fontify-debounce-interval nil
+             (lambda ()
+               (when (buffer-live-p buf)
+                 (with-current-buffer buf
+                   (setq eca-chat--fontify-timer nil)
+                   (font-lock-ensure)))))))))
+
 (defun eca-chat--add-text-content (text &optional overlay-key overlay-value)
   "Add TEXT to the chat current position.
 Add a overlay before with OVERLAY-KEY = OVERLAY-VALUE if passed."
@@ -2638,7 +2674,10 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
                 (eca-chat--update-expandable-content
                  parent-tool-call-id nil text t)
               (eca-chat--add-text-content text)
-              (font-lock-ensure))))))
+              ;; Defer fontification: let jit-lock handle visible-area
+              ;; updates and run a single final ensure in the
+              ;; "finished" progress arm below.
+              (eca-chat--schedule-fontify))))))
       ("url"
        (unless parent-tool-call-id
          (eca-chat--add-header
@@ -2938,6 +2977,10 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
                (setq-local eca-chat--progress-text "")
                (eca-chat--spinner-stop)
                (eca-chat--tool-call-elapsed-stop-all)
+               (when (timerp eca-chat--fontify-timer)
+                 (cancel-timer eca-chat--fontify-timer)
+                 (setq eca-chat--fontify-timer nil))
+               (font-lock-ensure)
                (eca-chat--set-chat-loading session nil)
                (eca-chat--refresh-progress chat-buffer)
                (eca-chat--send-steered-prompt session)
@@ -2949,6 +2992,12 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
                (eca-chat--spinner-stop)
                (eca-chat--tool-call-elapsed-stop-all)
                (eca-chat--add-text-content "\n")
+               (when (timerp eca-chat--fontify-timer)
+                 (cancel-timer eca-chat--fontify-timer)
+                 (setq eca-chat--fontify-timer nil))
+               ;; Final guaranteed fontify before table alignment so the
+               ;; beautifier sees fully-fontified text.
+               (font-lock-ensure)
                (eca-chat--align-tables (point-min))
                (eca-chat--beautify-tables (point-min))
                (eca-chat--set-chat-loading session nil)
