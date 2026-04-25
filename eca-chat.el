@@ -3079,6 +3079,13 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
           (let ((new-variant (plist-get chat-config :selectVariant)))
             (setq-local eca-chat--selected-variant new-variant)
             (setq eca-chat--last-known-variant new-variant)))
+        ;; Server-driven trust restore on chat resume (eca #426): keep the
+        ;; mode-line shield/flame indicator in sync with the persisted
+        ;; per-chat trust state so it matches the server's auto-approval
+        ;; behavior for subsequent tool calls.
+        (when (plist-member chat-config :selectTrust)
+          (setq-local eca-chat--selected-trust
+                      (eq t (plist-get chat-config :selectTrust))))
         (force-mode-line-update)))))
 
 (defun eca-chat-deleted (session params)
