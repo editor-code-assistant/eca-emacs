@@ -236,7 +236,15 @@ Select a text and call `eca-rewrite`, after rewrite is finish, call any action o
 
 ### Code completion
 
-Enable `eca-completion-mode` and call `eca-complete`.
+Enable `eca-completion-mode` and call `eca-complete`. The completion
+overlay supports both legacy "ghost text after the cursor" insertions
+and *region-replace* previews that may modify code before and/or after
+the cursor and span multiple lines (similar to Cursor's Tab / next-edit
+suggestions). The client advertises support via the
+`codeAssistant.completionCapabilities.regionReplace` capability at
+`initialize`; older servers continue to receive the legacy contract and
+behave as before. Press <kbd>TAB</kbd> over the suggestion to accept;
+the replacement is applied atomically as a single undo step.
 
 ### Speech-to-Text support (Talk)
 

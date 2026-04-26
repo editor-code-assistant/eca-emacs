@@ -303,6 +303,7 @@ backtrace.  On older Emacs, runs BODY without capture."
                                           :version (emacs-version))
                          :capabilities (list :codeAssistant (list :chat t
                                                                   :chatCapabilities (list :askQuestion t)
+                                                                  :completionCapabilities (list :regionReplace t)
                                                                   :editor (list :diagnostics t)))
                          :initializationOptions (list :chatAgent eca-chat-custom-agent)
                          :workspaceFolders (vconcat (-map (lambda (folder)

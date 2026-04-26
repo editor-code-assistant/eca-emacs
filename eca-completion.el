@@ -215,7 +215,8 @@ to mutate and does not yet carry `eca-completion-overlay-face'."
      (t (copy-sequence text)))))
 
 (defun eca-completion--set-overlay-text (ov text)
-  "Set overlay OV with TEXT."
+  "Set overlay OV with TEXT.
+Used by the legacy zero-width \"ghost text after cursor\" rendering path."
   (move-overlay ov (point) (line-end-position))
   (move-overlay (overlay-get ov 'keymap-overlay) (point) (min (point-max) (+ 1 (point))))
 
@@ -238,18 +239,56 @@ to mutate and does not yet carry `eca-completion-overlay-face'."
       (overlay-put ov 'display (substring text-p 0 1))
       (overlay-put ov 'after-string (substring text-p 1)))
     (overlay-put ov 'completion text)
-    (overlay-put ov 'start (point))))
+    (overlay-put ov 'start (point))
+    (overlay-put ov 'eca-mode 'legacy)))
+
+(defun eca-completion--set-region-replace-overlay (ov text start end)
+  "Set OV to render TEXT replacing the buffer range [START..END].
+The original buffer text in [START..END] is hidden via the overlay's
+`display' property and TEXT is shown in its place; suitable for
+region-replace previews where TEXT may differ from the original both
+before and after point and may span multiple lines."
+  (let ((display-text (eca-completion--prepare-display-text text)))
+    (add-face-text-property 0 (length display-text)
+                            'eca-completion-overlay-face t display-text)
+    (move-overlay ov start end)
+    (move-overlay (overlay-get ov 'keymap-overlay)
+                  start (min (point-max) (1+ start)))
+    (overlay-put ov 'display display-text)
+    (overlay-put ov 'after-string nil)
+    (overlay-put ov 'completion text)
+    (overlay-put ov 'start start)
+    (overlay-put ov 'eca-mode 'region-replace)
+    (setq eca-completion--real-posn (cons start (posn-at-point)))))
 
 (defun eca-completion--display-overlay-completion (text id start end)
-  "Show TEXT with ID between START and END."
+  "Show TEXT with ID between buffer positions START and END.
+Dispatches to the legacy ghost-text renderer when the range is
+zero-width (START equals END), otherwise renders a region-replace
+preview that hides the buffer text in [START..END] and shows TEXT in
+its place.  For region-replace previews TEXT may be empty (a pure
+deletion)."
   (eca-completion--clear-overlay)
-  (when (and (not (string-blank-p text))
-             (or (<= start (point))))
-    (let* ((ov (eca-completion--get-overlay)))
-      (overlay-put ov 'tail-length (- (line-end-position) end))
-      (eca-completion--set-overlay-text ov text)
+  (cond
+   ((= start end)
+    ;; Legacy zero-width path: only safe when the anchor is at or before
+    ;; point because the overlay is anchored to `point' and renders TEXT
+    ;; as a single-line ghost suffix.  Skip when TEXT is empty/blank — there
+    ;; is nothing to insert.
+    (when (and (not (string-blank-p text))
+               (<= start (point)))
+      (let ((ov (eca-completion--get-overlay)))
+        (overlay-put ov 'tail-length (- (line-end-position) end))
+        (eca-completion--set-overlay-text ov text)
+        (overlay-put ov 'id id)
+        (overlay-put ov 'completion-start start))))
+   (t
+    ;; Non-zero range: render the preview even when TEXT is empty, since
+    ;; the user-visible change is the deletion of [START..END].
+    (let ((ov (eca-completion--get-overlay)))
+      (eca-completion--set-region-replace-overlay ov text start end)
       (overlay-put ov 'id id)
-      (overlay-put ov 'completion-start start))))
+      (overlay-put ov 'completion-start start)))))
 
 (defun eca-completion--overlay-visible ()
   "Return whether completion overlay is being shown."
@@ -271,28 +310,50 @@ to mutate and does not yet carry `eca-completion-overlay-face'."
   "Accept completion."
   (interactive)
   (when (eca-completion--overlay-visible)
-    (let* ((text (overlay-get eca-completion--overlay 'completion))
-           (start (overlay-get eca-completion--overlay 'start))
-           (end (- (line-end-position) (overlay-get eca-completion--overlay 'tail-length)))
-           (completion-start (overlay-get eca-completion--overlay 'completion-start)))
-      ;; If there is extra indentation before the point, delete it and shift the completion
-      (when (and (< completion-start (point))
-                 ;; Region we are about to delete contains only blanks …
-                 (string-blank-p (buffer-substring-no-properties completion-start (point)))
-                 ;; … *and* everything from BOL to completion-start is blank
-                 ;; as well — i.e. we are really inside the leading indentation.
-                 (string-blank-p (buffer-substring-no-properties (line-beginning-position) completion-start)))
-        (setq start completion-start)
-        (setq end (- end (- (point) completion-start)))
-        (delete-region completion-start (point)))
-      (eca-completion--clear-overlay)
-      (if (derived-mode-p 'vterm-mode)
-          (progn
-            (vterm-delete-region start end)
-            (vterm-insert text))
-        (delete-region start end)
-        (insert text))
-      t)))
+    (let* ((ov eca-completion--overlay)
+           (text (overlay-get ov 'completion))
+           (mode (overlay-get ov 'eca-mode))
+           (region-replace? (eq mode 'region-replace)))
+      (cond
+       (region-replace?
+        ;; Use the live overlay bounds so any concurrent buffer edits
+        ;; are tracked, then atomically replace [start..end] with TEXT.
+        (let ((start (overlay-start ov))
+              (end (overlay-end ov)))
+          (eca-completion--clear-overlay)
+          (if (derived-mode-p 'vterm-mode)
+              (progn
+                (vterm-delete-region start end)
+                (vterm-insert text))
+            (atomic-change-group
+              (when (/= start end)
+                (delete-region start end))
+              (goto-char start)
+              (insert text)))
+          t))
+       (t
+        (let* ((start (overlay-get ov 'start))
+               (end (- (line-end-position) (overlay-get ov 'tail-length)))
+               (completion-start (overlay-get ov 'completion-start)))
+          ;; If there is extra indentation before the point, delete it and shift the completion
+          (when (and completion-start
+                     (< completion-start (point))
+                     ;; Region we are about to delete contains only blanks …
+                     (string-blank-p (buffer-substring-no-properties completion-start (point)))
+                     ;; … *and* everything from BOL to completion-start is blank
+                     ;; as well — i.e. we are really inside the leading indentation.
+                     (string-blank-p (buffer-substring-no-properties (line-beginning-position) completion-start)))
+            (setq start completion-start)
+            (setq end (- end (- (point) completion-start)))
+            (delete-region completion-start (point)))
+          (eca-completion--clear-overlay)
+          (if (derived-mode-p 'vterm-mode)
+              (progn
+                (vterm-delete-region start end)
+                (vterm-insert text))
+            (delete-region start end)
+            (insert text))
+          t))))))
 
 (cl-defun eca-completion--find-completion (&key on-success on-error)
   "Find completion requesting server calling ON-SUCCESS for the response.
@@ -330,14 +391,17 @@ Call ON-ERROR when error."
 (defun eca-completion--inserted-next-overlay-char-p (command)
   "Handle the case where the char just inserted is the start of the completion.
 If so, update the overlays and continue.  COMMAND is the command that triggered
-in `post-command-hook'."
+in `post-command-hook'.  Only applies to the legacy single-line ghost-text
+overlay; region-replace previews are cleared on any buffer change."
   (when (and (symbolp this-command)
              (eq command 'self-insert-command)
-             (eca-completion--overlay-visible))
+             (eca-completion--overlay-visible)
+             (eq (overlay-get eca-completion--overlay 'eca-mode) 'legacy))
     (let* ((ov eca-completion--overlay)
            (completion (overlay-get ov 'completion)))
       ;; The char just inserted is the next char of completion
-      (when (eq last-command-event (elt completion 0))
+      (when (and (> (length completion) 0)
+                 (eq last-command-event (elt completion 0)))
         (if (= (length completion) 1)
             ;; If there is only one char in the completion, accept it
             (eca-completion-accept)
@@ -357,15 +421,24 @@ in `post-command-hook'."
                                    #'eca-completion--post-command-debounce
                                    (current-buffer)))))))
 
+(defun eca-completion--after-change (_beg _end _len)
+  "Bump the buffer's `eca-completion--doc-version' on every change.
+Hooked into `after-change-functions' while `eca-completion-mode' is on so
+that the server can drop stale `completion/inline' responses whose
+`docVersion' no longer matches the buffer."
+  (cl-incf eca-completion--doc-version))
+
 (defun eca-completion--mode-activate ()
   "Initial setup for eca-completion-mode."
-  (add-hook 'post-command-hook #'eca-completion--post-command nil 'local))
+  (add-hook 'post-command-hook #'eca-completion--post-command nil 'local)
+  (add-hook 'after-change-functions #'eca-completion--after-change nil 'local))
 
 (defun eca-completion--mode-deactivate ()
   "Teardown for eca-completion-mode."
   (when eca-completion--post-command-timer
     (cancel-timer eca-completion--post-command-timer))
-  (remove-hook 'post-command-hook #'eca-completion--post-command 'local))
+  (remove-hook 'post-command-hook #'eca-completion--post-command 'local)
+  (remove-hook 'after-change-functions #'eca-completion--after-change 'local))
 
 (defun eca-completion--posn-advice (&rest args)
   "Remap posn if in eca-completion-mode with ARGS."
@@ -375,34 +448,44 @@ in `post-command-hook'."
                  (eq pos (car eca-completion--real-posn)))
         (cdr eca-completion--real-posn)))))
 
+(defun eca-completion--protocol-pos-to-point (line character)
+  "Convert protocol 1-based LINE and CHARACTER to a buffer position.
+Assumes the caller is inside `save-excursion' and `save-restriction'."
+  (goto-char (point-min))
+  (forward-line (1- (+ (1- line) eca-completion--line-bias)))
+  (forward-char (1- character))
+  (point))
+
 (defun eca-completion--show-completion (completion)
   "Show COMPLETION."
   (-let* (((&plist :text text :id id :range range :docVersion doc-version) completion)
-          ((&plist :start start :end end) range)
-          ((&plist :line start-line :character start-char) start)
-          ((&plist :character end-char) end))
+          ((&plist :start start-pos :end end-pos) range)
+          ((&plist :line start-line :character start-char) start-pos)
+          ((&plist :line end-line :character end-char) end-pos))
     (when (= doc-version eca-completion--doc-version)
       (save-excursion
         (save-restriction
           (widen)
           (let* ((p (point))
-                 (goto-line! (lambda ()
-                               (goto-char (point-min))
-                               (forward-line (1- (+ (1- start-line) eca-completion--line-bias)))))
-                 (start (progn
-                          (funcall goto-line!)
-                          (forward-char (1- start-char))
-                          (let* ((cur-line (buffer-substring-no-properties (line-beginning-position) (line-end-position)))
-                                 (common-prefix-len (length (eca-completion--string-common-prefix text cur-line))))
-                            (setq text (substring text common-prefix-len))
-                            (forward-char common-prefix-len)
-                            (point))))
-                 (end (progn
-                        (funcall goto-line!)
-                        (forward-char (1- end-char))
-                        (point))))
+                 (start-buf (eca-completion--protocol-pos-to-point start-line start-char))
+                 (end-buf (eca-completion--protocol-pos-to-point end-line end-char))
+                 (region-replace? (/= start-buf end-buf)))
+            ;; Legacy zero-width path: trim a common prefix between TEXT and
+            ;; the current line so older servers that include the
+            ;; pre-cursor portion of the line still render correctly.
+            ;; Skip this for region-replace responses where the server
+            ;; already produced a precise diff.
+            (unless region-replace?
+              (goto-char start-buf)
+              (let* ((cur-line (buffer-substring-no-properties
+                                (line-beginning-position) (line-end-position)))
+                     (common-prefix-len (length (eca-completion--string-common-prefix
+                                                 text cur-line))))
+                (setq text (substring text common-prefix-len))
+                (setq start-buf (+ start-buf common-prefix-len))
+                (setq end-buf (+ end-buf common-prefix-len))))
             (goto-char p)
-            (eca-completion--display-overlay-completion text id start end)))))))
+            (eca-completion--display-overlay-completion text id start-buf end-buf)))))))
 
 ;; Public
 

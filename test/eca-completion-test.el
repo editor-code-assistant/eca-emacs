@@ -105,5 +105,115 @@ Falls back to the `default' face's foreground when none is set."
       ;; original (unparseable) value or default fallback.
       (expect dimmed :to-equal src))))
 
+;; eca-completion--after-change
+
+(describe "eca-completion--after-change"
+  (it "increments eca-completion--doc-version on each call"
+    (with-temp-buffer
+      (setq-local eca-completion--doc-version 3)
+      (eca-completion--after-change 1 1 0)
+      (expect eca-completion--doc-version :to-equal 4)
+      (eca-completion--after-change 1 1 0)
+      (expect eca-completion--doc-version :to-equal 5))))
+
+;; eca-completion--show-completion + eca-completion-accept
+
+(describe "eca-completion--show-completion (legacy zero-width)"
+  (it "renders an after-cursor ghost overlay tagged 'legacy"
+    (with-temp-buffer
+      (insert "hello")
+      (goto-char (point-max))
+      (setq-local eca-completion--doc-version 0)
+      (eca-completion--show-completion
+       '(:text " world"
+         :id "1"
+         :range (:start (:line 1 :character 6) :end (:line 1 :character 6))
+         :docVersion 0))
+      (expect (eca-completion--overlay-visible) :to-be-truthy)
+      (expect (overlay-get eca-completion--overlay 'eca-mode)
+              :to-equal 'legacy)))
+
+  (it "accepts the suggestion by inserting at the cursor"
+    (with-temp-buffer
+      (insert "hello")
+      (goto-char (point-max))
+      (setq-local eca-completion--doc-version 0)
+      (eca-completion--show-completion
+       '(:text " world"
+         :id "1"
+         :range (:start (:line 1 :character 6) :end (:line 1 :character 6))
+         :docVersion 0))
+      (eca-completion-accept)
+      (expect (buffer-substring-no-properties (point-min) (point-max))
+              :to-equal "hello world")
+      ;; Overlay is gone after accept.
+      (expect (eca-completion--overlay-visible) :not :to-be-truthy)))
+
+  (it "drops stale completions whose docVersion no longer matches"
+    (with-temp-buffer
+      (insert "x")
+      (setq-local eca-completion--doc-version 5)
+      (eca-completion--show-completion
+       '(:text "y"
+         :id "1"
+         :range (:start (:line 1 :character 2) :end (:line 1 :character 2))
+         :docVersion 1))
+      (expect (eca-completion--overlay-visible) :not :to-be-truthy))))
+
+(describe "eca-completion--show-completion (region-replace before cursor)"
+  (it "tags the overlay 'region-replace and replaces atomically on accept"
+    (with-temp-buffer
+      (insert "thersholdd")
+      (goto-char (point-max))
+      (setq-local eca-completion--doc-version 0)
+      ;; Drop the trailing duplicate 'd' (chars 10..11 in 1-based protocol).
+      (eca-completion--show-completion
+       '(:text ""
+         :id "1"
+         :range (:start (:line 1 :character 10) :end (:line 1 :character 11))
+         :docVersion 0))
+      (expect (eca-completion--overlay-visible) :to-be-truthy)
+      (expect (overlay-get eca-completion--overlay 'eca-mode)
+              :to-equal 'region-replace)
+      (eca-completion-accept)
+      (expect (buffer-substring-no-properties (point-min) (point-max))
+              :to-equal "thershold"))))
+
+(describe "eca-completion--show-completion (region-replace multi-line)"
+  (it "replaces a multi-line range and lands point at start + len(text)"
+    (with-temp-buffer
+      (insert "alpha\nbeta\ngamma")
+      (goto-char (point-min))
+      (setq-local eca-completion--doc-version 0)
+      ;; Replace "beta" on line 2 with "BETA".
+      (eca-completion--show-completion
+       '(:text "BETA"
+         :id "1"
+         :range (:start (:line 2 :character 1) :end (:line 2 :character 5))
+         :docVersion 0))
+      (expect (overlay-get eca-completion--overlay 'eca-mode)
+              :to-equal 'region-replace)
+      (eca-completion-accept)
+      (expect (buffer-substring-no-properties (point-min) (point-max))
+              :to-equal "alpha\nBETA\ngamma")
+      ;; Point should be right after the inserted "BETA" — buffer position 11.
+      (expect (point) :to-equal 11))))
+
+(describe "eca-completion--show-completion (region-replace inserts new lines)"
+  (it "supports replacement text that introduces new lines"
+    (with-temp-buffer
+      (insert "first\nsecond")
+      (goto-char (point-max))
+      (setq-local eca-completion--doc-version 0)
+      ;; Replace "second" with "second\nthird".
+      (eca-completion--show-completion
+       '(:text "second\nthird"
+         :id "1"
+         :range (:start (:line 2 :character 1) :end (:line 2 :character 7))
+         :docVersion 0))
+      (eca-completion-accept)
+      (expect (buffer-substring-no-properties (point-min) (point-max))
+              :to-equal "first\nsecond\nthird"))))
+
 (provide 'eca-completion-test)
 ;;; eca-completion-test.el ends here
