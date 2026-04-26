@@ -160,6 +160,8 @@ Chat
 Completion
 
 - `eca-completion-idle-delay`: Idle delay before triggering inline completion (0 = immediate, nil = disabled).
+- `eca-completion-syntax-highlight`: Whether to syntax-highlight the inline ghost-text suggestion using the buffer's `major-mode` (default `t`).
+- `eca-completion-overlay-dim-ratio`: Float in `[0.0, 1.0]` controlling how far each fontified span's foreground is blended toward the default background; lower values yield a more dimmed "ghost" look (default `0.5`, `nil` disables dimming). Effective only when `eca-completion-syntax-highlight` is non-nil.
 
 Rewrite
 

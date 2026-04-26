@@ -11,6 +11,8 @@
 ;;
 ;;; Code:
 
+(require 'cl-lib)
+(require 'color)
 (require 'map)
 
 (require 'eca-util)
@@ -28,9 +30,36 @@ Disable idle completion if set to nil."
           (const :tag "Idle completion disabled" nil))
   :group 'eca)
 
+(defcustom eca-completion-syntax-highlight t
+  "Whether to syntax-highlight the inline completion overlay.
+When non-nil, the suggestion is fontified using the buffer's
+`major-mode' before being displayed as ghost text, and
+`eca-completion-overlay-face' is composed on top of those
+font-lock faces (rather than overriding them) so syntax colors
+remain visible."
+  :type 'boolean
+  :group 'eca)
+
+(defcustom eca-completion-overlay-dim-ratio 0.5
+  "How far to blend each fontified span toward the default background.
+A float in [0.0, 1.0]: 1.0 keeps the original syntax color, 0.0
+collapses it to the background, and intermediate values produce
+a dimmed \"ghost\" look similar to Cursor or Copilot.  Set to nil
+to disable dimming and show fully saturated syntax colors.
+Effective only when `eca-completion-syntax-highlight' is non-nil."
+  :type '(choice
+          (float :tag "Blend ratio (0.0..1.0)")
+          (const :tag "Disable dimming" nil))
+  :group 'eca)
+
 (defface eca-completion-overlay-face
   '((t :inherit shadow))
-  "Face for the ECA completion inline overlay."
+  "Face for the ECA completion inline overlay.
+Composed with APPEND priority on top of any font-lock faces
+already applied to the suggestion text, so syntax-highlighted
+foregrounds win over this face's foreground.  The face's other
+attributes (e.g. italic from `shadow') still apply across the
+whole suggestion, including spans that have no font-lock face."
   :group 'eca)
 
 ;; Internal
@@ -88,14 +117,117 @@ Incremented after each change.")
     (overlay-put eca-completion--overlay 'keymap-overlay (eca-completion--get-or-create-keymap-overlay)))
   eca-completion--overlay)
 
+(defun eca-completion--fontify-as-mode (text mode)
+  "Return a fresh copy of TEXT fontified in a temp buffer using MODE.
+MODE is a major-mode symbol.  Returns a copy of TEXT unmodified
+when MODE is nil, unbound, or signals an error during activation
+or fontification."
+  (if (and mode (fboundp mode))
+      (condition-case nil
+          (with-temp-buffer
+            (let ((inhibit-modification-hooks t))
+              (insert text)
+              (delay-mode-hooks (funcall mode))
+              (font-lock-ensure))
+            (buffer-substring (point-min) (point-max)))
+        (error (copy-sequence text)))
+    (copy-sequence text)))
+
+(defun eca-completion--blend-color (fg bg ratio)
+  "Blend foreground color FG toward background color BG by RATIO.
+RATIO is a float in [0.0, 1.0]: 1.0 returns FG, 0.0 returns BG.
+Returns a hex string like \"#rrggbb\", or nil when either color
+cannot be resolved (e.g. on low-color terminals)."
+  (let ((fg-rgb (and fg (color-name-to-rgb fg)))
+        (bg-rgb (and bg (color-name-to-rgb bg))))
+    (when (and fg-rgb bg-rgb)
+      (apply #'color-rgb-to-hex
+             (append (cl-mapcar (lambda (f b)
+                                  (+ (* f ratio) (* b (- 1.0 ratio))))
+                                fg-rgb bg-rgb)
+                     ;; 2 digits per component for portable #rrggbb output.
+                     '(2))))))
+
+(defun eca-completion--resolve-foreground (face)
+  "Return the foreground color implied by FACE, or nil.
+FACE may be a face name symbol, a list of faces (symbols and/or
+anonymous face plists like (:foreground COLOR)), or a single
+anonymous face plist.  Anonymous plists are inspected directly
+because `face-foreground' rejects them on Emacs 28."
+  (cond
+   ((null face) nil)
+   ((and (listp face) (keywordp (car face)))
+    (plist-get face :foreground))
+   ((listp face)
+    (let (result)
+      (while (and face (not result))
+        (setq result (eca-completion--resolve-foreground (car face))
+              face (cdr face)))
+      result))
+   ((symbolp face)
+    (face-foreground face nil 'default))))
+
+(defun eca-completion--dim-fontified (text bg ratio)
+  "Return a copy of TEXT with each face span's foreground dimmed.
+TEXT is expected to already carry font-lock face properties.
+Each span's resolved foreground (falling back to the `default'
+face's foreground) is blended toward BG by RATIO via
+`eca-completion--blend-color', and the result is layered on the
+span as a higher-priority anonymous face so the original
+font-lock face still contributes its non-color attributes.
+Spans whose colors cannot be resolved are left untouched."
+  (let* ((result (copy-sequence text))
+         (len (length result))
+         (default-fg (face-foreground 'default))
+         (pos 0))
+    (while (< pos len)
+      (let* ((next (or (next-single-property-change pos 'face result)
+                       len))
+             (face-prop (get-text-property pos 'face result))
+             (fg (or (eca-completion--resolve-foreground face-prop)
+                     default-fg))
+             (blended (and fg bg
+                           (eca-completion--blend-color fg bg ratio))))
+        (when blended
+          (add-face-text-property pos next
+                                  (list :foreground blended)
+                                  nil result))
+        (setq pos next)))
+    result))
+
+(defun eca-completion--prepare-display-text (text)
+  "Return TEXT prepared for the inline overlay.
+Applies syntax fontification and foreground dimming according to
+`eca-completion-syntax-highlight' and
+`eca-completion-overlay-dim-ratio'.  The returned string is safe
+to mutate and does not yet carry `eca-completion-overlay-face'."
+  (let ((mode major-mode)
+        (bg (face-background 'default nil 'default)))
+    (cond
+     ((and eca-completion-syntax-highlight
+           (numberp eca-completion-overlay-dim-ratio))
+      (eca-completion--dim-fontified
+       (eca-completion--fontify-as-mode text mode)
+       bg
+       eca-completion-overlay-dim-ratio))
+     (eca-completion-syntax-highlight
+      (eca-completion--fontify-as-mode text mode))
+     (t (copy-sequence text)))))
+
 (defun eca-completion--set-overlay-text (ov text)
   "Set overlay OV with TEXT."
   (move-overlay ov (point) (line-end-position))
   (move-overlay (overlay-get ov 'keymap-overlay) (point) (min (point-max) (+ 1 (point))))
 
-  (let* ((tail (buffer-substring (- (line-end-position) (overlay-get ov 'tail-length)) (line-end-position)))
-         (text-p (concat (propertize text 'face 'eca-completion-overlay-face)
-                               tail)))
+  (let* ((display-text (eca-completion--prepare-display-text text))
+         (tail (buffer-substring (- (line-end-position) (overlay-get ov 'tail-length)) (line-end-position)))
+         (text-p (concat display-text tail)))
+    ;; Layer the overlay face with APPEND priority so any font-lock
+    ;; foregrounds set during fontification remain visible.  Apply only
+    ;; to the suggestion portion; the trailing buffer text keeps its
+    ;; own faces untouched.
+    (add-face-text-property 0 (length display-text)
+                            'eca-completion-overlay-face t text-p)
     (if (eolp)
         (progn
           (overlay-put ov 'after-string "")

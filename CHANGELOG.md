@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Syntax-highlight the inline `eca-complete` ghost-text overlay using the buffer's `major-mode`, with optional foreground dimming for a "ghost" look similar to Cursor / Copilot. Configurable via `eca-completion-syntax-highlight` (default `t`) and `eca-completion-overlay-dim-ratio` (default `0.5`, `nil` disables dimming). `eca-completion-overlay-face` now composes with APPEND priority on top of font-lock faces instead of overriding them. #227
 - Sync the mode-line trust indicator on chat resume by honoring the new `selectTrust` field on `config/updated`: the shield/flame icon now matches the server's persisted trust state for the resumed chat instead of always defaulting to off (eca #426).
 - Defer fontification during chat streaming: replace the per-chunk `font-lock-ensure` with a debounced idle-timer scheduler plus a single guaranteed `font-lock-ensure` at end-of-stream, configurable via `eca-chat-fontify-debounce-interval` (default 0.15s, `nil` disables intermediate fontify). Cuts font-lock CPU by ~99% on fast-streaming models and ~84% on slow-streaming ones.
 - Improve mode-line trust indicator: 🔥 (fire) when ON, 🛡 (shield) when OFF. Customizable via `eca-chat-trust-on-symbol` / `eca-chat-trust-off-symbol`.
