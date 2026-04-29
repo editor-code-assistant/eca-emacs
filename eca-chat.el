@@ -22,6 +22,7 @@
 (require 'eca-table)
 (require 'eca-chat-expandable)
 (require 'eca-chat-context)
+(require 'eca-chat-image)
 
 (require 'evil nil t)
 
@@ -655,6 +656,13 @@ A plist with :session :request :question :options :tool-call-id :allow-freeform.
     (define-key map (kbd "C-c <up>") #'eca-chat-go-to-prev-expandable-block)
     (define-key map (kbd "C-c <down>") #'eca-chat-go-to-next-expandable-block)
     (define-key map (kbd "C-c <tab>") #'eca-chat-toggle-expandable-block)
+    ;; Per-chat inline image zoom (browser-style).  `=' is a no-Shift
+    ;; alias for `+' so users on US layouts don't need to press Shift.
+    (define-key map (kbd "C-c i +") #'eca-chat-image-zoom-in)
+    (define-key map (kbd "C-c i =") #'eca-chat-image-zoom-in)
+    (define-key map (kbd "C-c i -") #'eca-chat-image-zoom-out)
+    (define-key map (kbd "C-c i 0") #'eca-chat-image-zoom-reset)
+    (define-key map (kbd "C-c i s") #'eca-chat-save-image-at-point)
     map)
   "Keymap used by `eca-chat-mode'.")
 
@@ -2687,6 +2695,8 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
                    (plist-get content :title)
                    (lambda () (browse-url (plist-get content :url))))
                   "\n\n"))))
+      ("image"
+       (eca-chat--render-image-content content parent-tool-call-id))
       ("flag"
        (let* ((flag-text (plist-get content :text))
               (flag-content-id (plist-get content :contentId))
