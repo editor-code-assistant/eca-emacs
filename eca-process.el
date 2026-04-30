@@ -112,8 +112,24 @@ If current `gc-cons-threshold` is lower use that on filter server messages.'"
           (eca--session-project-name session)
           (eca--session-id session)))
 
+(defcustom eca-server-releases-cache-ttl 3600
+  "Time-to-live (seconds) for the cached eca server releases list.
+Once expired, the next call that needs the releases list will refetch
+from the GitHub API.  Set to nil to disable expiry (legacy behavior:
+cache lives until Emacs is restarted).  Set to 0 to always refetch.
+This affects update detection at session start and on `eca-restart',
+so longer-running Emacs sessions can still pick up newer eca releases.
+See also `eca-server-check-updates'."
+  :type '(choice (const :tag "Never expire" nil)
+                 (integer :tag "Seconds"))
+  :group 'eca)
+
 (defvar eca-process--releases-cache nil
-  "Cached parsed releases list from GitHub API.")
+  "Cached parsed releases list from GitHub API.
+When non-nil, a cons cell of (FETCH-TIME . RELEASES) where FETCH-TIME
+is the value of `float-time' when RELEASES was last fetched.  Honored
+together with `eca-server-releases-cache-ttl' by
+`eca-process--fetch-releases'.")
 
 (cl-defun eca--curl-download-file (&key url path on-done)
   "Downloads a file from URL to PATH shelling out to system with curl.
@@ -171,21 +187,41 @@ https://github.com/emacs-lsp/lsp-mode/issues/4746#issuecomment-2957183423"
 (defconst eca-process--releases-url "https://api.github.com/repos/editor-code-assistant/eca/releases"
   "Github url for retrieving json files with infos about release binaries.")
 
+(defun eca-process--releases-cache-valid-p ()
+  "Return non-nil if `eca-process--releases-cache' is fresh enough.
+Honors `eca-server-releases-cache-ttl': when nil any cached entry is
+considered valid; when 0 the cache is always considered stale."
+  (when (consp eca-process--releases-cache)
+    (let ((ttl eca-server-releases-cache-ttl)
+          (fetched-at (car eca-process--releases-cache)))
+      (cond
+       ((null ttl) t)
+       ((and (numberp ttl) (<= ttl 0)) nil)
+       ((numberp fetched-at)
+        (< (- (float-time) fetched-at) ttl))
+       (t nil)))))
+
 (defun eca-process--fetch-releases ()
-  "Return cached releases list, fetching from GitHub if needed."
-  (or eca-process--releases-cache
-      (condition-case err
-          (let* ((json-string
-                  (eca--curl-download-string
-                   eca-process--releases-url)))
-            (setq eca-process--releases-cache
-                  (with-temp-buffer
-                    (insert json-string)
-                    (goto-char (point-min))
-                    (eca-api--json-read-buffer))))
-        (error
-         (eca-warn "Failed to fetch releases: %s" err)
-         nil))))
+  "Return cached releases list, fetching from GitHub if needed.
+Refetches when the cache is empty or has expired per
+`eca-server-releases-cache-ttl'.  On fetch failure, any previously
+cached value is preserved and returned."
+  (if (eca-process--releases-cache-valid-p)
+      (cdr eca-process--releases-cache)
+    (condition-case err
+        (let* ((json-string
+                (eca--curl-download-string
+                 eca-process--releases-url))
+               (releases (with-temp-buffer
+                           (insert json-string)
+                           (goto-char (point-min))
+                           (eca-api--json-read-buffer))))
+          (setq eca-process--releases-cache
+                (cons (float-time) releases))
+          releases)
+      (error
+       (eca-warn "Failed to fetch releases: %s" err)
+       (cdr-safe eca-process--releases-cache)))))
 
 (defun eca-process--get-latest-server-version ()
   "Return the latest server version."
@@ -575,10 +611,40 @@ Call HANDLE-MSG for new msgs processed."
 
 ;;;###autoload
 (defun eca-install-server ()
-  "Force download the latest eca server."
+  "Force download the latest eca server.
+Clears `eca-process--releases-cache' first so the latest version is
+re-checked against GitHub even within a long-running Emacs session."
   (interactive)
+  (setq eca-process--releases-cache nil)
   (eca-process--download-server (lambda ())
                                 (eca-process--get-latest-server-version)))
+
+;;;###autoload
+(defun eca-server-check-updates ()
+  "Check GitHub for a newer eca server release.
+Bypasses `eca-process--releases-cache' (and thus
+`eca-server-releases-cache-ttl') so the answer is always fresh.
+Reports via the echo area whether the installed server is up to date,
+whether a newer version is available, or whether the check failed."
+  (interactive)
+  (setq eca-process--releases-cache nil)
+  (let ((latest (eca-process--get-latest-server-version))
+        (current (eca-process--get-current-server-version)))
+    (cond
+     ((null latest)
+      (eca-warn "Could not check for eca server updates."))
+     ((null current)
+      (eca-info
+       (concat "No eca server installed; latest available is %s. "
+               "Run M-x eca-install-server to install.")
+       latest))
+     ((string-version-lessp current latest)
+      (eca-info
+       (concat "eca server %s is available (installed: %s). "
+               "Run M-x eca-install-server to upgrade.")
+       latest current))
+     (t
+      (eca-info "eca server is up to date (%s)." current)))))
 
 ;;;###autoload
 (defun eca-uninstall-server ()
