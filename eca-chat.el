@@ -130,6 +130,16 @@ ECA chat opens in a regular buffer that follows standard
   :type 'string
   :group 'eca)
 
+(defcustom eca-chat-trust-on-symbol-tty "●"
+  "Mode-line trust ON glyph used on terminal (non-graphic) frames."
+  :type 'string
+  :group 'eca)
+
+(defcustom eca-chat-trust-off-symbol-tty "○"
+  "Mode-line trust OFF glyph used on terminal (non-graphic) frames."
+  :type 'string
+  :group 'eca)
+
 (defcustom eca-chat-expand-pending-approval-tools t
   "Whether to auto expand tool calls when pending approval."
   :type 'boolean
@@ -1902,15 +1912,21 @@ are in progress."
      (eca-chat--init-progress-str session))
     (:trust
      (let* ((trust? (eca-chat--trust))
+            (graphic? (display-graphic-p))
             (face (if trust?
                       'eca-chat-trust-on-face
                     'eca-chat-trust-off-face))
             (help (if trust?
                       "Trust ON - auto-accepting tool calls"
-                    "Trust OFF - not auto-accepting tool calls")))
-       (propertize (if trust?
-                       eca-chat-trust-on-symbol
-                     eca-chat-trust-off-symbol)
+                    "Trust OFF - not auto-accepting tool calls"))
+            (symbol (if trust?
+                        (if graphic?
+                            eca-chat-trust-on-symbol
+                          eca-chat-trust-on-symbol-tty)
+                      (if graphic?
+                          eca-chat-trust-off-symbol
+                        eca-chat-trust-off-symbol-tty))))
+       (propertize symbol
                    'face face
                    'mouse-face 'highlight
                    'help-echo help
