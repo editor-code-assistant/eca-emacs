@@ -23,6 +23,16 @@ Falls back to the `default' face's foreground when none is set."
        (get-text-property pos 'face str))
       (face-foreground 'default)))
 
+(defun eca-completion-test--deleted-overlay-p (overlay)
+  "Return non-nil when OVERLAY is a region-replace deletion preview."
+  (eq (overlay-get overlay 'face)
+      'eca-completion-region-replace-deleted-face))
+
+;; eca-diff-lcs-opcodes
+
+(describe "eca-diff-lcs-opcodes"
+  (it "returns no opcodes for two empty vectors"
+    (expect (eca-diff-lcs-opcodes [] []) :to-be nil)))
 ;; eca-completion--fontify-as-mode
 
 (describe "eca-completion--fontify-as-mode"
