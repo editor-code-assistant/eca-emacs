@@ -17,6 +17,7 @@
 
 (require 'eca-util)
 (require 'eca-api)
+(require 'eca-diff-lcs)
 
 ;; Variables
 
@@ -60,6 +61,22 @@ already applied to the suggestion text, so syntax-highlighted
 foregrounds win over this face's foreground.  The face's other
 attributes (e.g. italic from `shadow') still apply across the
 whole suggestion, including spans that have no font-lock face."
+  :group 'eca)
+
+(defface eca-completion-region-replace-deleted-face
+  '((((background dark))  :background "#3a0e0e")
+    (((background light)) :background "#ffd6d6"))
+  "Face for the original buffer text being replaced by a region-replace preview.
+Shown with a red-tinted background so the user can read the
+\"before\" alongside the \"after\"."
+  :group 'eca)
+
+(defface eca-completion-region-replace-inserted-face
+  '((((background dark))  :background "#0e3a14")
+    (((background light)) :background "#d6ffd6"))
+  "Face for the replacement text in a region-replace preview.
+Layered with APPEND on top of any syntax highlighting so the green
+background shows through."
   :group 'eca)
 
 ;; Internal
@@ -195,6 +212,33 @@ Spans whose colors cannot be resolved are left untouched."
         (setq pos next)))
     result))
 
+(defun eca-completion--line-diff-preview (orig new)
+  "Return preview data for replacing ORIG line text with NEW.
+The result is a plist `(:deletions RANGES :preview TEXT)' where RANGES
+are cons cells of ORIG-relative deleted spans and TEXT is propertized
+NEW with inserted spans highlighted."
+  (let ((hunks (eca-diff-lcs-diff (eca-diff-lcs-tokenize orig)
+                                  (eca-diff-lcs-tokenize new)))
+        (preview (eca-completion--prepare-preview-text new))
+        (orig-pos 0)
+        (new-pos 0)
+        deletions)
+    (dolist (h hunks)
+      (pcase h
+        (`(:equal ,s)
+         (setq orig-pos (+ orig-pos (length s)))
+         (setq new-pos (+ new-pos (length s))))
+        (`(:delete ,s)
+         (push (cons orig-pos (+ orig-pos (length s))) deletions)
+         (setq orig-pos (+ orig-pos (length s))))
+        (`(:insert ,s)
+         (add-face-text-property new-pos (+ new-pos (length s))
+                                 'eca-completion-region-replace-inserted-face
+                                 t preview)
+         (setq new-pos (+ new-pos (length s))))))
+    (list :deletions (nreverse deletions)
+          :preview preview)))
+
 (defun eca-completion--prepare-display-text (text)
   "Return TEXT prepared for the inline overlay.
 Applies syntax fontification and foreground dimming according to
@@ -214,6 +258,15 @@ to mutate and does not yet carry `eca-completion-overlay-face'."
       (eca-completion--fontify-as-mode text mode))
      (t (copy-sequence text)))))
 
+(defun eca-completion--prepare-preview-text (text)
+  "Return TEXT prepared for a region-replace preview.
+Like `eca-completion--prepare-display-text' but skips the dim-toward-bg
+step: the inserted (\"green\") side of a diff is the canonical
+replacement, not ghost text, so it should render at full contrast."
+  (if eca-completion-syntax-highlight
+      (eca-completion--fontify-as-mode text major-mode)
+    (copy-sequence text)))
+
 (defun eca-completion--set-overlay-text (ov text)
   "Set overlay OV with TEXT.
 Used by the legacy zero-width \"ghost text after cursor\" rendering path."
@@ -229,6 +282,7 @@ Used by the legacy zero-width \"ghost text after cursor\" rendering path."
     ;; own faces untouched.
     (add-face-text-property 0 (length display-text)
                             'eca-completion-overlay-face t text-p)
+    (overlay-put ov 'face nil)
     (if (eolp)
         (progn
           (overlay-put ov 'after-string "")
@@ -242,31 +296,152 @@ Used by the legacy zero-width \"ghost text after cursor\" rendering path."
     (overlay-put ov 'start (point))
     (overlay-put ov 'eca-mode 'legacy)))
 
+(defun eca-completion--coalesce-replaces (opcodes)
+  "Merge each `:delete' immediately followed by `:insert' into `:replace'.
+Input opcodes come from `eca-diff-lcs-opcodes' and use only
+`:equal' / `:delete' / `:insert'.  This pass folds adjacent
+`:delete'+`:insert' pairs into a single `(:replace OLD-LINES NEW-LINES)'
+opcode so downstream rendering can treat \"these lines became those
+lines\" as one case instead of peeking ahead."
+  (let (out)
+    (while opcodes
+      (pcase-let ((`(,op ,xs) (pop opcodes)))
+        (if (and (eq op :delete)
+                 (eq (car-safe (car opcodes)) :insert))
+            (push (list :replace xs (cadr (pop opcodes))) out)
+          (push (list op xs) out))))
+    (nreverse out)))
+
+(defun eca-completion--region-replace-compute-hunks (text start end)
+  "Return a flat list of render hunks for replacing [START..END] with TEXT.
+Each hunk is one of:
+
+  (:keep    LINE)                       ; unchanged orig LINE
+  (:delete  LINE)                       ; full-line deletion of orig LINE
+  (:replace OLD-LINE DELETIONS PREVIEW) ; intra-line red ranges + green PREVIEW
+                                        ; below; PREVIEW is nil when no insert
+                                        ; should render
+  (:insert  PREVIEWS)                   ; block of new lines, anchored after the
+                                        ; previously consumed orig line"
+  (let* ((line-start (save-excursion (goto-char start) (line-beginning-position)))
+         (line-end (save-excursion (goto-char end) (line-end-position)))
+         (orig (buffer-substring-no-properties line-start line-end))
+         (new (concat (buffer-substring-no-properties line-start start)
+                      text
+                      (buffer-substring-no-properties end line-end)))
+         (orig-lines (split-string orig "\n"))
+         (new-lines (split-string new "\n"))
+         (opcodes (eca-completion--coalesce-replaces
+                   (eca-diff-lcs-opcodes (vconcat orig-lines)
+                                         (vconcat new-lines))))
+         hunks)
+    (cl-flet ((insert-previews (lines)
+                (mapcar (lambda (l)
+                          (plist-get (eca-completion--line-diff-preview "" l)
+                                     :preview))
+                        lines)))
+      (dolist (op opcodes)
+        (pcase op
+          (`(:equal ,lines)
+           (dolist (l lines) (push (list :keep l) hunks)))
+          (`(:delete ,lines)
+           (dolist (l lines) (push (list :delete l) hunks)))
+          (`(:insert ,lines)
+           (push (list :insert (insert-previews lines)) hunks))
+          (`(:replace ,olds ,news)
+           (while (and olds news)
+             (let* ((old (pop olds))
+                    (new (pop news))
+                    (r (eca-completion--line-diff-preview old new)))
+               (push (list :replace old
+                           (plist-get r :deletions)
+                           (and (> (length new) 0)
+                                (not (equal old new))
+                                (plist-get r :preview)))
+                     hunks)))
+           (dolist (l olds) (push (list :delete l) hunks))
+           (when news
+             (push (list :insert (insert-previews news)) hunks))))))
+    (nreverse hunks)))
+
+(defun eca-completion--region-replace-build-subs (text start end)
+  "Build per-hunk sub-overlays previewing a replacement of [START..END] by TEXT.
+Returns the list of sub-overlays in render order."
+  (let* ((hunks (eca-completion--region-replace-compute-hunks text start end))
+         (line-start (save-excursion (goto-char start)
+                                     (line-beginning-position)))
+         (line-end (save-excursion (goto-char end) (line-end-position)))
+         (pos line-start)
+         (last-line-end line-start)
+         subs)
+    (cl-flet ((advance (line)
+                (setq last-line-end (+ pos (length line)))
+                (setq pos (if (< last-line-end line-end)
+                              (1+ last-line-end)
+                            last-line-end)))
+              (track (sub)
+                (overlay-put sub 'eca-completion-sub t)
+                (push sub subs)))
+      (dolist (hunk hunks)
+        (pcase hunk
+          (`(:keep ,line)
+           (advance line))
+          (`(:delete ,line)
+           (let ((sub (make-overlay pos (+ pos (length line)) nil t nil)))
+             (overlay-put sub 'face
+                          'eca-completion-region-replace-deleted-face)
+             (track sub))
+           (advance line))
+          (`(:replace ,old-line ,deletions ,preview)
+           (let ((line-end-here (+ pos (length old-line))))
+             (dolist (range deletions)
+               (let ((sub (make-overlay (+ pos (car range))
+                                        (+ pos (cdr range))
+                                        nil t nil)))
+                 (overlay-put sub 'face
+                              'eca-completion-region-replace-deleted-face)
+                 (track sub)))
+             (when preview
+               (let ((sub (make-overlay line-end-here line-end-here
+                                        nil nil t)))
+                 (overlay-put sub 'after-string (concat "\n" preview))
+                 (track sub))))
+           (advance old-line))
+          (`(:insert ,previews)
+           (when previews
+             (let ((sub (make-overlay last-line-end last-line-end
+                                      nil nil t)))
+               (overlay-put sub 'after-string
+                            (concat "\n"
+                                    (mapconcat #'identity previews "\n")))
+               (track sub)))))))
+    (nreverse subs)))
+
 (defun eca-completion--set-region-replace-overlay (ov text start end)
   "Set OV to render TEXT replacing the buffer range [START..END].
-The original buffer text in [START..END] is hidden via the overlay's
-`display' property and TEXT is shown in its place; suitable for
-region-replace previews where TEXT may differ from the original both
-before and after point and may span multiple lines."
-  (let ((display-text (eca-completion--prepare-display-text text)))
-    (add-face-text-property 0 (length display-text)
-                            'eca-completion-overlay-face t display-text)
-    (move-overlay ov start end)
-    (move-overlay (overlay-get ov 'keymap-overlay)
-                  start (min (point-max) (1+ start)))
-    (overlay-put ov 'display display-text)
-    (overlay-put ov 'after-string nil)
-    (overlay-put ov 'completion text)
-    (overlay-put ov 'start start)
-    (overlay-put ov 'eca-mode 'region-replace)
-    (setq eca-completion--real-posn (cons start (posn-at-point)))))
+Renders a red/green preview driven by a token-level Myers diff: current
+buffer lines stay in place with changed tokens highlighted, and each
+suggested line is shown as a temporary line below the line it edits.
+TEXT may be empty (pure deletion) and may span multiple lines."
+  (move-overlay ov start end)
+  (move-overlay (overlay-get ov 'keymap-overlay)
+                start (min (point-max) (1+ start)))
+  (overlay-put ov 'display nil)
+  (overlay-put ov 'after-string nil)
+  (overlay-put ov 'face nil)
+  (overlay-put ov 'completion text)
+  (overlay-put ov 'start start)
+  (overlay-put ov 'eca-mode 'region-replace)
+  (setq eca-completion--real-posn (cons start (posn-at-point)))
+  (overlay-put ov 'sub-overlays
+               (eca-completion--region-replace-build-subs text start end)))
 
 (defun eca-completion--display-overlay-completion (text id start end)
   "Show TEXT with ID between buffer positions START and END.
 Dispatches to the legacy ghost-text renderer when the range is
 zero-width (START equals END), otherwise renders a region-replace
-preview that hides the buffer text in [START..END] and shows TEXT in
-its place.  For region-replace previews TEXT may be empty (a pure
+preview for TEXT below the affected buffer lines.  For region-replace
+previews TEXT may be empty (a pure
 deletion)."
   (eca-completion--clear-overlay)
   (cond
@@ -299,6 +474,9 @@ deletion)."
   "Clear ECA completion overlay."
   (interactive)
   (when (eca-completion--overlay-visible)
+    (when-let ((subs (overlay-get eca-completion--overlay 'sub-overlays)))
+      (mapc #'delete-overlay subs)
+      (overlay-put eca-completion--overlay 'sub-overlays nil))
     (delete-overlay eca-completion--overlay)
     (delete-overlay eca-completion--keymap-overlay)
     (setq eca-completion--real-posn nil)))
@@ -519,8 +697,12 @@ Assumes the caller is inside `save-excursion' and `save-restriction'."
        (let ((item (if (seq-empty-p items) nil (seq-elt items 0))))
          (if item
              (eca-completion--show-completion item)
+           (eca-completion--clear-overlay)
            (when called-interactively
-             (eca-warn "No completion is available."))))))))
+             (eca-warn "No completion is available.")))))
+     :on-error
+     (lambda (_error)
+       (eca-completion--clear-overlay)))))
 
 (provide 'eca-completion)
 ;;; eca-completion.el ends here
