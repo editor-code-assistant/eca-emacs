@@ -666,13 +666,17 @@ A plist with :session :request :question :options :tool-call-id :allow-freeform.
     (define-key map (kbd "C-c <up>") #'eca-chat-go-to-prev-expandable-block)
     (define-key map (kbd "C-c <down>") #'eca-chat-go-to-next-expandable-block)
     (define-key map (kbd "C-c <tab>") #'eca-chat-toggle-expandable-block)
-    ;; Per-chat inline image zoom (browser-style).  `=' is a no-Shift
-    ;; alias for `+' so users on US layouts don't need to press Shift.
-    (define-key map (kbd "C-c i +") #'eca-chat-image-zoom-in)
-    (define-key map (kbd "C-c i =") #'eca-chat-image-zoom-in)
-    (define-key map (kbd "C-c i -") #'eca-chat-image-zoom-out)
-    (define-key map (kbd "C-c i 0") #'eca-chat-image-zoom-reset)
-    (define-key map (kbd "C-c i s") #'eca-chat-save-image-at-point)
+    ;; Per-chat inline image zoom (browser-style).  Uses `C-c C-z' as
+    ;; the prefix because `C-c <letter>' sequences are reserved for
+    ;; users by the Emacs key binding conventions; `C-c' followed by
+    ;; a control character is reserved for major modes.  `=' is a
+    ;; no-Shift alias for `+' so users on US layouts don't need to
+    ;; press Shift.
+    (define-key map (kbd "C-c C-z +") #'eca-chat-image-zoom-in)
+    (define-key map (kbd "C-c C-z =") #'eca-chat-image-zoom-in)
+    (define-key map (kbd "C-c C-z -") #'eca-chat-image-zoom-out)
+    (define-key map (kbd "C-c C-z 0") #'eca-chat-image-zoom-reset)
+    (define-key map (kbd "C-c C-z s") #'eca-chat-save-image-at-point)
     map)
   "Keymap used by `eca-chat-mode'.")
 
