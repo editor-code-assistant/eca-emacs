@@ -474,10 +474,12 @@ Add text property to prompt text to match context."
       (seq-doseq (arg arguments)
         (-let (((&plist :name name :description description :required required) arg))
           (eca-chat--insert " ")
-          (let ((arg-text (read-string (format "Arg: %s\nDescription: %s\nValue%s: "
-                                               name
-                                               (or description "")
-                                               (if required "" " (leave blank for default)")))))
+          (let* ((desc-part (if (and description (not (string-empty-p description)))
+                                (format "\nDescription: %s" description)
+                              ""))
+                 (value-suffix (if required "" " (leave blank for default)"))
+                 (prompt (format "Arg: %s%s\nValue%s: " name desc-part value-suffix))
+                 (arg-text (read-string prompt)))
             (if (and arg-text (string-match-p " " arg-text))
                 (eca-chat--insert (format "\"%s\"" arg-text))
               (eca-chat--insert arg-text)))))
