@@ -17,7 +17,7 @@
 
 (require 'eca-util)
 (require 'eca-api)
-(require 'eca-diff-lcs)
+(require 'eca-completion-diff)
 
 ;; Variables
 
@@ -217,8 +217,8 @@ Spans whose colors cannot be resolved are left untouched."
 The result is a plist `(:deletions RANGES :preview TEXT)' where RANGES
 are cons cells of ORIG-relative deleted spans and TEXT is propertized
 NEW with inserted spans highlighted."
-  (let ((hunks (eca-diff-lcs-diff (eca-diff-lcs-tokenize orig)
-                                  (eca-diff-lcs-tokenize new)))
+  (let ((hunks (eca-completion-diff-hunks (eca-completion-diff-tokenize orig)
+                                          (eca-completion-diff-tokenize new)))
         (preview (eca-completion--prepare-preview-text new))
         (orig-pos 0)
         (new-pos 0)
@@ -298,7 +298,7 @@ Used by the legacy zero-width \"ghost text after cursor\" rendering path."
 
 (defun eca-completion--coalesce-replaces (opcodes)
   "Merge each `:delete' immediately followed by `:insert' into `:replace'.
-Input opcodes come from `eca-diff-lcs-opcodes' and use only
+Input opcodes come from `eca-completion-diff-opcodes' and use only
 `:equal' / `:delete' / `:insert'.  This pass folds adjacent
 `:delete'+`:insert' pairs into a single `(:replace OLD-LINES NEW-LINES)'
 opcode so downstream rendering can treat \"these lines became those
@@ -332,8 +332,8 @@ Each hunk is one of:
          (orig-lines (split-string orig "\n"))
          (new-lines (split-string new "\n"))
          (opcodes (eca-completion--coalesce-replaces
-                   (eca-diff-lcs-opcodes (vconcat orig-lines)
-                                         (vconcat new-lines))))
+                   (eca-completion-diff-opcodes (vconcat orig-lines)
+                                                (vconcat new-lines))))
          hunks)
     (cl-flet ((insert-previews (lines)
                 (mapcar (lambda (l)

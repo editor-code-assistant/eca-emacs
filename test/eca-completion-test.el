@@ -28,11 +28,11 @@ Falls back to the `default' face's foreground when none is set."
   (eq (overlay-get overlay 'face)
       'eca-completion-region-replace-deleted-face))
 
-;; eca-diff-lcs-opcodes
+;; eca-completion-diff-opcodes
 
-(describe "eca-diff-lcs-opcodes"
+(describe "eca-completion-diff-opcodes"
   (it "returns no opcodes for two empty vectors"
-    (expect (eca-diff-lcs-opcodes [] []) :to-be nil)))
+    (expect (eca-completion-diff-opcodes [] []) :to-be nil)))
 
 ;; eca-completion--fontify-as-mode
 

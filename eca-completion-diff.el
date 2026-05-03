@@ -1,4 +1,4 @@
-;;; eca-diff-lcs.el --- Token/line diff utilities for ECA -*- lexical-binding: t; -*-
+;;; eca-completion-diff.el --- Token/line diff for ECA -*- lexical-binding: t; -*-
 ;; Copyright (C) 2025 Eric Dallo
 ;;
 ;; SPDX-License-Identifier: Apache-2.0
@@ -9,11 +9,9 @@
 ;;
 ;;  Token- and line-level diff utilities for ECA.
 ;;
-;;  `eca-diff-lcs-opcodes' uses LCS with common-prefix/suffix
-;;  elimination, which is O(NM) worst-case but highly optimised for the
-;;  common case (single contiguous edit across a short token run).
-;;  Consumers (currently `eca-completion.el') turn the opcodes into
-;;  red/green inline highlights.
+;;  `eca-completion-diff-opcodes' walks unmatched middle after matching
+;;  out common prefix and suffix, which is O(NM) worst-case but fast when
+;;  edits are short.
 ;;
 ;;  These helpers are pure data: no buffers, no overlays, no faces.
 ;;
@@ -21,7 +19,7 @@
 
 (require 'cl-lib)
 
-(defun eca-diff-lcs-tokenize (s)
+(defun eca-completion-diff-tokenize (s)
   "Split S into a vector of word / whitespace / single-punctuation tokens.
 Word runs use `[[:alnum:]_-]+' (so hyphenated identifiers like
 `foo-bar' stay one token), whitespace runs use `[[:space:]]+', and
@@ -33,7 +31,7 @@ concatenation of the resulting tokens equals S."
       (setq pos (match-end 0)))
     (vconcat (nreverse tokens))))
 
-(defun eca-diff-lcs-opcodes (a b)
+(defun eca-completion-diff-opcodes (a b)
   "Return diff opcodes from vector A to vector B.
 Uses LCS with common-prefix/suffix elimination so the common case
 \(single contiguous edit across a few tokens) is near O(N+M).
@@ -103,7 +101,7 @@ where ITEMS is a list of contiguous vector entries."
         ;; invariant to fold a delete-then-insert run into a
         ;; `:replace' without re-checking ordering.  Bubble any
         ;; `:insert' past following `:delete's; the run length is
-        ;; tiny (LCS already stripped common prefix/suffix).
+        ;; tiny once prefix and suffix are trimmed.
         (let (changed)
           (cl-loop do
                    (setq changed nil)
@@ -144,13 +142,13 @@ where ITEMS is a list of contiguous vector entries."
           (mapcar (lambda (h) (list (car h) (nreverse (cadr h))))
                   (nreverse out)))))))
 
-(defun eca-diff-lcs-diff (a b)
-  "Return diff hunks from token vector A to B using `eca-diff-lcs-opcodes'.
+(defun eca-completion-diff-hunks (a b)
+  "Return diff hunks from token vector A to B using `eca-completion-diff-opcodes'.
 Each hunk is `(:equal STR)', `(:delete STR)', or `(:insert STR)' where
 STR is the concatenation of the contiguous run of tokens."
   (mapcar (lambda (h)
             (list (car h) (mapconcat #'identity (cadr h) "")))
-          (eca-diff-lcs-opcodes a b)))
+          (eca-completion-diff-opcodes a b)))
 
-(provide 'eca-diff-lcs)
-;;; eca-diff-lcs.el ends here
+(provide 'eca-completion-diff)
+;;; eca-completion-diff.el ends here
