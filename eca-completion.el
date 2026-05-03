@@ -455,11 +455,7 @@ Returns the list of sub-overlays in render order."
     (nreverse subs)))
 
 (defun eca-completion--set-region-replace-overlay (ov text start end)
-  "Set OV to render TEXT replacing the buffer range [START..END].
-Renders a red/green preview driven by a token-level Myers diff: current
-buffer lines stay in place with changed tokens highlighted, and each
-suggested line is shown as a temporary line below the line it edits.
-TEXT may be empty (pure deletion) and may span multiple lines."
+  "Set OV on [START..END] with completion TEXT and diff-preview sub-overlays."
   (move-overlay ov start end)
   (move-overlay (overlay-get ov 'keymap-overlay)
                 start (min (point-max) (1+ start)))

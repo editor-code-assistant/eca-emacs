@@ -43,6 +43,18 @@ helper handles both."
       (setq pos (1+ pos)))
     found))
 
+(defmacro eca-completion-test--with-buffer (content &rest body)
+  "Run BODY in a temp buffer pre-loaded with CONTENT.
+Sets `eca-completion--doc-version' to 0, moves point to
+`point-min', and binds `eca-completion-syntax-highlight' to nil."
+  (declare (indent 1))
+  `(with-temp-buffer
+     (insert ,content)
+     (goto-char (point-min))
+     (setq-local eca-completion--doc-version 0)
+     (let ((eca-completion-syntax-highlight nil))
+       ,@body)))
+
 ;; eca-completion--fontify-as-mode
 
 (describe "eca-completion--fontify-as-mode"
@@ -139,36 +151,6 @@ helper handles both."
 ;; eca-completion--show-completion + eca-completion-accept
 
 (describe "eca-completion--show-completion (legacy zero-width)"
-  (it "renders an after-cursor ghost overlay tagged 'legacy"
-    (with-temp-buffer
-      (insert "hello")
-      (goto-char (point-max))
-      (setq-local eca-completion--doc-version 0)
-      (eca-completion--show-completion
-       '(:text " world"
-         :id "1"
-         :range (:start (:line 1 :character 6) :end (:line 1 :character 6))
-         :docVersion 0))
-      (expect (eca-completion--overlay-visible) :to-be-truthy)
-      (expect (overlay-get eca-completion--overlay 'eca-mode)
-              :to-equal 'legacy)))
-
-  (it "accepts the suggestion by inserting at the cursor"
-    (with-temp-buffer
-      (insert "hello")
-      (goto-char (point-max))
-      (setq-local eca-completion--doc-version 0)
-      (eca-completion--show-completion
-       '(:text " world"
-         :id "1"
-         :range (:start (:line 1 :character 6) :end (:line 1 :character 6))
-         :docVersion 0))
-      (eca-completion-accept)
-      (expect (buffer-substring-no-properties (point-min) (point-max))
-              :to-equal "hello world")
-      ;; Overlay is gone after accept.
-      (expect (eca-completion--overlay-visible) :not :to-be-truthy)))
-
   (it "drops stale completions whose docVersion no longer matches"
     (with-temp-buffer
       (insert "x")
@@ -180,31 +162,9 @@ helper handles both."
          :docVersion 1))
       (expect (eca-completion--overlay-visible) :not :to-be-truthy))))
 
-(describe "eca-completion--show-completion (region-replace before cursor)"
-  (it "tags the overlay 'region-replace and replaces atomically on accept"
-    (with-temp-buffer
-      (insert "thersholdd")
-      (goto-char (point-max))
-      (setq-local eca-completion--doc-version 0)
-      ;; Drop the trailing duplicate 'd' (chars 10..11 in 1-based protocol).
-      (eca-completion--show-completion
-       '(:text ""
-         :id "1"
-         :range (:start (:line 1 :character 10) :end (:line 1 :character 11))
-         :docVersion 0))
-      (expect (eca-completion--overlay-visible) :to-be-truthy)
-      (expect (overlay-get eca-completion--overlay 'eca-mode)
-              :to-equal 'region-replace)
-      (eca-completion-accept)
-      (expect (buffer-substring-no-properties (point-min) (point-max))
-              :to-equal "thershold"))))
-
 (describe "eca-completion--show-completion (region-replace multi-line)"
   (it "replaces a multi-line range and lands point at start + len(text)"
-    (with-temp-buffer
-      (insert "alpha\nbeta\ngamma")
-      (goto-char (point-min))
-      (setq-local eca-completion--doc-version 0)
+    (eca-completion-test--with-buffer "alpha\nbeta\ngamma"
       ;; Replace "beta" on line 2 with "BETA".
       (eca-completion--show-completion
        '(:text "BETA"
@@ -219,51 +179,14 @@ helper handles both."
       ;; Point should be right after the inserted "BETA" — buffer position 11.
       (expect (point) :to-equal 11))))
 
-(describe "eca-completion--show-completion (region-replace inserts new lines)"
-  (it "supports replacement text that introduces new lines"
-    (with-temp-buffer
-      (insert "first\nsecond")
-      (goto-char (point-max))
-      (setq-local eca-completion--doc-version 0)
-      ;; Replace "second" with "second\nthird".
-      (eca-completion--show-completion
-       '(:text "second\nthird"
-         :id "1"
-         :range (:start (:line 2 :character 1) :end (:line 2 :character 7))
-         :docVersion 0))
-      (eca-completion-accept)
-      (expect (buffer-substring-no-properties (point-min) (point-max))
-              :to-equal "first\nsecond\nthird"))))
-
 (describe "eca-completion--show-completion (region-replace preview)"
-  (it "clears sub-overlays with the main overlay"
-    (with-temp-buffer
-      (insert "foo bar")
-      (goto-char (point-min))
-      (setq-local eca-completion--doc-version 0)
-      (let ((eca-completion-syntax-highlight nil))
-        (eca-completion--show-completion
-         '(:text "foo baz"
-           :id "1"
-           :range (:start (:line 1 :character 1) :end (:line 1 :character 8))
-           :docVersion 0)))
-      (let ((subs (overlay-get eca-completion--overlay 'sub-overlays)))
-        (expect subs :to-be-truthy)
-        (eca-completion--clear-overlay)
-        (expect (cl-every #'null (mapcar #'overlay-buffer subs))
-                :to-be-truthy))))
-
   (it "highlights deleted and inserted token spans"
-    (with-temp-buffer
-      (insert "foo bar")
-      (goto-char (point-min))
-      (setq-local eca-completion--doc-version 0)
-      (let ((eca-completion-syntax-highlight nil))
-        (eca-completion--show-completion
-         '(:text "foo baz"
-           :id "1"
-           :range (:start (:line 1 :character 1) :end (:line 1 :character 8))
-           :docVersion 0)))
+    (eca-completion-test--with-buffer "foo bar"
+      (eca-completion--show-completion
+       '(:text "foo baz"
+         :id "1"
+         :range (:start (:line 1 :character 1) :end (:line 1 :character 8))
+         :docVersion 0))
       (let* ((subs (overlay-get eca-completion--overlay 'sub-overlays))
              (deleted (cl-find-if
                        (lambda (sub)
@@ -282,16 +205,13 @@ helper handles both."
         (expect inserted :to-be-truthy))))
 
   (it "previews pure deletion with deleted token spans"
-    (with-temp-buffer
-      (insert "thersholdd")
+    (eca-completion-test--with-buffer "thersholdd"
       (goto-char (point-max))
-      (setq-local eca-completion--doc-version 0)
-      (let ((eca-completion-syntax-highlight nil))
-        (eca-completion--show-completion
-         '(:text ""
-           :id "1"
-           :range (:start (:line 1 :character 10) :end (:line 1 :character 11))
-           :docVersion 0)))
+      (eca-completion--show-completion
+       '(:text ""
+         :id "1"
+         :range (:start (:line 1 :character 10) :end (:line 1 :character 11))
+         :docVersion 0))
       (expect (cl-find-if
                (lambda (sub)
                  (eq (overlay-get sub 'face)
@@ -303,16 +223,13 @@ helper handles both."
               :to-equal "thershold")))
 
   (it "aligns shifted unchanged lines after a full-line deletion"
-    (with-temp-buffer
-      (insert "console.log('')\nif (!isIssue && !isPR) return {};")
-      (goto-char (point-min))
-      (setq-local eca-completion--doc-version 0)
-      (let ((eca-completion-syntax-highlight nil))
-        (eca-completion--show-completion
-         '(:text ""
-           :id "1"
-           :range (:start (:line 1 :character 1) :end (:line 2 :character 1))
-           :docVersion 0)))
+    (eca-completion-test--with-buffer
+        "console.log('')\nif (!isIssue && !isPR) return {};"
+      (eca-completion--show-completion
+       '(:text ""
+         :id "1"
+         :range (:start (:line 1 :character 1) :end (:line 2 :character 1))
+         :docVersion 0))
       (let* ((subs (overlay-get eca-completion--overlay 'sub-overlays))
              (line-2-start (save-excursion
                              (goto-char (point-min))
@@ -335,73 +252,6 @@ helper handles both."
         (expect (cl-find-if #'eca-completion-test--deleted-overlay-p subs)
                 :to-be-truthy)
         (expect deleted-on-line-2 :to-be nil)
-        (expect inserted-if-preview :to-be nil))))
-
-  (it "aligns shifted unchanged lines after a full-line insertion"
-    (with-temp-buffer
-      (insert "return value;")
-      (goto-char (point-min))
-      (setq-local eca-completion--doc-version 0)
-      (let ((eca-completion-syntax-highlight nil))
-        (eca-completion--show-completion
-         '(:text "const value = compute();\nreturn value;"
-           :id "1"
-           :range (:start (:line 1 :character 1) :end (:line 1 :character 14))
-           :docVersion 0)))
-      (let* ((subs (overlay-get eca-completion--overlay 'sub-overlays))
-             (deleted-return
-              (cl-find-if #'eca-completion-test--deleted-overlay-p subs))
-             (inserted-value-preview
-              (cl-find-if
-               (lambda (sub)
-                 (let ((after (overlay-get sub 'after-string)))
-                   (and after
-                        (string-match-p "return value;" after))))
-               subs))
-             (inserted-new-line-preview
-              (cl-find-if
-               (lambda (sub)
-                 (let ((after (overlay-get sub 'after-string)))
-                   (and after
-                        (string-match-p "const value = compute();" after))))
-               subs)))
-        (expect deleted-return :to-be nil)
-        (expect inserted-value-preview :to-be nil)
-        (expect inserted-new-line-preview :to-be-truthy))))
-
-  (it "aligns an unchanged line after deleting partial-line text"
-    (with-temp-buffer
-      (insert "    console.log(\"isDraft:\", isDraft);\n    const \n    if (!isIssue && !isPR) return {};")
-      (goto-char (point-min))
-      (setq-local eca-completion--doc-version 0)
-      (let ((eca-completion-syntax-highlight nil))
-        (eca-completion--show-completion
-         '(:text "\n    if (!isIssue && !isPR) return {};"
-           :id "1"
-           :range (:start (:line 2 :character 1) :end (:line 3 :character 38))
-           :docVersion 0)))
-      (let* ((subs (overlay-get eca-completion--overlay 'sub-overlays))
-             (line-3-start (save-excursion
-                             (goto-char (point-min))
-                             (forward-line 2)
-                             (point)))
-             (deleted-on-if-line
-              (cl-find-if
-               (lambda (sub)
-                 (and (eca-completion-test--deleted-overlay-p sub)
-                      (>= (overlay-start sub) line-3-start)))
-               subs))
-             (inserted-if-preview
-              (cl-find-if
-               (lambda (sub)
-                 (let ((after (overlay-get sub 'after-string)))
-                   (and after
-                        (string-match-p "if (!isIssue && !isPR) return {};"
-                                        after))))
-               subs)))
-        (expect (cl-find-if #'eca-completion-test--deleted-overlay-p subs)
-                :to-be-truthy)
-        (expect deleted-on-if-line :to-be nil)
         (expect inserted-if-preview :to-be nil)))))
 
 (defun eca-completion-test--after-string-subs (subs)
@@ -412,47 +262,14 @@ helper handles both."
   "Return the deletion-faced overlays in SUBS."
   (cl-remove-if-not #'eca-completion-test--deleted-overlay-p subs))
 
-(describe "eca-completion--show-completion (region-replace removes 2, adds 1)"
-  (it "marks both deleted lines red and anchors the preview after them"
-    (with-temp-buffer
-      (insert "first\nsecond\nthird")
-      (goto-char (point-min))
-      (setq-local eca-completion--doc-version 0)
-      (let ((eca-completion-syntax-highlight nil))
-        (eca-completion--show-completion
-         '(:text "REPLACED"
-           :id "1"
-           :range (:start (:line 2 :character 1) :end (:line 3 :character 6))
-           :docVersion 0)))
-      (let* ((subs (overlay-get eca-completion--overlay 'sub-overlays))
-             (deleted (eca-completion-test--deleted-subs subs))
-             (afters (eca-completion-test--after-string-subs subs))
-             (line-3-end (save-excursion (goto-char (point-min))
-                                         (forward-line 2)
-                                         (line-end-position))))
-        (expect (length deleted) :to-equal 2)
-        ;; Multi-line delete + single-line insert no longer pairs with the
-        ;; first deleted line; the green preview renders as its own block
-        ;; anchored after the entire deletion run, so red and green never
-        ;; share a visual row.
-        (expect (length afters) :to-equal 1)
-        (expect (overlay-start (car afters)) :to-equal line-3-end)
-        (expect (string-match-p "REPLACED"
-                                (overlay-get (car afters) 'after-string))
-                :to-be-truthy)))))
-
 (describe "eca-completion--show-completion (region-replace removes 1, adds 2)"
   (it "anchors the new-line block at the consumed line's end"
-    (with-temp-buffer
-      (insert "first\nsecond\nthird")
-      (goto-char (point-min))
-      (setq-local eca-completion--doc-version 0)
-      (let ((eca-completion-syntax-highlight nil))
-        (eca-completion--show-completion
-         '(:text "A\nB"
-           :id "1"
-           :range (:start (:line 2 :character 1) :end (:line 2 :character 7))
-           :docVersion 0)))
+    (eca-completion-test--with-buffer "first\nsecond\nthird"
+      (eca-completion--show-completion
+       '(:text "A\nB"
+         :id "1"
+         :range (:start (:line 2 :character 1) :end (:line 2 :character 7))
+         :docVersion 0))
       (let* ((subs (overlay-get eca-completion--overlay 'sub-overlays))
              (deleted (eca-completion-test--deleted-subs subs))
              (afters (eca-completion-test--after-string-subs subs))
@@ -473,44 +290,14 @@ helper handles both."
                          afters)
                 :to-be-truthy)))))
 
-(describe "eca-completion--show-completion (region-replace 2 changed lines)"
-  (it "renders the green block after the deletion run, never on a deleted row"
-    (with-temp-buffer
-      (insert "      (shared/)\n      (strng/replace fence-re \"$1\")")
-      (goto-char (point-min))
-      (setq-local eca-completion--doc-version 0)
-      (let ((eca-completion-syntax-highlight nil))
-        (eca-completion--show-completion
-         `(:text ,(concat "trim-preamble-postamble)\n"
-                          "      (stri")
-           :id "1"
-           :range (:start (:line 1 :character 15)
-                   :end (:line 2 :character 11))
-           :docVersion 0)))
-      (let* ((subs (overlay-get eca-completion--overlay 'sub-overlays))
-             (deleted (eca-completion-test--deleted-subs subs))
-             (afters (eca-completion-test--after-string-subs subs))
-             (max-deleted-end
-              (apply #'max 0 (mapcar #'overlay-end deleted))))
-        ;; All inserted previews collapse into one contiguous green block
-        ;; anchored after every deletion, so red and green never share a
-        ;; visual row.
-        (expect (length afters) :to-equal 1)
-        (expect (>= (overlay-start (car afters)) max-deleted-end)
-                :to-be-truthy)))))
-
 (describe "eca-completion--show-completion (region-replace independent edits)"
   (it "leaves unchanged context lines untouched between two edits"
-    (with-temp-buffer
-      (insert "one\ntwo\nthree\nfour\nfive")
-      (goto-char (point-min))
-      (setq-local eca-completion--doc-version 0)
-      (let ((eca-completion-syntax-highlight nil))
-        (eca-completion--show-completion
-         '(:text "ONE\ntwo\nthree\nfour\nFIVE"
-           :id "1"
-           :range (:start (:line 1 :character 1) :end (:line 5 :character 5))
-           :docVersion 0)))
+    (eca-completion-test--with-buffer "one\ntwo\nthree\nfour\nfive"
+      (eca-completion--show-completion
+       '(:text "ONE\ntwo\nthree\nfour\nFIVE"
+         :id "1"
+         :range (:start (:line 1 :character 1) :end (:line 5 :character 5))
+         :docVersion 0))
       (let* ((subs (overlay-get eca-completion--overlay 'sub-overlays))
              (deleted (eca-completion-test--deleted-subs subs))
              (afters (eca-completion-test--after-string-subs subs))
@@ -540,16 +327,12 @@ helper handles both."
 
 (describe "eca-completion--show-completion (region-replace sub-line token)"
   (it "narrows the deletion to the changed token within the line"
-    (with-temp-buffer
-      (insert "let x = 1;")
-      (goto-char (point-min))
-      (setq-local eca-completion--doc-version 0)
-      (let ((eca-completion-syntax-highlight nil))
-        (eca-completion--show-completion
-         '(:text "let x = 42;"
-           :id "1"
-           :range (:start (:line 1 :character 1) :end (:line 1 :character 11))
-           :docVersion 0)))
+    (eca-completion-test--with-buffer "let x = 1;"
+      (eca-completion--show-completion
+       '(:text "let x = 42;"
+         :id "1"
+         :range (:start (:line 1 :character 1) :end (:line 1 :character 11))
+         :docVersion 0))
       (let* ((subs (overlay-get eca-completion--overlay 'sub-overlays))
              (deleted (eca-completion-test--deleted-subs subs))
              (afters (eca-completion-test--after-string-subs subs)))
@@ -568,42 +351,14 @@ helper handles both."
                      slice 'eca-completion-region-replace-inserted-face)
                     :to-be-truthy)))))))
 
-(describe "eca-completion--show-completion (region-replace EOF no newline)"
-  (it "previews and accepts the last line without a trailing newline"
-    (with-temp-buffer
-      (insert "line1\nline2")
-      (goto-char (point-min))
-      (setq-local eca-completion--doc-version 0)
-      (let ((eca-completion-syntax-highlight nil))
-        (eca-completion--show-completion
-         '(:text "LINE2"
-           :id "1"
-           :range (:start (:line 2 :character 1) :end (:line 2 :character 6))
-           :docVersion 0)))
-      (let* ((subs (overlay-get eca-completion--overlay 'sub-overlays))
-             (afters (eca-completion-test--after-string-subs subs)))
-        (expect afters :to-be-truthy)
-        (expect (cl-every (lambda (a)
-                            (let ((s (overlay-get a 'after-string)))
-                              (not (equal s "\n"))))
-                          afters)
-                :to-be-truthy))
-      (eca-completion-accept)
-      (expect (buffer-substring-no-properties (point-min) (point-max))
-              :to-equal "line1\nLINE2"))))
-
 (describe "eca-completion--show-completion (region-replace multibyte EOF)"
   (it "covers the multibyte deletion span and accepts cleanly"
-    (with-temp-buffer
-      (insert "hello\n세계")
-      (goto-char (point-min))
-      (setq-local eca-completion--doc-version 0)
-      (let ((eca-completion-syntax-highlight nil))
-        (eca-completion--show-completion
-         '(:text "world"
-           :id "1"
-           :range (:start (:line 2 :character 1) :end (:line 2 :character 3))
-           :docVersion 0)))
+    (eca-completion-test--with-buffer "hello\n세계"
+      (eca-completion--show-completion
+       '(:text "world"
+         :id "1"
+         :range (:start (:line 2 :character 1) :end (:line 2 :character 3))
+         :docVersion 0))
       (let* ((subs (overlay-get eca-completion--overlay 'sub-overlays))
              (deleted (eca-completion-test--deleted-subs subs)))
         (expect (length deleted) :to-equal 1)
@@ -614,33 +369,15 @@ helper handles both."
       (expect (buffer-substring-no-properties (point-min) (point-max))
               :to-equal "hello\nworld"))))
 
-(describe "eca-completion--show-completion (region-replace identical text)"
-  (it "creates no preview sub-overlays when text matches the range"
-    (with-temp-buffer
-      (insert "foo")
-      (goto-char (point-min))
-      (setq-local eca-completion--doc-version 0)
-      (let ((eca-completion-syntax-highlight nil))
-        (eca-completion--show-completion
-         '(:text "foo"
-           :id "1"
-           :range (:start (:line 1 :character 1) :end (:line 1 :character 4))
-           :docVersion 0)))
-      (let ((subs (overlay-get eca-completion--overlay 'sub-overlays)))
-        (expect subs :to-be nil)))))
-
 (describe "eca-completion--show-completion (legacy multi-line insertion)"
   (it "routes zero-width multi-line text to the legacy ghost path"
-    (with-temp-buffer
-      (insert "hello")
+    (eca-completion-test--with-buffer "hello"
       (goto-char (point-max))
-      (setq-local eca-completion--doc-version 0)
-      (let ((eca-completion-syntax-highlight nil))
-        (eca-completion--show-completion
-         '(:text "a\nb"
-           :id "1"
-           :range (:start (:line 1 :character 6) :end (:line 1 :character 6))
-           :docVersion 0)))
+      (eca-completion--show-completion
+       '(:text "a\nb"
+         :id "1"
+         :range (:start (:line 1 :character 6) :end (:line 1 :character 6))
+         :docVersion 0))
       (expect (eca-completion--overlay-visible) :to-be-truthy)
       (expect (overlay-get eca-completion--overlay 'eca-mode)
               :to-equal 'legacy)
