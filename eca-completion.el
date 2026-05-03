@@ -64,19 +64,27 @@ whole suggestion, including spans that have no font-lock face."
   :group 'eca)
 
 (defface eca-completion-region-replace-deleted-face
-  '((((background dark))  :background "#3a0e0e")
-    (((background light)) :background "#ffd6d6"))
-  "Face for the original buffer text being replaced by a region-replace preview.
-Shown with a red-tinted background so the user can read the
-\"before\" alongside the \"after\"."
+  '((((background dark))  :background "#893e44")
+    (((background light)) :background "#ffb2b2"))
+  "Face for removed tokens."
+  :group 'eca)
+
+(defface eca-completion-region-replace-deleted-row-face
+  '((((background dark))  :background "#4f313b")
+    (((background light)) :background "#ffe1e1"))
+  "Background face for deleted rows."
   :group 'eca)
 
 (defface eca-completion-region-replace-inserted-face
-  '((((background dark))  :background "#0e3a14")
-    (((background light)) :background "#d6ffd6"))
-  "Face for the replacement text in a region-replace preview.
-Layered with APPEND on top of any syntax highlighting so the green
-background shows through."
+  '((((background dark))  :background "#325b46")
+    (((background light)) :background "#d6fde0"))
+  "Face for inserted tokens."
+  :group 'eca)
+
+(defface eca-completion-region-replace-inserted-row-face
+  '((((background dark))  :background "#2c3d3c")
+    (((background light)) :background "#eefef3"))
+  "Background face for inserted rows."
   :group 'eca)
 
 ;; Internal
