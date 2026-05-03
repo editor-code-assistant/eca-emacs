@@ -221,16 +221,13 @@ Spans whose colors cannot be resolved are left untouched."
     result))
 
 (defun eca-completion--line-diff-preview (orig new)
-  "Return preview data for replacing ORIG line text with NEW.
-The result is a plist `(:deletions RANGES :preview TEXT)' where RANGES
-are cons cells of ORIG-relative deleted spans and TEXT is propertized
-NEW with inserted spans highlighted."
-  (let ((hunks (eca-completion-diff-hunks (eca-completion-diff-tokenize orig)
-                                          (eca-completion-diff-tokenize new)))
-        (preview (eca-completion--prepare-preview-text new))
-        (orig-pos 0)
-        (new-pos 0)
-        deletions)
+  "Calculates. preview data for replacing ORIG line text with NEW."
+  (let* ((hunks (eca-completion-diff-hunks (eca-completion-diff-tokenize orig)
+                                           (eca-completion-diff-tokenize new)))
+         (preview (eca-completion--prepare-preview-text new))
+         (orig-pos 0)
+         (new-pos 0)
+         deletions)
     (dolist (h hunks)
       (pcase h
         (`(:equal ,s)
@@ -242,8 +239,16 @@ NEW with inserted spans highlighted."
         (`(:insert ,s)
          (add-face-text-property new-pos (+ new-pos (length s))
                                  'eca-completion-region-replace-inserted-face
-                                 t preview)
+                                 nil preview)
          (setq new-pos (+ new-pos (length s))))))
+    ;; Append the faint row face with lower priority than the strong
+    ;; insert face we just prepended, so the row reads green overall
+    ;; without washing out the changed tokens.
+    (when (> (length preview) 0)
+      (add-face-text-property
+       0 (length preview)
+       'eca-completion-region-replace-inserted-row-face
+       t preview))
     (list :deletions (nreverse deletions)
           :preview preview)))
 
@@ -304,34 +309,28 @@ Used by the legacy zero-width \"ghost text after cursor\" rendering path."
     (overlay-put ov 'start (point))
     (overlay-put ov 'eca-mode 'legacy)))
 
-(defun eca-completion--coalesce-replaces (opcodes)
-  "Merge each `:delete' immediately followed by `:insert' into `:replace'.
-Input opcodes come from `eca-completion-diff-opcodes' and use only
-`:equal' / `:delete' / `:insert'.  This pass folds adjacent
-`:delete'+`:insert' pairs into a single `(:replace OLD-LINES NEW-LINES)'
-opcode so downstream rendering can treat \"these lines became those
-lines\" as one case instead of peeking ahead."
-  (let (out)
-    (while opcodes
-      (pcase-let ((`(,op ,xs) (pop opcodes)))
-        (if (and (eq op :delete)
-                 (eq (car-safe (car opcodes)) :insert))
-            (push (list :replace xs (cadr (pop opcodes))) out)
-          (push (list op xs) out))))
-    (nreverse out)))
+(defun eca-completion--region-replace-line-ops (text start end)
+  "Return per-line render ops for replacing [START..END] with TEXT.
 
-(defun eca-completion--region-replace-compute-hunks (text start end)
-  "Return a flat list of render hunks for replacing [START..END] with TEXT.
-Each hunk is one of:
+Layout and decoration are kept separate.  Each op describes exactly one
+visual row of the preview, and rows never mix red and green:
 
-  (:keep    LINE)                       ; unchanged orig LINE
-  (:delete  LINE)                       ; full-line deletion of orig LINE
-  (:replace OLD-LINE DELETIONS PREVIEW) ; intra-line red ranges + green PREVIEW
-                                        ; below; PREVIEW is nil when no insert
-                                        ; should render
-  (:insert  PREVIEWS)                   ; block of new lines, anchored after the
-                                        ; previously consumed orig line"
-  (let* ((line-start (save-excursion (goto-char start) (line-beginning-position)))
+  (:keep           LINE)         ; orig LINE rendered untouched
+  (:delete-full    LINE)         ; orig LINE rendered with the deleted face
+  (:delete-paired  LINE RANGES)  ; orig LINE with the deleted face only on
+                                 ; RANGES (line-relative `(start . end)' pairs)
+  (:insert         PREVIEW)      ; one virtual green row.  `:insert' ops
+                                 ; that follow other `:insert' / `:delete*'
+                                 ; ops are emitted as a single contiguous
+                                 ; green block by `build-subs'
+
+When a `:delete' opcode is immediately followed by an `:insert' opcode,
+the first min(N,M) lines on each side are paired for token-level
+highlighting (red only on actually-deleted tokens, green only on
+actually-inserted tokens).  Surplus lines on either side fall back to
+fully-faced `:delete-full' / `:insert' previews."
+  (let* ((line-start (save-excursion (goto-char start)
+                                     (line-beginning-position)))
          (line-end (save-excursion (goto-char end) (line-end-position)))
          (orig (buffer-substring-no-properties line-start line-end))
          (new (concat (buffer-substring-no-properties line-start start)
@@ -339,48 +338,64 @@ Each hunk is one of:
                       (buffer-substring-no-properties end line-end)))
          (orig-lines (split-string orig "\n"))
          (new-lines (split-string new "\n"))
-         (opcodes (eca-completion--coalesce-replaces
-                   (eca-completion-diff-opcodes (vconcat orig-lines)
-                                                (vconcat new-lines))))
-         hunks)
-    (cl-flet ((insert-previews (lines)
-                (mapcar (lambda (l)
-                          (plist-get (eca-completion--line-diff-preview "" l)
-                                     :preview))
-                        lines)))
-      (dolist (op opcodes)
-        (pcase op
-          (`(:equal ,lines)
-           (dolist (l lines) (push (list :keep l) hunks)))
-          (`(:delete ,lines)
-           (dolist (l lines) (push (list :delete l) hunks)))
-          (`(:insert ,lines)
-           (push (list :insert (insert-previews lines)) hunks))
-          (`(:replace ,olds ,news)
-           (while (and olds news)
-             (let* ((old (pop olds))
-                    (new (pop news))
-                    (r (eca-completion--line-diff-preview old new)))
-               (push (list :replace old
-                           (plist-get r :deletions)
-                           (and (> (length new) 0)
-                                (not (equal old new))
-                                (plist-get r :preview)))
-                     hunks)))
-           (dolist (l olds) (push (list :delete l) hunks))
-           (when news
-             (push (list :insert (insert-previews news)) hunks))))))
-    (nreverse hunks)))
+         (opcodes (eca-completion-diff-opcodes (vconcat orig-lines)
+                                               (vconcat new-lines)))
+         ops)
+    (cl-flet ((push-full-insert (line)
+                (push (list :insert
+                            (plist-get
+                             (eca-completion--line-diff-preview "" line)
+                             :preview))
+                      ops)))
+      (while opcodes
+        (pcase-let ((`(,op ,xs) (pop opcodes)))
+          (pcase op
+            (:equal
+             (dolist (l xs) (push (list :keep l) ops)))
+            (:delete
+             (if (eq (car-safe (car opcodes)) :insert)
+                 (let* ((news (cadr (pop opcodes)))
+                        (paired (min (length xs) (length news)))
+                        (pairs (cl-loop
+                                for i below paired
+                                collect (eca-completion--line-diff-preview
+                                         (nth i xs) (nth i news)))))
+                   (dotimes (i paired)
+                     (push (list :delete-paired (nth i xs)
+                                 (plist-get (nth i pairs) :deletions))
+                           ops))
+                   (cl-loop for i from paired below (length xs)
+                            do (push (list :delete-full (nth i xs)) ops))
+                   (dotimes (i paired)
+                     (push (list :insert (plist-get (nth i pairs) :preview))
+                           ops))
+                   (cl-loop for i from paired below (length news)
+                            do (push-full-insert (nth i news))))
+               (dolist (l xs) (push (list :delete-full l) ops))))
+            (:insert
+             (dolist (l xs) (push-full-insert l)))))))
+    (nreverse ops)))
 
 (defun eca-completion--region-replace-build-subs (text start end)
-  "Build per-hunk sub-overlays previewing a replacement of [START..END] by TEXT.
+  "Build sub-overlays previewing a replacement of [START..END] with TEXT.
+
+Layout invariants enforced here:
+- Deleted orig rows render in place with the deleted face (full-line for
+  unpaired deletes, only on changed token spans for paired deletes).
+- Inserted rows render as a single contiguous green virtual block via
+  one after-string overlay anchored to the end of the previously
+  consumed orig row.
+- No row ever mixes red and green: layout decisions never depend on
+  intra-line token diffs.
+
 Returns the list of sub-overlays in render order."
-  (let* ((hunks (eca-completion--region-replace-compute-hunks text start end))
+  (let* ((ops (eca-completion--region-replace-line-ops text start end))
          (line-start (save-excursion (goto-char start)
                                      (line-beginning-position)))
          (line-end (save-excursion (goto-char end) (line-end-position)))
          (pos line-start)
          (last-line-end line-start)
+         pending-inserts
          subs)
     (cl-flet ((advance (line)
                 (setq last-line-end (+ pos (length line)))
@@ -389,40 +404,54 @@ Returns the list of sub-overlays in render order."
                             last-line-end)))
               (track (sub)
                 (overlay-put sub 'eca-completion-sub t)
-                (push sub subs)))
-      (dolist (hunk hunks)
-        (pcase hunk
+                (push sub subs))
+              (flush-inserts ()
+                (when pending-inserts
+                  (let ((sub (make-overlay last-line-end last-line-end
+                                           nil nil t)))
+                    (overlay-put sub 'after-string
+                                 (concat
+                                  "\n"
+                                  (mapconcat #'identity
+                                             (nreverse pending-inserts)
+                                             "\n")))
+                    (overlay-put sub 'eca-completion-sub t)
+                    (push sub subs)
+                    (setq pending-inserts nil)))))
+      (dolist (op ops)
+        (pcase op
           (`(:keep ,line)
+           (flush-inserts)
            (advance line))
-          (`(:delete ,line)
+          (`(:delete-full ,line)
+           (flush-inserts)
            (let ((sub (make-overlay pos (+ pos (length line)) nil t nil)))
              (overlay-put sub 'face
                           'eca-completion-region-replace-deleted-face)
+             (overlay-put sub 'priority 1)
              (track sub))
            (advance line))
-          (`(:replace ,old-line ,deletions ,preview)
-           (let ((line-end-here (+ pos (length old-line))))
-             (dolist (range deletions)
-               (let ((sub (make-overlay (+ pos (car range))
-                                        (+ pos (cdr range))
-                                        nil t nil)))
-                 (overlay-put sub 'face
-                              'eca-completion-region-replace-deleted-face)
-                 (track sub)))
-             (when preview
-               (let ((sub (make-overlay line-end-here line-end-here
-                                        nil nil t)))
-                 (overlay-put sub 'after-string (concat "\n" preview))
-                 (track sub))))
-           (advance old-line))
-          (`(:insert ,previews)
-           (when previews
-             (let ((sub (make-overlay last-line-end last-line-end
-                                      nil nil t)))
-               (overlay-put sub 'after-string
-                            (concat "\n"
-                                    (mapconcat #'identity previews "\n")))
-               (track sub)))))))
+          (`(:delete-paired ,line ,ranges)
+           (flush-inserts)
+           ;; Faint red row underneath, then strong red on changed tokens.
+           ;; Higher `priority' wins where overlays overlap.
+           (let ((row (make-overlay pos (+ pos (length line)) nil t nil)))
+             (overlay-put row 'face
+                          'eca-completion-region-replace-deleted-row-face)
+             (overlay-put row 'priority 0)
+             (track row))
+           (dolist (range ranges)
+             (let ((sub (make-overlay (+ pos (car range))
+                                      (+ pos (cdr range))
+                                      nil t nil)))
+               (overlay-put sub 'face
+                            'eca-completion-region-replace-deleted-face)
+               (overlay-put sub 'priority 1)
+               (track sub)))
+           (advance line))
+          (`(:insert ,preview)
+           (push preview pending-inserts))))
+      (flush-inserts))
     (nreverse subs)))
 
 (defun eca-completion--set-region-replace-overlay (ov text start end)

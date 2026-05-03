@@ -28,6 +28,21 @@ Falls back to the `default' face's foreground when none is set."
   (eq (overlay-get overlay 'face)
       'eca-completion-region-replace-deleted-face))
 
+(defun eca-completion-test--string-has-face-p (str face)
+  "Return non-nil when any position of STR has FACE in its `face' property.
+The `face' property may be a single face or a list of faces; this
+helper handles both."
+  (let ((pos 0)
+        (len (length str))
+        (found nil))
+    (while (and (not found) (< pos len))
+      (let ((val (get-text-property pos 'face str)))
+        (when (or (eq val face)
+                  (and (listp val) (memq face val)))
+          (setq found t)))
+      (setq pos (1+ pos)))
+    found))
+
 ;; eca-completion-diff-opcodes
 
 (describe "eca-completion-diff-opcodes"
@@ -265,11 +280,9 @@ Falls back to the `default' face's foreground when none is set."
                         (lambda (sub)
                           (let ((after (overlay-get sub 'after-string)))
                             (and after
-                                 (text-property-any
-                                  0 (length after)
-                                  'face
-                                  'eca-completion-region-replace-inserted-face
-                                  after))))
+                                 (eca-completion-test--string-has-face-p
+                                  after
+                                  'eca-completion-region-replace-inserted-face))))
                         subs)))
         (expect deleted :to-be-truthy)
         (expect inserted :to-be-truthy))))
@@ -406,7 +419,7 @@ Falls back to the `default' face's foreground when none is set."
   (cl-remove-if-not #'eca-completion-test--deleted-overlay-p subs))
 
 (describe "eca-completion--show-completion (region-replace removes 2, adds 1)"
-  (it "marks both deleted lines red and anchors a single preview on line 1"
+  (it "marks both deleted lines red and anchors the preview after them"
     (with-temp-buffer
       (insert "first\nsecond\nthird")
       (goto-char (point-min))
@@ -420,25 +433,22 @@ Falls back to the `default' face's foreground when none is set."
       (let* ((subs (overlay-get eca-completion--overlay 'sub-overlays))
              (deleted (eca-completion-test--deleted-subs subs))
              (afters (eca-completion-test--after-string-subs subs))
-             (line-2-end (save-excursion (goto-char (point-min))
-                                         (forward-line 1)
-                                         (line-end-position)))
-             (line-3-start (save-excursion (goto-char (point-min))
-                                           (forward-line 2)
-                                           (point))))
+             (line-3-end (save-excursion (goto-char (point-min))
+                                         (forward-line 2)
+                                         (line-end-position))))
         (expect (length deleted) :to-equal 2)
+        ;; Multi-line delete + single-line insert no longer pairs with the
+        ;; first deleted line; the green preview renders as its own block
+        ;; anchored after the entire deletion run, so red and green never
+        ;; share a visual row.
         (expect (length afters) :to-equal 1)
-        (expect (overlay-start (car afters)) :to-equal line-2-end)
+        (expect (overlay-start (car afters)) :to-equal line-3-end)
         (expect (string-match-p "REPLACED"
                                 (overlay-get (car afters) 'after-string))
-                :to-be-truthy)
-        (expect (cl-some (lambda (s)
-                           (>= (overlay-start s) line-3-start))
-                         afters)
-                :not :to-be-truthy)))))
+                :to-be-truthy)))))
 
 (describe "eca-completion--show-completion (region-replace removes 1, adds 2)"
-  (it "anchors both new lines at the consumed line's end"
+  (it "anchors the new-line block at the consumed line's end"
     (with-temp-buffer
       (insert "first\nsecond\nthird")
       (goto-char (point-min))
@@ -456,9 +466,8 @@ Falls back to the `default' face's foreground when none is set."
                                          (forward-line 1)
                                          (line-end-position))))
         (expect (length deleted) :to-equal 1)
-        (expect (length afters) :to-equal 2)
-        (dolist (a afters)
-          (expect (overlay-start a) :to-equal line-2-end))
+        (expect (length afters) :to-equal 1)
+        (expect (overlay-start (car afters)) :to-equal line-2-end)
         (expect (cl-some (lambda (a)
                            (string-match-p
                             "A" (overlay-get a 'after-string)))
@@ -468,6 +477,32 @@ Falls back to the `default' face's foreground when none is set."
                            (string-match-p
                             "B" (overlay-get a 'after-string)))
                          afters)
+                :to-be-truthy)))))
+
+(describe "eca-completion--show-completion (region-replace 2 changed lines)"
+  (it "renders the green block after the deletion run, never on a deleted row"
+    (with-temp-buffer
+      (insert "      (shared/)\n      (strng/replace fence-re \"$1\")")
+      (goto-char (point-min))
+      (setq-local eca-completion--doc-version 0)
+      (let ((eca-completion-syntax-highlight nil))
+        (eca-completion--show-completion
+         `(:text ,(concat "trim-preamble-postamble)\n"
+                          "      (stri")
+           :id "1"
+           :range (:start (:line 1 :character 15)
+                   :end (:line 2 :character 11))
+           :docVersion 0)))
+      (let* ((subs (overlay-get eca-completion--overlay 'sub-overlays))
+             (deleted (eca-completion-test--deleted-subs subs))
+             (afters (eca-completion-test--after-string-subs subs))
+             (max-deleted-end
+              (apply #'max 0 (mapcar #'overlay-end deleted))))
+        ;; All inserted previews collapse into one contiguous green block
+        ;; anchored after every deletion, so red and green never share a
+        ;; visual row.
+        (expect (length afters) :to-equal 1)
+        (expect (>= (overlay-start (car afters)) max-deleted-end)
                 :to-be-truthy)))))
 
 (describe "eca-completion--show-completion (region-replace independent edits)"
@@ -533,11 +568,10 @@ Falls back to the `default' face's foreground when none is set."
         (expect (length afters) :to-equal 1)
         (let ((after (overlay-get (car afters) 'after-string)))
           (expect (string-match-p "let x = 42;" after) :to-be-truthy)
-          (let ((idx (string-match "42" after)))
-            (expect (text-property-any
-                     idx (+ idx 2)
-                     'face 'eca-completion-region-replace-inserted-face
-                     after)
+          (let* ((idx (string-match "42" after))
+                 (slice (substring after idx (+ idx 2))))
+            (expect (eca-completion-test--string-has-face-p
+                     slice 'eca-completion-region-replace-inserted-face)
                     :to-be-truthy)))))))
 
 (describe "eca-completion--show-completion (region-replace EOF no newline)"
