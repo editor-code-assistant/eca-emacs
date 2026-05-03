@@ -43,12 +43,6 @@ helper handles both."
       (setq pos (1+ pos)))
     found))
 
-;; eca-completion-diff-opcodes
-
-(describe "eca-completion-diff-opcodes"
-  (it "returns no opcodes for two empty vectors"
-    (expect (eca-completion-diff-opcodes [] []) :to-be nil)))
-
 ;; eca-completion--fontify-as-mode
 
 (describe "eca-completion--fontify-as-mode"

@@ -221,7 +221,7 @@ Spans whose colors cannot be resolved are left untouched."
     result))
 
 (defun eca-completion--line-diff-preview (orig new)
-  "Calculates. preview data for replacing ORIG line text with NEW."
+  "Return plist :deletions and :preview for replacing ORIG line with NEW."
   (let* ((hunks (eca-completion-diff-hunks (eca-completion-diff-tokenize orig)
                                            (eca-completion-diff-tokenize new)))
          (preview (eca-completion--prepare-preview-text new))
