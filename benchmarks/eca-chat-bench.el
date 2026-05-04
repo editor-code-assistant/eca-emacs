@@ -104,6 +104,42 @@
 ;;  `eca-chat--last-user-message-pos'.
 ;;
 ;;
+;;  tool-prep-stream-{skip,full} (issue #234, eca-no-fontify property
+;;  + custom `font-lock-fontify-region-function').  For these rows
+;;  the `size' column is the FINAL body size in chars (not chat-turn
+;;  count); each iteration appends a 200-char markdown-laden delta
+;;  and synchronously runs `font-lock-fontify-region' over the
+;;  inserted region (batch mode does not fire jit-lock automatically):
+;;
+;;    * tool-prep-stream-skip = post-fix path (body tagged
+;;      `eca-no-fontify'; `eca-chat--fontify-region' skips it).
+;;    * tool-prep-stream-full = pre-fix baseline (untagged body;
+;;      gfm/markdown matchers run on every chunk).
+;;
+;;  | op                    | size  | iters | gc  | wall-ms  | per-call-µs |
+;;  |-----------------------|------:|------:|----:|---------:|------------:|
+;;  | tool-prep-stream-skip |  1000 |     5 |   0 |     0.86 |      172.63 |
+;;  | tool-prep-stream-full |  1000 |     5 |   0 |    22.63 |     4526.86 |
+;;  | tool-prep-stream-skip |  5000 |    25 |   0 |     3.61 |      144.25 |
+;;  | tool-prep-stream-full |  5000 |    25 |   4 |  1558.16 |    62326.29 |
+;;  | tool-prep-stream-skip | 20000 |   100 |   0 |    22.53 |      225.34 |
+;;  | tool-prep-stream-full | 20000 |   100 | 265 | 90811.08 |   908110.78 |
+;;
+;;  Speedups (full → skip):
+;;    body 1000  :  4.5 ms/chunk →  173 µs/chunk (   26×)
+;;    body 5000  :   62 ms/chunk →  144 µs/chunk (  432×)
+;;    body 20000 :  908 ms/chunk →  225 µs/chunk ( 4030×)
+;;
+;;  Pre-fix per-chunk cost grows roughly QUADRATICALLY with the body
+;;  (each chunk reinserts the whole accumulated body and runs the
+;;  markdown matchers over it), which matches the reporter's
+;;  "degrades over time" symptom.  Post-fix per-chunk cost is FLAT
+;;  in the body size — only the buffer churn of the existing
+;;  delete+reinsert path remains, and fontification is a no-op for
+;;  the tagged region.  The 20000-char run also drops from 265 GCs
+;;  to 0, confirming the matcher allocations are eliminated.
+;;
+;;
 ;;; Code:
 
 (require 'benchmark)
@@ -135,6 +171,12 @@
     (stream-chunk           . 1000)
     (end-of-stream          . 5))
   "Default iteration counts per benchmark op.")
+
+(defvar eca-chat-bench-tool-prep-sizes '(1000 5000 20000)
+  "Final body sizes (in chars) for the tool-prep streaming benchmark.
+Each iteration appends a fixed-size delta until the body reaches
+the listed total; the bench reports the cost-per-chunk averaged
+across that growth.")
 
 ;;;; Fixture
 
@@ -307,6 +349,85 @@ default to scanning from `eca-chat--last-user-message-pos')."
          (eca-chat--beautify-tables)))
      iters)))
 
+(defun eca-chat-bench--tool-prep-sample-delta ()
+  "Return a 200-byte chunk of mixed markdown-like text.
+Mixes asterisks, backticks, underscores and JSON-ish structure so
+gfm-mode's `markdown-match-italic' / `markdown-match-bold' /
+`markdown-match-code' have realistic input to scan when the body
+is NOT tagged with `eca-no-fontify'."
+  (concat "\"path\": \"src/foo/bar.el\", "
+          "\"content\": \"some *text* with `code` and _underscores_ "
+          "and **bolded** segments mixed with `inline_code` plus a "
+          "snippet ```clj (defn x [] 1) ``` and trailing notes._ "))
+
+(defun eca-chat-bench--bench-tool-prep-stream (body-size tagged?)
+  "Time streaming an open tool-prep block to BODY-SIZE chars.
+Each iteration appends a chunk to the accumulated body, calls
+`eca-chat--update-expandable-content' with append-content? = nil
+\(matching `toolCallPrepare's behavior), then runs
+`font-lock-fontify-region' over the inserted region to simulate
+the jit-lock work that batch mode does not perform automatically.
+
+When TAGGED? is non-nil the body carries the `eca-no-fontify' text
+property — exercising the post-#234 fast path where
+`eca-chat--fontify-region' skips it.  When nil the body is plain
+text and the default markdown matchers run, reproducing the
+pre-fix cost profile.
+
+Returns a benchmark plist with op label
+`tool-prep-stream-skip' or `tool-prep-stream-full'."
+  (let* ((buf (eca-chat-bench--make-fixture 5))
+         (delta (let ((s (eca-chat-bench--tool-prep-sample-delta)))
+                  ;; Repeat to reach roughly 200 chars regardless of
+                  ;; the sample helper's exact length.
+                  (substring (concat s s) 0 200)))
+         (iters (max 1 (/ body-size (length delta)))))
+    (advice-add 'face-background :around #'eca-chat-bench--safe-face-background)
+    (unwind-protect
+        (with-current-buffer buf
+          ;; Initialize font-lock keyword machinery so that
+          ;; `font-lock-default-fontify-region' can actually run the
+          ;; gfm/markdown matchers in batch mode.
+          (font-lock-set-defaults)
+          (let* ((id "tool-prep-bench")
+                 (label (propertize "Streaming tool"
+                                    'font-lock-face
+                                    'eca-chat-mcp-tool-call-label-face))
+                 ;; Seed with a non-empty body so `has-content?' is true
+                 ;; in `eca-chat--expandable-content-toggle' and the
+                 ;; force-open call actually opens (an empty body
+                 ;; short-circuits to the close branch).  Mirrors how
+                 ;; production seeds via `eca-chat--content-table'.
+                 (initial-body "Tool: bench\nServer: local\nArguments: \n")
+                 (accumulated ""))
+            (let ((inhibit-read-only t))
+              (eca-chat--add-expandable-content id label initial-body)
+              ;; Force-open so the (when open?) branch in
+              ;; `eca-chat--update-expandable-content' fires per chunk.
+              (eca-chat--expandable-content-toggle id t nil))
+            (eca-chat-bench--time
+             (if tagged?
+                 'tool-prep-stream-skip
+               'tool-prep-stream-full)
+             (lambda ()
+               (let ((inhibit-read-only t))
+                 (setq accumulated (concat accumulated delta))
+                 (let ((content (if tagged?
+                                    (propertize accumulated
+                                                'eca-no-fontify t)
+                                  accumulated)))
+                   (eca-chat--update-expandable-content
+                    id label content nil))
+                 (when-let* ((ov-label (eca-chat--get-expandable-content id))
+                             (ov-content (overlay-get
+                                          ov-label
+                                          'eca-chat--expandable-content-ov-content)))
+                   (font-lock-fontify-region (overlay-start ov-content)
+                                             (overlay-end ov-content)))))
+             iters)))
+      (advice-remove 'face-background #'eca-chat-bench--safe-face-background)
+      (kill-buffer buf))))
+
 ;;;; Driver
 
 (defvar eca-chat-bench--results nil
@@ -381,6 +502,22 @@ contaminate later measurements."
                  buf (alist-get 'end-of-stream iters)))
         (kill-buffer buf)))))
 
+(defun eca-chat-bench-run-tool-prep ()
+  "Run the tool-prep streaming benchmark for each configured size.
+For each size in `eca-chat-bench-tool-prep-sizes', records both
+the post-#234 fast path (`tool-prep-stream-skip', tagged with
+`eca-no-fontify') and the pre-fix baseline (`tool-prep-stream-full',
+plain text running gfm/markdown matchers per chunk).  The size
+column in the result table refers to the final body size in chars,
+not the chat-turn count used by the other benches."
+  (dolist (size eca-chat-bench-tool-prep-sizes)
+    (message "[eca-chat-bench] tool-prep body=%d (skip) ..." size)
+    (eca-chat-bench--add-result
+     size (eca-chat-bench--bench-tool-prep-stream size t))
+    (message "[eca-chat-bench] tool-prep body=%d (full) ..." size)
+    (eca-chat-bench--add-result
+     size (eca-chat-bench--bench-tool-prep-stream size nil))))
+
 ;;;###autoload
 (defun eca-chat-bench-run ()
   "Run all benchmarks at all sizes; print a markdown table.
@@ -392,6 +529,7 @@ the table is printed to standard output."
   (dolist (size eca-chat-bench-sizes)
     (message "[eca-chat-bench] running size=%d ..." size)
     (eca-chat-bench-run-size size))
+  (eca-chat-bench-run-tool-prep)
   (let ((table (eca-chat-bench--format-results)))
     (cond
      (noninteractive

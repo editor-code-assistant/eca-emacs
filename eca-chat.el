@@ -2122,6 +2122,32 @@ FRAME is the resized frame."
                          (setq-local word-wrap t)))))
                  buf)))))))
 
+(defun eca-chat--fontify-region (beg end &optional loudly)
+  "Custom `font-lock-fontify-region-function' for chat buffers.
+Walks BEG..END in `eca-no-fontify' property runs.  For each
+untagged sub-range delegates to `font-lock-default-fontify-region'
+forwarding LOUDLY; tagged sub-ranges are skipped entirely, which
+avoids running gfm/markdown matchers (the dominant CPU cost
+reported in #234) over still-streaming tool-call argument bodies
+that have not yet stabilized.
+
+Cleanup is automatic: the `toolCalled' arm replaces the body with
+fresh, un-tagged content, so on the next redisplay jit-lock asks
+this function to refontify, the property is gone and the default
+fontifier runs normally.
+
+Returns `(jit-lock-bounds BEG . END)' so jit-lock's bookkeeping
+matches the region we considered."
+  (let ((pos beg))
+    (while (< pos end)
+      (let ((skip (get-text-property pos 'eca-no-fontify))
+            (next (or (next-single-property-change pos 'eca-no-fontify nil end)
+                      end)))
+        (unless skip
+          (font-lock-default-fontify-region pos next loudly))
+        (setq pos next))))
+  `(jit-lock-bounds ,beg . ,end))
+
 (defun eca-chat--schedule-fontify ()
   "Schedule a deferred `font-lock-ensure' for the current chat buffer.
 Cancels any previously scheduled timer.  Does nothing when
@@ -2303,6 +2329,11 @@ CHILD, NAME, DOCSTRING and BODY are passed down."
   (setq-local font-lock-extra-managed-props
               (seq-difference font-lock-extra-managed-props
                               '(keymap help-echo mouse-face)))
+
+  ;; Skip font-lock on ranges tagged with `eca-no-fontify', currently
+  ;; used to stop gfm/markdown matchers from re-fontifying streaming
+  ;; tool-call argument bodies on every chunk (see #234).
+  (setq-local font-lock-fontify-region-function #'eca-chat--fontify-region)
 
   (make-local-variable 'completion-at-point-functions)
   (setq-local completion-at-point-functions (list #'eca-chat-completion-at-point))
@@ -2873,16 +2904,29 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
                                     'eca-chat-mcp-tool-call-label-face))
                       (label (concat (propertize label 'font-lock-face label-face)
                                      " " eca-chat-mcp-tool-call-loading-symbol))
+                      ;; Tag body and accumulated content with `eca-no-fontify' so
+                      ;; the custom `font-lock-fontify-region-function' skips them
+                      ;; while the tool args are still streaming (#234).  The
+                      ;; property travels through `eca-chat--insert' and
+                      ;; `eca-chat--update-expandable-content' to every code
+                      ;; path that lands the body in the buffer; the `toolCalled'
+                      ;; arm later reinserts un-tagged final content, so jit-lock
+                      ;; refontifies normally on the next redisplay.
                       (body (if subagent?
                                 (eca-chat--content-table `())
-                              (eca-chat--content-table
-                               `(("Tool" . ,name)
-                                 ("Server" . ,server)
-                                 ("Arguments" . ,new-content))))))
+                              (propertize
+                               (eca-chat--content-table
+                                `(("Tool" . ,name)
+                                  ("Server" . ,server)
+                                  ("Arguments" . ,new-content)))
+                               'eca-no-fontify t)))
+                      (update-content (if subagent?
+                                          body
+                                        (propertize new-content 'eca-no-fontify t))))
                  (if (eca-chat--get-expandable-content id)
                      ;; Update with accumulated content, not just this chunk
                      (eca-chat--update-expandable-content
-                      id label (if subagent? body new-content) nil parent-tool-call-id)
+                      id label update-content nil parent-tool-call-id)
                    (eca-chat--add-expandable-content
                     id label body parent-tool-call-id))))))))
       ("toolCallRun"
