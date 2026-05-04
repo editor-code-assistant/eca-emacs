@@ -613,6 +613,27 @@ Used when server never responds to stop request.")
   "When non-nil, holds the active question state.
 A plist with :session :request :question :options :tool-call-id :allow-freeform.")
 
+;; Buffer-local caches for singleton overlays.  The chat buffer
+;; contains a fixed set of overlays that are created once at chat
+;; setup (prompt-area, prompt-field, loading-area, progress-area,
+;; context-area, task-area, queued-area, steer-area) plus optionally
+;; one question-block.  Each lookup historically scanned every
+;; overlay in the buffer via `(overlays-in (point-min) (point-max))',
+;; which scales linearly with chat length and is exercised on every
+;; streamed chunk.  Caching the overlay reference per buffer turns
+;; those lookups into O(1).  The cache is invalidated automatically
+;; when the cached overlay is deleted (its `overlay-buffer' becomes
+;; nil) and explicitly in `eca-chat--clear'.
+(defvar-local eca-chat--prompt-area-ov-cache nil)
+(defvar-local eca-chat--prompt-field-ov-cache nil)
+(defvar-local eca-chat--loading-area-ov-cache nil)
+(defvar-local eca-chat--progress-area-ov-cache nil)
+(defvar-local eca-chat--context-area-ov-cache nil)
+(defvar-local eca-chat--task-area-ov-cache nil)
+(defvar-local eca-chat--queued-area-ov-cache nil)
+(defvar-local eca-chat--steer-area-ov-cache nil)
+(defvar-local eca-chat--question-block-ov-cache nil)
+
 
 (defvar eca-chat--new-chat-id 0)
 (defvar eca-chat--last-known-model nil)
@@ -971,6 +992,8 @@ request, useful for subagent tool calls."
   "Clear the chat for SESSION and then insert NEW-PROMPT-CONTENT."
   (erase-buffer)
   (remove-overlays (point-min) (point-max))
+  (eca-chat--invalidate-overlay-caches)
+  (eca-chat-expandable--reset-id-table)
   (setq-local eca-chat--task-state nil)
   ;; Cancel loading-related timers and reset state
   (when eca-chat--stopping-safety-timer
@@ -1154,15 +1177,51 @@ LOADING can be t (loading), \\='stopping (stop in progress), or nil (idle)."
                 eca-chat--chat-loading)
        (eca-chat--queue-prompt prompt)))))
 
+(defmacro eca-chat--cached-overlay (cache-var prop)
+  "Return the singleton overlay tagged with PROP, memoized in CACHE-VAR.
+Falls back to a single linear scan of overlays in the current
+buffer when the cache is empty, holds a deleted overlay, or
+points to an overlay in a different buffer.  CACHE-VAR must be a
+buffer-local variable (defined with `defvar-local').
+
+The returned overlay is the same one a plain
+`(-first (-lambda (ov) (eq t (overlay-get ov PROP)))
+         (overlays-in (point-min) (point-max)))'
+would produce, but cached so that subsequent calls skip the scan."
+  (declare (debug (symbolp form)))
+  `(or (let ((ov ,cache-var))
+         (when (and (overlayp ov)
+                    (overlay-buffer ov)
+                    (eq (overlay-buffer ov) (current-buffer))
+                    (eq t (overlay-get ov ,prop)))
+           ov))
+       (setq ,cache-var
+             (-first (-lambda (ov) (eq t (overlay-get ov ,prop)))
+                     (overlays-in (point-min) (point-max))))))
+
+(defun eca-chat--invalidate-overlay-caches ()
+  "Clear all cached singleton-overlay references for the current buffer.
+Should be called whenever overlays are wholesale removed, e.g. via
+`erase-buffer' + `remove-overlays' in `eca-chat--clear'."
+  (setq eca-chat--prompt-area-ov-cache nil
+        eca-chat--prompt-field-ov-cache nil
+        eca-chat--loading-area-ov-cache nil
+        eca-chat--progress-area-ov-cache nil
+        eca-chat--context-area-ov-cache nil
+        eca-chat--task-area-ov-cache nil
+        eca-chat--queued-area-ov-cache nil
+        eca-chat--steer-area-ov-cache nil
+        eca-chat--question-block-ov-cache nil))
+
 (defun eca-chat--loading-area-ov ()
   "Return the overlay for the loading area."
-  (-first (-lambda (ov) (eq t (overlay-get ov 'eca-chat-loading-area)))
-          (overlays-in (point-min) (point-max))))
+  (eca-chat--cached-overlay eca-chat--loading-area-ov-cache
+                            'eca-chat-loading-area))
 
 (defun eca-chat--prompt-field-ov ()
   "Return the overlay for the prompt field."
-  (-first (-lambda (ov) (eq t (overlay-get ov 'eca-chat-prompt-field)))
-          (overlays-in (point-min) (point-max))))
+  (eca-chat--cached-overlay eca-chat--prompt-field-ov-cache
+                            'eca-chat-prompt-field))
 
 (defun eca-chat--prompt-field-start-point ()
   "Return the metadata overlay for the prompt field start point."
@@ -1170,33 +1229,33 @@ LOADING can be t (loading), \\='stopping (stop in progress), or nil (idle)."
 
 (defun eca-chat--prompt-progress-field-ov ()
   "Return the overlay for the progress field."
-  (-first (-lambda (ov) (eq t (overlay-get ov 'eca-chat-progress-area)))
-          (overlays-in (point-min) (point-max))))
+  (eca-chat--cached-overlay eca-chat--progress-area-ov-cache
+                            'eca-chat-progress-area))
 
 (defun eca-chat--prompt-context-field-ov ()
   "Return the overlay for the context field."
-  (-first (-lambda (ov) (eq t (overlay-get ov 'eca-chat-context-area)))
-          (overlays-in (point-min) (point-max))))
+  (eca-chat--cached-overlay eca-chat--context-area-ov-cache
+                            'eca-chat-context-area))
 
 (defun eca-chat--prompt-area-ov ()
   "Return the overlay for the prompt area."
-  (-first (-lambda (ov) (eq t (overlay-get ov 'eca-chat-prompt-area)))
-          (overlays-in (point-min) (point-max))))
+  (eca-chat--cached-overlay eca-chat--prompt-area-ov-cache
+                            'eca-chat-prompt-area))
 
 (defun eca-chat--task-area-ov ()
   "Return the overlay for the task area."
-  (-first (-lambda (ov) (eq t (overlay-get ov 'eca-chat-task-area)))
-          (overlays-in (point-min) (point-max))))
+  (eca-chat--cached-overlay eca-chat--task-area-ov-cache
+                            'eca-chat-task-area))
 
 (defun eca-chat--queued-area-ov ()
   "Return the overlay for the queued prompt area."
-  (-first (-lambda (ov) (eq t (overlay-get ov 'eca-chat-queued-area)))
-          (overlays-in (point-min) (point-max))))
+  (eca-chat--cached-overlay eca-chat--queued-area-ov-cache
+                            'eca-chat-queued-area))
 
 (defun eca-chat--steer-area-ov ()
   "Return the overlay for the steer prompt area."
-  (-first (-lambda (ov) (eq t (overlay-get ov 'eca-chat-steer-area)))
-          (overlays-in (point-min) (point-max))))
+  (eca-chat--cached-overlay eca-chat--steer-area-ov-cache
+                            'eca-chat-steer-area))
 
 (defun eca-chat--prompt-area-start-point ()
   "Return the metadata overlay for the prompt area start point."
@@ -2068,7 +2127,11 @@ FRAME is the resized frame."
 Cancels any previously scheduled timer.  Does nothing when
 `eca-chat-fontify-debounce-interval' is nil, letting jit-lock cover
 visible-area fontification and relying on the final ensure at
-end-of-stream for correctness."
+end-of-stream for correctness.
+
+The scoped region runs from `eca-chat--last-user-message-pos' (the
+start of the current turn) to `point-max', so cost is bounded by
+the new turn instead of the full chat history."
   (when (timerp eca-chat--fontify-timer)
     (cancel-timer eca-chat--fontify-timer))
   (setq eca-chat--fontify-timer nil)
@@ -2081,7 +2144,9 @@ end-of-stream for correctness."
                (when (buffer-live-p buf)
                  (with-current-buffer buf
                    (setq eca-chat--fontify-timer nil)
-                   (font-lock-ensure)))))))))
+                   (font-lock-ensure
+                    (or eca-chat--last-user-message-pos (point-min))
+                    (point-max))))))))))
 
 (defun eca-chat--add-text-content (text &optional overlay-key overlay-value)
   "Add TEXT to the chat current position.
@@ -2675,7 +2740,10 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
          (pcase role
            ("user"
             (unless parent-tool-call-id
-              (progn
+              ;; Capture the insertion point before adding the user
+              ;; expandable so we can scope `font-lock-ensure' to just
+              ;; the newly-inserted region instead of the whole buffer.
+              (let ((user-msg-start (eca-chat--content-insertion-point)))
                 (when eca-chat--steered-prompt
                   (setq-local eca-chat--steered-prompt nil)
                   (eca-chat--update-steer-area))
@@ -2690,7 +2758,7 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
                   (overlay-put ov 'eca-chat--user-message-id content-id)
                   (overlay-put ov 'eca-chat--timestamp (float-time)))
                 (eca-chat--mark-header)
-                (font-lock-ensure))))
+                (font-lock-ensure user-msg-start (point-max)))))
            ("system"
             (eca-chat--add-text-content
              (propertize text
@@ -3010,7 +3078,12 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
                (when (timerp eca-chat--fontify-timer)
                  (cancel-timer eca-chat--fontify-timer)
                  (setq eca-chat--fontify-timer nil))
-               (font-lock-ensure)
+               ;; Region-scoped fontify: only the current turn needs
+               ;; (re)fontification at end-of-stream; full-buffer
+               ;; fontify is O(buffer size) and was the dominant
+               ;; cost on long chats.
+               (font-lock-ensure (or eca-chat--last-user-message-pos (point-min))
+                                 (point-max))
                (eca-chat--set-chat-loading session nil)
                (eca-chat--refresh-progress chat-buffer)
                (eca-chat--send-steered-prompt session)
@@ -3025,11 +3098,18 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
                (when (timerp eca-chat--fontify-timer)
                  (cancel-timer eca-chat--fontify-timer)
                  (setq eca-chat--fontify-timer nil))
-               ;; Final guaranteed fontify before table alignment so the
-               ;; beautifier sees fully-fontified text.
-               (font-lock-ensure)
-               (eca-chat--align-tables (point-min))
-               (eca-chat--beautify-tables (point-min))
+               ;; Final guaranteed fontify before table alignment so
+               ;; the beautifier sees fully-fontified text.  Scoped
+               ;; to the current turn so cost does not grow with
+               ;; chat history; previous turns were already
+               ;; fontified at their own end-of-stream.
+               (font-lock-ensure (or eca-chat--last-user-message-pos (point-min))
+                                 (point-max))
+               ;; Table align/beautify default to scanning from
+               ;; `eca-chat--last-user-message-pos' when called with
+               ;; no argument, scoping work to the current turn.
+               (eca-chat--align-tables)
+               (eca-chat--beautify-tables)
                (eca-chat--set-chat-loading session nil)
                (eca-chat--refresh-progress chat-buffer)
                (eca-chat--send-steered-prompt session)
@@ -3233,8 +3313,8 @@ the user answers or cancels."
 
 (defun eca-chat--question-block-ov ()
   "Return the overlay marking the standalone question block."
-  (-first (lambda (ov) (overlay-get ov 'eca-chat--question-block))
-          (overlays-in (point-min) (point-max))))
+  (eca-chat--cached-overlay eca-chat--question-block-ov-cache
+                            'eca-chat--question-block))
 
 (defun eca-chat--render-ask-question-standalone (question options)
   "Insert a standalone question block with QUESTION and OPTIONS.

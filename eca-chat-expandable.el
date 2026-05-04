@@ -84,6 +84,27 @@ darkens for light themes."
   :type 'number
   :group 'eca)
 
+;;;; State
+
+(defvar-local eca-chat-expandable--id->ov (make-hash-table :test 'equal)
+  "Per-buffer map from expandable block ID to its label overlay.
+Maintained by `eca-chat--insert-expandable-block' (puthash) and
+`eca-chat--remove-expandable-content' / `eca-chat--destroy-nested-blocks'
+\(remhash).  Accessed by `eca-chat--get-expandable-content' to avoid
+the previous linear `(overlays-in (point-min) (point-max))' scan,
+which scaled with chat length.
+
+Stale entries (e.g. an overlay deleted by a path that did not
+update the map) are tolerated: lookups validate the hit's
+`overlay-buffer' / id and fall back to the linear scan plus a
+refill when the cache misses or is stale.")
+
+(defun eca-chat-expandable--reset-id-table ()
+  "Clear the expandable id→overlay map for the current buffer.
+Should be called whenever overlays are wholesale removed (e.g.
+`erase-buffer' + `remove-overlays' in `eca-chat--clear')."
+  (clrhash eca-chat-expandable--id->ov))
+
 ;;;; Faces
 
 (defface eca-chat-expandable-block-1-face
@@ -158,9 +179,21 @@ innermost block whose content region contains point."
        best-ov))))
 
 (defun eca-chat--get-expandable-content (id)
-  "Return the overlay if there is a expandable content for ID."
-  (-first (-lambda (ov) (string= id (overlay-get ov 'eca-chat--expandable-content-id)))
-          (overlays-in (point-min) (point-max))))
+  "Return the overlay if there is a expandable content for ID.
+Uses `eca-chat-expandable--id->ov' for an O(1) hit; on miss or
+stale entry, falls back to the historical linear scan and
+refills the cache."
+  (or (let ((ov (gethash id eca-chat-expandable--id->ov)))
+        (when (and (overlayp ov)
+                   (overlay-buffer ov)
+                   (eq (overlay-buffer ov) (current-buffer))
+                   (equal id (overlay-get ov 'eca-chat--expandable-content-id)))
+          ov))
+      (when-let* ((ov (-first (-lambda (ov)
+                                (string= id (overlay-get ov 'eca-chat--expandable-content-id)))
+                              (overlays-in (point-min) (point-max)))))
+        (puthash id ov eca-chat-expandable--id->ov)
+        ov)))
 
 (defun eca-chat--propertize-only-first-word (str &rest properties)
   "Return a new string propertizing PROPERTIES to the first word of STR.
@@ -239,6 +272,7 @@ NESTED-PROPS is a plist with :parent-id and :label-indent for nested blocks."
   (let ((ov-label (make-overlay (point) (point) (current-buffer)))
         (label-indent (plist-get nested-props :label-indent)))
     (overlay-put ov-label 'eca-chat--expandable-content-id id)
+    (puthash id ov-label eca-chat-expandable--id->ov)
     (overlay-put ov-label 'eca-chat--expandable-content-open-icon open-icon)
     (overlay-put ov-label 'eca-chat--expandable-content-close-icon close-icon)
     (overlay-put ov-label 'eca-chat--expandable-content-toggle nil)
@@ -291,6 +325,8 @@ NESTED-PROPS is a plist with :parent-id and :label-indent for nested blocks."
     (when (string= parent-id (overlay-get ov 'eca-chat--expandable-content-parent-id))
       (when-let* ((content-ov (overlay-get ov 'eca-chat--expandable-content-ov-content)))
         (delete-overlay content-ov))
+      (when-let* ((id (overlay-get ov 'eca-chat--expandable-content-id)))
+        (remhash id eca-chat-expandable--id->ov))
       (delete-overlay ov))))
 
 (defun eca-chat--segments-total-text (segments)
@@ -377,6 +413,7 @@ any text they covered, including surrounding newlines added during insertion."
       ;; Delete overlays
       (when ov-content (delete-overlay ov-content))
       (delete-overlay ov-label)
+      (remhash id eca-chat-expandable--id->ov)
       ;; Remove the text region
       (let ((inhibit-read-only t))
         (delete-region start end)))))
@@ -484,8 +521,7 @@ in parent."
 (defun eca-chat--expandable-content-toggle (id &optional force? close?)
   "Toggle the expandable-content of ID.
 If FORCE? decide to CLOSE? or not."
-  (when-let* ((ov-label (-first (-lambda (ov) (string= id (overlay-get ov 'eca-chat--expandable-content-id)))
-                                (overlays-in (point-min) (point-max)))))
+  (when-let* ((ov-label (eca-chat--get-expandable-content id)))
     (let* ((ov-content (overlay-get ov-label 'eca-chat--expandable-content-ov-content))
            (content (overlay-get ov-content 'eca-chat--expandable-content-content))
            (segments (overlay-get ov-label 'eca-chat--expandable-content-segments))
