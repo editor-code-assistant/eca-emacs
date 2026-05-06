@@ -1948,11 +1948,12 @@ are in progress."
                  'help-echo "Add workspace folder"
                  'local-map eca-chat--add-workspace-map))
     (:remove-workspace-button
-     (propertize " [-]"
-                 'face 'shadow
-                 'mouse-face 'highlight
-                 'help-echo "Remove workspace folder"
-                 'local-map eca-chat--remove-workspace-map))
+     (when (> (length (eca--session-workspace-folders session)) 1)
+       (propertize " [-]"
+                   'face 'shadow
+                   'mouse-face 'highlight
+                   'help-echo "Remove workspace folder"
+                   'local-map eca-chat--remove-workspace-map)))
     (:bg-jobs
      (when-let* ((jobs (eca--session-jobs session))
                  (running (seq-count (lambda (j) (string= "running" (plist-get j :status))) jobs)))
