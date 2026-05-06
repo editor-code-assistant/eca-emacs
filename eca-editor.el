@@ -136,7 +136,8 @@ If URI is nil find all diagnostics otherwise filter to that uri."
                                          :character (if end (cdr end) (cdr beg)))))))
            (list :uri diag-uri
                  :severity (eca-editor--flymake-to-eca-severity (flymake-diagnostic-type it))
-                 :code (when-let ((code (flymake-diagnostic-code it)))
+                 :code (when-let ((code (and (fboundp 'flymake-diagnostic-code)
+                                             (flymake-diagnostic-code it))))
                          (if (symbolp code) (symbol-name code) (format "%s" code)))
                  :range range
                  :source (when-let ((backend (flymake-diagnostic-backend it)))
