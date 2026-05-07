@@ -94,7 +94,13 @@ Tries git info first, then package.el version, then file modification date."
   "Whether to send the Emacs process ID to the ECA server.
 When non-nil, the server uses it to detect when Emacs exits and
 shut down automatically.  Set to nil to omit it, e.g. when running
-the server independently of Emacs."
+the server independently of Emacs.
+
+Set to nil when running the server inside a sandbox that hides or
+remaps the host PID (firejail, bubblewrap, jai, containers); in
+those setups the server's parent-process watchdog would otherwise
+see an invalid PID and shut down right after startup.  Pair this
+with `eca-process-wrapper-function' for a fully sandboxed setup."
   :type 'boolean
   :group 'eca)
 

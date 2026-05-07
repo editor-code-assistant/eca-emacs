@@ -30,6 +30,20 @@ If not provided, download and start eca automatically."
   :risky t
   :type '(repeat string))
 
+(defcustom eca-process-wrapper-function nil
+  "Optional function to wrap the eca server command before launch.
+When non-nil, called with two arguments: COMMAND (list of strings,
+already including `eca-extra-args') and ROOTS (list of absolute
+workspace folder paths).  Must return a list of strings to be
+passed to `make-process'.
+
+Useful for running ECA inside a sandbox like firejail, bubblewrap,
+or jai, optionally whitelisting workspace roots at startup.  See
+the README's \"Sandboxing\" section for examples."
+  :group 'eca
+  :risky t
+  :type '(choice (const nil) function))
+
 (defcustom eca-server-download-method 'url-retrieve
   "The method to use to download eca server binary.
 Some Emacs versions / distributions have issues with
@@ -518,6 +532,11 @@ Call HANDLE-MSG for new msgs processed."
     (-let* (((result &as &plist :decision decision :command command) (eca-process--server-command))
             (start-process-fn (lambda ()
                                 (let ((command (append command eca-extra-args)))
+                                  (when eca-process-wrapper-function
+                                    (setq command
+                                          (funcall eca-process-wrapper-function
+                                                   command
+                                                   (eca--session-workspace-folders session))))
                                   (eca-info "Starting process '%s'" (string-join command " "))
                                   (setf (eca--session-process session)
                                         (make-process

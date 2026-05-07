@@ -259,6 +259,76 @@ accuracy and transcription speed.
 
 Calling `M-x eca` with prefix `C-u` will ask for what workspaces to start the process.
 
+## Sandboxing
+
+You can run the eca server under any sandbox tool that wraps a command
+(firejail, bubblewrap, jai, docker, etc.) without writing a separate
+launcher script. Configure `eca-process-wrapper-function` to prepend the
+sandbox invocation in elisp. The function is called with the resolved
+command (already including `eca-extra-args`) and the list of absolute
+workspace folder paths that ECA will operate on, so it can dynamically
+whitelist the directories the server needs.
+
+When the sandbox tool hides or remaps the host PID, also set
+`eca-send-process-id` to `nil`; otherwise the server's parent-process
+watchdog would see an invalid PID and shut down right after startup.
+
+### Example: jai
+
+[jai](https://jai.scs.stanford.edu/) is a lightweight Linux sandbox that
+hides processes, environment variables, and any directory not explicitly
+whitelisted with `-d`.
+
+```elisp
+(defun my/eca-jail-wrapper (command roots)
+  "Wrap the eca server COMMAND with `jai', exposing ROOTS."
+  (append (list "jai" "-j" "eca"
+                "-D"                       ; do not expose $CWD
+                "--unsetenv=*"             ; hide all environment vars
+                "--setenv" "TERM")
+          ;; Workspace roots picked at session startup.
+          (cl-loop for d in roots
+                   append (list "-d" (expand-file-name d)))
+          ;; Always-needed directories for ECA itself.
+          (list "-d" (expand-file-name "~/.config/eca/")
+                "-d" (expand-file-name "~/.cache/eca/")
+                "-d" (expand-file-name "~/.emacs.d/"))
+          command))
+
+(setq eca-process-wrapper-function #'my/eca-jail-wrapper)
+(setq eca-send-process-id nil)
+```
+
+### Example: firejail
+
+The same shape works for any wrapper. Replace the `jai` prefix and flags:
+
+```elisp
+(defun my/eca-firejail-wrapper (command roots)
+  (append (list "firejail" "--quiet"
+                (format "--whitelist=%s" (expand-file-name "~/.config/eca"))
+                (format "--whitelist=%s" (expand-file-name "~/.cache/eca")))
+          (cl-loop for d in roots
+                   append (list (format "--whitelist=%s"
+                                        (expand-file-name d))))
+          command))
+
+(setq eca-process-wrapper-function #'my/eca-firejail-wrapper)
+(setq eca-send-process-id nil)
+```
+
+### Limitations
+
+- Sandbox tools that seal their directory whitelist at startup (jai,
+  firejail's `--whitelist`, etc.) won't honor a workspace root added
+  later in the same session. eca-emacs still sends
+  `workspace/didChangeWorkspaceFolders` to the server when a root is
+  added via `eca-chat-add-workspace-root` or the `[+]` mode-line button,
+  but the sandbox itself blocks the new path. Workaround: launch ECA
+  with `C-u M-x eca` and pre-select every root you intend to use.
+- The wrapper function runs once per server start. Restart the eca
+  session (`M-x eca-process-stop` then `M-x eca`) after editing it.
+
 ## Troubleshooting
 
 Check before the [server troubleshooting](https://eca.dev/troubleshooting/).
