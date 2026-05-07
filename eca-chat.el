@@ -707,15 +707,11 @@ A plist with :session :request :question :options :tool-call-id :allow-freeform.
   (get-buffer-create (generate-new-buffer-name (eca-chat-new-buffer-name session))))
 
 (defun eca-chat--get-chat-buffer (session chat-id)
-  "Get chat buffer for SESSION and CHAT-ID."
-  (or (eca-get (eca--session-chats session) chat-id)
-      ;; new chat, we rename empty to chat-id
-      (let ((empty-chat-buffer (eca-get (eca--session-chats session) 'empty)))
-        (setf (eca--session-chats session)
-              (-> (eca--session-chats session)
-                  (eca-assoc chat-id empty-chat-buffer)
-                  (eca-dissoc 'empty)))
-        empty-chat-buffer)))
+  "Get chat buffer for SESSION and CHAT-ID, or nil when none registered.
+Since the client now generates the chat-id at buffer creation
+time (see `eca-chat-open'), every known chat is registered under
+its real id and there is no `'empty' placeholder to migrate from."
+  (eca-get (eca--session-chats session) chat-id))
 
 (defun eca-chat--delete-chat ()
   "Delete current chat."
@@ -1373,11 +1369,11 @@ Resteps a list of context plists found in the prompt field."
                          (list :variant variant)))
                      (when (eca-chat--trust)
                        (list :trust t)))
-     :success-callback (let ((chat-buffer (current-buffer)))
-                         (-lambda (res)
-                           (when (buffer-live-p chat-buffer)
-                             (with-current-buffer chat-buffer
-                               (setq-local eca-chat--id (plist-get res :chatId)))))))))
+     ;; The chat-id is already set buffer-locally at chat creation
+     ;; time, so the prompt response carries no information we need
+     ;; to act on.  Pass `#'ignore' (rather than nil) so the response
+     ;; dispatcher still removes the pending-handler entry.
+     :success-callback #'ignore)))
 
 (defun eca-chat--queued-prompt-display-string (text)
   "Return a display string for queued prompt TEXT, truncated to 40 chars."
@@ -2509,12 +2505,16 @@ Returns the task plist or nil."
   "Set new agent to NEW-AGENT notifying server for SESSION.
 When BUFFER is provided, set the agent in that buffer instead of
 the last chat buffer of SESSION."
-  (eca-chat--with-current-buffer (or buffer (eca-chat--get-last-buffer session))
-    (setq-local eca-chat--selected-agent new-agent)
-    (setq eca-chat--last-known-agent new-agent))
-  (eca-api-notify session
-                  :method "chat/selectedAgentChanged"
-                  :params (list :agent new-agent)))
+  (let* ((target (or buffer (eca-chat--get-last-buffer session)))
+         (chat-id (when (buffer-live-p target)
+                    (buffer-local-value 'eca-chat--id target))))
+    (eca-chat--with-current-buffer target
+      (setq-local eca-chat--selected-agent new-agent)
+      (setq eca-chat--last-known-agent new-agent))
+    (eca-api-notify session
+                    :method "chat/selectedAgentChanged"
+                    :params (append (list :agent new-agent)
+                                    (when chat-id (list :chatId chat-id))))))
 
 (defun eca-chat--set-trust (session value &optional buffer)
   "Set trust mode to VALUE for SESSION.
@@ -3222,8 +3222,45 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
       (when messages?
         (eca-chat--clear)))))
 
+(defun eca-chat--apply-per-chat-config (chat-config buffer)
+  "Apply the per-chat fields of CHAT-CONFIG to BUFFER's local state.
+Used by `eca-chat-config-updated' to drive a single chat's UI from
+a `config/updated' broadcast."
+  (with-current-buffer buffer
+    (when-let* ((new-model (plist-get chat-config :selectModel)))
+      (setq-local eca-chat--selected-model new-model)
+      (setq eca-chat--last-known-model new-model))
+    (when-let* ((new-agent (plist-get chat-config :selectAgent)))
+      (setq-local eca-chat--selected-agent new-agent)
+      (setq eca-chat--last-known-agent new-agent))
+    (when (plist-member chat-config :selectVariant)
+      (let ((new-variant (plist-get chat-config :selectVariant)))
+        (setq-local eca-chat--selected-variant new-variant)
+        (setq eca-chat--last-known-variant new-variant)))
+    ;; Server-driven trust restore on chat resume (eca #426): keep the
+    ;; mode-line shield/flame indicator in sync with the persisted
+    ;; per-chat trust state so it matches the server's auto-approval
+    ;; behavior for subsequent tool calls.
+    (when (plist-member chat-config :selectTrust)
+      (setq-local eca-chat--selected-trust
+                  (eq t (plist-get chat-config :selectTrust))))
+    (force-mode-line-update)))
+
 (defun eca-chat-config-updated (session chat-config)
-  "Update chat based on the CHAT-CONFIG for SESSION."
+  "Update chat based on the CHAT-CONFIG for SESSION.
+
+Session-level fields (welcomeMessage, models, agents, variants) are
+always applied to the session record.  Per-chat fields (selectModel,
+selectAgent, selectVariant, selectTrust) are scoped by `chatId':
+
+- when CHAT-CONFIG contains a `chatId' the per-chat fields apply only
+  to that chat's buffer (eca-emacs#231 - prevents one chat's model
+  change from leaking into other chats);
+
+- when no `chatId' is present the legacy session-wide path is used
+  (per-chat fields broadcast to every chat buffer).  This path is still
+  needed for the initial `config/updated' the server sends right after
+  `initialize' which pushes session-default model/agent to all chats."
   (-some->> (plist-get chat-config :welcomeMessage)
     (setf (eca--session-chat-welcome-message session)))
   (-some->> (plist-get chat-config :models)
@@ -3233,27 +3270,13 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
   (when (plist-member chat-config :variants)
     (setf (eca--session-chat-variants session)
           (append (plist-get chat-config :variants) nil)))
-  (seq-doseq (chat-buffer (eca-vals (eca--session-chats session)))
-    (when (buffer-live-p chat-buffer)
-      (with-current-buffer chat-buffer
-        (when-let* ((new-model (plist-get chat-config :selectModel)))
-          (setq-local eca-chat--selected-model new-model)
-          (setq eca-chat--last-known-model new-model))
-        (when-let* ((new-agent (plist-get chat-config :selectAgent)))
-          (setq-local eca-chat--selected-agent new-agent)
-          (setq eca-chat--last-known-agent new-agent))
-        (when (plist-member chat-config :selectVariant)
-          (let ((new-variant (plist-get chat-config :selectVariant)))
-            (setq-local eca-chat--selected-variant new-variant)
-            (setq eca-chat--last-known-variant new-variant)))
-        ;; Server-driven trust restore on chat resume (eca #426): keep the
-        ;; mode-line shield/flame indicator in sync with the persisted
-        ;; per-chat trust state so it matches the server's auto-approval
-        ;; behavior for subsequent tool calls.
-        (when (plist-member chat-config :selectTrust)
-          (setq-local eca-chat--selected-trust
-                      (eq t (plist-get chat-config :selectTrust))))
-        (force-mode-line-update)))))
+  (if-let* ((chat-id (plist-get chat-config :chatId)))
+      (when-let* ((chat-buffer (eca-get (eca--session-chats session) chat-id))
+                  ((buffer-live-p chat-buffer)))
+        (eca-chat--apply-per-chat-config chat-config chat-buffer))
+    (seq-doseq (chat-buffer (eca-vals (eca--session-chats session)))
+      (when (buffer-live-p chat-buffer)
+        (eca-chat--apply-per-chat-config chat-config chat-buffer)))))
 
 (defun eca-chat-deleted (session params)
   "Handle chat deleted notification for SESSION with PARAMS."
@@ -3267,25 +3290,39 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
 
 (defun eca-chat-opened (session params)
   "Handle chat/opened notification for SESSION with PARAMS.
-Creates a new chat buffer for a server-initiated chat (e.g. /fork).
-The buffer is registered with the real chat-id so subsequent
-`chat/contentReceived' notifications render into it."
-  (let ((chat-id (plist-get params :chatId))
-        (title (plist-get params :title)))
-    (cl-incf eca-chat--new-chat-id)
-    (let ((new-buffer (eca-chat--create-buffer session)))
-      (with-current-buffer new-buffer
-        (let ((eca--chat-init-session session))
-          (eca-chat-mode))
-        (setq-local eca-chat--id chat-id)
-        (setq-local eca-chat--title title)
-        (setq-local eca-chat--selected-agent eca-chat--last-known-agent)
-        (setq-local eca-chat--selected-model eca-chat--last-known-model)
-        (setq-local eca-chat--selected-variant eca-chat--last-known-variant)
-        (setq-local eca-chat--selected-trust eca-chat-trust-enable))
-      (setf (eca--session-chats session)
-            (eca-assoc (eca--session-chats session) chat-id new-buffer))
-      (eca-chat--force-tab-line-update))))
+Idempotent: if the chat-id is already known on the client side
+\(e.g. a client-initiated chat where the client minted the id and
+the server is just announcing the new chat to other observers\),
+update the title and return without creating a duplicate buffer.
+Otherwise, creates a new chat buffer for a server-initiated chat
+\(e.g. /fork or replay via chat/open\) and registers it under the
+real chat-id so subsequent `chat/contentReceived' notifications
+render into it."
+  (let* ((chat-id (plist-get params :chatId))
+         (title (plist-get params :title))
+         (existing (eca-get (eca--session-chats session) chat-id)))
+    (cond
+     ((and existing (buffer-live-p existing))
+      ;; Already known: propagate title (if any) but do not duplicate.
+      (when title
+        (with-current-buffer existing
+          (setq-local eca-chat--title title)))
+      (eca-chat--force-tab-line-update))
+     (t
+      (cl-incf eca-chat--new-chat-id)
+      (let ((new-buffer (eca-chat--create-buffer session)))
+        (with-current-buffer new-buffer
+          (let ((eca--chat-init-session session))
+            (eca-chat-mode))
+          (setq-local eca-chat--id chat-id)
+          (setq-local eca-chat--title title)
+          (setq-local eca-chat--selected-agent eca-chat--last-known-agent)
+          (setq-local eca-chat--selected-model eca-chat--last-known-model)
+          (setq-local eca-chat--selected-variant eca-chat--last-known-variant)
+          (setq-local eca-chat--selected-trust eca-chat-trust-enable))
+        (setf (eca--session-chats session)
+              (eca-assoc (eca--session-chats session) chat-id new-buffer))
+        (eca-chat--force-tab-line-update))))))
 
 (defun eca-chat-status-changed (session params)
   "Handle chat status changed notification for SESSION with PARAMS.
@@ -3494,6 +3531,10 @@ When ACTIVE is non-nil, show the question prefix; otherwise restore normal."
     (unless (derived-mode-p 'eca-chat-mode)
       (let ((eca--chat-init-session session))
         (eca-chat-mode))
+      ;; Generate the chat-id eagerly so every chat/* request (including
+      ;; the very first chat/prompt) carries a real id.  The server
+      ;; treats a previously-unknown id as a new empty chat.
+      (setq-local eca-chat--id (eca-uuid))
       (setq-local eca-chat--selected-agent eca-chat--last-known-agent)
       (setq-local eca-chat--selected-model eca-chat--last-known-model)
       (setq-local eca-chat--selected-variant eca-chat--last-known-variant)
@@ -3504,7 +3545,9 @@ When ACTIVE is non-nil, show the question prefix; otherwise restore normal."
       (when eca-chat-auto-add-repomap
         (eca-chat--add-context (list :type "repoMap"))))
     (unless (member (current-buffer) (eca-vals (eca--session-chats session)))
-      (setf (eca--session-chats session) (eca-assoc (eca--session-chats session) 'empty (current-buffer))))
+      (cl-assert eca-chat--id nil "eca-chat--id must be set before registering buffer")
+      (setf (eca--session-chats session)
+            (eca-assoc (eca--session-chats session) eca-chat--id (current-buffer))))
     (if (window-live-p (get-buffer-window (buffer-name)))
         (eca-chat--select-window)
       (eca-chat--pop-window))
@@ -3566,13 +3609,25 @@ When ACTIVE is non-nil, show the question prefix; otherwise restore normal."
   (when eca-chat-custom-model
     (error (eca-error "The eca-chat-custom-model variable is already set: %s" eca-chat-custom-model)))
   (when-let* ((model (completing-read "Select a model:" (append (eca--session-models (eca-session)) nil) nil t)))
-    (eca-chat--with-current-buffer (eca-chat--get-last-buffer (eca-session))
-      (setq-local eca-chat--selected-model model)
-      (setq eca-chat--last-known-model model))
-    (eca-api-notify (eca-session)
-                    :method "chat/selectedModelChanged"
-                    :params (list :model model
-                                  :variant eca-chat--selected-variant))))
+    ;; Target the chat the user is interacting with (the current buffer
+    ;; when invoked from inside a chat, otherwise the session's
+    ;; last-chat-buffer fallback), not whichever chat was last globally
+    ;; tracked.  This keeps the model selection from leaking across
+    ;; chats in the session (eca-emacs#231).
+    (let* ((target (if (derived-mode-p 'eca-chat-mode)
+                       (current-buffer)
+                     (eca-chat--get-last-buffer (eca-session))))
+           (chat-id (when (buffer-live-p target)
+                      (buffer-local-value 'eca-chat--id target)))
+           (variant (when (buffer-live-p target)
+                      (buffer-local-value 'eca-chat--selected-variant target))))
+      (eca-chat--with-current-buffer target
+        (setq-local eca-chat--selected-model model)
+        (setq eca-chat--last-known-model model))
+      (eca-api-notify (eca-session)
+                      :method "chat/selectedModelChanged"
+                      :params (append (list :model model :variant variant)
+                                      (when chat-id (list :chatId chat-id)))))))
 
 ;;;###autoload
 (defun eca-chat-select-variant ()
@@ -3587,9 +3642,13 @@ When ACTIVE is non-nil, show the question prefix; otherwise restore normal."
                                  (cycle-sort-function . ,#'identity))
                     (complete-with-action action candidates string pred)))))
     (when-let* ((variant (completing-read "Select a variant:" table nil t)))
-      (eca-chat--with-current-buffer (eca-chat--get-last-buffer (eca-session))
-        (setq-local eca-chat--selected-variant variant)
-        (setq eca-chat--last-known-variant variant)))))
+      ;; Target the active chat buffer (see `eca-chat-select-model').
+      (let ((target (if (derived-mode-p 'eca-chat-mode)
+                        (current-buffer)
+                      (eca-chat--get-last-buffer (eca-session)))))
+        (eca-chat--with-current-buffer target
+          (setq-local eca-chat--selected-variant variant)
+          (setq eca-chat--last-known-variant variant))))))
 
 ;;;###autoload
 (defun eca-chat-select-agent ()

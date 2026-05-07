@@ -44,6 +44,22 @@
                  (const :tag "Isolated (independent session per worktree)" isolated))
   :group 'eca)
 
+(defun eca-uuid ()
+  "Return a fresh v4-style UUID string.
+
+Uses Emacs's pseudo-random generator reseeded from system entropy
+on every call so consecutive ids inside the same Emacs session do
+not repeat across, e.g., quickly-clicked \"+ new chat\" tabs.  Used
+for client-generated `chatId' values sent to the eca server."
+  (random t)
+  (format "%04x%04x-%04x-4%03x-%01x%03x-%04x%04x%04x"
+          (random 65536) (random 65536)
+          (random 65536)
+          (logand (random 65536) #x0fff)
+          (logior #x8 (logand (random 16) #x3))
+          (logand (random 65536) #x0fff)
+          (random 65536) (random 65536) (random 65536)))
+
 (defun eca-assoc (map key val)
   "Return a new MAP with KEY associated to flat plist VAL, replacing any existing."
   (cons (cons key val)
