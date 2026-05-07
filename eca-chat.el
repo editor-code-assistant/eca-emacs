@@ -1440,7 +1440,7 @@ Resteps a list of context plists found in the prompt field."
             (eca-buttonize
              eca-chat-mode-map
              (propertize "[-]" 'font-lock-face 'eca-chat-prompt-stop-face)
-             #'eca-chat--remove-steered-prompt)
+             (lambda () (eca-chat--remove-steered-prompt (eca-session))))
             "\n")))
 
 (defun eca-chat--update-steer-area ()
@@ -1509,10 +1509,13 @@ Does not send directly — `eca-chat--send-queued-prompt' handles sending."
     (eca-chat--update-steer-area)
     (eca-chat--update-queued-area)))
 
-(defun eca-chat--remove-steered-prompt ()
-  "Discard the steered prompt locally without notifying the server."
+(defun eca-chat--remove-steered-prompt (session)
+  "Discard the pending steer for SESSION and notify the server."
   (setq-local eca-chat--steered-prompt nil)
-  (eca-chat--update-steer-area))
+  (eca-chat--update-steer-area)
+  (eca-api-notify session
+                  :method "chat/promptSteerRemove"
+                  :params (list :chatId eca-chat--id)))
 
 (defun eca-chat--completion-active-p ()
   "Return non-nil if a completion popup is active."
