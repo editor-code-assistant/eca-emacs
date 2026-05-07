@@ -606,32 +606,26 @@ Each task is a plist with :id, :content, :status, :priority, etc.")
   "Safety timer to force-clear \='stopping state.
 Used when server never responds to stop request.")
 
-(defvar-local eca-chat--stop-button-inserted nil
-  "Non-nil when the stop button is inserted in loading area.")
-
 (defvar-local eca-chat--pending-question nil
   "When non-nil, holds the active question state.
 A plist with :session :request :question :options :tool-call-id :allow-freeform.")
 
 ;; Buffer-local caches for singleton overlays.  The chat buffer
 ;; contains a fixed set of overlays that are created once at chat
-;; setup (prompt-area, prompt-field, loading-area, progress-area,
-;; context-area, task-area, queued-area, steer-area) plus optionally
-;; one question-block.  Each lookup historically scanned every
-;; overlay in the buffer via `(overlays-in (point-min) (point-max))',
-;; which scales linearly with chat length and is exercised on every
-;; streamed chunk.  Caching the overlay reference per buffer turns
-;; those lookups into O(1).  The cache is invalidated automatically
-;; when the cached overlay is deleted (its `overlay-buffer' becomes
-;; nil) and explicitly in `eca-chat--clear'.
+;; setup (prompt-area, prompt-field, progress-area, context-area,
+;; task-area) plus optionally one question-block.  Each lookup
+;; historically scanned every overlay in the buffer via
+;; `(overlays-in (point-min) (point-max))', which scales linearly
+;; with chat length and is exercised on every streamed chunk.
+;; Caching the overlay reference per buffer turns those lookups
+;; into O(1).  The cache is invalidated automatically when the
+;; cached overlay is deleted (its `overlay-buffer' becomes nil)
+;; and explicitly in `eca-chat--clear'.
 (defvar-local eca-chat--prompt-area-ov-cache nil)
 (defvar-local eca-chat--prompt-field-ov-cache nil)
-(defvar-local eca-chat--loading-area-ov-cache nil)
 (defvar-local eca-chat--progress-area-ov-cache nil)
 (defvar-local eca-chat--context-area-ov-cache nil)
 (defvar-local eca-chat--task-area-ov-cache nil)
-(defvar-local eca-chat--queued-area-ov-cache nil)
-(defvar-local eca-chat--steer-area-ov-cache nil)
 (defvar-local eca-chat--question-block-ov-cache nil)
 
 
@@ -972,18 +966,11 @@ request, useful for subagent tool calls."
     (overlay-put progress-area-ov 'eca-chat-progress-area t)
     (eca-chat--insert "\n")
     (move-overlay progress-area-ov (overlay-start progress-area-ov) (1- (overlay-end progress-area-ov))))
-  (let ((queued-area-ov (make-overlay (line-beginning-position) (1+ (line-beginning-position)) (current-buffer))))
-    (overlay-put queued-area-ov 'eca-chat-queued-area t))
-  (let ((steer-area-ov (make-overlay (line-beginning-position) (1+ (line-beginning-position)) (current-buffer))))
-    (overlay-put steer-area-ov 'eca-chat-steer-area t))
   (let ((context-area-ov (make-overlay (line-beginning-position) (line-end-position) (current-buffer) nil t)))
     (overlay-put context-area-ov 'eca-chat-context-area t)
     (eca-chat--insert (propertize eca-chat-context-prefix 'font-lock-face 'eca-chat-context-unlinked-face))
     (eca-chat--insert "\n")
     (move-overlay context-area-ov (overlay-start context-area-ov) (1- (overlay-end context-area-ov))))
-  (let ((loading-area-ov (make-overlay (line-beginning-position) (1+ (line-beginning-position)) (current-buffer))))
-    (overlay-put loading-area-ov 'eca-chat-loading-area t))
-  (eca-chat--insert "\n")
   (let ((prompt-field-ov (make-overlay (line-beginning-position) (1+ (line-beginning-position)) (current-buffer))))
     (overlay-put prompt-field-ov 'eca-chat-prompt-field t)
     (overlay-put prompt-field-ov 'before-string (propertize eca-chat-prompt-prefix 'font-lock-face 'eca-chat-prompt-prefix-face))))
@@ -1003,7 +990,6 @@ request, useful for subagent tool calls."
     (cancel-timer eca-chat--modeline-timer)
     (setq-local eca-chat--modeline-timer nil))
   (setq-local eca-chat--chat-loading nil)
-  (setq-local eca-chat--stop-button-inserted nil)
   (setq-local eca-chat--steered-prompt nil)
   (setq-local eca-chat--queued-prompt nil)
   (clrhash eca-chat--subagent-chat-id->tool-call-id)
@@ -1116,27 +1102,7 @@ LOADING can be t (loading), \\='stopping (stop in progress), or nil (idle)."
          (cancel-timer eca-chat--modeline-timer)
          (setq-local eca-chat--modeline-timer nil))
        (eca-chat--force-tab-line-update)))
-    (let ((loading-area-ov (eca-chat--loading-area-ov))
-          (stop-text (eca-buttonize
-                      eca-chat-mode-map
-                      (propertize "stop" 'font-lock-face 'eca-chat-prompt-stop-face)
-                      (lambda () (eca-chat--stop-prompt session)))))
-      (if (eq eca-chat--chat-loading t)
-          ;; Show loading prefix and stop button
-          (progn
-            (overlay-put loading-area-ov 'before-string (propertize eca-chat-prompt-prefix-loading 'font-lock-face 'default))
-            (unless eca-chat--stop-button-inserted
-              (save-excursion
-                (goto-char (overlay-start loading-area-ov))
-                (eca-chat--insert stop-text))
-              (setq-local eca-chat--stop-button-inserted t)))
-        ;; Not loading (stopping or nil) — clear prefix and remove button if present
-        (overlay-put loading-area-ov 'before-string "")
-        (when eca-chat--stop-button-inserted
-          (save-excursion
-            (goto-char (overlay-start loading-area-ov))
-            (delete-region (point) (+ (point) (length stop-text))))
-          (setq-local eca-chat--stop-button-inserted nil))))))
+    (eca-chat--refresh-transient-area)))
 
 (defun eca-chat--set-prompt (text)
   "Set the chat prompt to be TEXT."
@@ -1205,18 +1171,10 @@ Should be called whenever overlays are wholesale removed, e.g. via
 `erase-buffer' + `remove-overlays' in `eca-chat--clear'."
   (setq eca-chat--prompt-area-ov-cache nil
         eca-chat--prompt-field-ov-cache nil
-        eca-chat--loading-area-ov-cache nil
         eca-chat--progress-area-ov-cache nil
         eca-chat--context-area-ov-cache nil
         eca-chat--task-area-ov-cache nil
-        eca-chat--queued-area-ov-cache nil
-        eca-chat--steer-area-ov-cache nil
         eca-chat--question-block-ov-cache nil))
-
-(defun eca-chat--loading-area-ov ()
-  "Return the overlay for the loading area."
-  (eca-chat--cached-overlay eca-chat--loading-area-ov-cache
-                            'eca-chat-loading-area))
 
 (defun eca-chat--prompt-field-ov ()
   "Return the overlay for the prompt field."
@@ -1246,16 +1204,6 @@ Should be called whenever overlays are wholesale removed, e.g. via
   "Return the overlay for the task area."
   (eca-chat--cached-overlay eca-chat--task-area-ov-cache
                             'eca-chat-task-area))
-
-(defun eca-chat--queued-area-ov ()
-  "Return the overlay for the queued prompt area."
-  (eca-chat--cached-overlay eca-chat--queued-area-ov-cache
-                            'eca-chat-queued-area))
-
-(defun eca-chat--steer-area-ov ()
-  "Return the overlay for the steer prompt area."
-  (eca-chat--cached-overlay eca-chat--steer-area-ov-cache
-                            'eca-chat-steer-area))
 
 (defun eca-chat--prompt-area-start-point ()
   "Return the metadata overlay for the prompt area start point."
@@ -1437,16 +1385,23 @@ Resteps a list of context plists found in the prompt field."
          (truncated (if (> (length single-line) 40)
                         (concat (substring single-line 0 40) "...")
                       single-line)))
-    (propertize (concat "Queued: " truncated "\n")
-                'face 'eca-chat-queued-prompt-face)))
+    (propertize (concat "Queued: " truncated)
+                'font-lock-face 'eca-chat-queued-prompt-face)))
+
+(defun eca-chat--transient-segment-queued ()
+  "Return the queued-prompt segment string, or nil when not queued."
+  (when eca-chat--queued-prompt
+    (concat (eca-chat--queued-prompt-display-string eca-chat--queued-prompt)
+            " "
+            (eca-buttonize
+             eca-chat-mode-map
+             (propertize "[-]" 'font-lock-face 'eca-chat-prompt-stop-face)
+             #'eca-chat--remove-queued-prompt)
+            "\n")))
 
 (defun eca-chat--update-queued-area ()
-  "Update the queued-area overlay to reflect `eca-chat--queued-prompt'."
-  (when-let* ((ov (eca-chat--queued-area-ov)))
-    (overlay-put ov 'before-string
-                 (if eca-chat--queued-prompt
-                     (eca-chat--queued-prompt-display-string eca-chat--queued-prompt)
-                   ""))))
+  "Refresh the transient area to reflect `eca-chat--queued-prompt'."
+  (eca-chat--refresh-transient-area))
 
 (defun eca-chat--queue-prompt (prompt)
   "Queue PROMPT to be sent to SESSION when it finish current prompt."
@@ -1463,22 +1418,71 @@ Resteps a list of context plists found in the prompt field."
     (setq-local eca-chat--queued-prompt nil)
     (eca-chat--update-queued-area)))
 
+(defun eca-chat--remove-queued-prompt ()
+  "Discard the queued prompt without sending it."
+  (setq-local eca-chat--queued-prompt nil)
+  (eca-chat--update-queued-area))
+
 (defun eca-chat--steered-prompt-display-string (text)
   "Return a display string for steered prompt TEXT, truncated to 40 chars."
   (let* ((single-line (replace-regexp-in-string "\n" " " text))
          (truncated (if (> (length single-line) 40)
                         (concat (substring single-line 0 40) "...")
                       single-line)))
-    (propertize (concat "Steering: " truncated "\n")
-                'face 'eca-chat-steer-prompt-face)))
+    (propertize (concat "Steering: " truncated)
+                'font-lock-face 'eca-chat-steer-prompt-face)))
+
+(defun eca-chat--transient-segment-steered ()
+  "Return the steered-prompt segment string, or nil when not steered."
+  (when eca-chat--steered-prompt
+    (concat (eca-chat--steered-prompt-display-string eca-chat--steered-prompt)
+            " "
+            (eca-buttonize
+             eca-chat-mode-map
+             (propertize "[-]" 'font-lock-face 'eca-chat-prompt-stop-face)
+             #'eca-chat--remove-steered-prompt)
+            "\n")))
 
 (defun eca-chat--update-steer-area ()
-  "Update the steer-area overlay to reflect `eca-chat--steered-prompt'."
-  (when-let* ((ov (eca-chat--steer-area-ov)))
-    (overlay-put ov 'before-string
-                 (if eca-chat--steered-prompt
-                     (eca-chat--steered-prompt-display-string eca-chat--steered-prompt)
-                   ""))))
+  "Refresh the transient area to reflect `eca-chat--steered-prompt'."
+  (eca-chat--refresh-transient-area))
+
+(defun eca-chat--transient-segment-loading ()
+  "Return the loading segment string, or nil when chat is idle."
+  (when (eq eca-chat--chat-loading t)
+    (concat (propertize eca-chat-prompt-prefix-loading
+                        'font-lock-face 'default)
+            (eca-buttonize
+             eca-chat-mode-map
+             (propertize "stop" 'font-lock-face 'eca-chat-prompt-stop-face)
+             (lambda () (eca-chat--stop-prompt (eca-session))))
+            "\n")))
+
+(defvar eca-chat-transient-area-segments
+  '(eca-chat--transient-segment-queued
+    eca-chat--transient-segment-steered
+    eca-chat--transient-segment-loading)
+  "Ordered list of zero-arg functions returning a propertized string or nil.
+Each non-nil result is rendered on its own line, top to bottom, between
+the context area and the prompt input.  Add a new function here to make
+a new dynamic line appear in that region.")
+
+(defun eca-chat--refresh-transient-area ()
+  "Re-render the transient area between context and prompt input.
+Iterates `eca-chat-transient-area-segments', concatenating each
+segment's non-nil string result.  Uses `insert-before-markers' so
+the prompt-field overlay's start advances past inserted content."
+  (when-let* ((context-ov (eca-chat--prompt-context-field-ov))
+              (prompt-ov (eca-chat--prompt-field-ov)))
+    (save-excursion
+      (let ((start (1+ (overlay-end context-ov)))
+            (end (overlay-start prompt-ov)))
+        (delete-region start end)
+        (goto-char start)
+        (dolist (seg eca-chat-transient-area-segments)
+          (when-let* ((str (funcall seg)))
+            (insert-before-markers str)))
+        (setq-local buffer-undo-list nil)))))
 
 (defun eca-chat--steer-prompt (session prompt)
   "Steer the running prompt for SESSION by injecting PROMPT at the next LLM turn."
@@ -1504,6 +1508,11 @@ Does not send directly — `eca-chat--send-queued-prompt' handles sending."
     (setq-local eca-chat--steered-prompt nil)
     (eca-chat--update-steer-area)
     (eca-chat--update-queued-area)))
+
+(defun eca-chat--remove-steered-prompt ()
+  "Discard the steered prompt locally without notifying the server."
+  (setq-local eca-chat--steered-prompt nil)
+  (eca-chat--update-steer-area))
 
 (defun eca-chat--completion-active-p ()
   "Return non-nil if a completion popup is active."
