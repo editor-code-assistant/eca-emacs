@@ -273,7 +273,8 @@ When the sandbox tool hides or remaps the host PID, also set
 `eca-send-process-id` to `nil`; otherwise the server's parent-process
 watchdog would see an invalid PID and shut down right after startup.
 
-### Example: jai
+<details>
+<summary><strong>Example: jai</strong></summary>
 
 [jai](https://jai.scs.stanford.edu/) is a lightweight Linux sandbox that
 hides processes, environment variables, and any directory not explicitly
@@ -299,7 +300,10 @@ whitelisted with `-d`.
 (setq eca-send-process-id nil)
 ```
 
-### Example: firejail
+</details>
+
+<details>
+<summary><strong>Example: firejail</strong></summary>
 
 The same shape works for any wrapper. Replace the `jai` prefix and flags:
 
@@ -316,6 +320,8 @@ The same shape works for any wrapper. Replace the `jai` prefix and flags:
 (setq eca-process-wrapper-function #'my/eca-firejail-wrapper)
 (setq eca-send-process-id nil)
 ```
+
+</details>
 
 ### Limitations
 
