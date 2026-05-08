@@ -1217,6 +1217,7 @@ This is similar to actions like `backward-delete-char' but protects
 the prompt/context line."
   (if (derived-mode-p 'eca-chat-mode)
       (let* ((cur-ov (car (overlays-in (line-beginning-position) (line-end-position))))
+             (prompt-ov (eca-chat--prompt-field-ov))
              (text (thing-at-point 'symbol))
              (in-prompt? (eca-chat--point-at-prompt-field-p))
              (context-item (-some->> text
@@ -1248,10 +1249,11 @@ the prompt/context line."
           (apply side-effect-fn args))
 
          ;; start of the prompt
-         ((and cur-ov
-               (or (<= (point) (overlay-start cur-ov))
+         ((and prompt-ov
+               (or (<= (point) (overlay-start prompt-ov))
                    (and (eq 'backward-kill-word this-command)
-                        (string-blank-p (buffer-substring-no-properties (line-beginning-position) (point))))))
+                        (string-blank-p (buffer-substring-no-properties
+                                         (overlay-start prompt-ov) (point))))))
           (ding))
 
          ;; in context area trying to remove a context space separator
