@@ -222,8 +222,8 @@ nil otherwise."
        :method "workspace/didChangeWorkspaceFolders"
        :params (list :event
                      (list :added (vector
-                                  (list :uri (eca--path-to-uri folder)
-                                        :name (file-name-nondirectory (directory-file-name folder))))
+                                   (list :uri (eca--path-to-uri folder)
+                                         :name (file-name-nondirectory (directory-file-name folder))))
                            :removed [])))
       (eca-info "Added workspace folder: %s" folder))))
 
@@ -313,19 +313,50 @@ workspace folder. Falls back to \"unknown\"."
   (concat eca--uri-file-prefix
           (--> path
                (expand-file-name it)
-               (or (file-remote-p it 'localname t) it))))
+               (or (file-remote-p it 'localname t) it)
+               (eca--path-local-to-remote it))))
 
 (defun eca--uri-to-path (uri)
   "Convert a file URI to a file path."
-  (cond
-   ((string-prefix-p "file:///" uri)
-    (url-unhex-string
-     (substring uri (if (eq system-type 'windows-nt) 8 7))))
+  (let ((path (cond
+               ((string-prefix-p "file:///" uri)
+                (url-unhex-string
+                 (substring uri (if (eq system-type 'windows-nt) 8 7))))
 
-   ((string-prefix-p "file://" uri)
-    (url-unhex-string (substring uri 6)))
+               ((string-prefix-p "file://" uri)
+                (url-unhex-string (substring uri 6)))
 
-   (t uri)))
+               (t uri))))
+    (eca--path-remote-to-local path)))
+
+(defvar eca-path-mappings)
+
+(defun eca--path-local-to-remote (path)
+  "Translate a local Emacs PATH to a remote path using `eca-path-mappings'."
+  (let ((expanded (expand-file-name path)))
+    (or (seq-some (lambda (mapping)
+                    (let* ((local-dir (file-name-as-directory (expand-file-name (car mapping))))
+                           (remote-dir (file-name-as-directory (cdr mapping))))
+                      (cond
+                       ((string= expanded (directory-file-name local-dir))
+                        (directory-file-name remote-dir))
+                       ((string-prefix-p local-dir expanded)
+                        (concat remote-dir (substring expanded (length local-dir)))))))
+                  eca-path-mappings)
+        expanded)))
+
+(defun eca--path-remote-to-local (path)
+  "Translate a remote server PATH to a local Emacs path using `eca-path-mappings'."
+  (or (seq-some (lambda (mapping)
+                  (let* ((local-dir (file-name-as-directory (expand-file-name (car mapping))))
+                         (remote-dir (file-name-as-directory (cdr mapping))))
+                    (cond
+                     ((string= path (directory-file-name remote-dir))
+                      (directory-file-name local-dir))
+                     ((string-prefix-p remote-dir path)
+                      (concat local-dir (substring path (length remote-dir)))))))
+                eca-path-mappings)
+      path))
 
 (defun eca-info (format &rest args)
   "Display eca info message with FORMAT with ARGS."
