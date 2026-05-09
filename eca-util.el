@@ -330,21 +330,8 @@ workspace folder. Falls back to \"unknown\"."
     (eca--path-remote-to-local path)))
 
 (defcustom eca-path-mappings nil
-  "Alist mapping local file paths to remote/container server paths.
-This is useful when the ECA server is running inside a Docker
-container or on a remote machine with a different filesystem
-layout.  Format is an alist of (LOCAL-PATH . REMOTE-PATH).
-
-The most specific (longest) matching prefix is used, so a single
-parent-directory mapping eliminates the need for per-project
-entries in the common Docker/container case:
-
-  \\='((\"/Users/me/dev\" . \"/workspace\"))
-  ;; /Users/me/dev/project-a → /workspace/project-a
-  ;; /Users/me/dev/project-b → /workspace/project-b
-
-If a project needs a different remote path, add a more specific
-entry that takes precedence:
+  "Alist of (LOCAL-PATH . REMOTE-PATH) for Docker or remote servers.
+The longest matching prefix wins.
 
   \\='((\"/Users/me/dev\" . \"/workspace\")
     (\"/Users/me/dev/special\" . \"/custom\"))
@@ -356,8 +343,8 @@ entry that takes precedence:
 (defun eca--path--translate (path from-fn to-fn expand-from-p)
   "Translate PATH using `eca-path-mappings'.
 FROM-FN extracts the side of each mapping to match against PATH;
-TO-FN extracts the side to substitute in.  The longest matching
-prefix wins; ties break on the opposite side's length."
+TO-FN extracts the side to substitute in.  If EXPAND-FROM-P is non-nil,
+expand the from-side path.  The longest matching prefix wins."
   (let ((sorted (sort (copy-sequence eca-path-mappings)
                       (lambda (a b)
                         (let ((la (length (funcall from-fn a)))
