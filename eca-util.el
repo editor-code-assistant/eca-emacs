@@ -329,7 +329,7 @@ workspace folder. Falls back to \"unknown\"."
                (t uri))))
     (eca--path-remote-to-local path)))
 
-(defcustom eca-path-mappings nil
+(defcustom eca-local-to-remote-prefix-map nil
   "Alist of (LOCAL-PATH . REMOTE-PATH) for Docker or remote servers.
 The longest matching prefix wins.
 
@@ -341,12 +341,12 @@ The longest matching prefix wins.
   :group 'eca)
 
 (defun eca--path--translate (path from-fn to-fn expand-from-p)
-  "Translate PATH using `eca-path-mappings'.
+  "Translate PATH using `eca-local-to-remote-prefix-map'.
 FROM-FN extracts the side of each mapping to match against PATH;
 TO-FN extracts the side to substitute in.  If EXPAND-FROM-P is non-nil,
 expand the from-side path.  The longest matching prefix wins."
   (let* ((ensure-slash (lambda (s) (if (string-suffix-p "/" s) s (concat s "/"))))
-         (sorted (sort (copy-sequence eca-path-mappings)
+         (sorted (sort (copy-sequence eca-local-to-remote-prefix-map)
                        (lambda (a b)
                          (let ((la (length (funcall from-fn a)))
                                (lb (length (funcall from-fn b))))
@@ -371,12 +371,12 @@ expand the from-side path.  The longest matching prefix wins."
         path)))
 
 (defun eca--path-local-to-remote (path)
-  "Translate a local Emacs PATH to a remote path using `eca-path-mappings'.
+  "Translate a local Emacs PATH to a remote path using `eca-local-to-remote-prefix-map'.
 Uses the longest (most specific) matching prefix to avoid ambiguity."
   (eca--path--translate (expand-file-name path) #'car #'cdr t))
 
 (defun eca--path-remote-to-local (path)
-  "Translate a remote server PATH to a local Emacs path using `eca-path-mappings'.
+  "Translate a remote server PATH to a local Emacs path using `eca-local-to-remote-prefix-map'.
 Uses the longest (most specific) matching prefix to avoid ambiguity."
   (eca--path--translate path #'cdr #'car nil))
 
