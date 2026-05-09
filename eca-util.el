@@ -41,7 +41,7 @@
   all scope to the individual worktree.  This matches the behaviour
   prior to 0.110.0 and is preferred for parallel worktree workflows."
   :type '(choice (const :tag "Merged (shared session per repo)" merged)
-                 (const :tag "Isolated (independent session per worktree)" isolated))
+          (const :tag "Isolated (independent session per worktree)" isolated))
   :group 'eca)
 
 (defun eca-uuid ()
@@ -329,7 +329,15 @@ workspace folder. Falls back to \"unknown\"."
                (t uri))))
     (eca--path-remote-to-local path)))
 
-(defvar eca-path-mappings)
+(defcustom eca-path-mappings nil
+  "Alist mapping local file paths to remote/container server paths.
+This is useful when the ECA server is running inside a Docker container.
+Format is an alist of (LOCAL-PATH . REMOTE-PATH).
+
+Example:
+  '((\"/Users/me/dev/project\" . \"/workspace/project\"))"
+  :type '(alist :key-type string :value-type string)
+  :group 'eca)
 
 (defun eca--path-local-to-remote (path)
   "Translate a local Emacs PATH to a remote path using `eca-path-mappings'."
