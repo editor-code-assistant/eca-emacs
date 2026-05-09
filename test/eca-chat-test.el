@@ -87,4 +87,57 @@ Returns the buffer.  Caller must kill it."
                         :to-equal "hello")))
           (kill-buffer buf))))))
 
+(describe "eca-chat path mapping"
+  (describe "chat/queryContext"
+    (it "maps paths in :contexts to remote"
+      (let ((eca-chat--id "chat-123")
+            (eca-chat--context '((:type "file" :path "/local/path/file.txt")))
+            (session (make-eca--session)))
+        (spy-on 'eca-session :and-return-value session)
+        (spy-on 'eca--session-workspace-folders :and-return-value '("/local/path"))
+        (spy-on 'eca--path-local-to-remote :and-return-value "/remote/path/file.txt")
+        (spy-on 'eca-api-request-while-no-input :and-return-value '(:contexts []))
+        (spy-on 'eca-chat--find-typed-query :and-return-value "")
+        (spy-on 'eca-chat--point-at-new-context-p :and-return-value nil)
+        (with-temp-buffer
+          (insert "@")
+          (let* ((capf-res (eca-chat-completion-at-point))
+                 (completion-fn (nth 2 capf-res)))
+            (funcall completion-fn "" nil t)
+            (expect 'eca--path-local-to-remote :to-have-been-called-with "/local/path/file.txt")
+            (expect 'eca-api-request-while-no-input :to-have-been-called-with
+                    session
+                    :method "chat/queryContext"
+                    :params (list :chatId "chat-123"
+                                  :query ""
+                                  :contexts [(:type "file" :path "/remote/path/file.txt")])))))))
+
+  (describe "chat/promptSteer"
+    (it "normalizes the message prompt"
+      (let ((eca-chat--id "chat-456")
+            (session (make-eca--session)))
+        (spy-on 'eca-api-notify)
+        (spy-on 'eca--path-local-to-remote :and-return-value "/remote/path/file.txt")
+        (let ((prompt (propertize "@file.txt"
+                                  'eca-chat-expanded-item-str "@file.txt"
+                                  'eca-chat-item-type 'context)))
+          (eca-chat--steer-prompt session prompt)
+          (expect 'eca--path-local-to-remote :to-have-been-called-with "file.txt")
+          (expect 'eca-api-notify :to-have-been-called-with
+                  session
+                  :method "chat/promptSteer"
+                  :params (list :chatId "chat-456"
+                                :message "@/remote/path/file.txt"))))))
+
+  (describe "eca-chat--normalize-prompt"
+    (it "handles relative paths in expansions"
+      (let ((default-directory "/local/path/"))
+        (spy-on 'eca--path-local-to-remote :and-return-value "/remote/path/file.txt")
+        (let ((prompt (propertize "@file.txt"
+                                  'eca-chat-expanded-item-str "@file.txt"
+                                  'eca-chat-item-type 'context)))
+          (expect (eca-chat--normalize-prompt prompt)
+                  :to-equal "@/remote/path/file.txt")
+          (expect 'eca--path-local-to-remote :to-have-been-called-with "file.txt"))))))
+
 ;;; eca-chat-test.el ends here
