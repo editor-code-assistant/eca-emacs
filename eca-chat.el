@@ -1322,9 +1322,14 @@ the prompt/context line."
              (expanded-str (get-text-property pos 'eca-chat-expanded-item-str prompt))
              (item-type (get-text-property pos 'eca-chat-item-type prompt)))
         (if expanded-str
-            (setq result (concat result (if (eq 'filepath item-type)
-                                            (eca--path-local-to-remote (substring expanded-str 1))
-                                          expanded-str)))
+            (setq result (concat result
+                                 (cond
+                                  ((eq item-type 'filepath)
+                                   (eca--path-local-to-remote (substring expanded-str 1)))
+                                  ((eq item-type 'context)
+                                   (concat "@" (eca--path-local-to-remote
+                                                (substring expanded-str 1))))
+                                  (t expanded-str))))
           (setq result (concat result (substring prompt pos next-change))))
         (setq pos next-change)))
     result))
@@ -1497,7 +1502,7 @@ the prompt-field overlay's start advances past inserted content."
   (eca-api-notify session
                   :method "chat/promptSteer"
                   :params (list :chatId eca-chat--id
-                                :message prompt)))
+                                :message (eca-chat--normalize-prompt prompt))))
 
 (defun eca-chat--send-steered-prompt (session)
   "Merge any unconsumed steered prompt into the queued prompt for SESSION.

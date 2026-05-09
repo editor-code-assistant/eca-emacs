@@ -23,6 +23,7 @@
 (defvar eca-chat-window-width)
 (declare-function eca-chat--insert "eca-chat")
 (declare-function eca-chat--prompt-field-start-point "eca-chat")
+(declare-function eca-chat--refine-context "eca-chat")
 (declare-function eca-chat--prompt-context-field-ov "eca-chat")
 (declare-function eca-chat--point-at-new-context-p "eca-chat")
 (declare-function eca-chat--point-at-prompt-field-p "eca-chat")
@@ -599,7 +600,8 @@ Calls CB with the resulting message."
                                                                                :method "chat/queryContext"
                                                                                :params (list :chatId eca-chat--id
                                                                                              :query query
-                                                                                             :contexts (vconcat eca-chat--context))))
+                                                                                             :contexts (vconcat (mapcar #'eca-chat--refine-context
+                                                                      eca-chat--context)))))
                                                  (items (-map #'eca-chat--context-to-completion contexts)))
                                            (clrhash eca-chat--context-completion-cache)
                                            (puthash query items eca-chat--context-completion-cache)
