@@ -49,29 +49,29 @@
   (it "translates a remote path to a local path"
     (let ((eca-path-mappings '(("/Users/me/dev/project" . "/workspace/project"))))
       (expect (eca--path-remote-to-local "/workspace/project/src/main.rs")
-              :to-equal "/Users/me/dev/project/src/main.rs")))
+              :to-equal (expand-file-name "/Users/me/dev/project/src/main.rs"))))
 
   (it "translates using the longest (most specific) matching mapping"
     (let ((eca-path-mappings '(("/Users/me/dev" . "/workspace")
                                ("/Users/me/dev/project" . "/custom"))))
       (expect (eca--path-remote-to-local "/custom/package.json")
-              :to-equal "/Users/me/dev/project/package.json")))
+              :to-equal (expand-file-name "/Users/me/dev/project/package.json"))))
 
   (it "longest-prefix wins regardless of order"
     ;; General mapping first, specific override second.
     (let ((eca-path-mappings '(("/Users/me/dev" . "/workspace")
                                ("/Users/me/dev/special" . "/custom"))))
       (expect (eca--path-remote-to-local "/custom/src/main.rs")
-              :to-equal "/Users/me/dev/special/src/main.rs")
+              :to-equal (expand-file-name "/Users/me/dev/special/src/main.rs"))
       (expect (eca--path-remote-to-local "/workspace/other/src/main.rs")
-              :to-equal "/Users/me/dev/other/src/main.rs"))
+              :to-equal (expand-file-name "/Users/me/dev/other/src/main.rs")))
     ;; Specific override first, general mapping second.
     (let ((eca-path-mappings '(("/Users/me/dev/special" . "/custom")
                                ("/Users/me/dev" . "/workspace"))))
       (expect (eca--path-remote-to-local "/custom/src/main.rs")
-              :to-equal "/Users/me/dev/special/src/main.rs")
+              :to-equal (expand-file-name "/Users/me/dev/special/src/main.rs"))
       (expect (eca--path-remote-to-local "/workspace/other/src/main.rs")
-              :to-equal "/Users/me/dev/other/src/main.rs")))
+              :to-equal (expand-file-name "/Users/me/dev/other/src/main.rs"))))
 
   (it "returns the inputted path when no match is found"
     (let ((eca-path-mappings '(("/Users/me/dev/project" . "/workspace/project"))))
@@ -81,7 +81,7 @@
   (it "handles paths with trailing slashes"
     (let ((eca-path-mappings '(("/home/user/app/" . "/app/"))))
       (expect (eca--path-remote-to-local "/app/src/index.js")
-              :to-equal "/home/user/app/src/index.js")))
+              :to-equal (expand-file-name "/home/user/app/src/index.js"))))
 
   (it "does not match substrings"
     (let ((eca-path-mappings '(("/Users/me/project" . "/workspace/project"))))
@@ -117,7 +117,7 @@
     (let ((eca-path-mappings '(("/Users/me/ws/nested" . "/workspace")
                                ("/Users/me/ws/nested/dev" . "/workspace"))))
       (expect (eca--path-remote-to-local "/workspace/project/file.el")
-              :to-equal "/Users/me/ws/nested/dev/project/file.el"))))
+              :to-equal (expand-file-name "/Users/me/ws/nested/dev/project/file.el")))))
 
 (describe "eca--path-translation windows"
   (it "handles Windows paths correctly"

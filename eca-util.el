@@ -345,22 +345,23 @@ The longest matching prefix wins.
 FROM-FN extracts the side of each mapping to match against PATH;
 TO-FN extracts the side to substitute in.  If EXPAND-FROM-P is non-nil,
 expand the from-side path.  The longest matching prefix wins."
-  (let ((sorted (sort (copy-sequence eca-path-mappings)
-                      (lambda (a b)
-                        (let ((la (length (funcall from-fn a)))
-                              (lb (length (funcall from-fn b))))
-                          (if (= la lb)
-                              (> (length (funcall to-fn a))
-                                 (length (funcall to-fn b)))
-                            (> la lb)))))))
+  (let* ((ensure-slash (lambda (s) (if (string-suffix-p "/" s) s (concat s "/"))))
+         (sorted (sort (copy-sequence eca-path-mappings)
+                       (lambda (a b)
+                         (let ((la (length (funcall from-fn a)))
+                               (lb (length (funcall from-fn b))))
+                           (if (= la lb)
+                               (> (length (funcall to-fn a))
+                                  (length (funcall to-fn b)))
+                             (> la lb)))))))
     (or (seq-some
          (lambda (m)
            (let* ((from-raw (funcall from-fn m))
                   (to-raw (funcall to-fn m))
-                  (from (file-name-as-directory
-                         (if expand-from-p (expand-file-name from-raw) from-raw)))
-                  (to (file-name-as-directory
-                       (if (not expand-from-p) (expand-file-name to-raw) to-raw))))
+                  (from (funcall ensure-slash
+                                 (if expand-from-p (expand-file-name from-raw) from-raw)))
+                  (to (funcall ensure-slash
+                               (if (not expand-from-p) (expand-file-name to-raw) to-raw))))
              (cond
               ((string= path (directory-file-name from))
                (directory-file-name to))
