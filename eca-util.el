@@ -331,40 +331,66 @@ workspace folder. Falls back to \"unknown\"."
 
 (defcustom eca-path-mappings nil
   "Alist mapping local file paths to remote/container server paths.
-This is useful when the ECA server is running inside a Docker container.
-Format is an alist of (LOCAL-PATH . REMOTE-PATH).
+This is useful when the ECA server is running inside a Docker
+container or on a remote machine with a different filesystem
+layout.  Format is an alist of (LOCAL-PATH . REMOTE-PATH).
 
-Example:
-  '((\"/Users/me/dev/project\" . \"/workspace/project\"))"
+The most specific (longest) matching prefix is used, so a single
+parent-directory mapping eliminates the need for per-project
+entries in the common Docker/container case:
+
+  \\='((\"/Users/me/dev\" . \"/workspace\"))
+  ;; /Users/me/dev/project-a → /workspace/project-a
+  ;; /Users/me/dev/project-b → /workspace/project-b
+
+If a project needs a different remote path, add a more specific
+entry that takes precedence:
+
+  \\='((\"/Users/me/dev\" . \"/workspace\")
+    (\"/Users/me/dev/special\" . \"/custom\"))
+  ;; /Users/me/dev/project → /workspace/project
+  ;; /Users/me/dev/special → /custom"
   :type '(alist :key-type string :value-type string)
   :group 'eca)
 
+(defun eca--path--translate (path from-fn to-fn expand-from-p)
+  "Translate PATH using `eca-path-mappings'.
+FROM-FN extracts the side of each mapping to match against PATH;
+TO-FN extracts the side to substitute in.  The longest matching
+prefix wins; ties break on the opposite side's length."
+  (let ((sorted (sort (copy-sequence eca-path-mappings)
+                      (lambda (a b)
+                        (let ((la (length (funcall from-fn a)))
+                              (lb (length (funcall from-fn b))))
+                          (if (= la lb)
+                              (> (length (funcall to-fn a))
+                                 (length (funcall to-fn b)))
+                            (> la lb)))))))
+    (or (seq-some
+         (lambda (m)
+           (let* ((from-raw (funcall from-fn m))
+                  (to-raw (funcall to-fn m))
+                  (from (file-name-as-directory
+                         (if expand-from-p (expand-file-name from-raw) from-raw)))
+                  (to (file-name-as-directory
+                       (if (not expand-from-p) (expand-file-name to-raw) to-raw))))
+             (cond
+              ((string= path (directory-file-name from))
+               (directory-file-name to))
+              ((string-prefix-p from path)
+               (concat to (substring path (length from)))))))
+         sorted)
+        path)))
+
 (defun eca--path-local-to-remote (path)
-  "Translate a local Emacs PATH to a remote path using `eca-path-mappings'."
-  (let ((expanded (expand-file-name path)))
-    (or (seq-some (lambda (mapping)
-                    (let* ((local-dir (file-name-as-directory (expand-file-name (car mapping))))
-                           (remote-dir (file-name-as-directory (cdr mapping))))
-                      (cond
-                       ((string= expanded (directory-file-name local-dir))
-                        (directory-file-name remote-dir))
-                       ((string-prefix-p local-dir expanded)
-                        (concat remote-dir (substring expanded (length local-dir)))))))
-                  eca-path-mappings)
-        expanded)))
+  "Translate a local Emacs PATH to a remote path using `eca-path-mappings'.
+Uses the longest (most specific) matching prefix to avoid ambiguity."
+  (eca--path--translate (expand-file-name path) #'car #'cdr t))
 
 (defun eca--path-remote-to-local (path)
-  "Translate a remote server PATH to a local Emacs path using `eca-path-mappings'."
-  (or (seq-some (lambda (mapping)
-                  (let* ((local-dir (file-name-as-directory (expand-file-name (car mapping))))
-                         (remote-dir (file-name-as-directory (cdr mapping))))
-                    (cond
-                     ((string= path (directory-file-name remote-dir))
-                      (directory-file-name local-dir))
-                     ((string-prefix-p remote-dir path)
-                      (concat local-dir (substring path (length remote-dir)))))))
-                eca-path-mappings)
-      path))
+  "Translate a remote server PATH to a local Emacs path using `eca-path-mappings'.
+Uses the longest (most specific) matching prefix to avoid ambiguity."
+  (eca--path--translate path #'cdr #'car nil))
 
 (defun eca-info (format &rest args)
   "Display eca info message with FORMAT with ARGS."
