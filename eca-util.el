@@ -408,18 +408,6 @@ plus TRAMP workspace folder mappings).  The longest matching prefix
 wins; explicit user mappings take priority over TRAMP-derived ones."
   (eca--path--translate path #'cdr #'car nil))
 
-(defmacro eca--with-remote-context (path &rest body)
-  "Execute BODY with `default-directory' set for PATH's context.
-When PATH is remote (has a TRAMP prefix), bind `default-directory'
-to the remote directory so `shell-command' runs on the remote host.
-Use `file-local-name' on paths passed to shell commands within BODY."
-  (declare (indent 1))
-  `(let ((default-directory (if-let ((remote (file-remote-p ,path)))
-                                 (or (file-name-directory ,path)
-                                     default-directory)
-                               default-directory)))
-     ,@body))
-
 (defun eca-info (format &rest args)
   "Display eca info message with FORMAT with ARGS."
   (message "%s :: %s" (propertize "ECA" 'face 'success) (apply #'format format args)))
