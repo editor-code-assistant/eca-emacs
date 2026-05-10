@@ -472,13 +472,14 @@ When ARG is current prefix, ask for workspace roots to use."
         (widget-create (eca--tree-widget-open-all
                         (hierarchy-convert-to-tree-widget h label-fn)))
         (widget-setup))
-      (let* ((display-buffer-alist
-              `((,(regexp-quote (buffer-name b))
-                 (display-buffer-in-side-window)
-                 (side . bottom)
-                 (slot . 0)
-                 (window-parameters . ((no-delete-other-windows . t)))))))
-        (select-window (display-buffer b))))))
+      (select-window
+       (display-buffer
+        b
+        '((display-buffer-in-side-window)
+          (side . bottom)
+          (slot . 0)
+          (dedicated . t)
+          (window-parameters . ((no-delete-other-windows . t)))))))))
 
 ;;;###autoload
 (defun eca-open-global-config ()

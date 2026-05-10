@@ -1989,17 +1989,17 @@ If `eca-chat-focus-on-open' is non-nil, the window is selected."
              (let* ((side eca-chat-window-side)
                     (slot 0)
                     (window-parameters '((no-delete-other-windows . t)))
-                    (display-buffer-alist
-                     `((,(regexp-quote (buffer-name buffer))
-                        (display-buffer-in-side-window)
-                        (side . ,side)
-                        (slot . ,slot)
-                        ,@(when (memq side '(left right))
-                            `((window-width . ,eca-chat-window-width)))
-                        ,@(when (memq side '(top bottom))
-                            `((window-height . ,eca-chat-window-height)))
-                        (window-parameters . ,window-parameters)))))
-               (display-buffer buffer))
+                    (display-action
+                     `((display-buffer-in-side-window)
+                       (side . ,side)
+                       (slot . ,slot)
+                       (dedicated . t)
+                       ,@(when (memq side '(left right))
+                           `((window-width . ,eca-chat-window-width)))
+                       ,@(when (memq side '(top bottom))
+                           `((window-height . ,eca-chat-window-height)))
+                       (window-parameters . ,window-parameters))))
+               (display-buffer buffer display-action))
            ;; Use regular buffer
            (display-buffer buffer))))
     ;; Select the window to give it focus if configured to do so
