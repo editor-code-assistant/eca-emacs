@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add `eca-doctor` command that prints a markdown-formatted diagnostic report to `*eca-doctor*` for bug reports: a `## Versions` section (same as `eca-version`) plus a `## Chat` section sourced from the active session's auto-detected chat buffer. #242
+
 - Bugfix: stop the `merged` worktree fallback in `eca-session` from auto-adding an unrelated ancestor (typically `$HOME`) as a second workspace folder. The fallback previously declared two paths to be the "same repo" purely on `git rev-parse --git-common-dir` equality, which is also true for any subdirectory of a git-tracked HOME (yadm/chezmoi/`git init ~`); a buffer whose `default-directory` is `~` (e.g. the doom scratch buffer) would then trigger `workspace/didChangeWorkspaceFolders` and append `~` to the session created with `C-u M-x eca` on `~/.config/eca`, showing both roots in the chat modeline. The match in `eca--session-for-worktree` now additionally requires that ROOT and the candidate folder are not in an ancestor/descendant relationship (real worktrees are always sibling directories, never nested), via the new `eca--paths-nested-p` helper. True sibling worktrees continue to merge as before. #238
 - Generate `chatId` client-side at chat-buffer creation. #231
 

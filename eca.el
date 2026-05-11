@@ -44,6 +44,7 @@
 
 (declare-function package-desc-version "package" (pkg-desc))
 (declare-function package-version-join "package" (vlist))
+(declare-function eca-chat--doctor-section "eca-chat")
 
 (defun eca--client-version ()
   "Return the eca-emacs client version string.
@@ -386,6 +387,33 @@ Displays eca-emacs client version, server version, and Emacs version."
               "not found")))
     (message "eca-emacs: %s | server: %s | emacs: %s"
              client-version server-version (emacs-version))))
+
+;;;###autoload
+(defun eca-doctor ()
+  "Print ECA diagnostic info to `*eca-doctor*' for bug reports.
+The report contains the same data as `eca-version' followed by a
+chat section automatically sourced from the active session's
+chat buffer.  See `eca-chat--doctor-section'."
+  (interactive)
+  (let* ((out-buf (get-buffer-create "*eca-doctor*"))
+         (client-ver (or (eca--client-version) "unknown"))
+         (server-ver (or (eca-process--server-version) "not found"))
+         (chat-section (eca-chat--doctor-section)))
+    (with-current-buffer out-buf
+      (let ((inhibit-read-only t))
+        (erase-buffer)
+        (insert "# eca-doctor\n\n")
+        (insert "Paste this buffer into your bug report.\n\n")
+        (insert "## Versions\n\n")
+        (insert (format "- eca-emacs:   %s\n" client-ver))
+        (insert (format "- eca server:  %s\n" server-ver))
+        (insert (format "- emacs:       %s\n" (emacs-version)))
+        (insert (format "- system-type: %s\n\n" system-type))
+        (insert "## Chat\n\n")
+        (insert chat-section)
+        (goto-char (point-min))
+        (special-mode)))
+    (pop-to-buffer out-buf)))
 
 ;;;###autoload
 (defun eca (&optional arg)

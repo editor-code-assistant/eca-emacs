@@ -4222,5 +4222,168 @@ Resteps selected message plist or nil if no messages or cancelled."
         (save-buffer))
       (eca-info (format "Saved chat to '%s'" file)))))
 
+(defun eca-chat--doctor-find-buffer ()
+  "Find an ECA chat buffer to inspect for diagnostics.
+Tries, in order: a chat buffer for the current buffer's session, then
+the most recent chat of any running session.  Returns the buffer or
+nil if no chat buffer can be located."
+  (let ((session (ignore-errors (eca-session))))
+    (or (and session
+             (let ((b (ignore-errors (eca-chat--get-last-buffer session))))
+               (and b (buffer-live-p b) b)))
+        (-some (lambda (s)
+                 (let ((b (ignore-errors (eca-chat--get-last-buffer s))))
+                   (and b (buffer-live-p b) b)))
+               (eca-vals eca--sessions)))))
+
+(defun eca-chat--doctor-format (src-buf)
+  "Return a markdown diagnostic string describing chat buffer SRC-BUF.
+Captures `major-mode' derivation, RET binding, shadowing minor modes,
+ECA chat state, prompt overlays, and rule-based hints."
+  (let* ((mm (buffer-local-value 'major-mode src-buf))
+         (in-chat-p (with-current-buffer src-buf
+                      (derived-mode-p 'eca-chat-mode)))
+         (parent-mode (and (boundp 'eca-chat-parent-mode)
+                           eca-chat-parent-mode))
+         (def-dir (buffer-local-value 'default-directory src-buf))
+         (ret-cmd (with-current-buffer src-buf
+                    (key-binding (kbd "RET"))))
+         (return-cmd (with-current-buffer src-buf
+                       (key-binding (kbd "<return>"))))
+         (cm-cmd (with-current-buffer src-buf
+                   (key-binding (kbd "C-m"))))
+         (input-method (buffer-local-value 'current-input-method src-buf))
+         (e-indent (and (boundp 'electric-indent-mode)
+                        (buffer-local-value 'electric-indent-mode src-buf)))
+         (e-pair (and (boundp 'electric-pair-mode)
+                      (buffer-local-value 'electric-pair-mode src-buf)))
+         (e-quote (and (boundp 'electric-quote-mode)
+                       (buffer-local-value 'electric-quote-mode src-buf)))
+         (evil-on (and (boundp 'evil-mode) (symbol-value 'evil-mode)))
+         (evil-state-val (and (boundp 'evil-state)
+                              (buffer-local-value 'evil-state src-buf)))
+         (viper-on (and (boundp 'viper-mode) (symbol-value 'viper-mode)))
+         (god-on (and (boundp 'god-local-mode)
+                      (buffer-local-value 'god-local-mode src-buf)))
+         (sp-on (and (boundp 'smartparens-mode)
+                     (buffer-local-value 'smartparens-mode src-buf)))
+         (paredit-on (and (boundp 'paredit-mode)
+                          (buffer-local-value 'paredit-mode src-buf)))
+         (corfu-on (and (boundp 'corfu-mode)
+                        (buffer-local-value 'corfu-mode src-buf)))
+         (company-on (and (boundp 'company-mode)
+                          (buffer-local-value 'company-mode src-buf)))
+         (chat-id (buffer-local-value 'eca-chat--id src-buf))
+         (closed (buffer-local-value 'eca-chat--closed src-buf))
+         (loading (buffer-local-value 'eca-chat--chat-loading src-buf))
+         (pending (buffer-local-value 'eca-chat--pending-question src-buf))
+         (session (with-current-buffer src-buf
+                    (ignore-errors (eca-session))))
+         (prompt-area (with-current-buffer src-buf
+                        (ignore-errors (eca-chat--prompt-area-ov))))
+         (prompt-field (with-current-buffer src-buf
+                         (ignore-errors (eca-chat--prompt-field-ov))))
+         (prompt-content (with-current-buffer src-buf
+                           (ignore-errors (eca-chat--prompt-content))))
+         (pt (with-current-buffer src-buf (point)))
+         (hints nil))
+    ;; --- compute hints ---
+    (unless in-chat-p
+      (push (format "Inspected buffer's `major-mode' is `%s' and is not \
+derived from `eca-chat-mode'.  `eca-chat-mode' likely failed to activate." mm)
+            hints))
+    (when (and in-chat-p
+               (not (eq ret-cmd 'eca-chat--key-pressed-return))
+               (not (eq return-cmd 'eca-chat--key-pressed-return)))
+      (push (format "RET is bound to `%s' (and <return> to `%s'), not \
+`eca-chat--key-pressed-return'.  Another keymap is intercepting RET — see \
+\"Likely shadowing\" below." ret-cmd return-cmd)
+            hints))
+    (when (and in-chat-p (null session))
+      (push "(eca-session) returned nil from inside the chat buffer — \
+the buffer is not registered to any ECA workspace." hints))
+    (when (and in-chat-p (null prompt-area))
+      (push "The `eca-chat-prompt-area' overlay is missing — chat buffer is \
+in an inconsistent state.  Try `M-x eca-chat-reset'." hints))
+    (when (and in-chat-p evil-on (eq evil-state-val 'insert))
+      (push "evil-mode is in insert state.  `evil-insert-state-map' (an \
+emulation map) beats major-mode maps.  If RET above is `evil-ret' / \
+`newline', that is the cause." hints))
+    (when (and in-chat-p pending)
+      (push "An unanswered question is pending \
+(`eca-chat--pending-question' non-nil).  RET without freeform input is \
+intentionally a no-op until you answer the question." hints))
+    (when (and in-chat-p closed)
+      (push "This chat is marked closed (`eca-chat--closed' non-nil); \
+sending will raise a user-error." hints))
+    ;; --- render report into temp buffer and return as string ---
+    (with-temp-buffer
+      (insert "### Inspected chat buffer\n\n")
+      (insert (format "- buffer:            %s\n" (buffer-name src-buf)))
+      (insert (format "- major-mode:        %s\n" mm))
+      (insert (format "- derived from `eca-chat-mode': %s\n"
+                      (if in-chat-p "yes" "NO")))
+      (insert (format "- `eca-chat-parent-mode': %s\n" parent-mode))
+      (insert (format "- default-directory: %s\n\n" def-dir))
+      (insert "### Key bindings in chat buffer\n\n")
+      (insert (format "- RET        → %s\n" (or ret-cmd "<unbound>")))
+      (insert (format "- <return>   → %s\n" (or return-cmd "<unbound>")))
+      (insert (format "- C-m        → %s\n\n" (or cm-cmd "<unbound>")))
+      (insert "### Likely shadowing / input translation\n\n")
+      (insert (format "- current-input-method:  %s\n" (or input-method "nil")))
+      (insert (format "- electric-indent-mode:  %s\n" e-indent))
+      (insert (format "- electric-pair-mode:    %s\n" e-pair))
+      (insert (format "- electric-quote-mode:   %s\n" e-quote))
+      (insert (format "- evil-mode:             %s (state=%s)\n"
+                      evil-on evil-state-val))
+      (insert (format "- viper-mode:            %s\n" viper-on))
+      (insert (format "- god-local-mode:        %s\n" god-on))
+      (insert (format "- smartparens-mode:      %s\n" sp-on))
+      (insert (format "- paredit-mode:          %s\n" paredit-on))
+      (insert (format "- corfu-mode:            %s\n" corfu-on))
+      (insert (format "- company-mode:          %s\n\n" company-on))
+      (insert "### ECA chat state\n\n")
+      (insert (format "- eca-chat--id:               %s\n" chat-id))
+      (insert (format "- eca-chat--closed:           %s\n" closed))
+      (insert (format "- eca-chat--chat-loading:     %s\n" loading))
+      (insert (format "- eca-chat--pending-question: %s\n"
+                      (if pending "set" "nil")))
+      (insert "- (eca-session): ")
+      (if session
+          (insert (format "found (id=%s, roots=%S)\n\n"
+                          (eca--session-id session)
+                          (eca--session-workspace-folders session)))
+        (insert "NIL — buffer is not registered to a workspace\n\n"))
+      (insert "### Prompt overlays\n\n")
+      (insert (format "- prompt-area overlay:  %s\n"
+                      (if prompt-area
+                          (format "%d..%d"
+                                  (overlay-start prompt-area)
+                                  (overlay-end prompt-area))
+                        "MISSING")))
+      (insert (format "- prompt-field overlay: %s\n"
+                      (if prompt-field
+                          (format "%d..%d"
+                                  (overlay-start prompt-field)
+                                  (overlay-end prompt-field))
+                        "MISSING")))
+      (insert (format "- point:                %d\n" pt))
+      (insert (format "- (eca-chat--prompt-content): %S\n\n" prompt-content))
+      (insert "### Hints\n\n")
+      (if hints
+          (dolist (h (nreverse hints))
+            (insert "- " h "\n"))
+        (insert "- No obvious issue detected by the static checks.\n"))
+      (buffer-string))))
+
+(defun eca-chat--doctor-section ()
+  "Return a markdown-formatted diagnostic string for the active chat.
+Auto-finds the chat buffer via `eca-chat--doctor-find-buffer'.  When
+no chat buffer is available, returns a single-line notice instead.
+Used by `eca-doctor'."
+  (if-let ((src-buf (eca-chat--doctor-find-buffer)))
+      (eca-chat--doctor-format src-buf)
+    "No chat buffer found in any running session.\n"))
+
 (provide 'eca-chat)
 ;;; eca-chat.el ends here
