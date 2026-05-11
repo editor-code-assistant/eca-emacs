@@ -1300,11 +1300,16 @@ the prompt/context line."
 
 (defun eca-chat--refine-context (context)
   "Refine CONTEXT before sending in prompt."
-  (pcase (plist-get context :type)
-    ("cursor" (-> context
-                  (plist-put :path (plist-get eca-chat--cursor-context :path))
-                  (plist-put :position (plist-get eca-chat--cursor-context :position))))
-    (_ context)))
+  (let* ((type (plist-get context :type))
+         (refined (pcase type
+                    ("cursor" (-> context
+                                  (plist-put :path (plist-get eca-chat--cursor-context :path))
+                                  (plist-put :position (plist-get eca-chat--cursor-context :position))))
+                    (_ context)))
+         (path (plist-get refined :path)))
+    (if path
+        (plist-put (copy-sequence refined) :path (eca--path-local-to-remote path))
+      refined)))
 
 (defun eca-chat--normalize-prompt (prompt)
   "Normalize PROMPT before sending to server.
@@ -1317,9 +1322,14 @@ the prompt/context line."
              (expanded-str (get-text-property pos 'eca-chat-expanded-item-str prompt))
              (item-type (get-text-property pos 'eca-chat-item-type prompt)))
         (if expanded-str
-            (setq result (concat result (if (eq 'filepath item-type)
-                                            (substring expanded-str 1)
-                                          expanded-str)))
+            (setq result (concat result
+                                 (cond
+                                  ((eq item-type 'filepath)
+                                   (eca--path-local-to-remote (substring expanded-str 1)))
+                                  ((eq item-type 'context)
+                                   (concat "@" (eca--path-local-to-remote
+                                                (substring expanded-str 1))))
+                                  (t expanded-str))))
           (setq result (concat result (substring prompt pos next-change))))
         (setq pos next-change)))
     result))
@@ -1492,7 +1502,7 @@ the prompt-field overlay's start advances past inserted content."
   (eca-api-notify session
                   :method "chat/promptSteer"
                   :params (list :chatId eca-chat--id
-                                :message prompt)))
+                                :message (eca-chat--normalize-prompt prompt))))
 
 (defun eca-chat--send-steered-prompt (session)
   "Merge any unconsumed steered prompt into the queued prompt for SESSION.
@@ -2533,7 +2543,7 @@ CONTENT is the tool call content, LABEL is the label.
 Can include optional APPROVAL-TEXT and TIME.
 Append STATUS, ROOTS and optional PARENT-ID."
   (-let* (((&plist :name name :details details :id id) content)
-          (path (plist-get details :path))
+          (path (eca--path-remote-to-local (plist-get details :path)))
           (diff (plist-get details :diff))
           (view-diff-btn
            (when (and path diff)
@@ -2545,7 +2555,7 @@ Append STATUS, ROOTS and optional PARENT-ID."
     (eca-chat--update-expandable-content
      id
      (concat (propertize label 'font-lock-face 'eca-chat-mcp-tool-call-label-face)
-             " " (eca-chat--file-change-details-label details)
+             " " (eca-chat--file-change-details-label (plist-put (copy-sequence details) :path path))
              " " status time
              (when view-diff-btn
                (concat " " view-diff-btn))

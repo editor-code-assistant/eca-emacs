@@ -105,5 +105,23 @@ Falls back to the `default' face's foreground when none is set."
       ;; original (unparseable) value or default fallback.
       (expect dimmed :to-equal src))))
 
+(describe "eca-completion path mapping"
+  (describe "completion/inline"
+    (it "sends mapped :path in params"
+      (let ((session (make-eca--session)))
+        (spy-on 'eca-session :and-return-value session)
+        (spy-on 'eca-api-request-async)
+        (spy-on 'eca--path-local-to-remote :and-return-value "/remote/path/src/main.rs")
+        (with-temp-buffer
+          (setq-local buffer-file-name "/local/path/src/main.rs")
+          (eca-completion--find-completion :on-success #'ignore :on-error #'ignore)
+          (expect 'eca--path-local-to-remote :to-have-been-called-with "/local/path/src/main.rs")
+          (expect 'eca-api-request-async :to-have-been-called)
+          (let* ((args (spy-calls-args-for 'eca-api-request-async 0))
+                 (params (plist-get (cdr args) :params)))
+            (expect (plist-get (cdr args) :method) :to-equal "completion/inline")
+            (expect (plist-get params :path) :to-equal "/remote/path/src/main.rs")
+            (expect (plist-get params :doc-text) :to-equal "")))))))
+
 (provide 'eca-completion-test)
 ;;; eca-completion-test.el ends here

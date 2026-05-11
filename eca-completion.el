@@ -304,6 +304,7 @@ Call ON-ERROR when error."
                              :method "completion/inline"
                              :params (list :doc-text (buffer-substring-no-properties (point-min) (point-max))
                                            :doc-version eca-completion--doc-version
+                                           :path (eca--path-local-to-remote (buffer-file-name))
                                            :position (list :line line :character character))
                              :success-callback (-lambda ((&plist :items items :error error))
                                                  (if error

@@ -402,14 +402,15 @@ PATH is the optional file path."
         (end-char (save-excursion
                     (goto-char end)
                     (current-column)))
-        (id (number-to-string (random 100000000))))
+        (id (number-to-string (random 100000000)))
+        (remote-path (when path (eca--path-local-to-remote path))))
     (eca-api-request-async
      session
      :method "rewrite/prompt"
      :params (list :id id
                    :text text
                    :prompt prompt
-                   :path path
+                   :path remote-path
                    :range (list :start (list :line start-line :character start-char)
                                 :end (list :line end-line :character end-char)))
      :success-callback
