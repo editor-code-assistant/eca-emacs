@@ -1563,17 +1563,17 @@ Does not send directly — `eca-chat--send-queued-prompt' handles sending."
          (get-text-property 0 'eca-button-on-action)
          (funcall)))
 
+      ;; check is inside a expandable text
+      ((eca-chat--expandable-content-at-point)
+       (let ((ov (eca-chat--expandable-content-at-point)))
+         (eca-chat--expandable-content-toggle (overlay-get ov 'eca-chat--expandable-content-id))))
+
       ;; follow markdown link [text](url)
       ((let ((face (get-text-property (point) 'face)))
          (or (eq face 'markdown-link-face)
              (eq face 'markdown-url-face)
              (eq face 'markdown-plain-url-face)))
        (markdown-follow-thing-at-point nil))
-
-      ;; check is inside a expandable text
-      ((eca-chat--expandable-content-at-point)
-       (let ((ov (eca-chat--expandable-content-at-point)))
-         (eca-chat--expandable-content-toggle (overlay-get ov 'eca-chat--expandable-content-id))))
 
       ;; pending question + freeform allowed — answer with prompt text
       ((and eca-chat--pending-question

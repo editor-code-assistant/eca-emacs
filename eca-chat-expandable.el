@@ -289,6 +289,8 @@ NESTED-PROPS is a plist with :parent-id and :label-indent for nested blocks."
                                   'keymap (let ((km (make-sparse-keymap)))
                                             (define-key km (kbd "<mouse-1>") (lambda () (interactive) (eca-chat--expandable-content-toggle id)))
                                             (define-key km (kbd "<tab>") (lambda () (interactive) (eca-chat--expandable-content-toggle id)))
+                                            (define-key km (kbd "RET") (lambda () (interactive) (eca-chat--expandable-content-toggle id)))
+                                            (define-key km (kbd "<return>") (lambda () (interactive) (eca-chat--expandable-content-toggle id)))
                                             km)
                                   'help-echo "mouse-1 / tab / RET: expand/collapse"))
     (eca-chat--insert "\n")
