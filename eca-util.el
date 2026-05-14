@@ -392,6 +392,35 @@ Uses the longest (most specific) matching prefix to avoid ambiguity."
   "Display eca error message with FORMAT with ARGS."
   (message "%s :: %s" (propertize "ECA" 'face 'error) (apply #'format format args)))
 
+(defvar-local eca-chat-closed nil
+  "Non-nil when the chat buffer belongs to a closed session.")
+
+(cl-defun eca-generate-buffer-name-default-function (mode &key session chat-id)
+  "Generate a buffer name for optional SESSION and optional CHAT-ID.
+MODE is a string describing the buffer type (e.g. eca-chat)."
+  (cond
+   ((null session)
+    (format "<%s>" mode))
+   (chat-id
+    (format "<%s[%s]:%s:%s>" mode
+            (eca--session-project-name session)
+            (eca--session-id session)
+            chat-id))
+   (t
+    (format "<%s[%s]:%s>" mode
+            (eca--session-project-name session)
+            (eca--session-id session)))))
+
+(defcustom eca-generate-buffer-name-function
+  #'eca-generate-buffer-name-default-function
+  "The function used to generate the name for an ECA buffer.
+The function is called with a required MODE (string), followed by
+keyword arguments :session and :chat-id. It must return a string
+to use as the buffer name."
+  :type `(radio (function-item ,#'eca-generate-buffer-name-default-function)
+                (function :tag "Function"))
+  :group 'eca)
+
 (defun eca-buttonize (base-map text callback)
   "Create a actionable TEXT that call CALLBACK when actioned.
 Inheirits BASE-MAP."

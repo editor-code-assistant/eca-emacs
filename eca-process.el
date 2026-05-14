@@ -114,18 +114,6 @@ If current `gc-cons-threshold` is lower use that on filter server messages.'"
   :type 'integer
   :group 'eca)
 
-(defun eca-process--buffer-name (session)
-  "Return the process buffer name for SESSION."
-  (format "<eca[%s]:%s>"
-          (eca--session-project-name session)
-          (eca--session-id session)))
-
-(defun eca-process--stderr-buffer-name (session)
-  "Return the stderr buffer name for SESSION."
-  (format "<eca:stderr[%s]:%s>"
-          (eca--session-project-name session)
-          (eca--session-id session)))
-
 (defcustom eca-server-releases-cache-ttl 3600
   "Time-to-live (seconds) for the cached eca server releases list.
 Once expired, the next call that needs the releases list will refetch
@@ -544,12 +532,12 @@ Call HANDLE-MSG for new msgs processed."
                                          :connection-type 'pipe
                                          :name "eca"
                                          :command command
-                                         :buffer (eca-process--buffer-name session)
-                                         :stderr (get-buffer-create (eca-process--stderr-buffer-name session))
+                                         :buffer (funcall eca-generate-buffer-name-function "eca" :session session)
+                                         :stderr (get-buffer-create (funcall eca-generate-buffer-name-function "eca:stderr" :session session))
                                          :filter (eca-process--make-filter handle-msg)
                                          :sentinel (lambda (process exit-str)
                                                      (unless (process-live-p process)
-                                                       (when-let* ((name (eca-process--stderr-buffer-name session))
+                                                       (when-let* ((name (funcall eca-generate-buffer-name-function "eca:stderr" :session session))
                                                                     (buf (get-buffer name)))
                                                          (with-current-buffer buf
                                                            (rename-buffer (concat (buffer-name) ":closed") t)
@@ -581,12 +569,13 @@ Call HANDLE-MSG for new msgs processed."
   "Stop the eca process for SESSION if running."
   (when session
     (kill-process (eca--session-process session))
-    (kill-buffer (eca-process--buffer-name session))
+    (kill-buffer (funcall eca-generate-buffer-name-function "eca" :session session))
     ;; Rename stderr buffer to closed and clean up older closed ones
-    (let ((stderr-buffer (get-buffer (eca-process--stderr-buffer-name session))))
+    (let ((stderr-buffer (get-buffer (funcall eca-generate-buffer-name-function "eca:stderr" :session session))))
       (when stderr-buffer
         (with-current-buffer stderr-buffer
           (rename-buffer (concat (buffer-name) ":closed") t)
+          (setq-local eca-chat-closed t)
           (setq-local mode-line-format '("*Closed session*"))
           (when-let ((win (get-buffer-window (current-buffer))))
             (quit-window nil win))
@@ -596,12 +585,12 @@ Call HANDLE-MSG for new msgs processed."
           (let ((current (current-buffer)))
             (dolist (b (buffer-list))
               (when (and (not (eq b current))
-                         (string-match-p "^<eca:stderr:.*>:closed" (buffer-name b)))
+                         (buffer-local-value 'eca-chat-closed b))
                 (kill-buffer b)))))))))
 
 (defun eca-process-show-stderr (session)
   "Open the eca process stderr buffer for SESSION."
-  (if-let ((buf (get-buffer (eca-process--stderr-buffer-name session))))
+  (if-let ((buf (get-buffer (funcall eca-generate-buffer-name-function "eca:stderr" :session session))))
       (if (window-live-p (get-buffer-window buf))
           (select-window (get-buffer-window buf))
         (display-buffer buf))

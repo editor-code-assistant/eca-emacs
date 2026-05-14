@@ -82,22 +82,15 @@ preserving tab order."
 (defvar-local eca-settings--tab-key nil
   "The tab key for this settings buffer.")
 
-(defun eca-settings--buffer-name (tab-key session)
-  "Return buffer name for TAB-KEY in SESSION."
-  (format "<eca-settings[%s]:%s:%s>"
-          (eca--session-project-name session)
-          tab-key
-          (eca--session-id session)))
-
 (defun eca-settings--get-buffer (tab-key session)
   "Get existing settings buffer for TAB-KEY in SESSION."
-  (get-buffer (eca-settings--buffer-name tab-key session)))
+  (get-buffer (funcall eca-generate-buffer-name-function "eca-settings" :session session :chat-id tab-key)))
 
 (defun eca-settings--create-buffer (tab-key session)
   "Create a new settings buffer for TAB-KEY in SESSION."
   (get-buffer-create
    (generate-new-buffer-name
-    (eca-settings--buffer-name tab-key session))))
+    (funcall eca-generate-buffer-name-function "eca-settings" :session session :chat-id tab-key))))
 
 (defun eca-settings--get-or-create-tab-buffer (tab-key session)
   "Get or create settings buffer for TAB-KEY in SESSION.

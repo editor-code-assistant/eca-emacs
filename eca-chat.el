@@ -549,7 +549,7 @@ are not currently selected."
 
 ;; Internal
 
-(defvar-local eca-chat--closed nil)
+
 (defvar-local eca-chat--history '())
 (defvar-local eca-chat--history-index -1)
 (defvar-local eca-chat--id nil)
@@ -637,13 +637,6 @@ A plist with :session :request :question :options :tool-call-id :allow-freeform.
 (defvar eca--chat-init-session nil
   "Dynamically bound session during `eca-chat-mode' initialization.")
 
-(defun eca-chat-new-buffer-name (session)
-  "Return the chat buffer name for SESSION."
-  (format "<eca-chat[%s]:%s:%s>"
-          (eca--session-project-name session)
-          (eca--session-id session)
-          eca-chat--new-chat-id))
-
 (defvar eca-chat-mode-map
   (let ((map (make-sparse-keymap)))
     (set-keymap-parent map markdown-mode-map)
@@ -700,11 +693,11 @@ A plist with :session :request :question :options :tool-call-id :allow-freeform.
   (or (when-let (last-buff (eca--session-last-chat-buffer session))
         (when (buffer-live-p last-buff)
           last-buff))
-      (get-buffer (eca-chat-new-buffer-name session))))
+      (get-buffer (funcall eca-generate-buffer-name-function "eca-chat" :session session :chat-id eca-chat--new-chat-id))))
 
 (defun eca-chat--create-buffer (session)
   "Create the eca chat buffer for SESSION."
-  (get-buffer-create (generate-new-buffer-name (eca-chat-new-buffer-name session))))
+  (get-buffer-create (generate-new-buffer-name (funcall eca-generate-buffer-name-function "eca-chat" :session session :chat-id eca-chat--new-chat-id))))
 
 (defun eca-chat--get-chat-buffer (session chat-id)
   "Get chat buffer for SESSION and CHAT-ID, or nil when none registered.
@@ -720,7 +713,7 @@ its real id and there is no `'empty' placeholder to migrate from."
                  (and (symbolp this-command)
                       (string-prefix-p "eca-" (symbol-name this-command))))
              eca-chat--id
-             (not eca-chat--closed)
+             (not eca-chat-closed)
              (yes-or-no-p "Delete chat from server side (otherwise it will just kill the buffer) ?"))
     (eca-api-request-sync (eca-session)
                           :method "chat/delete"
@@ -1357,7 +1350,7 @@ Resteps a list of context plists found in the prompt field."
 
 (defun eca-chat--send-prompt (session prompt)
   "Send PROMPT to server for SESSION."
-  (when eca-chat--closed
+  (when eca-chat-closed
     (user-error (eca-error "This chat is closed")))
   (let* ((prompt-contexts (eca-chat--extract-contexts-from-prompt))
          (refined-contexts (-map #'eca-chat--refine-context
@@ -2020,7 +2013,7 @@ are in progress."
 
 (defun eca-chat--mode-line-string (session)
   "Build mode-line string for SESSION from `eca-chat-mode-line-format'."
-  (if eca-chat--closed
+  (if eca-chat-closed
       (propertize "*Closed session*"
                   'font-lock-face 'eca-chat-system-messages-face)
     (let* ((fmt eca-chat-mode-line-format)
@@ -3588,7 +3581,7 @@ When ACTIVE is non-nil, show the question prefix; otherwise restore normal."
                   (when eca-chat--stopping-safety-timer
                     (cancel-timer eca-chat--stopping-safety-timer)
                     (setq-local eca-chat--stopping-safety-timer nil))
-                  (setq eca-chat--closed t)
+                  (setq-local eca-chat-closed t)
                   (force-mode-line-update)
                   (goto-char (point-max))
                   (rename-buffer (concat (buffer-name) ":closed") t)
@@ -3596,7 +3589,7 @@ When ACTIVE is non-nil, show the question prefix; otherwise restore normal."
                   (let ((current (current-buffer)))
                     (dolist (b (buffer-list))
                       (when (and (not (eq b current))
-                                 (string-match-p "^<eca-chat:.*>:closed$" (buffer-name b)))
+                                 (buffer-local-value 'eca-chat-closed b))
                         (kill-buffer b))))
                   (when-let* ((window (get-buffer-window chat-buffer)))
                     (quit-window nil window))))))
