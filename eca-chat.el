@@ -12,6 +12,7 @@
 ;;; Code:
 
 (require 'f)
+(require 'find-func)
 (require 'markdown-mode)
 (require 'compat)
 
@@ -4246,6 +4247,67 @@ nil if no chat buffer can be located."
                    (and b (buffer-live-p b) b)))
                (eca-vals eca--sessions)))))
 
+(defun eca-chat--doctor-self-check (src-buf)
+  "Probe loaded ECA chat code and SRC-BUF for fix-presence indicators.
+Return a plist describing the state of mode-map bindings, the
+cond ordering inside `eca-chat--key-pressed-return', the first
+expandable label's keymap, and whether the loaded `.elc' is stale
+relative to the on-disk `.el'."
+  (let* ((mode-map-ret (ignore-errors
+                         (lookup-key eca-chat-mode-map (kbd "RET"))))
+         (mode-map-ret-ok (eq mode-map-ret 'eca-chat--key-pressed-return))
+         (kpr-body (ignore-errors
+                     (prin1-to-string
+                      (symbol-function 'eca-chat--key-pressed-return))))
+         (kpr-exp-pos (and kpr-body
+                           (string-match-p "expandable-content-at-point"
+                                           kpr-body)))
+         (kpr-md-pos (and kpr-body
+                          (string-match-p "markdown-link-face" kpr-body)))
+         (cond-ok (cond ((and kpr-exp-pos kpr-md-pos)
+                         (< kpr-exp-pos kpr-md-pos))
+                        (t 'unknown)))
+         (label-ov (with-current-buffer src-buf
+                     (-first (lambda (o)
+                               (overlay-get o 'eca-chat--expandable-content-id))
+                             (overlays-in (point-min) (point-max)))))
+         (label-ret
+          (and label-ov
+               (with-current-buffer src-buf
+                 (save-excursion
+                   (goto-char (overlay-start label-ov))
+                   (let ((line-end (line-end-position))
+                         (km nil)
+                         (pos (point)))
+                     (while (and (< pos line-end) (not km))
+                       (setq km (get-text-property pos 'keymap))
+                       (unless km
+                         (setq pos (or (next-single-property-change
+                                        pos 'keymap nil line-end)
+                                       line-end))))
+                     (when km
+                       (or (lookup-key km (kbd "RET"))
+                           (lookup-key km (kbd "<return>")))))))))
+         (label-ret-ok (and label-ret (functionp label-ret)))
+         (loaded-file (ignore-errors
+                        (symbol-file 'eca-chat--insert-expandable-block
+                                     'defun)))
+         (source-file (ignore-errors
+                        (find-library-name "eca-chat-expandable")))
+         (stale-elc-p (and loaded-file source-file
+                           (string-suffix-p ".elc" loaded-file)
+                           (file-newer-than-file-p source-file
+                                                   loaded-file))))
+    (list :mode-map-ret mode-map-ret
+          :mode-map-ret-ok mode-map-ret-ok
+          :cond-ok cond-ok
+          :has-label (not (null label-ov))
+          :label-ret label-ret
+          :label-ret-ok label-ret-ok
+          :loaded-file loaded-file
+          :source-file source-file
+          :stale-elc-p stale-elc-p)))
+
 (defun eca-chat--doctor-format (src-buf)
   "Return a markdown diagnostic string describing chat buffer SRC-BUF.
 Captures `major-mode' derivation, RET binding, shadowing minor modes,
@@ -4296,6 +4358,7 @@ ECA chat state, prompt overlays, and rule-based hints."
          (prompt-content (with-current-buffer src-buf
                            (ignore-errors (eca-chat--prompt-content))))
          (pt (with-current-buffer src-buf (point)))
+         (self (eca-chat--doctor-self-check src-buf))
          (hints nil))
     ;; --- compute hints ---
     (unless in-chat-p
@@ -4326,6 +4389,29 @@ intentionally a no-op until you answer the question." hints))
     (when (and in-chat-p closed)
       (push "This chat is marked closed (`eca-chat--closed' non-nil); \
 sending will raise a user-error." hints))
+    (when (and in-chat-p (not (plist-get self :mode-map-ret-ok)))
+      (push (format "`eca-chat-mode-map' RET is `%s', expected \
+`eca-chat--key-pressed-return'.  Some code has clobbered the mode-map \
+after `eca-chat' was loaded; check your user config."
+                    (plist-get self :mode-map-ret))
+            hints))
+    (when (and in-chat-p (eq (plist-get self :cond-ok) nil))
+      (push "`eca-chat--key-pressed-return' references the markdown-link \
+clause before the expandable clause.  Loaded code predates commit \
+`dac33d8'; pull master, restart Emacs, and `M-x byte-recompile-directory' \
+if the warning persists." hints))
+    (when (and in-chat-p (plist-get self :has-label)
+               (not (plist-get self :label-ret-ok)))
+      (push "The first expandable block label has no RET binding in its \
+`keymap' text-property.  Either the loaded `eca-chat-expandable.el' \
+predates commit `dac33d8' or this block was rendered before the fix was \
+reloaded; start a new chat or wait for a fresh tool call to be rendered."
+            hints))
+    (when (and in-chat-p (plist-get self :stale-elc-p))
+      (push (format "`%s' is newer than the loaded `%s'.  Recompile \
+(`M-x byte-recompile-directory') or delete the stale `.elc' and restart \
+Emacs." (plist-get self :source-file) (plist-get self :loaded-file))
+            hints))
     ;; --- render report into temp buffer and return as string ---
     (with-temp-buffer
       (insert "### Inspected chat buffer\n\n")
@@ -4364,6 +4450,32 @@ sending will raise a user-error." hints))
                           (eca--session-id session)
                           (eca--session-workspace-folders session)))
         (insert "NIL — buffer is not registered to a workspace\n\n"))
+      (insert "### Self-check\n\n")
+      (insert (format "- `eca-chat-mode-map' RET → %s  %s\n"
+                      (or (plist-get self :mode-map-ret) "<unbound>")
+                      (if (plist-get self :mode-map-ret-ok) "✓" "✗")))
+      (insert (format
+               "- `eca-chat--key-pressed-return': expandable before \
+markdown-link  %s\n"
+               (let ((status (plist-get self :cond-ok)))
+                 (cond ((eq status t) "✓")
+                       ((null status) "✗")
+                       (t "? (could not introspect)")))))
+      (if (plist-get self :has-label)
+          (insert (format "- nearest expandable label RET → %s  %s\n"
+                          (let ((b (plist-get self :label-ret)))
+                            (cond ((null b) "<unbound>")
+                                  ((functionp b) "<toggle lambda>")
+                                  (t (format "%s" b))))
+                          (if (plist-get self :label-ret-ok) "✓" "✗")))
+        (insert "- nearest expandable label RET: n.a. \
+(no blocks rendered yet)\n"))
+      (insert (format "- loaded from: %s\n"
+                      (or (plist-get self :loaded-file) "<unknown>")))
+      (when (plist-get self :stale-elc-p)
+        (insert (format "  ⚠ source `%s' is newer than the loaded `.elc'\n"
+                        (plist-get self :source-file))))
+      (insert "\n")
       (insert "### Prompt overlays\n\n")
       (insert (format "- prompt-area overlay:  %s\n"
                       (if prompt-area
