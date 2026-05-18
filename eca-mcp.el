@@ -13,6 +13,7 @@
 
 (require 'compat)
 
+(require 'eca-api)
 (require 'eca-util)
 (require 'eca-process)
 (require 'eca-settings)
@@ -112,6 +113,287 @@ With EVENT, show a mouse popup.  Without it, prompt in minibuffer."
     ("requires-auth" "🟠")
     (_ "⚪")))
 
+;; Buffer-local UI state for the MCPs settings tab.
+
+(defvar-local eca-mcp--add-form-state nil
+  "Buffer-local plist describing the in-progress add-server form.
+nil when the form is closed.")
+
+(defvar-local eca-mcp--confirming-remove nil
+  "Buffer-local name of the MCP server currently in remove-confirmation, or nil.")
+
+(defun eca-mcp--add-form-default ()
+  "Return the initial plist for a fresh add-server form."
+  (list :name ""
+        :transport "stdio"
+        :command ""
+        :args ""
+        :env nil
+        :url ""
+        :headers nil
+        :scope "global"))
+
+(defun eca-mcp--parse-args-string (s)
+  "Split args string S by whitespace into a list of args."
+  (when (and s (not (string-empty-p (string-trim s))))
+    (split-string s "[ \t\n]+" t)))
+
+(defun eca-mcp--parse-env-lines (lines)
+  "Parse LINES (each \"KEY=VALUE\") into a plist for JSON encoding."
+  (let (out)
+    (dolist (l lines)
+      (when-let* ((pos (string-match "=" l)))
+        (let ((k (substring l 0 pos))
+              (v (substring l (1+ pos))))
+          (push v out)
+          (push (intern (concat ":" k)) out))))
+    (nreverse out)))
+
+(defun eca-mcp--parse-header-lines (lines)
+  "Parse LINES (each \"Header: value\") into a plist for JSON encoding."
+  (let (out)
+    (dolist (l lines)
+      (when-let* ((pos (string-match ":" l)))
+        (let ((k (string-trim (substring l 0 pos)))
+              (v (string-trim (substring l (1+ pos)))))
+          (push v out)
+          (push (intern (concat ":" k)) out))))
+    (nreverse out)))
+
+(defun eca-mcp--add-form-set (field value session)
+  "Set FIELD to VALUE in the add-server form state and refresh SESSION's tab."
+  (setq eca-mcp--add-form-state
+        (plist-put eca-mcp--add-form-state field value))
+  (eca-settings-refresh-tab "mcps" session))
+
+(defun eca-mcp--add-form-edit-field (field prompt session)
+  "Read a single-line value for FIELD from minibuffer using PROMPT."
+  (let ((cur (or (plist-get eca-mcp--add-form-state field) "")))
+    (eca-mcp--add-form-set field (read-string prompt cur) session)))
+
+(defun eca-mcp--add-form-edit-list-field (field prompt session)
+  "Read multiple lines for list FIELD (env or headers) until empty."
+  (let (acc next)
+    (while (not (string-empty-p (setq next (read-string prompt ""))))
+      (push next acc))
+    (eca-mcp--add-form-set field (nreverse acc) session)))
+
+(defun eca-mcp--open-add-form (session)
+  "Open the inline add-server form."
+  (setq eca-mcp--add-form-state (eca-mcp--add-form-default))
+  (eca-settings-refresh-tab "mcps" session))
+
+(defun eca-mcp--cancel-add-form (session)
+  "Close the add-server form without submitting."
+  (setq eca-mcp--add-form-state nil)
+  (eca-settings-refresh-tab "mcps" session))
+
+(defun eca-mcp--submit-add-server (session)
+  "Validate current form state and send `mcp/addServer' to the server."
+  (let* ((st eca-mcp--add-form-state)
+         (name (string-trim (or (plist-get st :name) "")))
+         (transport (plist-get st :transport))
+         (scope (plist-get st :scope)))
+    (cond
+     ((string-empty-p name)
+      (eca-error "MCP server name is required"))
+     ((and (string= transport "stdio")
+           (string-empty-p (string-trim (or (plist-get st :command) ""))))
+      (eca-error "Command is required for stdio transport"))
+     ((and (string= transport "remote")
+           (string-empty-p (string-trim (or (plist-get st :url) ""))))
+      (eca-error "URL is required for remote transport"))
+     ((and (string= scope "workspace")
+           (null (eca--session-workspace-folders session)))
+      (eca-error "No workspace folder available for workspace scope"))
+     (t
+      (let ((params (list :name name :scope scope))
+            (buf (current-buffer)))
+        (if (string= transport "stdio")
+            (let ((cmd (string-trim (plist-get st :command)))
+                  (args (eca-mcp--parse-args-string (plist-get st :args)))
+                  (env (eca-mcp--parse-env-lines (plist-get st :env))))
+              (setq params (plist-put params :command cmd))
+              (when args (setq params (plist-put params :args (vconcat args))))
+              (when env (setq params (plist-put params :env env))))
+          (let ((url (string-trim (plist-get st :url)))
+                (headers (eca-mcp--parse-header-lines (plist-get st :headers))))
+            (setq params (plist-put params :url url))
+            (when headers (setq params (plist-put params :headers headers)))))
+        (when (string= scope "workspace")
+          (when-let ((folder (car (eca--session-workspace-folders session))))
+            (setq params (plist-put params :workspaceUri (eca--path-to-uri folder)))))
+        (eca-api-request-async
+         session
+         :method "mcp/addServer"
+         :params params
+         :success-callback
+         (lambda (resp)
+           (let ((err (plist-get resp :error)))
+             (if err
+                 (eca-error "Add MCP failed: %s"
+                            (or (plist-get err :message) (format "%S" err)))
+               (when (buffer-live-p buf)
+                 (with-current-buffer buf
+                   (setq eca-mcp--add-form-state nil)))
+               (eca-settings-refresh-tab "mcps" session))))
+         :error-callback
+         (lambda (err)
+           (eca-error "Add MCP failed: %s"
+                      (or (plist-get err :message) (format "%S" err))))))))))
+
+(defun eca-mcp--request-confirm-remove (session name)
+  "Start two-step remove-confirmation for server NAME."
+  (setq eca-mcp--confirming-remove name)
+  (eca-settings-refresh-tab "mcps" session))
+
+(defun eca-mcp--cancel-confirm-remove (session)
+  "Cancel remove confirmation in SESSION's MCPs tab."
+  (setq eca-mcp--confirming-remove nil)
+  (eca-settings-refresh-tab "mcps" session))
+
+(defun eca-mcp--submit-remove-server (session name)
+  "Send `mcp/removeServer' for NAME."
+  (let ((buf (current-buffer)))
+    (eca-api-request-async
+     session
+     :method "mcp/removeServer"
+     :params (list :name name)
+     :success-callback
+     (lambda (resp)
+       (let ((err (plist-get resp :error)))
+         (when (buffer-live-p buf)
+           (with-current-buffer buf
+             (setq eca-mcp--confirming-remove nil)))
+         (when err
+           (eca-error "Remove MCP %s failed: %s" name
+                      (or (plist-get err :message) (format "%S" err)))
+           (eca-settings-refresh-tab "mcps" session))))
+     :error-callback
+     (lambda (err)
+       (eca-error "Remove MCP %s failed: %s" name
+                  (or (plist-get err :message) (format "%S" err)))
+       (when (buffer-live-p buf)
+         (with-current-buffer buf
+           (setq eca-mcp--confirming-remove nil)))
+       (eca-settings-refresh-tab "mcps" session)))))
+
+(defun eca-mcp--render-add-form (session keymap)
+  "Render the inline add-server form into the current buffer."
+  (let* ((st eca-mcp--add-form-state)
+         (transport (plist-get st :transport))
+         (scope (plist-get st :scope)))
+    (insert (propertize "Add MCP server" 'font-lock-face 'bold) "\n")
+    (insert "Name: ")
+    (insert (eca-buttonize
+             keymap
+             (propertize (if (string-empty-p (plist-get st :name))
+                             "<click to set>"
+                           (plist-get st :name))
+                         'font-lock-face 'eca-mcp-details-command-value-face)
+             (lambda () (eca-mcp--add-form-edit-field :name "Server name: " session))))
+    (insert "\n")
+    (insert "Transport: ")
+    (insert (eca-buttonize
+             keymap
+             (propertize (concat (if (string= transport "stdio") "[x]" "[ ]") " stdio")
+                         'font-lock-face (if (string= transport "stdio")
+                                             'eca-mcp-details-button-face
+                                           'eca-mcp-details-button-disable-face))
+             (lambda () (eca-mcp--add-form-set :transport "stdio" session))))
+    (insert "  ")
+    (insert (eca-buttonize
+             keymap
+             (propertize (concat (if (string= transport "remote") "[x]" "[ ]") " remote")
+                         'font-lock-face (if (string= transport "remote")
+                                             'eca-mcp-details-button-face
+                                           'eca-mcp-details-button-disable-face))
+             (lambda () (eca-mcp--add-form-set :transport "remote" session))))
+    (insert "\n")
+    (cond
+     ((string= transport "stdio")
+      (insert "Command: ")
+      (insert (eca-buttonize
+               keymap
+               (propertize (if (string-empty-p (plist-get st :command))
+                               "<click to set>"
+                             (plist-get st :command))
+                           'font-lock-face 'eca-mcp-details-command-value-face)
+               (lambda () (eca-mcp--add-form-edit-field :command "Command: " session))))
+      (insert "\n")
+      (insert "Args: ")
+      (insert (eca-buttonize
+               keymap
+               (propertize (if (string-empty-p (plist-get st :args))
+                               "<click to set>"
+                             (plist-get st :args))
+                           'font-lock-face 'eca-mcp-details-command-value-face)
+               (lambda () (eca-mcp--add-form-edit-field :args "Args (space-separated): " session))))
+      (insert "\n")
+      (insert "Env: ")
+      (let ((env (plist-get st :env)))
+        (if env
+            (insert (propertize (mapconcat #'identity env ", ")
+                                'font-lock-face 'eca-mcp-details-command-value-face))
+          (insert (propertize "(none)" 'font-lock-face 'shadow))))
+      (insert " ")
+      (insert (eca-buttonize
+               keymap
+               (propertize "[edit]" 'font-lock-face 'eca-mcp-details-button-face)
+               (lambda () (eca-mcp--add-form-edit-list-field
+                           :env "Env KEY=VALUE (empty to finish): " session))))
+      (insert "\n"))
+     (t
+      (insert "URL: ")
+      (insert (eca-buttonize
+               keymap
+               (propertize (if (string-empty-p (plist-get st :url))
+                               "<click to set>"
+                             (plist-get st :url))
+                           'font-lock-face 'eca-mcp-details-command-value-face)
+               (lambda () (eca-mcp--add-form-edit-field :url "URL: " session))))
+      (insert "\n")
+      (insert "Headers: ")
+      (let ((hs (plist-get st :headers)))
+        (if hs
+            (insert (propertize (mapconcat #'identity hs ", ")
+                                'font-lock-face 'eca-mcp-details-command-value-face))
+          (insert (propertize "(none)" 'font-lock-face 'shadow))))
+      (insert " ")
+      (insert (eca-buttonize
+               keymap
+               (propertize "[edit]" 'font-lock-face 'eca-mcp-details-button-face)
+               (lambda () (eca-mcp--add-form-edit-list-field
+                           :headers "Header KEY: VALUE (empty to finish): " session))))
+      (insert "\n")))
+    (insert "Scope: ")
+    (insert (eca-buttonize
+             keymap
+             (propertize (concat (if (string= scope "global") "[x]" "[ ]") " global")
+                         'font-lock-face (if (string= scope "global")
+                                             'eca-mcp-details-button-face
+                                           'eca-mcp-details-button-disable-face))
+             (lambda () (eca-mcp--add-form-set :scope "global" session))))
+    (insert "  ")
+    (insert (eca-buttonize
+             keymap
+             (propertize (concat (if (string= scope "workspace") "[x]" "[ ]") " workspace")
+                         'font-lock-face (if (string= scope "workspace")
+                                             'eca-mcp-details-button-face
+                                           'eca-mcp-details-button-disable-face))
+             (lambda () (eca-mcp--add-form-set :scope "workspace" session))))
+    (insert "\n")
+    (insert (eca-buttonize
+             keymap
+             (propertize "[Submit]" 'font-lock-face 'eca-mcp-details-button-face)
+             (lambda () (eca-mcp--submit-add-server session))))
+    (insert "  ")
+    (insert (eca-buttonize
+             keymap
+             (propertize "[Cancel]" 'font-lock-face 'eca-mcp-details-button-stop-face)
+             (lambda () (eca-mcp--cancel-add-form session))))
+    (insert "\n\n")))
+
 (defun eca-mcp--render-server-details (session buffer)
   "Render MCP server details for SESSION into BUFFER.
 Works with both standalone and settings panel buffers."
@@ -119,11 +401,20 @@ Works with both standalone and settings panel buffers."
     (with-current-buffer buffer
       (let ((inhibit-read-only t)
             (keymap (or (current-local-map)
-                        eca-settings-mode-map)))
+                        eca-settings-mode-map))
+            (saved-pos (point)))
         (erase-buffer)
         (insert "\n")
         (insert (propertize "All MCP servers configured in ECA" 'font-lock-face 'eca-settings-heading))
         (insert "\n\n")
+        (if eca-mcp--add-form-state
+            (eca-mcp--render-add-form session keymap)
+          (insert (eca-buttonize
+                   keymap
+                   (propertize "[+ Add MCP server]"
+                               'font-lock-face 'eca-mcp-details-button-face)
+                   (lambda () (eca-mcp--open-add-form session)))
+                  "\n\n"))
         (seq-doseq (server (-sort  (lambda (a b)
                                      (string-lessp (plist-get a :name)
                                                    (plist-get b :name)))
@@ -136,7 +427,23 @@ Works with both standalone and settings panel buffers."
             (insert " ")
             (insert (propertize name 'font-lock-face 'bold))
             (insert "   ")
-            (pcase status
+            (cond
+             ((and eca-mcp--confirming-remove
+                   (string= name eca-mcp--confirming-remove))
+              (insert (propertize "Remove? " 'font-lock-face 'warning))
+              (insert (eca-buttonize
+                       keymap
+                       (propertize "[Yes]"
+                                   'font-lock-face 'eca-mcp-details-button-stop-face)
+                       (lambda () (eca-mcp--submit-remove-server session name))))
+              (insert " ")
+              (insert (eca-buttonize
+                       keymap
+                       (propertize "[Cancel]"
+                                   'font-lock-face 'eca-mcp-details-button-face)
+                       (lambda () (eca-mcp--cancel-confirm-remove session)))))
+             (t
+              (pcase status
               ("requires-auth"
                (insert (eca-buttonize
                         keymap
@@ -212,6 +519,13 @@ Works with both standalone and settings panel buffers."
                           (lambda () (eca-api-notify session
                                                       :method "mcp/enableServer"
                                                       :params (list :name name))))))))
+              (unless (string= name "ECA")
+                (insert " "
+                        (eca-buttonize
+                         keymap
+                         (propertize "remove"
+                                     'font-lock-face 'eca-mcp-details-button-stop-face)
+                         (lambda () (eca-mcp--request-confirm-remove session name)))))))
             (insert "\n")
             (if (seq-empty-p tools)
                 (insert (propertize "No tools available" 'font-lock-face font-lock-doc-face))
@@ -254,7 +568,8 @@ Works with both standalone and settings panel buffers."
                                            "eca stderr buffer"
                                            (lambda(_) (eca-process-show-stderr session))))
                                   'font-lock-face 'error))))
-          (insert "\n\n"))))))
+          (insert "\n\n"))
+        (goto-char (min saved-pos (point-max)))))))
 
 (defun eca-mcp--format-input-schema-args (input-schema)
   "Format INPUT-SCHEMA properties into a list of readable arg description strings."

@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Add inline `[+ Add MCP server]` form and per-row `remove` button (with two-step inline confirmation) on the MCPs settings tab. Handles the new `tool/serverRemoved` notification so the UI updates live without a server restart.
 - `eca-doctor` now emits a `### Self-check` section probing whether the loaded code carries the chat-RET expand fix: `eca-chat-mode-map` RET still points at `eca-chat--key-pressed-return`, `eca-chat--key-pressed-return` references the expandable clause before the markdown-link clause, the nearest expandable block label has RET bound in its text-property `keymap`, and the loaded `eca-chat-expandable` file's path (with a stale-`.elc` warning when the on-disk `.el` is newer). Each failing probe pushes a targeted hint pointing at commit `dac33d8` and the appropriate remediation (pull master, restart Emacs, `M-x byte-recompile-directory`, or start a new chat so blocks get the new label keymap).
 - Bugfix: restore RET expanding/collapsing `>` blocks in the chat. The recent markdown-link-on-RET clause was intercepting the toggle when the label text was fontified as a link; the expandable check now runs before the link follow, and the label's text-property keymap also binds RET so it works in evil normal state without evil-collection wiring.
 - Add `eca-doctor` command that prints a markdown-formatted diagnostic report to `*eca-doctor*` for bug reports: a `## Versions` section (same as `eca-version`) plus a `## Chat` section sourced from the active session's auto-detected chat buffer. #242
