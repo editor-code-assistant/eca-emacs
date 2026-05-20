@@ -468,6 +468,12 @@ works normally."
   "Face for the welcome message in chat."
   :group 'eca)
 
+(defface eca-chat-resume-link-face
+  '((((background dark))  (:foreground "deep sky blue" :underline t))
+    (((background light)) (:foreground "dark cyan" :underline t)))
+  "Face for the resume session link in the welcome area."
+  :group 'eca)
+
 (defface eca-chat-option-key-face
   '((t :inherit font-lock-doc-face))
   "Face for the option keys in header-line of the chat."
@@ -553,6 +559,12 @@ are not currently selected."
 (defvar-local eca-chat--closed nil)
 (defvar-local eca-chat--history '())
 (defvar-local eca-chat--history-index -1)
+
+(defvar-local eca-chat--welcome-shown nil
+  "Non-nil when this buffer still displays the welcome banner.
+Set when the welcome message and resume link are inserted in
+`eca-chat-mode'; cleared by `eca-chat--clear'.  Used to decide
+whether the first user prompt should erase the banner first.")
 (defvar-local eca-chat--id nil)
 (defvar-local eca-chat--title nil)
 (defvar-local eca-chat--custom-title nil)
@@ -637,6 +649,12 @@ A plist with :session :request :question :options :tool-call-id :allow-freeform.
 
 (defvar eca--chat-init-session nil
   "Dynamically bound session during `eca-chat-mode' initialization.")
+
+(defvar eca--chat-init-skip-welcome nil
+  "When non-nil, skip welcome message during `eca-chat-mode' init.
+Bound while creating a buffer for a server-initiated chat (resume,
+fork) whose content will be streamed in next, so the welcome text
+and resume link are not left behind under the replayed messages.")
 
 (defun eca-chat-new-buffer-name (session)
   "Return the chat buffer name for SESSION."
@@ -989,6 +1007,7 @@ request, useful for subagent tool calls."
   (setq-local eca-chat--chat-loading nil)
   (setq-local eca-chat--steered-prompt nil)
   (setq-local eca-chat--queued-prompt nil)
+  (setq-local eca-chat--welcome-shown nil)
   (clrhash eca-chat--subagent-chat-id->tool-call-id)
   (clrhash eca-chat--subagent-usage)
   (eca-chat--insert "\n")
@@ -1363,7 +1382,7 @@ Resteps a list of context plists found in the prompt field."
   (let* ((prompt-contexts (eca-chat--extract-contexts-from-prompt))
          (refined-contexts (-map #'eca-chat--refine-context
                                  (append eca-chat--context prompt-contexts))))
-    (when (seq-empty-p eca-chat--history) (eca-chat--clear))
+    (when eca-chat--welcome-shown (eca-chat--clear))
     (add-to-list 'eca-chat--history prompt)
     (setq eca-chat--history-index -1)
     (eca-chat--set-prompt "")
@@ -2375,8 +2394,16 @@ CHILD, NAME, DOCSTRING and BODY are passed down."
       (save-excursion
         (goto-char (point-min))
         (eca-chat--insert "\n")
-        (eca-chat--insert (propertize (eca--session-chat-welcome-message session)
-                                      'font-lock-face 'eca-chat-welcome-face))
+        (unless eca--chat-init-skip-welcome
+          (eca-chat--insert (propertize (eca--session-chat-welcome-message session)
+                                        'font-lock-face 'eca-chat-welcome-face))
+          (eca-chat--insert "\n")
+          (eca-chat--insert (eca-buttonize
+                             eca-chat-mode-map
+                             (propertize "Resume a previous session"
+                                         'font-lock-face 'eca-chat-resume-link-face)
+                             #'eca-chat-resume))
+          (setq-local eca-chat--welcome-shown t))
         (eca-chat--insert-prompt-string)))
 
     ;; TODO is there a better way to do that?
@@ -3231,9 +3258,10 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
   (-let* ((chat-id (plist-get params :chatId))
           (messages? (plist-get params :messages))
           (chat-buffer (eca-chat--get-chat-buffer session chat-id)))
-    (eca-chat--with-current-buffer chat-buffer
-      (when messages?
-        (eca-chat--clear)))))
+    (when (buffer-live-p chat-buffer)
+      (eca-chat--with-current-buffer chat-buffer
+        (when messages?
+          (eca-chat--clear))))))
 
 (defun eca-chat--apply-per-chat-config (chat-config buffer)
   "Apply the per-chat fields of CHAT-CONFIG to BUFFER's local state.
@@ -3325,7 +3353,8 @@ render into it."
       (cl-incf eca-chat--new-chat-id)
       (let ((new-buffer (eca-chat--create-buffer session)))
         (with-current-buffer new-buffer
-          (let ((eca--chat-init-session session))
+          (let ((eca--chat-init-session session)
+                (eca--chat-init-skip-welcome t))
             (eca-chat-mode))
           (setq-local eca-chat--id chat-id)
           (setq-local eca-chat--title title)
@@ -4016,6 +4045,99 @@ title, and elapsed time annotation."
               (setf (eca--session-last-chat-buffer session) buffer)
               (eca-chat-open session))
           (eca-chat-new))))))
+
+(defun eca-chat--relative-time (ms)
+  "Return a relative-time string for epoch MS (milliseconds).
+E.g. \"just now\", \"5m ago\", \"3h ago\", \"2d ago\"."
+  (when ms
+    (let* ((delta (- (float-time) (/ (float ms) 1000.0))))
+      (cond
+       ((< delta 60)    "just now")
+       ((< delta 3600)  (format "%dm ago" (floor (/ delta 60))))
+       ((< delta 86400) (format "%dh ago" (floor (/ delta 3600))))
+       (t               (format "%dd ago" (floor (/ delta 86400))))))))
+
+(defun eca-chat--kill-empty-welcome-buffer (session buffer keep-buffer)
+  "Kill BUFFER for SESSION if it's a fresh welcome chat.
+Skips when BUFFER equals KEEP-BUFFER or when the welcome banner is
+no longer present (i.e. the user already exchanged messages there).
+Marks the chat as `eca-chat--closed' so the kill-buffer hook does
+not prompt for server-side deletion, and dissocs it from the
+session's chat registry.  Used by `eca-chat-resume' to clean up
+the empty buffer that was used to trigger the resume."
+  (when (and (buffer-live-p buffer)
+             (not (eq buffer keep-buffer))
+             (with-current-buffer buffer eca-chat--welcome-shown))
+    (with-current-buffer buffer
+      (setq-local eca-chat--closed t)
+      (when-let* ((cid eca-chat--id))
+        (setf (eca--session-chats session)
+              (eca-dissoc (eca--session-chats session) cid))))
+    (kill-buffer buffer)
+    (eca-chat--force-tab-line-update)))
+
+;;;###autoload
+(defun eca-chat-resume ()
+  "Select and resume a previous ECA session."
+  (interactive)
+  (let* ((session (eca-session))
+         (from-buf (current-buffer)))
+    (eca-assert-session-running session)
+    (when-let* ((res (eca-api-request-sync session :method "chat/list"))
+                (chats (plist-get res :chats)))
+      (if (zerop (length chats))
+          (message "No previous sessions to resume.")
+        (let* ((id-by-label  (make-hash-table :test 'equal))
+               (ann-by-label (make-hash-table :test 'equal))
+               (labels       nil))
+          (seq-do
+           (lambda (chat)
+             (let* ((id    (plist-get chat :id))
+                    (title (or (plist-get chat :title) "Untitled"))
+                    (model (plist-get chat :model))
+                    (count (plist-get chat :messageCount))
+                    (upd   (plist-get chat :updatedAt))
+                    (label (if (gethash title id-by-label)
+                               (concat title " (" id ")")
+                             title))
+                    (ann   (concat
+                            (when model
+                              (propertize (concat "  " model) 'face 'shadow))
+                            (when count
+                              (propertize (format "  %d msgs" count) 'face 'shadow))
+                            (when-let* ((rel (eca-chat--relative-time upd)))
+                              (propertize (concat "  " rel)
+                                          'face 'eca-chat-elapsed-time-face)))))
+               (puthash label id id-by-label)
+               (puthash label ann ann-by-label)
+               (push label labels)))
+           chats)
+          (setq labels (nreverse labels))
+          (when-let* ((chosen (completing-read
+                               "Resume session: "
+                               (lambda (string pred action)
+                                 (if (eq action 'metadata)
+                                     `(metadata
+                                       (display-sort-function . ,#'identity)
+                                       (annotation-function
+                                        . ,(lambda (candidate)
+                                             (gethash candidate ann-by-label))))
+                                   (complete-with-action action labels string pred)))
+                               nil t))
+                      (chat-id (gethash chosen id-by-label)))
+            (eca-api-request-async
+             session
+             :method "chat/open"
+             :params (list :chatId chat-id)
+             :success-callback
+             (lambda (_)
+               (when-let* ((chat-buf (eca-get (eca--session-chats session) chat-id)))
+                 (setf (eca--session-last-chat-buffer session) chat-buf)
+                 (eca-chat-open session)
+                 (eca-chat--kill-empty-welcome-buffer session from-buf chat-buf)))
+             :error-callback
+             (lambda (err)
+               (user-error "Failed to resume: %s" err)))))))))
 
 ;;;###autoload
 (defun eca-chat-rename ()

@@ -428,6 +428,7 @@ Inheirits BASE-MAP."
     "ECA transient menu."
     [["Chat"
       ("n" "New" eca-chat-new)
+      ("e" "Resume" eca-chat-resume)
       ("f" "Select" eca-chat-select)
       ("c" "Clear" eca-chat-clear)
       ("r" "Reset" eca-chat-reset)
