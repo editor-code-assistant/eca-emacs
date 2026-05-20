@@ -4083,9 +4083,14 @@ the empty buffer that was used to trigger the resume."
   (let* ((session (eca-session))
          (from-buf (current-buffer)))
     (eca-assert-session-running session)
-    (when-let* ((res (eca-api-request-sync session :method "chat/list"))
-                (chats (plist-get res :chats)))
-      (if (zerop (length chats))
+    (let* ((res (eca-api-request-sync session :method "chat/list"))
+           ;; Drop entries the server can't actually re-open: nil ids show up
+           ;; for legacy DB rows that pre-date the per-chat `:id` field, and
+           ;; picking them would silently no-op because `chat/open {:chatId
+           ;; nil}` returns `{:found? false}`.
+           (chats (cl-remove-if-not (lambda (c) (plist-get c :id))
+                                    (append (plist-get res :chats) nil))))
+      (if (null chats)
           (message "No previous sessions to resume.")
         (let* ((id-by-label  (make-hash-table :test 'equal))
                (ann-by-label (make-hash-table :test 'equal))
@@ -4130,11 +4135,17 @@ the empty buffer that was used to trigger the resume."
              :method "chat/open"
              :params (list :chatId chat-id)
              :success-callback
-             (lambda (_)
-               (when-let* ((chat-buf (eca-get (eca--session-chats session) chat-id)))
-                 (setf (eca--session-last-chat-buffer session) chat-buf)
-                 (eca-chat-open session)
-                 (eca-chat--kill-empty-welcome-buffer session from-buf chat-buf)))
+             (lambda (open-res)
+               (cond
+                ((not (plist-get open-res :found?))
+                 (user-error "Server could not open chat %s" chat-id))
+                ((not (buffer-live-p (eca-get (eca--session-chats session) chat-id)))
+                 (user-error "Resume: no buffer was registered for chat %s" chat-id))
+                (t
+                 (let ((chat-buf (eca-get (eca--session-chats session) chat-id)))
+                   (setf (eca--session-last-chat-buffer session) chat-buf)
+                   (eca-chat-open session)
+                   (eca-chat--kill-empty-welcome-buffer session from-buf chat-buf)))))
              :error-callback
              (lambda (err)
                (user-error "Failed to resume: %s" err)))))))))
