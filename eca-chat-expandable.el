@@ -128,7 +128,7 @@ Background is computed dynamically from the current theme by
 Shift percentages are controlled by `eca-chat-expandable-block-bg-shift-1'
 and `eca-chat-expandable-block-bg-shift-2'.  Lightens for dark themes,
 darkens for light themes."
-  (when-let* ((bg (face-background 'default nil t)))
+  (when-let* ((bg (eca-safe-face-background 'default nil t)))
     (let* ((dark? (eq 'dark (frame-parameter nil 'background-mode)))
            (fn (if dark? #'color-lighten-name #'color-darken-name))
            (bg1 (funcall fn bg eca-chat-expandable-block-bg-shift-1))
@@ -240,7 +240,7 @@ When NESTED? is non-nil, return the level-2 face; otherwise level-1."
   "Add background of FACE to every `line-prefix' string between START and END.
 Only the `:background' attribute is applied so that existing foreground
 colors (e.g. icon faces via `font-lock-face') are preserved."
-  (when-let* ((bg (face-background face nil t)))
+  (when-let* ((bg (eca-safe-face-background face nil t)))
     (let ((bg-plist `(:background ,bg))
           (pos start))
       (while (< pos end)

@@ -392,6 +392,19 @@ Uses the longest (most specific) matching prefix to avoid ambiguity."
   "Display eca error message with FORMAT with ARGS."
   (message "%s :: %s" (propertize "ECA" 'face 'error) (apply #'format format args)))
 
+(defun eca-safe-face-background (face &optional frame inherit)
+  "Return background of FACE on FRAME, treating TTY sentinels as nil.
+INHERIT is passed through to `face-background'.  On non-graphic
+frames `face-background' returns the literal strings
+\"unspecified-bg\" / \"unspecified-fg\" instead of nil, which
+breaks callers that feed the result to `color-name-to-rgb' (e.g.
+`color-lighten-name', `color-darken-name').  This wrapper maps
+those sentinels back to nil so callers can short-circuit with
+`when-let*' and friends."
+  (let ((bg (face-background face frame inherit)))
+    (unless (member bg '("unspecified-bg" "unspecified-fg"))
+      bg)))
+
 (defun eca-buttonize (base-map text callback)
   "Create a actionable TEXT that call CALLBACK when actioned.
 Inheirits BASE-MAP."

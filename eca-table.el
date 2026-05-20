@@ -21,6 +21,7 @@
 (require 'compat)
 (require 'markdown-mode)
 (require 'seq)
+(require 'eca-util)
 
 ;; Forward-declare defcustom defined in eca-chat.el.
 (defvar eca-chat-table-beautify)
@@ -68,7 +69,7 @@ Background is computed dynamically from the current theme by
 (defun eca-table-update-faces ()
   "Recompute table faces from the current theme.
 Sets subtle background tints on header and even-row faces."
-  (when-let* ((bg (face-background 'default nil t)))
+  (when-let* ((bg (eca-safe-face-background 'default nil t)))
     (let* ((dark? (eq 'dark (frame-parameter nil 'background-mode)))
            (fn (if dark? #'color-lighten-name #'color-darken-name)))
       (set-face-attribute 'eca-table-header-face nil
