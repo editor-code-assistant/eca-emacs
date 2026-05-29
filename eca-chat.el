@@ -3445,14 +3445,25 @@ the user answers or cancels."
           :async)
       (list :answer nil :cancelled t))))
 
+(defun eca-chat--normalize-question-option (opt)
+  "Return a cons (LABEL . DESCRIPTION) for question OPT.
+OPT may be a plist with :label/:description or a plain string.  LABEL is
+always a non-nil string so option rendering never fails on bad data."
+  (let* ((label (cond ((stringp opt) opt)
+                      ((listp opt) (plist-get opt :label))))
+         (desc (and (listp opt) (plist-get opt :description))))
+    (cons (if (stringp label) label (format "%s" (or label opt)))
+          (and (stringp desc) desc))))
+
 (defun eca-chat--build-question-options-content (options)
   "Build expandable block content string with OPTIONS and a cancel button."
   (concat
    (when options
      (mapconcat
       (lambda (opt)
-        (let* ((label (plist-get opt :label))
-               (desc (plist-get opt :description))
+        (let* ((ld (eca-chat--normalize-question-option opt))
+               (label (car ld))
+               (desc (cdr ld))
                (btn (eca-buttonize
                      eca-chat-mode-map
                      (propertize label 'font-lock-face 'eca-chat-question-option-face)
@@ -3493,8 +3504,9 @@ Used as fallback when no toolCallId is available."
            "\n"
            (mapconcat
             (lambda (opt)
-              (let* ((label (plist-get opt :label))
-                     (desc (plist-get opt :description))
+              (let* ((ld (eca-chat--normalize-question-option opt))
+                     (label (car ld))
+                     (desc (cdr ld))
                      (btn (eca-buttonize
                            eca-chat-mode-map
                            (propertize label 'font-lock-face 'eca-chat-question-option-face)

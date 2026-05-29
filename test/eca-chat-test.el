@@ -213,4 +213,21 @@ Returns the buffer.  Caller must kill it."
         (expect 'eca-chat--set-chat-loading :to-have-been-called-with
                 session 'stopping)))))
 
+(describe "eca-chat--normalize-question-option"
+  ;; Regression: a `chat/askQuestion' option that is a plain string or a
+  ;; plist without `:label' must not crash rendering with
+  ;; `(wrong-type-argument stringp nil)'.
+  (it "returns label and description from a plist option"
+    (expect (eca-chat--normalize-question-option '(:label "Yes" :description "do it"))
+            :to-equal '("Yes" . "do it")))
+
+  (it "treats a plain string as the label with no description"
+    (expect (eca-chat--normalize-question-option "Yes")
+            :to-equal '("Yes" . nil)))
+
+  (it "always returns a non-nil string label when :label is missing"
+    (let ((res (eca-chat--normalize-question-option '(:description "no label"))))
+      (expect (stringp (car res)) :to-be-truthy)
+      (expect (cdr res) :to-equal "no label"))))
+
 ;;; eca-chat-test.el ends here
