@@ -646,6 +646,11 @@ A plist with :session :request :question :options :tool-call-id :allow-freeform.
 (defvar eca-chat--last-known-model nil)
 (defvar eca-chat--last-known-agent nil)
 (defvar eca-chat--last-known-variant nil)
+(defvar eca-chat--last-known-trust eca-chat-trust-enable
+  "Session-wide trust default for new chats.
+Seeded from `eca-chat-trust-enable' and kept in sync with the server's
+`config/updated' selectTrust, so the server `chat.defaultTrust' config
+applies to new chats too.")
 
 (defvar eca--chat-init-session nil
   "Dynamically bound session during `eca-chat-mode' initialization.")
@@ -3303,8 +3308,9 @@ a `config/updated' broadcast."
     ;; per-chat trust state so it matches the server's auto-approval
     ;; behavior for subsequent tool calls.
     (when (plist-member chat-config :selectTrust)
-      (setq-local eca-chat--selected-trust
-                  (eq t (plist-get chat-config :selectTrust))))
+      (let ((new-trust (eq t (plist-get chat-config :selectTrust))))
+        (setq-local eca-chat--selected-trust new-trust)
+        (setq eca-chat--last-known-trust new-trust)))
     (force-mode-line-update)))
 
 (defun eca-chat-config-updated (session chat-config)
@@ -3381,7 +3387,7 @@ render into it."
           (setq-local eca-chat--selected-agent eca-chat--last-known-agent)
           (setq-local eca-chat--selected-model eca-chat--last-known-model)
           (setq-local eca-chat--selected-variant eca-chat--last-known-variant)
-          (setq-local eca-chat--selected-trust eca-chat-trust-enable))
+          (setq-local eca-chat--selected-trust eca-chat--last-known-trust))
         (setf (eca--session-chats session)
               (eca-assoc (eca--session-chats session) chat-id new-buffer))
         (eca-chat--force-tab-line-update))))))
@@ -3617,7 +3623,7 @@ When ACTIVE is non-nil, show the question prefix; otherwise restore normal."
       (setq-local eca-chat--selected-agent eca-chat--last-known-agent)
       (setq-local eca-chat--selected-model eca-chat--last-known-model)
       (setq-local eca-chat--selected-variant eca-chat--last-known-variant)
-      (setq-local eca-chat--selected-trust eca-chat-trust-enable)
+      (setq-local eca-chat--selected-trust eca-chat--last-known-trust)
       (eca-chat--track-cursor-position-schedule)
       (when eca-chat-auto-add-cursor
         (eca-chat--add-context (list :type "cursor")))
