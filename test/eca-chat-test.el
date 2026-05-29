@@ -172,4 +172,45 @@ Returns the buffer.  Caller must kill it."
             (cancel-timer eca-chat--spinner-timer))
           (kill-buffer buf))))))
 
+(describe "eca-chat--transient-segment-loading"
+  (it "shows the stop button while a question is pending even when idle"
+    ;; A pending question keeps the turn active server-side, so the stop
+    ;; affordance must stay available even though `eca-chat--chat-loading'
+    ;; is nil (the chat reports idle while awaiting the answer).
+    (with-temp-buffer
+      (setq-local eca-chat--chat-loading nil)
+      (setq-local eca-chat--pending-question
+                  (list :session (make-eca--session) :request 1))
+      (let ((seg (eca-chat--transient-segment-loading)))
+        (expect seg :to-be-truthy)
+        (expect (string-match-p "stop" seg) :to-be-truthy))))
+
+  (it "returns nil when idle and no question is pending"
+    (with-temp-buffer
+      (setq-local eca-chat--chat-loading nil)
+      (setq-local eca-chat--pending-question nil)
+      (expect (eca-chat--transient-segment-loading) :to-be nil))))
+
+(describe "eca-chat--stop-prompt"
+  (it "cancels the pending question and notifies the server when idle"
+    ;; Regression: stopping must work while a question is pending even if
+    ;; `eca-chat--chat-loading' is nil, since the question blocks the turn.
+    (with-temp-buffer
+      (let ((session (make-eca--session)))
+        (setq-local eca-chat--id "chat-1")
+        (setq-local eca-chat--chat-loading nil)
+        (setq-local eca-chat--pending-question
+                    (list :session session :request 1))
+        (spy-on 'eca-chat--cancel-question)
+        (spy-on 'eca-api-notify)
+        (spy-on 'eca-chat--set-chat-loading)
+        (eca-chat--stop-prompt session)
+        (expect 'eca-chat--cancel-question :to-have-been-called)
+        (expect 'eca-api-notify :to-have-been-called-with
+                session
+                :method "chat/promptStop"
+                :params (list :chatId "chat-1"))
+        (expect 'eca-chat--set-chat-loading :to-have-been-called-with
+                session 'stopping)))))
+
 ;;; eca-chat-test.el ends here

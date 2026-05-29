@@ -1017,8 +1017,11 @@ request, useful for subagent tool calls."
     (eca-chat--set-prompt new-prompt-content)))
 
 (defun eca-chat--stop-prompt (session)
-  "Stop the running chat prompt for SESSION."
-  (when (eq eca-chat--chat-loading t)
+  "Stop the running chat prompt for SESSION.
+A pending question keeps the turn active server-side, so allow
+stopping while one is pending: cancel it, then notify the server."
+  (when (or (eq eca-chat--chat-loading t)
+            eca-chat--pending-question)
     (when eca-chat--pending-question
       (eca-chat--cancel-question))
     (eca-api-notify session
@@ -1476,8 +1479,11 @@ Resteps a list of context plists found in the prompt field."
   (eca-chat--refresh-transient-area))
 
 (defun eca-chat--transient-segment-loading ()
-  "Return the loading segment string, or nil when chat is idle."
-  (when (eq eca-chat--chat-loading t)
+  "Return the loading/stop segment, or nil when idle.
+Also returned while a question is pending so the prompt can be
+stopped even if the chat reports idle awaiting the answer."
+  (when (or (eq eca-chat--chat-loading t)
+            eca-chat--pending-question)
     (concat (propertize eca-chat-prompt-prefix-loading
                         'font-lock-face 'default)
             (eca-buttonize
@@ -3432,7 +3438,10 @@ the user answers or cancels."
                   (eca-chat--expandable-content-toggle tool-call-id t nil))
               (eca-chat--render-ask-question-standalone question options))
             (when allow-freeform
-              (eca-chat--set-question-prompt-prefix t)))
+              (eca-chat--set-question-prompt-prefix t))
+            ;; A pending question keeps the turn active server-side, so
+            ;; surface the stop affordance even if the chat reports idle.
+            (eca-chat--refresh-transient-area))
           :async)
       (list :answer nil :cancelled t))))
 
@@ -3538,7 +3547,8 @@ Used as fallback when no toolCallId is available."
           (concat (propertize (concat "→ " answer)
                               'font-lock-face 'eca-chat-question-option-face)
                   "\n\n")))
-       (eca-chat--set-prompt ""))
+       (eca-chat--set-prompt "")
+       (eca-chat--refresh-transient-area))
       (eca-api-send-request-response
        session request
        (list :answer answer :cancelled :json-false)))))
@@ -3563,7 +3573,8 @@ Used as fallback when no toolCallId is available."
          (eca-chat--collapse-question-block
           (concat (propertize "✗ Cancelled"
                               'font-lock-face 'font-lock-comment-face)
-                  "\n\n"))))
+                  "\n\n")))
+       (eca-chat--refresh-transient-area))
       (eca-api-send-request-response
        session request
        (list :answer nil :cancelled t)))))
