@@ -525,6 +525,84 @@ When ARG is current prefix, ask for workspace roots to use."
           (dedicated . t)
           (window-parameters . ((no-delete-other-windows . t)))))))))
 
+(defun eca--chat-buffer-candidates-for-session (session seen)
+  "Return completion candidates for SESSION.
+
+SEEN is a hash table tracking previously used candidate names.
+Returns a list of (NAME . PLIST) entries."
+  (cl-loop
+   for chat-by-id in (eca--session-chats session)
+   for buf = (cdr chat-by-id)
+   when (buffer-live-p buf)
+   collect
+   (with-current-buffer buf
+     (let* ((title (substring-no-properties (eca-chat-title)))
+            (project (eca--session-project-name session))
+            (base (format "%s: %s" project title))
+            (n (gethash base seen 0))
+            (name (if (zerop n)
+                      base
+                    (format "%s (%s)" base (buffer-name buf)))))
+       (puthash base (1+ n) seen)
+       (cons name
+             (list :buffer buf
+                   :session session))))))
+
+(defun eca--chat-buffer-candidates ()
+  "Return an alist of chat completion candidates.
+
+Each element is (NAME . PLIST).  PLIST includes:
+  :buffer  the chat buffer
+  :session the owning session.
+
+Candidate names are made unique when multiple chats share the same title."
+  (let ((seen (make-hash-table :test #'equal)))
+    (cl-loop
+     for session in (eca-vals eca--sessions)
+     append (eca--chat-buffer-candidates-for-session session seen))))
+
+(defun eca--chat-buffer-completion-table (candidates)
+  "Build a completion table for CANDIDATES."
+  (lambda (string pred action)
+    (if (eq action 'metadata)
+        `(metadata
+          (category . eca-chat))
+      (complete-with-action action (mapcar #'car candidates) string pred))))
+
+(defun eca--switch-to-chat-buffer (buffer session)
+  "Switch to chat BUFFER for SESSION."
+  (unless (buffer-live-p buffer)
+    (user-error "Chat buffer no longer exists"))
+  (if-let* ((window (get-buffer-window buffer)))
+      (select-window window)
+    (eca-chat--display-buffer buffer))
+  (setf (eca--session-last-chat-buffer session) buffer)
+  buffer)
+
+(defun eca--switch-to-chat-candidate (prompt candidates empty-message)
+  "Switch to a chat selected from CANDIDATES using PROMPT.
+
+Signal EMPTY-MESSAGE as a `user-error' when CANDIDATES is nil."
+  (unless candidates
+    (user-error empty-message))
+  (let* ((info (if (= 1 (length candidates))
+                   (cdar candidates)
+                 (let* ((table (eca--chat-buffer-completion-table candidates))
+                        (choice (completing-read prompt table nil t)))
+                   (cdr (assoc choice candidates)))))
+         (buffer (plist-get info :buffer))
+         (session (plist-get info :session)))
+    (eca--switch-to-chat-buffer buffer session)))
+
+;;;###autoload
+(defun eca-switch-to-chat ()
+  "Prompt for an active ECA chat buffer and switch to it."
+  (interactive)
+  (eca--switch-to-chat-candidate
+   "Switch to ECA chat: "
+   (eca--chat-buffer-candidates)
+   "No active ECA chats"))
+
 ;;;###autoload
 (defun eca-open-global-config ()
   "Open the global config tab in eca-settings."
