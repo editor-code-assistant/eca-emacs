@@ -604,6 +604,18 @@ Signal EMPTY-MESSAGE as a `user-error' when CANDIDATES is nil."
    "No active ECA chats"))
 
 ;;;###autoload
+(defun eca-switch-to-project-chat ()
+  "Switch to an ECA chat buffer for the current project."
+  (interactive)
+  (let ((session (eca-session))
+        (seen (make-hash-table :test #'equal)))
+    (eca--switch-to-chat-candidate
+     "Switch to project ECA chat: "
+     (and session
+          (eca--chat-buffer-candidates-for-session session seen))
+     "No active ECA chats for this project")))
+
+;;;###autoload
 (defun eca-open-global-config ()
   "Open the global config tab in eca-settings."
   (interactive)
