@@ -87,6 +87,49 @@ Returns the buffer.  Caller must kill it."
                         :to-equal "hello")))
           (kill-buffer buf))))))
 
+(describe "eca-chat completion trigger detection"
+  (it "triggers context completion when a char like ( precedes @"
+    (let ((eca-chat--id "chat-123")
+          (eca-chat--context '())
+          (session (make-eca--session)))
+      (spy-on 'eca-session :and-return-value session)
+      (spy-on 'eca--session-workspace-folders :and-return-value '("/local/path"))
+      (spy-on 'eca-api-request-while-no-input :and-return-value '(:contexts []))
+      (spy-on 'eca-chat--find-typed-query :and-return-value "")
+      (spy-on 'eca-chat--point-at-new-context-p :and-return-value nil)
+      (with-temp-buffer
+        (insert "(@")
+        (let* ((capf-res (eca-chat-completion-at-point))
+               (completion-fn (nth 2 capf-res)))
+          (funcall completion-fn "" nil t)
+          (expect 'eca-chat--find-typed-query :to-have-been-called-with eca-chat-context-prefix)))))
+
+  (it "triggers file completion when a char like ( precedes #"
+    (let ((eca-chat--id "chat-123")
+          (session (make-eca--session)))
+      (spy-on 'eca-session :and-return-value session)
+      (spy-on 'eca--session-workspace-folders :and-return-value '("/local/path"))
+      (spy-on 'eca-api-request-while-no-input :and-return-value '(:files []))
+      (spy-on 'eca-chat--find-typed-query :and-return-value "")
+      (spy-on 'eca-chat--point-at-new-context-p :and-return-value nil)
+      (with-temp-buffer
+        (insert "(#")
+        (let* ((capf-res (eca-chat-completion-at-point))
+               (completion-fn (nth 2 capf-res)))
+          (funcall completion-fn "" nil t)
+          (expect 'eca-chat--find-typed-query :to-have-been-called-with eca-chat-filepath-prefix)))))
+
+  (it "does not trigger when @ is preceded by a word char"
+    (spy-on 'eca-api-request-while-no-input :and-return-value '(:contexts []))
+    (spy-on 'eca-chat--point-at-new-context-p :and-return-value nil)
+    (spy-on 'eca-chat--point-at-prompt-field-p :and-return-value nil)
+    (with-temp-buffer
+      (insert "foo@bar")
+      (let* ((capf-res (eca-chat-completion-at-point))
+             (completion-fn (nth 2 capf-res)))
+        (funcall completion-fn "" nil t)
+        (expect 'eca-api-request-while-no-input :not :to-have-been-called)))))
+
 (describe "eca-chat path mapping"
   (describe "chat/queryContext"
     (it "maps paths in :contexts to remote"

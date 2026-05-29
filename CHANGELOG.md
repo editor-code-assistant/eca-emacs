@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Bugfix: trigger `@`/`#` chat completion even when a char like `(` immediately precedes it.
 - Bugfix: don't crash with `(wrong-type-argument stringp nil)` when `chat/askQuestion` sends options as plain strings or option objects without a `:label`. Options are normalized via `eca-chat--normalize-question-option` (string or plist) and the label always falls back to a non-nil string.
 - Bugfix: keep the `stop` button available while a question is pending. A pending question keeps the turn active server-side even when the chat reports idle, so the loading/stop transient segment and `eca-chat--stop-prompt` now treat a pending question like the loading state, and the transient area is refreshed when a question is shown/answered/cancelled.
 - Bugfix: clear the chat progress text and spinner when `chat/contentReceived` `progress`/`finished` arrives while `eca-chat--chat-loading` is nil (e.g. after the 10s stopping safety-timer reset the flag, or for server-driven progress not started via `eca-chat--send-prompt`). The wildcard `pcase` arm added in 19aa392 to ignore stale duplicate `finished` events was dropping the visible UI cleanup too; it now still clears progress text, spinner and elapsed timers idempotently while skipping the trailing newline / fontify / queued-prompt dispatch so duplicate `finished` events remain harmless.

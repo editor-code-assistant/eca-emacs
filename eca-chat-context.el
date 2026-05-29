@@ -569,11 +569,11 @@ Calls CB with the resulting message."
                  'contexts-from-new-context)
 
                 ((when-let (last-word (car (last (string-split full-text "[\s]"))))
-                   (string-match-p (concat "^" eca-chat-context-prefix) last-word))
+                   (string-match-p (concat "\\(?:^\\|[^[:alnum:]]\\)" (regexp-quote eca-chat-context-prefix)) last-word))
                  'contexts-from-prompt)
 
                 ((when-let (last-word (car (last (string-split full-text "[\s]"))))
-                   (string-match-p (concat "^" eca-chat-filepath-prefix) last-word))
+                   (string-match-p (concat "\\(?:^\\|[^[:alnum:]]\\)" (regexp-quote eca-chat-filepath-prefix)) last-word))
                  'files-from-prompt)
 
                 ;; completing commands with `/`
