@@ -140,4 +140,36 @@ Returns the buffer.  Caller must kill it."
                   :to-equal "@/remote/path/file.txt")
           (expect 'eca--path-local-to-remote :to-have-been-called-with "file.txt"))))))
 
+(describe "eca-chat--render-content"
+  (describe "progress finished"
+    (it "clears progress text and spinner when chat-loading is nil"
+      ;; Regression: a `progress' / `finished' notification that arrives
+      ;; while `eca-chat--chat-loading' is nil (e.g. after the 10s
+      ;; stopping safety-timer reset the flag, or for server-driven
+      ;; progress not initiated by `eca-chat--send-prompt') must still
+      ;; clear the visible spinner and progress text.  Previously the
+      ;; wildcard `pcase' arm silently dropped the event.
+      (let ((buf (generate-new-buffer " *test-chat-progress*"))
+            (session (make-eca--session)))
+        (unwind-protect
+            (with-current-buffer buf
+              (setq-local eca-chat--progress-text "thinking...")
+              (setq-local eca-chat--chat-loading nil)
+              (setq-local eca-chat--spinner-timer
+                          (run-with-timer 100 100 #'ignore))
+              (spy-on 'eca-chat--refresh-progress)
+              (spy-on 'eca-chat--tool-call-elapsed-stop-all)
+              (eca-chat--render-content
+               session buf "system"
+               (list :type "progress" :state "finished")
+               nil)
+              (expect eca-chat--progress-text :to-equal "")
+              (expect eca-chat--spinner-timer :to-be nil)
+              (expect 'eca-chat--refresh-progress :to-have-been-called)
+              (expect 'eca-chat--tool-call-elapsed-stop-all
+                      :to-have-been-called))
+          (when (timerp eca-chat--spinner-timer)
+            (cancel-timer eca-chat--spinner-timer))
+          (kill-buffer buf))))))
+
 ;;; eca-chat-test.el ends here

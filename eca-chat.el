@@ -3212,7 +3212,21 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
                (eca-chat--send-steered-prompt session)
                (eca-chat--send-queued-prompt session)
                (run-hooks 'eca-chat-finished-hook))
-              (_ nil))))))
+              (_
+               ;; Idempotent UI cleanup for a `finished' arriving while
+               ;; `chat-loading' is nil — e.g. server-driven progress not
+               ;; started via `eca-chat--send-prompt', or after the 10s
+               ;; stopping safety-timer already cleared the flag.  We still
+               ;; clear the visible spinner / progress text and stop the
+               ;; elapsed timers, but intentionally skip the trailing
+               ;; newline, fontify and queued/steered-prompt dispatch so a
+               ;; duplicate `finished' (the case 19aa392 guarded against)
+               ;; still cannot insert a second newline or re-trigger a
+               ;; queued prompt.
+               (setq-local eca-chat--progress-text "")
+               (eca-chat--spinner-stop)
+               (eca-chat--tool-call-elapsed-stop-all)
+               (eca-chat--refresh-progress chat-buffer)))))))
       ("usage"
        (progn
          (if parent-tool-call-id
