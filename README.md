@@ -68,6 +68,8 @@ Server / process
 Chat
 
 - `eca-chat-toggle-window`: Open/close chat
+- `eca-switch-to-chat`: Switch to an active chat across sessions
+- `eca-switch-to-project-chat`: Switch to a chat for the current session
 - `eca-chat-select`: Select a chat for existing session
 - `eca-chat-new`: Start a new chat for current session/workspace folders.
 - `eca-chat-rename`: Rename current chat
