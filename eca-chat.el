@@ -2104,7 +2104,7 @@ If `eca-chat-focus-on-open' is non-nil, the window is selected."
                      `((display-buffer-in-side-window)
                        (side . ,side)
                        (slot . ,slot)
-                       (dedicated . t)
+                       (dedicated . side)
                        ,@(when (memq side '(left right))
                            `((window-width . ,eca-chat-window-width)))
                        ,@(when (memq side '(top bottom))
