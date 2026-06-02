@@ -75,6 +75,7 @@ Chat
 - `eca-chat-rename`: Rename current chat
 - `eca-chat-clear`: Clear chat messages both on server and local.
 - `eca-chat-reset`: Deletes current chat and start a new one
+- `eca-chat-delete`: Delete the active chat from the server without prompting (works from any buffer in the project)
 - `eca-chat-select-model`: Change chat model
 - `eca-chat-select-agent`: Change chat agent
 - `eca-chat-cycle-agent`: Change chat agent to next available

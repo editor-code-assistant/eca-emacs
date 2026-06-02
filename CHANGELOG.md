@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Add `eca-chat-delete` command to delete the active chat from the server without prompting. Works from any buffer in the project (acts on the session's last visited chat), switches the chat window to another chat first when one exists, and is bound to `C-c C-S-k` plus a `Delete` entry in the transient menu.
 - Bugfix: trigger `@`/`#` chat completion even when a char like `(` immediately precedes it.
 - Bugfix: don't crash with `(wrong-type-argument stringp nil)` when `chat/askQuestion` sends options as plain strings or option objects without a `:label`. Options are normalized via `eca-chat--normalize-question-option` (string or plist) and the label always falls back to a non-nil string.
 - Bugfix: keep the `stop` button available while a question is pending. A pending question keeps the turn active server-side even when the chat reports idle, so the loading/stop transient segment and `eca-chat--stop-prompt` now treat a pending question like the loading state, and the transient area is refreshed when a question is shown/answered/cancelled.
