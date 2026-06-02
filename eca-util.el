@@ -432,6 +432,7 @@ Inheirits BASE-MAP."
       ("f" "Select" eca-chat-select)
       ("c" "Clear" eca-chat-clear)
       ("r" "Reset" eca-chat-reset)
+      ("k" "Delete" eca-chat-delete)
       ("R" "Rename" eca-chat-rename)
       ("t" "Talk" eca-chat-talk)
       ("p" "Repeat prompt" eca-chat-repeat-prompt)

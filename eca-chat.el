@@ -681,6 +681,7 @@ and resume link are not left behind under the replayed messages.")
     (define-key map (kbd "<tab>") #'eca-chat--key-pressed-tab)
     (define-key map (kbd "TAB") #'eca-chat--key-pressed-tab)
     (define-key map (kbd "C-c C-k") #'eca-chat-reset)
+    (define-key map (kbd "C-c C-S-k") #'eca-chat-delete)
     (define-key map (kbd "C-c C-l") #'eca-chat-clear)
     (define-key map (kbd "C-c C-t") #'eca-chat-toggle-trust)
     (define-key map (kbd "C-c C-S-t") #'eca-chat-talk)
@@ -4208,6 +4209,42 @@ the empty buffer that was used to trigger the resume."
       (eca-api-request-sync (eca-session)
                             :method "chat/update"
                             :params (list :chatId eca-chat--id :title new-name)))))
+
+;;;###autoload
+(defun eca-chat-delete ()
+  "Delete the active chat of the current session from the server.
+Operates on the session's last visited chat buffer, so it can be
+called from any buffer in the project, not only from the chat
+buffer itself.  Unlike killing the chat buffer, this never
+prompts; the chat is always removed server-side.  When the session
+has other chats, any window showing the deleted chat switches to
+another chat first."
+  (interactive)
+  (let ((session (eca-session)))
+    (eca-assert-session-running session)
+    (let* ((buffer (eca-chat--get-last-buffer session))
+           (chat-id (and (buffer-live-p buffer)
+                         (buffer-local-value 'eca-chat--id buffer))))
+      (unless (and (buffer-live-p buffer) chat-id)
+        (user-error "No active chat to delete"))
+      (when-let ((other (-first (lambda (buf)
+                                  (and (buffer-live-p buf) (not (eq buf buffer))))
+                                (eca-vals (eca--session-chats session)))))
+        (setf (eca--session-last-chat-buffer session) other)
+        (dolist (win (get-buffer-window-list buffer nil t))
+          (let ((dedicated (window-dedicated-p win)))
+            (set-window-dedicated-p win nil)
+            (set-window-buffer win other)
+            (set-window-dedicated-p win dedicated))))
+      ;; Mark closed so the kill-buffer hook neither prompts nor sends a
+      ;; second chat/delete when BUFFER is killed below.
+      (with-current-buffer buffer
+        (setq-local eca-chat--closed t))
+      (eca-api-request-sync session
+                            :method "chat/delete"
+                            :params (list :chatId chat-id))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
 
 ;;;###autoload
 (defun eca-chat-new ()

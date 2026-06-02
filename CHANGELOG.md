@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Add `eca-chat-delete` command to delete the active chat from the server without prompting. Works from any buffer in the project (acts on the session's last visited chat), switches the chat window to another chat first when one exists, and is bound to `C-c C-S-k` plus a `Delete` entry in the transient menu.
 - Bugfix: switching chat tabs via `tab-line-switch-to-next-tab`/`tab-line-switch-to-prev-tab` or clicking a tab now switches the chat in place instead of opening it in a new window.
 - Bugfix: trigger `@`/`#` chat completion even when a char like `(` immediately precedes it.
 - Bugfix: don't crash with `(wrong-type-argument stringp nil)` when `chat/askQuestion` sends options as plain strings or option objects without a `:label`. Options are normalized via `eca-chat--normalize-question-option` (string or plist) and the label always falls back to a non-nil string.
