@@ -1578,6 +1578,27 @@ Does not send directly — `eca-chat--send-queued-prompt' handles sending."
    ((bound-and-true-p completion-in-region-mode)
     (completion-at-point))))
 
+(defun eca-chat--face-at-point-member-p (faces)
+  "Return non-nil when the `face' text property at point includes any of FACES.
+The `face' property may be a single symbol or a list of faces: a bare
+URL wrapped in emphasis such as **https://...** carries both
+`markdown-plain-url-face' and `markdown-bold-face', so a plain `eq'
+against a single symbol would miss it."
+  (let ((prop (get-text-property (point) 'face)))
+    (seq-some (lambda (f) (memq f faces))
+              (if (listp prop) prop (list prop)))))
+
+(defun eca-chat--follow-link-at-point ()
+  "Open the markdown link or URL at point in the chat buffer.
+Handles inline [text](url) links as well as bare URLs, including bare
+URLs wrapped in markdown emphasis like **https://...** or _https://..._
+where `thing-at-point' would otherwise capture the trailing markup
+characters as part of the URL."
+  (if (eca-chat--face-at-point-member-p '(markdown-plain-url-face))
+      (when-let* ((url (thing-at-point 'url t)))
+        (browse-url (string-trim url "[*_~`]+" "[*_~`]+")))
+    (markdown-follow-thing-at-point nil)))
+
 (defun eca-chat--key-pressed-return ()
   "Send the current prompt to eca process if in prompt."
   (interactive)
@@ -1600,12 +1621,13 @@ Does not send directly — `eca-chat--send-queued-prompt' handles sending."
        (let ((ov (eca-chat--expandable-content-at-point)))
          (eca-chat--expandable-content-toggle (overlay-get ov 'eca-chat--expandable-content-id))))
 
-      ;; follow markdown link [text](url)
-      ((let ((face (get-text-property (point) 'face)))
-         (or (eq face 'markdown-link-face)
-             (eq face 'markdown-url-face)
-             (eq face 'markdown-plain-url-face)))
-       (markdown-follow-thing-at-point nil))
+      ;; follow markdown link [text](url) or a bare URL, even when the URL
+      ;; is wrapped in emphasis like **https://...** (face is then a list,
+      ;; so check membership instead of `eq' against a single symbol).
+      ((eca-chat--face-at-point-member-p '(markdown-link-face
+                                           markdown-url-face
+                                           markdown-plain-url-face))
+       (eca-chat--follow-link-at-point))
 
       ;; pending question + freeform allowed — answer with prompt text
       ((and eca-chat--pending-question

@@ -30,6 +30,19 @@ Returns the buffer.  Caller must kill it."
     (buffer-substring-no-properties
      (eca-chat--prompt-field-start-point) (point-max))))
 
+(defun eca-chat-test--call-on (text marker fn)
+  "Fontify TEXT in a gfm buffer, move point onto MARKER, then call FN.
+TEXT is inserted on the third line (after a heading) so markdown
+does not treat the first line as metadata.  Returns FN's value."
+  (with-temp-buffer
+    (insert "# Title\n\n" text)
+    (delay-mode-hooks (gfm-mode))
+    (font-lock-ensure)
+    (goto-char (point-min))
+    (search-forward marker)
+    (goto-char (match-beginning 0))
+    (funcall fn)))
+
 ;; ---------------------------------------------------------------------------
 ;; Tests
 ;; ---------------------------------------------------------------------------
@@ -272,5 +285,81 @@ Returns the buffer.  Caller must kill it."
     (let ((res (eca-chat--normalize-question-option '(:description "no label"))))
       (expect (stringp (car res)) :to-be-truthy)
       (expect (cdr res) :to-equal "no label"))))
+
+(describe "eca-chat--face-at-point-member-p"
+  ;; A bare URL wrapped in emphasis (**url**, _url_) gets a list-valued
+  ;; `face' property, so detection must not rely on `eq' to a symbol.
+  (it "matches when the face is a single symbol"
+    (with-temp-buffer
+      (insert (propertize "x" 'face 'markdown-plain-url-face))
+      (goto-char (point-min))
+      (expect (eca-chat--face-at-point-member-p '(markdown-plain-url-face))
+              :to-be-truthy)))
+
+  (it "matches when the face is a list (emphasized URL)"
+    (with-temp-buffer
+      (insert (propertize "x" 'face '(markdown-plain-url-face markdown-bold-face)))
+      (goto-char (point-min))
+      (expect (eca-chat--face-at-point-member-p '(markdown-plain-url-face))
+              :to-be-truthy)))
+
+  (it "returns nil when no listed face is present"
+    (with-temp-buffer
+      (insert (propertize "x" 'face 'font-lock-comment-face))
+      (goto-char (point-min))
+      (expect (eca-chat--face-at-point-member-p '(markdown-plain-url-face))
+              :to-be nil)))
+
+  (it "returns nil when there is no face at point"
+    (with-temp-buffer
+      (insert "x")
+      (goto-char (point-min))
+      (expect (eca-chat--face-at-point-member-p '(markdown-plain-url-face))
+              :to-be nil))))
+
+(describe "eca-chat--follow-link-at-point"
+
+  (it "opens a bare URL"
+    (eca-chat-test--call-on
+     "see https://github.com/nubank/nucli/pull/10063 here" "github.com"
+     (lambda ()
+       (spy-on 'browse-url)
+       (spy-on 'markdown-follow-thing-at-point)
+       (eca-chat--follow-link-at-point)
+       (expect 'browse-url :to-have-been-called-with
+               "https://github.com/nubank/nucli/pull/10063")
+       (expect 'markdown-follow-thing-at-point :not :to-have-been-called))))
+
+  (it "opens a bold URL without the trailing ** markers"
+    ;; Regression: **https://...** fontifies the URL with a list face and
+    ;; `thing-at-point' captures the trailing "**"; both used to break RET.
+    (eca-chat-test--call-on
+     "see **https://github.com/nubank/nucli/pull/10063** here" "github.com"
+     (lambda ()
+       (spy-on 'browse-url)
+       (spy-on 'markdown-follow-thing-at-point)
+       (eca-chat--follow-link-at-point)
+       (expect 'browse-url :to-have-been-called-with
+               "https://github.com/nubank/nucli/pull/10063")
+       (expect 'markdown-follow-thing-at-point :not :to-have-been-called))))
+
+  (it "opens an italic URL without the trailing _ marker"
+    (eca-chat-test--call-on
+     "see _https://github.com/nubank/nucli/pull/10063_ here" "github.com"
+     (lambda ()
+       (spy-on 'browse-url)
+       (eca-chat--follow-link-at-point)
+       (expect 'browse-url :to-have-been-called-with
+               "https://github.com/nubank/nucli/pull/10063"))))
+
+  (it "defers a proper [text](url) link to markdown-follow-thing-at-point"
+    (eca-chat-test--call-on
+     "see [PR](https://github.com/nubank/nucli/pull/10063) here" "github.com"
+     (lambda ()
+       (spy-on 'browse-url)
+       (spy-on 'markdown-follow-thing-at-point)
+       (eca-chat--follow-link-at-point)
+       (expect 'markdown-follow-thing-at-point :to-have-been-called)
+       (expect 'browse-url :not :to-have-been-called)))))
 
 ;;; eca-chat-test.el ends here
