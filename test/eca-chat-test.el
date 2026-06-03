@@ -193,10 +193,24 @@ Returns the buffer.  Caller must kill it."
                            (overlay-get overlay
                                         'eca-chat--code-copy-button))
                          (overlays-in (point-min) (point-max))))
-             (button (overlay-get ov 'after-string))
-             (action (get-text-property 1 'eca-button-on-action button)))
+             (button (overlay-get ov 'before-string))
+             (action (get-text-property 0 'eca-button-on-action button)))
         (funcall action)
         (expect (current-kill 0 t) :to-equal "(+ 1 2)"))))
+
+  (it "copies two-backtick fenced code block content"
+    (with-temp-buffer
+      (setq major-mode 'eca-chat-mode)
+      (insert "``bash\naz login\n``\n")
+      (eca-chat--refresh-code-copy-buttons (point-min) (point-max))
+      (let* ((ov (-first (lambda (overlay)
+                           (overlay-get overlay
+                                        'eca-chat--code-copy-button))
+                         (overlays-in (point-min) (point-max))))
+             (button (overlay-get ov 'before-string))
+             (action (get-text-property 0 'eca-button-on-action button)))
+        (funcall action)
+        (expect (current-kill 0 t) :to-equal "az login"))))
 
   (it "copies the whole assistant response"
     (with-temp-buffer
