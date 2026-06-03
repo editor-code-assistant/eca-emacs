@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Bugfix: resuming a previous session after a server restart no longer reopens it as a `*Closed session*` (mode-line) / `This chat is closed` buffer that rejects new prompts. `eca-chat-exit` (run on restart) marks the most-recent chat buffer `eca-chat--closed` but leaves it in the session registry; `eca-chat-opened` was treating that live-but-closed buffer as "already known" and replaying the resumed history into it. It now treats a registered buffer marked `eca-chat--closed` as stale, killing the leftover closed buffer and creating a fresh, writable one in its place.
 - Color the Doom Emacs workspace tabline by ECA session status: orange when a chat waits for approval/question, dim yellow while running. Enabled automatically on Doom (`:ui workspaces` module), disable with `eca-doom-workspace-tabs`.
 - Add `eca-chat-go-to-next-attention` and `eca-chat-go-to-next-attention-in-project` commands to jump to the next chat waiting on the user (pending tool call approval or unanswered question), cycling across all sessions or only the current one.
 - Make the chat history/output, the `---` separator and the task area read-only so only the progress, `@`-context and prompt input lines stay editable, preventing accidental edits to previous messages and assistant output. The `read-only` text property is applied up to the progress area (with stickiness tuned so typing still works) and kept in sync as content streams in and as blocks are expanded. Toggle off via the new `eca-chat-read-only-history` (default `t`).
@@ -52,7 +53,7 @@
 
 ## 0.6.0
 
-- Add `eca-chat-save-to-file` command. #95 
+- Add `eca-chat-save-to-file` command. #95
 - Fix chat not being closed. #89
 - Fix: check existing eca sessions when opening chat. #88
 - Add rewrite feature.
