@@ -2274,14 +2274,15 @@ HELP is shown as hover text."
     (remove-overlays start end 'eca-chat--code-copy-button t)
     (save-excursion
       (goto-char start)
-      (while (re-search-forward "^[ \t]*\\(```+\\|~~~+\\).*$" end t)
+      (while (re-search-forward "^[ \t]*\\(``+\\|~~+\\).*$" end t)
         (let* ((fence (match-string-no-properties 1))
-               (label-pos (line-end-position))
                (body-start (copy-marker (1+ (line-end-position)) t))
                (close-regexp (eca-chat--code-fence-close-regexp fence)))
           (when (re-search-forward close-regexp end t)
             (let* ((body-end (copy-marker (match-beginning 0)))
-                   (ov (make-overlay label-pos label-pos nil t t))
+                   (ov (make-overlay (marker-position body-start)
+                                     (marker-position body-start)
+                                     nil t t))
                    (button (eca-chat--copy-button
                             "⧉"
                             (lambda ()
@@ -2292,7 +2293,7 @@ HELP is shown as hover text."
                                "code block"))
                             "Copy code block")))
               (overlay-put ov 'eca-chat--code-copy-button t)
-              (overlay-put ov 'after-string (concat " " button)))))))))
+              (overlay-put ov 'before-string (concat button "\n")))))))))
 
 (defun eca-chat--refresh-response-copy-button (&optional from to)
   "Refresh the copy button for assistant response between FROM and TO."
