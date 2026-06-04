@@ -151,6 +151,11 @@ ECA chat opens in a regular buffer that follows standard
   :type 'boolean
   :group 'eca)
 
+(defcustom eca-chat-show-copy-buttons nil
+  "Whether to show copy buttons for chat responses and code blocks."
+  :type 'boolean
+  :group 'eca)
+
 (defcustom eca-chat-tab-line t
   "Whether to show a tab line with chat tabs at the top of each chat window.
 When non-nil, enables `tab-line-mode' in chat buffers with tabs
@@ -2272,28 +2277,29 @@ HELP is shown as hover text."
   (let ((start (or from (point-min)))
         (end (or to (point-max))))
     (remove-overlays start end 'eca-chat--code-copy-button t)
-    (save-excursion
-      (goto-char start)
-      (while (re-search-forward "^[ \t]*\\(``+\\|~~+\\).*$" end t)
-        (let* ((fence (match-string-no-properties 1))
-               (body-start (copy-marker (1+ (line-end-position)) t))
-               (close-regexp (eca-chat--code-fence-close-regexp fence)))
-          (when (re-search-forward close-regexp end t)
-            (let* ((body-end (copy-marker (match-beginning 0)))
-                   (ov (make-overlay (marker-position body-start)
-                                     (marker-position body-start)
-                                     nil t t))
-                   (button (eca-chat--copy-button
-                            "⧉"
-                            (lambda ()
-                              (interactive)
-                              (eca-chat--copy-region
-                               body-start
-                               body-end
-                               "code block"))
-                            "Copy code block")))
-              (overlay-put ov 'eca-chat--code-copy-button t)
-              (overlay-put ov 'before-string (concat button "\n")))))))))
+    (when eca-chat-show-copy-buttons
+      (save-excursion
+        (goto-char start)
+        (while (re-search-forward "^[ \t]*\\(``+\\|~~+\\).*$" end t)
+          (let* ((fence (match-string-no-properties 1))
+                 (body-start (copy-marker (1+ (line-end-position)) t))
+                 (close-regexp (eca-chat--code-fence-close-regexp fence)))
+            (when (re-search-forward close-regexp end t)
+              (let* ((body-end (copy-marker (match-beginning 0)))
+                     (ov (make-overlay (marker-position body-start)
+                                       (marker-position body-start)
+                                       nil t t))
+                     (button (eca-chat--copy-button
+                              "⧉"
+                              (lambda ()
+                                (interactive)
+                                (eca-chat--copy-region
+                                 body-start
+                                 body-end
+                                 "code block"))
+                              "Copy code block")))
+                (overlay-put ov 'eca-chat--code-copy-button t)
+                (overlay-put ov 'before-string (concat button "\n"))))))))))
 
 (defun eca-chat--refresh-response-copy-button (&optional from to)
   "Refresh the copy button for assistant response between FROM and TO."
@@ -2301,9 +2307,10 @@ HELP is shown as hover text."
          (end (or to (eca-chat--prompt-area-start-point))))
     (when (and start end (< start end))
       (remove-overlays start end 'eca-chat--response-copy-button t)
-      (unless (string-empty-p
-               (string-trim
-                (buffer-substring-no-properties start end)))
+      (when (and eca-chat-show-copy-buttons
+                 (not (string-empty-p
+                       (string-trim
+                        (buffer-substring-no-properties start end)))))
         (let* ((copy-start (copy-marker start t))
                (copy-end (copy-marker end))
                (ov (make-overlay start start nil t t))
