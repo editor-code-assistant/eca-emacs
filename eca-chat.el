@@ -3128,6 +3128,9 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
            (remhash id eca-chat--tool-call-prepare-content-cache)
            ;; Stop elapsed-time tracking for this tool call
            (eca-chat--tool-call-elapsed-stop id)
+           ;; Another client may have answered this ask_user question first,
+           ;; resolving the tool call here; drop our now-stale prompt state.
+           (eca-chat--dismiss-pending-question-for-tool-call id)
            ;; Cleanup subagent mapping only for top-level tool calls
            (when (and (not parent-tool-call-id)
                       (string= "subagent" (plist-get details :type)))
@@ -3167,6 +3170,9 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
            ;; Cleanup counters for this tool-call id
            (remhash id eca-chat--tool-call-prepare-counters)
            (remhash id eca-chat--tool-call-prepare-content-cache)
+           ;; Another client may have cancelled this ask_user question first,
+           ;; rejecting the tool call here; drop our now-stale prompt state.
+           (eca-chat--dismiss-pending-question-for-tool-call id)
            ;; Cleanup subagent mapping only for top-level tool calls
            (when (and (not parent-tool-call-id)
                       (string= "subagent" (plist-get details :type)))
@@ -3619,6 +3625,21 @@ Used as fallback when no toolCallId is available."
       (eca-api-send-request-response
        session request
        (list :answer nil :cancelled t)))))
+
+(defun eca-chat--dismiss-pending-question-for-tool-call (tool-call-id)
+  "Dismiss the pending question when it belongs to TOOL-CALL-ID.
+Used when another client answers the same `ask_user' question first, so
+the server resolves the tool call out from under us.  The tool output is
+rendered by the caller; here we only restore the local question state
+and prompt so this client does not stay stuck in answer mode."
+  (when (and eca-chat--pending-question
+             (equal tool-call-id
+                    (plist-get eca-chat--pending-question :tool-call-id)))
+    (let ((allow-freeform (plist-get eca-chat--pending-question :allow-freeform)))
+      (setq eca-chat--pending-question nil)
+      (when allow-freeform
+        (eca-chat--set-question-prompt-prefix nil))
+      (eca-chat--refresh-transient-area))))
 
 (defun eca-chat--set-question-prompt-prefix (active)
   "Toggle the prompt prefix for question mode.
