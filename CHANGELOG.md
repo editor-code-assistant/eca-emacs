@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Auto-dismiss a pending `ask_user` question when another client (e.g. an SSE/web client in remote mode, see eca 0.139.0) answers it first. The server resolves the `ask_user` tool out from under us and sends a `toolCalled`/`toolCallRejected` for that tool-call id but no longer expects our answer (it cancels our request); we now correlate that id with `eca-chat--pending-question` and clear the stale answer-mode prompt state instead of staying stuck waiting for input.
 - Add `eca-chat-delete` command to delete the active chat from the server without prompting. Works from any buffer in the project (acts on the session's last visited chat), switches the chat window to another chat first when one exists, and is bound to `C-c C-S-k` plus a `Delete` entry in the transient menu.
 - Bugfix: pressing `RET` on a URL in the chat now opens it even when the URL is wrapped in markdown emphasis like `**https://...**` or `_https://..._`. The face at point is a list in that case, so the old `eq` check missed it; the trailing `**`/`_` markers are also stripped so the right URL opens. Proper `[text](url)` links still go through `markdown-follow-thing-at-point`.
 - Bugfix: switching chat tabs via `tab-line-switch-to-next-tab`/`tab-line-switch-to-prev-tab` or clicking a tab now switches the chat in place instead of opening it in a new window.
@@ -48,7 +49,7 @@
 
 ## 0.6.0
 
-- Add `eca-chat-save-to-file` command. #95 
+- Add `eca-chat-save-to-file` command. #95
 - Fix chat not being closed. #89
 - Fix: check existing eca sessions when opening chat. #88
 - Add rewrite feature.
