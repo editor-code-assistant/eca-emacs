@@ -1254,22 +1254,32 @@ Should be called whenever overlays are wholesale removed, e.g. via
 Returns the position just before the prompt area start."
   (1- (eca-chat--prompt-area-start-point)))
 
+(defun eca-chat--read-only-end-point ()
+  "Return the position where the read-only region ends.
+This is the start of the progress area, so the history, the
+separator and the task area are all read-only while the progress,
+context and prompt input stay editable.  Falls back to the prompt
+area start when the progress overlay does not exist yet."
+  (or (-some-> (eca-chat--prompt-progress-field-ov) (overlay-start))
+      (eca-chat--prompt-area-start-point)))
+
 (defun eca-chat--protect-non-prompt (&optional from)
-  "Make the chat history area above the prompt block read-only.
+  "Make the chat history, separator and task area read-only.
 Apply the `read-only' text property from FROM (default
-`point-min') up to the prompt area start so only the prompt block
-remains editable.  The first protected char is `front-sticky' and
-the last is `rear-nonsticky' for `read-only', so the history
-rejects edits while typing at the prompt still works.  No-op when
-`eca-chat-read-only-history' is nil or the prompt area is absent."
+`point-min') up to the progress area so the history, the prompt
+separator and the task area are locked, while the progress,
+context and prompt input stay editable.  The first protected char
+is `front-sticky' and the last is `rear-nonsticky' for
+`read-only', so the locked region rejects edits while typing in
+the progress/context/prompt still works.  No-op when
+`eca-chat-read-only-history' is nil or the boundary is absent."
   (when eca-chat-read-only-history
-    (when-let* ((area-start (eca-chat--prompt-area-start-point)))
+    (when-let* ((end (eca-chat--read-only-end-point)))
       (let ((inhibit-read-only t)
             (beg (max (point-min) (or from (point-min)))))
-        (when (< beg area-start)
-          (put-text-property beg area-start 'read-only t)
-          (put-text-property (1- area-start) area-start
-                             'rear-nonsticky '(read-only))
+        (when (< beg end)
+          (put-text-property beg end 'read-only t)
+          (put-text-property (1- end) end 'rear-nonsticky '(read-only))
           (when (= beg (point-min))
             (put-text-property (point-min) (1+ (point-min))
                                'front-sticky '(read-only))))))))

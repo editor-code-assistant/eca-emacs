@@ -11,22 +11,35 @@
 
 (defun eca-chat-test--make-prompt-buffer (prompt-text)
   "Create a test buffer with PROMPT-TEXT in a simulated prompt.
-Returns the buffer.  Caller must kill it."
+Mirrors the real prompt-block layout: history, then the
+separator, task, progress and context areas, then the prompt
+field.  Returns the buffer.  Caller must kill it."
   (let ((buf (generate-new-buffer " *test-chat-deletion*")))
     (with-current-buffer buf
-      ;; Simulate content above the prompt
+      ;; History (read-only region).
       (insert "header")
-      ;; The prompt area (separator + prompt block) starts here, so the
-      ;; "header" above it is the read-only history region.
+      ;; Prompt area starts at the separator newline.
       (let ((area-start (point)))
-        (insert "\n---\n@\n\n")
-        (let ((prompt-start (point)))
-          (insert prompt-text)
-          ;; 1-char overlays, matching the real layout
-          (let ((field-ov (make-overlay prompt-start (1+ prompt-start)))
-                (area-ov (make-overlay area-start (1+ area-start))))
-            (overlay-put field-ov 'eca-chat-prompt-field t)
-            (overlay-put area-ov 'eca-chat-prompt-area t))))
+        (insert "\n---")
+        (let ((task-start (point)))       ; task area (a space)
+          (insert " ")
+          (let ((progress-start (point))) ; progress area (a newline)
+            (insert "\n")
+            (let ((context-start (point))) ; context area ("@")
+              (insert "@\n")
+              (let ((prompt-start (point)))
+                (insert prompt-text)
+                ;; Overlays matching the real layout.
+                (overlay-put (make-overlay area-start (1+ area-start))
+                             'eca-chat-prompt-area t)
+                (overlay-put (make-overlay task-start task-start)
+                             'eca-chat-task-area t)
+                (overlay-put (make-overlay progress-start progress-start)
+                             'eca-chat-progress-area t)
+                (overlay-put (make-overlay context-start (1+ context-start))
+                             'eca-chat-context-area t)
+                (overlay-put (make-overlay prompt-start (1+ prompt-start))
+                             'eca-chat-prompt-field t))))))
       (setq major-mode 'eca-chat-mode))
     buf))
 
@@ -163,6 +176,33 @@ does not treat the first line as metadata.  Returns FN's value."
             (goto-char (point-min))
             (insert "x")
             (expect (char-after (point-min)) :to-equal ?x))
+        (kill-buffer buf))))
+
+  (it "locks the separator and task area but keeps context/prompt editable"
+    (let ((buf (eca-chat-test--make-prompt-buffer "hi"))
+          (eca-chat-read-only-history t))
+      (unwind-protect
+          (with-current-buffer buf
+            (eca-chat--protect-non-prompt)
+            (let ((sep (eca-chat--prompt-area-start-point))
+                  (prog (overlay-start (eca-chat--prompt-progress-field-ov)))
+                  (ctx (overlay-start (eca-chat--prompt-context-field-ov))))
+              ;; The separator newline and the "---" text are read-only.
+              (goto-char sep)
+              (expect (insert "x") :to-throw 'text-read-only)
+              ;; The task area (last char before the progress) is read-only.
+              (goto-char (1- prog))
+              (expect (insert "x") :to-throw 'text-read-only)
+              ;; The progress area start stays editable.
+              (goto-char prog)
+              (insert "p")
+              ;; The context area stays editable.
+              (goto-char ctx)
+              (insert "c")
+              ;; The prompt stays editable.
+              (goto-char (point-max))
+              (insert "!")
+              (expect (eca-chat-test--prompt-text buf) :to-equal "hi!")))
         (kill-buffer buf)))))
 
 (describe "eca-chat completion trigger detection"
