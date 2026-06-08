@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Add `eca-table-open` to view a markdown table at point in a dedicated `*eca-table*` buffer with `truncate-lines`, so wide tables can be scrolled horizontally with the header staying aligned and the whole table searched/copied. Press `o` with point on any table to open it, or click `[o] open` on a wide table's action bar. The `o` binding lives in a char-property keymap scoped to the table, so it takes precedence over `o` only while point is on a table (works under evil) and leaves `o` untouched elsewhere. The in-chat table rendering is otherwise unchanged.
 - Add `eca-chat-delete` command to delete the active chat from the server without prompting. Works from any buffer in the project (acts on the session's last visited chat), switches the chat window to another chat first when one exists, and is bound to `C-c C-S-k` plus a `Delete` entry in the transient menu.
 - Bugfix: pressing `RET` on a URL in the chat now opens it even when the URL is wrapped in markdown emphasis like `**https://...**` or `_https://..._`. The face at point is a list in that case, so the old `eq` check missed it; the trailing `**`/`_` markers are also stripped so the right URL opens. Proper `[text](url)` links still go through `markdown-follow-thing-at-point`.
 - Bugfix: switching chat tabs via `tab-line-switch-to-next-tab`/`tab-line-switch-to-prev-tab` or clicking a tab now switches the chat in place instead of opening it in a new window.

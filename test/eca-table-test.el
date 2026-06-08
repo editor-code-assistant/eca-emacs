@@ -202,5 +202,54 @@
       (expect (eca-table--make-separator-cell 5 nil)
               :to-equal "-------"))))
 
+(describe "eca-table-open"
+  (it "opens the table at point in a dedicated truncate-lines buffer"
+    (when (get-buffer "*eca-table*") (kill-buffer "*eca-table*"))
+    (with-temp-buffer
+      (gfm-mode)
+      (setq-local markdown-hide-markup t)
+      (insert "| Setting | What it does |\n")
+      (insert "|---|---|\n")
+      (insert "| alpha | does alpha things |\n")
+      (goto-char (point-min))
+      (forward-line 2)
+      (eca-table-open))
+    (let ((buf (get-buffer "*eca-table*")))
+      (expect buf :to-be-truthy)
+      (with-current-buffer buf
+        (expect truncate-lines :to-be-truthy)
+        (expect (> (buffer-size) 0) :to-be-truthy)
+        (expect (string-match-p "Setting" (buffer-string)) :to-be-truthy))
+      (kill-buffer buf)))
+
+  (it "errors when point is not on a table"
+    (with-temp-buffer
+      (gfm-mode)
+      (insert "not a table\n")
+      (goto-char (point-min))
+      (expect (eca-table-open) :to-throw 'user-error))))
+
+(describe "eca-table-open keybinding"
+  (it "binds o to eca-table-open while point is on a table"
+    (let ((eca-chat-table-beautify t))
+      (with-temp-buffer
+        (gfm-mode)
+        (setq-local markdown-hide-markup t)
+        (insert "| A | B |\n|---|---|\n| x | y |\n")
+        (eca-table-beautify (point-min) (point-max))
+        (goto-char (point-min))
+        (forward-line 2)
+        (expect (key-binding (kbd "o") nil nil (point))
+                :to-equal 'eca-table-open))))
+
+  (it "leaves o untouched away from any table"
+    (let ((eca-chat-table-beautify t))
+      (with-temp-buffer
+        (gfm-mode)
+        (insert "just some prose\n")
+        (goto-char (point-min))
+        (expect (key-binding (kbd "o") nil nil (point))
+                :not :to-equal 'eca-table-open)))))
+
 (provide 'eca-table-test)
 ;;; eca-table-test.el ends here

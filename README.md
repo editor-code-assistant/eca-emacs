@@ -102,6 +102,7 @@ Chat
 - `eca-chat-collapse-all-blocks`: Collapse all expandable blocks in current chat
 - `eca-chat-timeline`: Show user prompt history as a timeline
 - `eca-chat-talk`: Use whisper.el to send a prompt via voice.
+- `eca-table-open`: Open the markdown table at point in a dedicated `*eca-table*` buffer where horizontal scrolling keeps the header aligned with the body, so wide tables can be read in full. Press `o` with point on any table to open it (the binding is scoped to the table, so it overrides `o` only there and works under evil/Doom too), or click `[o] open` on a wide table's action bar.
 - `eca-chat-save-to-file`: Save chat to a file.
 
 ### Variables
