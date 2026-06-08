@@ -15,12 +15,18 @@ Returns the buffer.  Caller must kill it."
   (let ((buf (generate-new-buffer " *test-chat-deletion*")))
     (with-current-buffer buf
       ;; Simulate content above the prompt
-      (insert "header\n---\n@\n\n")
-      (let ((prompt-start (point)))
-        (insert prompt-text)
-        ;; 1-char prompt-field overlay, matching real layout
-        (let ((ov (make-overlay prompt-start (1+ prompt-start))))
-          (overlay-put ov 'eca-chat-prompt-field t)))
+      (insert "header")
+      ;; The prompt area (separator + prompt block) starts here, so the
+      ;; "header" above it is the read-only history region.
+      (let ((area-start (point)))
+        (insert "\n---\n@\n\n")
+        (let ((prompt-start (point)))
+          (insert prompt-text)
+          ;; 1-char overlays, matching the real layout
+          (let ((field-ov (make-overlay prompt-start (1+ prompt-start)))
+                (area-ov (make-overlay area-start (1+ area-start))))
+            (overlay-put field-ov 'eca-chat-prompt-field t)
+            (overlay-put area-ov 'eca-chat-prompt-area t))))
       (setq major-mode 'eca-chat-mode))
     buf))
 
@@ -99,6 +105,65 @@ does not treat the first line as metadata.  Returns FN's value."
                 (expect (eca-chat-test--prompt-text buf)
                         :to-equal "hello")))
           (kill-buffer buf))))))
+
+(describe "eca-chat--protect-non-prompt"
+
+  (it "blocks editing inside the history area"
+    (let ((buf (eca-chat-test--make-prompt-buffer "hello"))
+          (eca-chat-read-only-history t))
+      (unwind-protect
+          (with-current-buffer buf
+            (eca-chat--protect-non-prompt)
+            (goto-char (+ (point-min) 3))
+            (expect (insert "x") :to-throw 'text-read-only)
+            (goto-char (+ (point-min) 3))
+            (expect (delete-char 1) :to-throw 'text-read-only))
+        (kill-buffer buf))))
+
+  (it "blocks inserting at the very top of the buffer"
+    (let ((buf (eca-chat-test--make-prompt-buffer "hello"))
+          (eca-chat-read-only-history t))
+      (unwind-protect
+          (with-current-buffer buf
+            (eca-chat--protect-non-prompt)
+            (goto-char (point-min))
+            (expect (insert "x") :to-throw 'text-read-only))
+        (kill-buffer buf))))
+
+  (it "keeps the prompt editable"
+    (let ((buf (eca-chat-test--make-prompt-buffer "hello"))
+          (eca-chat-read-only-history t))
+      (unwind-protect
+          (with-current-buffer buf
+            (eca-chat--protect-non-prompt)
+            (goto-char (point-max))
+            (insert " world")
+            (expect (eca-chat-test--prompt-text buf) :to-equal "hello world"))
+        (kill-buffer buf))))
+
+  (it "marks newly inserted (streamed) content read-only"
+    (let ((buf (eca-chat-test--make-prompt-buffer "hello"))
+          (eca-chat-read-only-history t))
+      (unwind-protect
+          (with-current-buffer buf
+            (eca-chat--protect-non-prompt)
+            (let ((inhibit-read-only t))
+              (goto-char (eca-chat--content-insertion-point))
+              (insert "streamed text"))
+            (eca-chat--protect-non-prompt)
+            (expect (get-text-property (+ (point-min) 8) 'read-only) :to-be t))
+        (kill-buffer buf))))
+
+  (it "does nothing when eca-chat-read-only-history is nil"
+    (let ((buf (eca-chat-test--make-prompt-buffer "hello"))
+          (eca-chat-read-only-history nil))
+      (unwind-protect
+          (with-current-buffer buf
+            (eca-chat--protect-non-prompt)
+            (goto-char (point-min))
+            (insert "x")
+            (expect (char-after (point-min)) :to-equal ?x))
+        (kill-buffer buf)))))
 
 (describe "eca-chat completion trigger detection"
   (it "triggers context completion when a char like ( precedes @"

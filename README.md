@@ -141,6 +141,7 @@ Chat
 - `eca-chat-prompt-separator`: Separator string between the chat content and the prompt area.
 - `eca-chat-prompt-prefix`: Prompt prefix string shown before user input.
 - `eca-chat-prompt-prefix-loading`: Prompt prefix string while a request is in progress.
+- `eca-chat-read-only-history`: Whether the chat history/output is read-only so only the prompt block is editable (default `t`). Set to `nil` to keep the whole buffer writable.
 - `eca-chat-context-prefix`: Prefix used for context references in the chat buffer (default `@`).
 - `eca-chat-filepath-prefix`: Prefix used for file path references in the chat buffer (default `#`).
 - `eca-chat-expandable-block-open-symbol`: Symbol used for expandable blocks in open state.

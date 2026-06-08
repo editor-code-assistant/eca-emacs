@@ -91,6 +91,14 @@ ECA chat opens in a regular buffer that follows standard
   :type 'string
   :group 'eca)
 
+(defcustom eca-chat-read-only-history t
+  "When non-nil, make the chat history/output area read-only.
+Only the prompt block at the bottom stays editable, which prevents
+accidental edits to previous messages and assistant output.  Set
+to nil to keep the whole chat buffer writable."
+  :type 'boolean
+  :group 'eca)
+
 (defcustom eca-chat-prompt-prefix-loading "⏳ "
   "The prompt prefix string used in eca chat buffer when loading."
   :type 'string
@@ -753,7 +761,8 @@ its real id and there is no `'empty' placeholder to migrate from."
 
 (defun eca-chat--insert (&rest contents)
   "Insert CONTENTS reseting undo-list to avoid buffer inconsistencies."
-  (apply #'insert contents)
+  (let ((inhibit-read-only t))
+    (apply #'insert contents))
   (setq-local buffer-undo-list nil))
 
 (defun eca-chat--spinner-start (callback)
@@ -994,12 +1003,14 @@ request, useful for subagent tool calls."
     (move-overlay context-area-ov (overlay-start context-area-ov) (1- (overlay-end context-area-ov))))
   (let ((prompt-field-ov (make-overlay (line-beginning-position) (1+ (line-beginning-position)) (current-buffer))))
     (overlay-put prompt-field-ov 'eca-chat-prompt-field t)
-    (overlay-put prompt-field-ov 'before-string (propertize eca-chat-prompt-prefix 'font-lock-face 'eca-chat-prompt-prefix-face))))
+    (overlay-put prompt-field-ov 'before-string (propertize eca-chat-prompt-prefix 'font-lock-face 'eca-chat-prompt-prefix-face)))
+  (eca-chat--protect-non-prompt))
 
 (defun eca-chat--clear (&optional new-prompt-content)
   "Clear the chat for SESSION and then insert NEW-PROMPT-CONTENT."
-  (erase-buffer)
-  (remove-overlays (point-min) (point-max))
+  (let ((inhibit-read-only t))
+    (erase-buffer)
+    (remove-overlays (point-min) (point-max)))
   (eca-chat--invalidate-overlay-caches)
   (eca-chat-expandable--reset-id-table)
   (setq-local eca-chat--task-state nil)
@@ -1242,6 +1253,26 @@ Should be called whenever overlays are wholesale removed, e.g. via
   "Return the point where new chat content should be inserted.
 Returns the position just before the prompt area start."
   (1- (eca-chat--prompt-area-start-point)))
+
+(defun eca-chat--protect-non-prompt (&optional from)
+  "Make the chat history area above the prompt block read-only.
+Apply the `read-only' text property from FROM (default
+`point-min') up to the prompt area start so only the prompt block
+remains editable.  The first protected char is `front-sticky' and
+the last is `rear-nonsticky' for `read-only', so the history
+rejects edits while typing at the prompt still works.  No-op when
+`eca-chat-read-only-history' is nil or the prompt area is absent."
+  (when eca-chat-read-only-history
+    (when-let* ((area-start (eca-chat--prompt-area-start-point)))
+      (let ((inhibit-read-only t)
+            (beg (max (point-min) (or from (point-min)))))
+        (when (< beg area-start)
+          (put-text-property beg area-start 'read-only t)
+          (put-text-property (1- area-start) area-start
+                             'rear-nonsticky '(read-only))
+          (when (= beg (point-min))
+            (put-text-property (point-min) (1+ (point-min))
+                               'front-sticky '(read-only))))))))
 
 (defun eca-chat--ensure-prompt-visible ()
   "Scroll the chat window so the prompt area stays visible.
@@ -3294,12 +3325,14 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
                     ((buffer-live-p parent-buffer)))
           (eca-chat--with-current-buffer parent-buffer
             (when-let* ((tool-call-id (gethash chat-id eca-chat--subagent-chat-id->tool-call-id)))
-              (eca-chat--render-content session parent-buffer role content roots tool-call-id chat-id))))
+              (eca-chat--render-content session parent-buffer role content roots tool-call-id chat-id)
+              (eca-chat--protect-non-prompt eca-chat--last-user-message-pos))))
       ;; Normal content
       (when-let* ((chat-buffer (eca-chat--get-chat-buffer session chat-id))
                   ((buffer-live-p chat-buffer)))
         (eca-chat--with-current-buffer chat-buffer
-          (eca-chat--render-content session chat-buffer role content roots))))))
+          (eca-chat--render-content session chat-buffer role content roots)
+          (eca-chat--protect-non-prompt eca-chat--last-user-message-pos))))))
 
 (defun eca-chat-cleared (session params)
   "Clear chat for SESSION and PARAMS requested by server."
@@ -3560,7 +3593,8 @@ Used as fallback when no toolCallId is available."
   "Replace the standalone question block with TEXT."
   (when-let* ((ov (eca-chat--question-block-ov)))
     (let ((start (overlay-start ov))
-          (end (overlay-end ov)))
+          (end (overlay-end ov))
+          (inhibit-read-only t))
       (delete-overlay ov)
       (save-excursion
         (goto-char start)
