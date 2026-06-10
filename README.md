@@ -183,6 +183,10 @@ Settings
 - `eca-settings-tab-line`: Whether to show a tab line in settings buffers (default `t`).
 - `eca-settings-display-params`: Display parameters for the settings panel side window.
 
+Doom Emacs
+
+- `eca-doom-workspace-tabs`: Whether to decorate the Doom workspace tabline with the ECA session status of each workspace (default `t`).
+
 MCP
 
 API / requests
@@ -265,6 +269,18 @@ accuracy and transcription speed.
 ### Custom workspaces
 
 Calling `M-x eca` with prefix `C-u` will ask for what workspaces to start the process.
+
+### Doom Emacs workspace tabs
+
+On Doom Emacs with the `:ui workspaces` module, the workspace tabline is
+colored with the ECA session status of each workspace: orange when a chat
+waits on you (pending approval or question), dim yellow while a chat is
+running. Customize the colors via the `eca-doom-workspace-tab-attention-face`
+and `eca-doom-workspace-tab-running-face` faces, or disable with:
+
+```elisp
+(setq eca-doom-workspace-tabs nil)
+```
 
 ## Sandboxing
 

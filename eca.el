@@ -41,6 +41,7 @@
 (require 'eca-editor)
 (require 'eca-completion)
 (require 'eca-rewrite)
+(require 'eca-doom)
 
 (declare-function package-desc-version "package" (pkg-desc))
 (declare-function package-version-join "package" (vlist))

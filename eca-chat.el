@@ -1886,6 +1886,21 @@ waiting, so it is not considered."
               (or (eca-chat--has-pending-approvals-p)
                   (and eca-chat--pending-question t))))))
 
+(defun eca-chat-session-status (session)
+  "Return the aggregated status of all chats in SESSION.
+Return the symbol `waiting-approval' when any chat waits on the
+user (pending tool call approval or question), `running' when any
+chat is loading, otherwise `idle'."
+  (let ((buffers (-filter #'buffer-live-p
+                          (eca-vals (eca--session-chats session)))))
+    (cond
+     ((-first #'eca-chat--needs-attention-p buffers) 'waiting-approval)
+     ((-first (lambda (buffer)
+                (buffer-local-value 'eca-chat--chat-loading buffer))
+              buffers)
+      'running)
+     (t 'idle))))
+
 (defun eca-chat--chat-status-prefix ()
   "Return a status prefix string for the current chat buffer.
 Returns \"🚧 \" for pending approvals, \"⏳ \" for loading, or \"\" otherwise."
