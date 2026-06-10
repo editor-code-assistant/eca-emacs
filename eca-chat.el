@@ -4786,5 +4786,30 @@ Used by `eca-doctor'."
       (eca-chat--doctor-format src-buf)
     "No chat buffer found in any running session.\n"))
 
+(defun eca-chat--balance-windows-advice (orig-fn &rest args)
+  "Prevent `balance-windows' from resizing chat windows.
+Temporarily marks every live eca-chat buffer as fixed-size for
+the duration of ORIG-FN, then clears it.
+This lets `enlarge-window' and `shrink-window' still work."
+  (let (chat-bufs)
+    (dolist (buf (buffer-list))
+      (when (buffer-live-p buf)
+        (with-current-buffer buf
+          ;; Only fix size for chat buffers shown in a side window.
+          (when (and (derived-mode-p 'eca-chat-mode) eca-chat-use-side-window)
+            (setq-local window-size-fixed
+                        (if (memq eca-chat-window-side '(left right))
+                            'width
+                          'height))
+            (push buf chat-bufs)))))
+    (unwind-protect
+        (apply orig-fn args)
+      (dolist (buf chat-bufs)
+        (when (buffer-live-p buf)
+          (with-current-buffer buf
+            (setq-local window-size-fixed nil)))))))
+
+(advice-add 'balance-windows :around #'eca-chat--balance-windows-advice)
+
 (provide 'eca-chat)
 ;;; eca-chat.el ends here
