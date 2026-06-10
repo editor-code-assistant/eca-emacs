@@ -97,6 +97,8 @@ Chat
 - `eca-chat-go-to-next-user-message`: Go to the next user message from point
 - `eca-chat-go-to-prev-expandable-block`: Go to the previous expandable block from point
 - `eca-chat-go-to-next-expandable-block`: Go to the next expandable block from point
+- `eca-chat-go-to-next-attention`: Go to the next chat waiting on you (pending tool call approval or question), cycling across sessions
+- `eca-chat-go-to-next-attention-in-project`: Same as `eca-chat-go-to-next-attention` but cycling only the current session chats
 - `eca-chat-toggle-expandable-block`: Toggle current expandable block at point
 - `eca-chat-expand-all-blocks`: Expand all expandable blocks in current chat
 - `eca-chat-collapse-all-blocks`: Collapse all expandable blocks in current chat

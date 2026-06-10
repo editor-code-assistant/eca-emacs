@@ -1875,6 +1875,17 @@ or \"Xm\" when seconds are zero."
     (not (null (text-property-search-forward
                 'eca-tool-call-pending-approval-accept t t)))))
 
+(defun eca-chat--needs-attention-p (buffer)
+  "Return non-nil when chat BUFFER is waiting on the user.
+A chat needs attention when it has a pending tool call approval
+or an unanswered question.  A still loading chat is busy, not
+waiting, so it is not considered."
+  (and (buffer-live-p buffer)
+       (with-current-buffer buffer
+         (and (derived-mode-p 'eca-chat-mode)
+              (or (eca-chat--has-pending-approvals-p)
+                  (and eca-chat--pending-question t))))))
+
 (defun eca-chat--chat-status-prefix ()
   "Return a status prefix string for the current chat buffer.
 Returns \"🚧 \" for pending approvals, \"⏳ \" for loading, or \"\" otherwise."
@@ -2186,6 +2197,16 @@ If `eca-chat-focus-on-open' is non-nil, the window is selected."
   "Pop eca dedicated window if it exists."
   (let ((buffer (current-buffer)))
     (eca-chat--display-buffer buffer)))
+
+(defun eca-chat--switch-to-buffer (buffer session)
+  "Switch to chat BUFFER for SESSION."
+  (unless (buffer-live-p buffer)
+    (user-error "Chat buffer no longer exists"))
+  (if-let* ((window (get-buffer-window buffer)))
+      (select-window window)
+    (eca-chat--display-buffer buffer))
+  (setf (eca--session-last-chat-buffer session) buffer)
+  buffer)
 
 (defun eca-chat--mark-header ()
   "Mark last messages header."
@@ -3948,6 +3969,73 @@ If there is no next user message, go to the chat prompt line."
   (interactive)
   (eca-assert-session-running (eca-session))
   (eca-chat--go-to-overlay 'eca-chat--expandable-content-id (1+ (point)) (point-max) t))
+
+(defun eca-chat--session-chats-oldest-first (session)
+  "Return SESSION's chat buffers ordered oldest-first."
+  (nreverse (eca-vals (eca--session-chats session))))
+
+(defun eca-chat--rotate-after (items pos)
+  "Return ITEMS rotated to start right after position POS.
+The element at POS is moved to the end so it is visited last.
+When POS is nil, return ITEMS unchanged."
+  (if pos
+      (append (nthcdr (1+ pos) items)
+              (cl-subseq items 0 (1+ pos)))
+    items))
+
+;;;###autoload
+(defun eca-chat-go-to-next-attention-in-project ()
+  "Go to the next chat of the current project needing attention.
+A chat needs attention when it is waiting on you: a tool call
+pending approval or an unanswered question.  Cycles through the
+current session's chats, wrapping around, so repeated invocations
+visit every chat that is waiting."
+  (interactive)
+  (let ((session (eca-session)))
+    (eca-assert-session-running session)
+    (let* ((chats (eca-chat--session-chats-oldest-first session))
+           ;; Start searching after the current chat (wrapping) so each
+           ;; call advances instead of re-selecting the current one.
+           (ordered (eca-chat--rotate-after chats
+                                            (cl-position (current-buffer)
+                                                         chats)))
+           (target (seq-find #'eca-chat--needs-attention-p ordered)))
+      (if target
+          (eca-chat--switch-to-buffer target session)
+        (eca-info "No chat needs attention in this project")))))
+
+;;;###autoload
+(defun eca-chat-go-to-next-attention ()
+  "Go to the next chat needing attention, cycling across projects.
+A chat needs attention when it is waiting on you: a tool call
+pending approval or an unanswered question.  Exhausts the current
+project's chats first, then moves on to the next project (ECA
+session), eventually visiting them all and wrapping around."
+  (interactive)
+  (let ((sessions (sort (copy-sequence (eca-vals eca--sessions))
+                        (lambda (a b)
+                          (< (eca--session-id a) (eca--session-id b))))))
+    (eca-assert-session-running (car sessions))
+    (let* ((entries (cl-loop
+                     for session in sessions
+                     append (cl-loop
+                             for buffer in (eca-chat--session-chats-oldest-first
+                                            session)
+                             collect (cons session buffer))))
+           ;; Anchor at the current chat; when not in a chat, anchor just
+           ;; before the current session's entries so they are searched
+           ;; first.
+           (pos (or (cl-position (current-buffer) entries :key #'cdr)
+                    (when-let* ((session (eca-session))
+                                (idx (cl-position session entries
+                                                  :key #'car)))
+                      (1- idx))))
+           (target (seq-find (lambda (entry)
+                               (eca-chat--needs-attention-p (cdr entry)))
+                             (eca-chat--rotate-after entries pos))))
+      (if target
+          (eca-chat--switch-to-buffer (cdr target) (car target))
+        (eca-info "No chat needs attention in any project")))))
 
 ;;;###autoload
 (defun eca-chat-toggle-expandable-block (&optional force-open?)
