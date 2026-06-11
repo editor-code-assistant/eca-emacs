@@ -3466,18 +3466,27 @@ update the title and return without creating a duplicate buffer.
 Otherwise, creates a new chat buffer for a server-initiated chat
 \(e.g. /fork or replay via chat/open\) and registers it under the
 real chat-id so subsequent `chat/contentReceived' notifications
-render into it."
+render into it.
+
+A registered buffer marked `eca-chat--closed' (left behind by
+`eca-chat-exit' on restart) is treated as stale, not reused, so a
+resumed chat gets a fresh writable buffer."
   (let* ((chat-id (plist-get params :chatId))
          (title (plist-get params :title))
          (existing (eca-get (eca--session-chats session) chat-id)))
     (cond
-     ((and existing (buffer-live-p existing))
+     ((and existing (buffer-live-p existing)
+           (not (buffer-local-value 'eca-chat--closed existing)))
       ;; Already known: propagate title (if any) but do not duplicate.
       (when title
         (with-current-buffer existing
           (setq-local eca-chat--title title)))
       (eca-chat--force-tab-line-update))
      (t
+      ;; Any live buffer reaching here is a stale closed one; kill it so
+      ;; it doesn't linger as an orphan `:closed' buffer.
+      (when (and existing (buffer-live-p existing))
+        (kill-buffer existing))
       (cl-incf eca-chat--new-chat-id)
       (let ((new-buffer (eca-chat--create-buffer session)))
         (with-current-buffer new-buffer
