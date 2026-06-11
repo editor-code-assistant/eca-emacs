@@ -159,6 +159,11 @@ to nil to keep the whole chat buffer writable."
   :type 'boolean
   :group 'eca)
 
+(defcustom eca-chat-show-copy-buttons nil
+  "Whether to show copy buttons for chat responses and code blocks."
+  :type 'boolean
+  :group 'eca)
+
 (defcustom eca-chat-tab-line t
   "Whether to show a tab line with chat tabs at the top of each chat window.
 When non-nil, enables `tab-line-mode' in chat buffers with tabs
@@ -381,6 +386,16 @@ works normally."
   "Face for the rollback button."
   :group 'eca)
 
+(defface eca-chat-copy-button-face
+  '((t (:inherit link :underline nil :weight bold)))
+  "Face for chat copy buttons."
+  :group 'eca)
+
+(defface eca-chat-copy-label-face
+  '((t (:inherit font-lock-comment-face :height 0.9)))
+  "Face for chat copy button labels."
+  :group 'eca)
+
 (defface eca-chat-system-messages-face
   '((t :inherit font-lock-builtin-face))
   "Face for the system messages in chat."
@@ -600,6 +615,8 @@ whether the first user prompt should erase the banner first.")
   "Idle timer that defers `font-lock-ensure' during streaming.")
 (defvar-local eca-chat--progress-text "")
 (defvar-local eca-chat--last-user-message-pos nil)
+(defvar-local eca-chat--last-response-copy-start nil
+  "Buffer position where the latest assistant response starts.")
 (defvar-local eca-chat--chat-loading nil)
 (defvar-local eca-chat--session-cost nil)
 (defvar-local eca-chat--message-cost nil)
@@ -1025,6 +1042,7 @@ request, useful for subagent tool calls."
   (setq-local eca-chat--steered-prompt nil)
   (setq-local eca-chat--queued-prompt nil)
   (setq-local eca-chat--welcome-shown nil)
+  (setq-local eca-chat--last-response-copy-start nil)
   (clrhash eca-chat--subagent-chat-id->tool-call-id)
   (clrhash eca-chat--subagent-usage)
   (eca-chat--insert "\n")
@@ -2326,6 +2344,100 @@ the new turn instead of the full chat history."
                     (or eca-chat--last-user-message-pos (point-min))
                     (point-max))))))))))
 
+(defun eca-chat--copy-region (start end description)
+  "Copy text between START and END and show DESCRIPTION."
+  (let ((buffer (or (and (markerp start) (marker-buffer start))
+                    (current-buffer)))
+        (beg (if (markerp start) (marker-position start) start))
+        (finish (if (markerp end) (marker-position end) end)))
+    (with-current-buffer buffer
+      (kill-new (string-trim-right
+                 (buffer-substring-no-properties beg finish))))
+    (message "Copied %s" description)))
+
+(defun eca-chat--copy-button (text callback help)
+  "Create copy button TEXT using CALLBACK.
+HELP is shown as hover text."
+  (let ((button (eca-buttonize
+                 eca-chat-mode-map
+                 (propertize text
+                             'font-lock-face 'eca-chat-copy-button-face
+                             'mouse-face 'highlight)
+                 callback)))
+    (put-text-property 0 (length button) 'help-echo help button)
+    button))
+
+(defun eca-chat--code-fence-close-regexp (fence)
+  "Return regexp matching the closing FENCE line."
+  (concat "^[ \t]*" (regexp-quote fence) "[ \t]*$"))
+
+(defun eca-chat--refresh-code-copy-buttons (&optional from to)
+  "Refresh copy buttons for fenced code blocks between FROM and TO."
+  (let ((start (or from (point-min)))
+        (end (or to (point-max))))
+    (remove-overlays start end 'eca-chat--code-copy-button t)
+    (when eca-chat-show-copy-buttons
+      (save-excursion
+        (goto-char start)
+        (while (re-search-forward "^[ \t]*\\(``+\\|~~+\\).*$" end t)
+          (let* ((fence (match-string-no-properties 1))
+                 (body-start (copy-marker (1+ (line-end-position)) t))
+                 (close-regexp (eca-chat--code-fence-close-regexp fence)))
+            (when (re-search-forward close-regexp end t)
+              (let* ((body-end (copy-marker (match-beginning 0)))
+                     (ov (make-overlay (marker-position body-start)
+                                       (marker-position body-start)
+                                       nil t t))
+                     (button (eca-chat--copy-button
+                              "⧉"
+                              (lambda ()
+                                (interactive)
+                                (eca-chat--copy-region
+                                 body-start
+                                 body-end
+                                 "code block"))
+                              "Copy code block")))
+                (overlay-put ov 'eca-chat--code-copy-button t)
+                (overlay-put ov 'before-string (concat button "\n"))))))))))
+
+(defun eca-chat--refresh-response-copy-button (&optional from to)
+  "Refresh the copy button for assistant response between FROM and TO."
+  (let* ((start (or from eca-chat--last-response-copy-start))
+         (end (or to (eca-chat--prompt-area-start-point))))
+    (when (and start end (< start end))
+      (remove-overlays start end 'eca-chat--response-copy-button t)
+      (when (and eca-chat-show-copy-buttons
+                 (not (string-empty-p
+                       (string-trim
+                        (buffer-substring-no-properties start end)))))
+        (let* ((copy-start (copy-marker start t))
+               (copy-end (copy-marker end))
+               (ov (make-overlay start start nil t t))
+               (button (eca-chat--copy-button
+                        "⧉"
+                        (lambda ()
+                          (interactive)
+                          (eca-chat--copy-region
+                           copy-start
+                           copy-end
+                           "response"))
+                        "Copy response"))
+               (label (propertize " Copy response\n"
+                                  'font-lock-face
+                                  'eca-chat-copy-label-face)))
+          (overlay-put ov 'eca-chat--response-copy-button t)
+          (overlay-put ov 'before-string (concat button label)))))))
+
+(defun eca-chat--refresh-copy-buttons ()
+  "Refresh copy affordances for the latest assistant response."
+  (let ((start (or eca-chat--last-response-copy-start
+                   eca-chat--last-user-message-pos
+                   (point-min)))
+        (end (eca-chat--prompt-area-start-point)))
+    (when (and start end (< start end))
+      (eca-chat--refresh-response-copy-button start end)
+      (eca-chat--refresh-code-copy-buttons start end))))
+
 (defun eca-chat--add-text-content (text &optional overlay-key overlay-value)
   "Add TEXT to the chat current position.
 Add a overlay before with OVERLAY-KEY = OVERLAY-VALUE if passed."
@@ -2952,6 +3064,7 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
                 (when-let* ((ov (eca-chat--get-expandable-content content-id)))
                   (overlay-put ov 'eca-chat--user-message-id content-id)
                   (overlay-put ov 'eca-chat--timestamp (float-time)))
+                (setq-local eca-chat--last-response-copy-start nil)
                 (eca-chat--mark-header)
                 (font-lock-ensure user-msg-start (point-max)))))
            ("system"
@@ -2964,6 +3077,9 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
                 ;; Subagent: append assistant text to the parent tool call content
                 (eca-chat--update-expandable-content
                  parent-tool-call-id nil text t)
+              (unless eca-chat--last-response-copy-start
+                (setq-local eca-chat--last-response-copy-start
+                            (eca-chat--content-insertion-point)))
               (eca-chat--add-text-content text)
               ;; Defer fontification: let jit-lock handle visible-area
               ;; updates and run a single final ensure in the
@@ -3292,6 +3408,7 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
                ;; cost on long chats.
                (font-lock-ensure (or eca-chat--last-user-message-pos (point-min))
                                  (point-max))
+               (eca-chat--refresh-copy-buttons)
                (eca-chat--set-chat-loading session nil)
                (eca-chat--refresh-progress chat-buffer)
                (eca-chat--send-steered-prompt session)
@@ -3313,6 +3430,7 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
                ;; fontified at their own end-of-stream.
                (font-lock-ensure (or eca-chat--last-user-message-pos (point-min))
                                  (point-max))
+               (eca-chat--refresh-copy-buttons)
                ;; Table align/beautify default to scanning from
                ;; `eca-chat--last-user-message-pos' when called with
                ;; no argument, scoping work to the current turn.
@@ -4283,7 +4401,7 @@ E.g. \"just now\", \"5m ago\", \"3h ago\", \"2d ago\"."
   "Kill BUFFER for SESSION if it's a fresh welcome chat.
 Skips when BUFFER equals KEEP-BUFFER or when the welcome banner is
 no longer present (i.e. the user already exchanged messages there).
-Marks the chat as `eca-chat--closed' so the kill-buffer hook does
+Marks the chat as `eca-chat--closed' so the `kill-buffer' hook does
 not prompt for server-side deletion, and dissocs it from the
 session's chat registry.  Used by `eca-chat-resume' to clean up
 the empty buffer that was used to trigger the resume."
