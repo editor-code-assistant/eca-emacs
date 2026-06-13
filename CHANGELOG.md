@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Paginate long chats instead of replaying the full history on open. With `eca-chat-history-page-size` non-nil (default 50), `eca-chat-resume` opens a chat with only the newest page and shows a clickable "Load older messages" control at the top to page through earlier history on demand via the new `chat/history` request (also bound to `C-c C-S-o`). Older pages are prepended above the existing content, reusing the streaming renderer (subagent nesting included) and kept read-only like the rest of the history. Set `eca-chat-history-page-size` to nil to keep the previous full-replay behavior.
+- Bugfix: resuming a previous session after a server restart no longer reopens it as a `*Closed session*` (mode-line) / `This chat is closed` buffer that rejects new prompts. `eca-chat-exit` (run on restart) marks the most-recent chat buffer `eca-chat--closed` but leaves it in the session registry; `eca-chat-opened` was treating that live-but-closed buffer as "already known" and replaying the resumed history into it. It now treats a registered buffer marked `eca-chat--closed` as stale, killing the leftover closed buffer and creating a fresh, writable one in its place.
 - Color the Doom Emacs workspace tabline by ECA session status: orange when a chat waits for approval/question, dim yellow while running. Enabled automatically on Doom (`:ui workspaces` module), disable with `eca-doom-workspace-tabs`.
 - Add `eca-chat-go-to-next-attention` and `eca-chat-go-to-next-attention-in-project` commands to jump to the next chat waiting on the user (pending tool call approval or unanswered question), cycling across all sessions or only the current one.
 - Make the chat history/output, the `---` separator and the task area read-only so only the progress, `@`-context and prompt input lines stay editable, preventing accidental edits to previous messages and assistant output. The `read-only` text property is applied up to the progress area (with stickiness tuned so typing still works) and kept in sync as content streams in and as blocks are expanded. Toggle off via the new `eca-chat-read-only-history` (default `t`).
@@ -53,7 +54,7 @@
 
 ## 0.6.0
 
-- Add `eca-chat-save-to-file` command. #95 
+- Add `eca-chat-save-to-file` command. #95
 - Fix chat not being closed. #89
 - Fix: check existing eca sessions when opening chat. #88
 - Add rewrite feature.

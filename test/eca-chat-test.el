@@ -583,4 +583,57 @@ does not treat the first line as metadata.  Returns FN's value."
          session (current-buffer) (list '(:role "user" :content (:type "text" :text "m0"))))
         (expect eca-chat--last-user-message-pos :to-equal 42)))))
 
+(describe "eca-chat-opened"
+  ;; Regression: resuming after a restart must not replay into a stale
+  ;; closed buffer left in the registry by `eca-chat-exit'.
+  (it "creates a fresh buffer when the registered chat buffer is closed"
+    (spy-on 'eca-chat--force-tab-line-update)
+    (let* ((session (make-eca--session))
+           (closed-buf (generate-new-buffer " *test-closed-chat*")))
+      (unwind-protect
+          (progn
+            (with-current-buffer closed-buf
+              (setq major-mode 'eca-chat-mode)
+              (setq-local eca-chat--id "chat-AAA")
+              (setq-local eca-chat--closed t))
+            (setf (eca--session-chats session)
+                  (eca-assoc (eca--session-chats session) "chat-AAA" closed-buf))
+            (eca-chat-opened session (list :chatId "chat-AAA" :title "My chat"))
+            (let ((registered (eca-get (eca--session-chats session) "chat-AAA")))
+              ;; The registry now points at a brand new, live, writable buffer.
+              (expect (buffer-live-p registered) :to-be-truthy)
+              (expect registered :not :to-be closed-buf)
+              (expect (buffer-local-value 'eca-chat--closed registered) :to-be nil)
+              (expect (buffer-local-value 'eca-chat--id registered)
+                      :to-equal "chat-AAA")
+              ;; The stale closed buffer is cleaned up, not left lingering.
+              (expect (buffer-live-p closed-buf) :to-be nil)
+              (when (and (buffer-live-p registered)
+                         (not (eq registered closed-buf)))
+                (kill-buffer registered))))
+        (when (buffer-live-p closed-buf)
+          (kill-buffer closed-buf)))))
+
+  (it "reuses the existing buffer when it is live and not closed"
+    (spy-on 'eca-chat--force-tab-line-update)
+    (let* ((session (make-eca--session))
+           (live-buf (generate-new-buffer " *test-open-chat*")))
+      (unwind-protect
+          (progn
+            (with-current-buffer live-buf
+              (setq major-mode 'eca-chat-mode)
+              (setq-local eca-chat--id "chat-BBB")
+              (setq-local eca-chat--closed nil)
+              (setq-local eca-chat--title "old title"))
+            (setf (eca--session-chats session)
+                  (eca-assoc (eca--session-chats session) "chat-BBB" live-buf))
+            (eca-chat-opened session (list :chatId "chat-BBB" :title "new title"))
+            (let ((registered (eca-get (eca--session-chats session) "chat-BBB")))
+              ;; No duplicate buffer; the title is propagated in place.
+              (expect registered :to-be live-buf)
+              (expect (buffer-local-value 'eca-chat--title live-buf)
+                      :to-equal "new title")))
+        (when (buffer-live-p live-buf)
+          (kill-buffer live-buf))))))
+
 ;;; eca-chat-test.el ends here
