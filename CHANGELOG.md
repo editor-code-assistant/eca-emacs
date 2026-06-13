@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Paginate long chats instead of replaying the full history on open. With `eca-chat-history-page-size` non-nil (default 50), `eca-chat-resume` opens a chat with only the newest page and shows a clickable "Load older messages" control at the top to page through earlier history on demand via the new `chat/history` request (also bound to `C-c C-S-o`). Older pages are prepended above the existing content, reusing the streaming renderer (subagent nesting included) and kept read-only like the rest of the history. Set `eca-chat-history-page-size` to nil to keep the previous full-replay behavior.
 - Color the Doom Emacs workspace tabline by ECA session status: orange when a chat waits for approval/question, dim yellow while running. Enabled automatically on Doom (`:ui workspaces` module), disable with `eca-doom-workspace-tabs`.
 - Add `eca-chat-go-to-next-attention` and `eca-chat-go-to-next-attention-in-project` commands to jump to the next chat waiting on the user (pending tool call approval or unanswered question), cycling across all sessions or only the current one.
 - Make the chat history/output, the `---` separator and the task area read-only so only the progress, `@`-context and prompt input lines stay editable, preventing accidental edits to previous messages and assistant output. The `read-only` text property is applied up to the progress area (with stickiness tuned so typing still works) and kept in sync as content streams in and as blocks are expanded. Toggle off via the new `eca-chat-read-only-history` (default `t`).

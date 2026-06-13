@@ -103,6 +103,7 @@ Chat
 - `eca-chat-expand-all-blocks`: Expand all expandable blocks in current chat
 - `eca-chat-collapse-all-blocks`: Collapse all expandable blocks in current chat
 - `eca-chat-timeline`: Show user prompt history as a timeline
+- `eca-chat-load-older-history`: Load and prepend the previous (older) page of the chat's history, also reachable via the "Load older messages" link at the top of the chat. Bound to `C-c C-S-o`.
 - `eca-chat-talk`: Use whisper.el to send a prompt via voice.
 - `eca-table-open`: Open the markdown table at point in a dedicated `*eca-table*` buffer where horizontal scrolling keeps the header aligned with the body, so wide tables can be read in full. Press `o` with point on any table to open it (the binding is scoped to the table, so it overrides `o` only there and works under evil/Doom too), or click `[o] open` on a wide table's action bar.
 - `eca-chat-save-to-file`: Save chat to a file.
@@ -144,6 +145,7 @@ Chat
 - `eca-chat-prompt-prefix`: Prompt prefix string shown before user input.
 - `eca-chat-prompt-prefix-loading`: Prompt prefix string while a request is in progress.
 - `eca-chat-read-only-history`: Whether the chat history/output, the `---` separator and the task area are read-only so only the progress, `@`-context and prompt input lines stay editable (default `t`). Set to `nil` to keep the whole buffer writable.
+- `eca-chat-history-page-size`: Number of newest messages to load when opening a persisted chat (default `50`). When non-nil, `eca-chat-resume` opens chats with a bounded window and shows a "Load older messages" control to page through earlier history on demand; set to `nil` to replay the entire history on open.
 - `eca-chat-context-prefix`: Prefix used for context references in the chat buffer (default `@`).
 - `eca-chat-filepath-prefix`: Prefix used for file path references in the chat buffer (default `#`).
 - `eca-chat-expandable-block-open-symbol`: Symbol used for expandable blocks in open state.

@@ -467,4 +467,120 @@ does not treat the first line as metadata.  Returns FN's value."
        (expect 'markdown-follow-thing-at-point :to-have-been-called)
        (expect 'browse-url :not :to-have-been-called)))))
 
+(describe "eca-chat--apply-history-meta"
+  (it "sets buffer-local pagination cursors from a meta plist"
+    (with-temp-buffer
+      (eca-chat--apply-history-meta
+       '(:total 412 :returned 50 :beforeCursor "b" :afterCursor "a" :compactionCursor "c"))
+      (expect eca-chat--history-total :to-equal 412)
+      (expect eca-chat--history-before-cursor :to-equal "b")
+      (expect eca-chat--history-after-cursor :to-equal "a")
+      (expect eca-chat--history-compaction-cursor :to-equal "c")))
+
+  (it "stores nil cursors at the ends (nil-punning)"
+    (with-temp-buffer
+      (eca-chat--apply-history-meta
+       '(:total 3 :returned 3 :beforeCursor nil :afterCursor nil :compactionCursor nil))
+      (expect eca-chat--history-before-cursor :to-be nil)
+      (expect eca-chat--history-after-cursor :to-be nil))))
+
+(describe "eca-chat--refresh-load-older-control"
+  (it "inserts the control at the top when an older page is available"
+    (let ((buf (eca-chat-test--make-prompt-buffer "hi")))
+      (unwind-protect
+          (with-current-buffer buf
+            (setq-local eca-chat--history-before-cursor "cursor")
+            (eca-chat--refresh-load-older-control)
+            (expect (eca-chat--load-older-control-region) :not :to-be nil)
+            (expect (buffer-substring-no-properties
+                     (point-min) (cdr (eca-chat--load-older-control-region)))
+                    :to-match "Load older messages"))
+        (kill-buffer buf))))
+
+  (it "removes the control when there is no older page"
+    (let ((buf (eca-chat-test--make-prompt-buffer "hi")))
+      (unwind-protect
+          (with-current-buffer buf
+            (setq-local eca-chat--history-before-cursor "cursor")
+            (eca-chat--refresh-load-older-control)
+            (setq-local eca-chat--history-before-cursor nil)
+            (eca-chat--refresh-load-older-control)
+            (expect (eca-chat--load-older-control-region) :to-be nil))
+        (kill-buffer buf)))))
+
+(describe "eca-chat--content-insertion-point"
+  (it "returns the override marker position when bound"
+    (let ((buf (eca-chat-test--make-prompt-buffer "hi")))
+      (unwind-protect
+          (with-current-buffer buf
+            (let ((eca-chat--insertion-point-override (copy-marker (point-min))))
+              (expect (eca-chat--content-insertion-point) :to-equal (point-min))))
+        (kill-buffer buf))))
+
+  (it "falls back to just before the prompt area when override is nil"
+    (let ((buf (eca-chat-test--make-prompt-buffer "hi")))
+      (unwind-protect
+          (with-current-buffer buf
+            (expect (eca-chat--content-insertion-point)
+                    :to-equal (1- (eca-chat--prompt-area-start-point))))
+        (kill-buffer buf)))))
+
+(describe "eca-chat--render-history-contents"
+  ;; A plain buffer is enough: the insertion-point override short-circuits the
+  ;; prompt-area layout, and the table/fontify helpers are stubbed.
+  (it "prepends items in chronological order, separated from existing content"
+    (with-temp-buffer
+      (insert "EXISTING")
+      (let ((session (make-eca--session)))
+        (spy-on 'eca--session-workspace-folders :and-return-value nil)
+        (spy-on 'font-lock-ensure)
+        (spy-on 'eca-chat--align-tables)
+        (spy-on 'eca-chat--beautify-tables)
+        ;; Stub the renderer to insert the item text at the (overridable)
+        ;; insertion point, mirroring how the real renderer appends text.
+        (spy-on 'eca-chat--render-content :and-call-fake
+                (lambda (_session _buf _role content _roots &rest _)
+                  (goto-char (eca-chat--content-insertion-point))
+                  (insert (plist-get content :text))))
+        (eca-chat--render-history-contents
+         session (current-buffer)
+         (list '(:role "user" :content (:type "text" :text "m0"))
+               '(:role "assistant" :content (:type "text" :text "m1"))))
+        ;; Older page on top, in order, with a single separating newline so the
+        ;; last older line is not glued to the first existing line.
+        (expect (buffer-string) :to-equal "m0m1\nEXISTING"))))
+
+  (it "does not add a separator when the older page already ends with a newline"
+    (with-temp-buffer
+      (insert "EXISTING")
+      (let ((session (make-eca--session)))
+        (spy-on 'eca--session-workspace-folders :and-return-value nil)
+        (spy-on 'font-lock-ensure)
+        (spy-on 'eca-chat--align-tables)
+        (spy-on 'eca-chat--beautify-tables)
+        (spy-on 'eca-chat--render-content :and-call-fake
+                (lambda (_session _buf _role content _roots &rest _)
+                  (goto-char (eca-chat--content-insertion-point))
+                  (insert (plist-get content :text))))
+        (eca-chat--render-history-contents
+         session (current-buffer)
+         (list '(:role "assistant" :content (:type "text" :text "m0\n"))))
+        (expect (buffer-string) :to-equal "m0\nEXISTING"))))
+
+  (it "restores eca-chat--last-user-message-pos after prepending"
+    (with-temp-buffer
+      (insert "EXISTING")
+      (setq-local eca-chat--last-user-message-pos 42)
+      (let ((session (make-eca--session)))
+        (spy-on 'eca--session-workspace-folders :and-return-value nil)
+        (spy-on 'font-lock-ensure)
+        (spy-on 'eca-chat--align-tables)
+        (spy-on 'eca-chat--beautify-tables)
+        (spy-on 'eca-chat--render-content :and-call-fake
+                (lambda (_session _buf _role _content _roots &rest _)
+                  (setq-local eca-chat--last-user-message-pos 999)))
+        (eca-chat--render-history-contents
+         session (current-buffer) (list '(:role "user" :content (:type "text" :text "m0"))))
+        (expect eca-chat--last-user-message-pos :to-equal 42)))))
+
 ;;; eca-chat-test.el ends here
