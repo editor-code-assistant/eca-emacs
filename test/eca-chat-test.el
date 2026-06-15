@@ -301,6 +301,177 @@ does not treat the first line as metadata.  Returns FN's value."
                   :to-equal "@/remote/path/file.txt")
           (expect 'eca--path-local-to-remote :to-have-been-called-with "file.txt"))))))
 
+(describe "eca-chat copy buttons"
+  (it "copies fenced code block content"
+    (let ((eca-chat-show-copy-buttons t))
+      (with-temp-buffer
+        (setq major-mode 'eca-chat-mode)
+        (insert "```elisp\n(+ 1 2)\n```\n")
+        (eca-chat--refresh-code-copy-buttons (point-min) (point-max))
+        (let* ((ov (-first (lambda (overlay)
+                             (overlay-get overlay
+                                          'eca-chat--code-copy-button))
+                           (overlays-in (point-min) (point-max))))
+               (button (overlay-get ov 'display))
+               (action (get-text-property 0 'eca-button-on-action button)))
+          (funcall action)
+          (expect (current-kill 0 t) :to-equal "(+ 1 2)")))))
+
+  (it "copies two-backtick fenced code block content"
+    (let ((eca-chat-show-copy-buttons t))
+      (with-temp-buffer
+        (setq major-mode 'eca-chat-mode)
+        (insert "``bash\naz login\n``\n")
+        (eca-chat--refresh-code-copy-buttons (point-min) (point-max))
+        (let* ((ov (-first (lambda (overlay)
+                             (overlay-get overlay
+                                          'eca-chat--code-copy-button))
+                           (overlays-in (point-min) (point-max))))
+               (button (overlay-get ov 'display))
+               (action (get-text-property 0 'eca-button-on-action button)))
+          (funcall action)
+          (expect (current-kill 0 t) :to-equal "az login")))))
+
+  (it "copies the whole assistant response"
+    (let ((eca-chat-show-copy-buttons t))
+      (with-temp-buffer
+        (setq major-mode 'eca-chat-mode)
+        (insert "Answer\n")
+        (eca-chat--refresh-response-copy-button (point-min) (point-max))
+        (let* ((ov (-first (lambda (overlay)
+                             (overlay-get overlay
+                                          'eca-chat--response-copy-button))
+                           (overlays-in (point-min) (point-max))))
+               (button (overlay-get ov 'before-string))
+               (action (get-text-property 0 'eca-button-on-action button)))
+          (funcall action)
+          (expect (current-kill 0 t) :to-equal "Answer")))))
+
+  (it "renders response and code copy affordances on separate lines"
+    (let ((eca-chat-show-copy-buttons t))
+      (with-temp-buffer
+        (setq major-mode 'eca-chat-mode)
+        (insert "Answer\n```elisp\n(+ 1 2)\n```\n")
+        (eca-chat--refresh-response-copy-button (point-min) (point-max))
+        (eca-chat--refresh-code-copy-buttons (point-min) (point-max))
+        (let* ((response-ov (-first
+                             (lambda (overlay)
+                               (overlay-get overlay
+                                            'eca-chat--response-copy-button))
+                             (overlays-in (point-min) (point-max))))
+               (code-ov (-first
+                         (lambda (overlay)
+                           (overlay-get overlay
+                                        'eca-chat--code-copy-button))
+                         (overlays-in (point-min) (point-max)))))
+          (expect (substring-no-properties
+                   (overlay-get response-ov 'before-string))
+                  :to-equal "[copy response]\n")
+          (expect (substring-no-properties (overlay-get code-ov 'display))
+                  :to-equal "[copy]\n")))))
+
+  (it "adds a direct mouse binding to copy overlays"
+    (let ((eca-chat-show-copy-buttons t))
+      (with-temp-buffer
+        (setq major-mode 'eca-chat-mode)
+        (insert "```elisp\n(+ 1 2)\n```\n")
+        (eca-chat--refresh-code-copy-buttons (point-min) (point-max))
+        (let* ((ov (-first (lambda (overlay)
+                             (overlay-get overlay
+                                          'eca-chat--code-copy-button))
+                           (overlays-in (point-min) (point-max))))
+               (button (overlay-get ov 'display))
+               (map (get-text-property 0 'keymap button)))
+          (expect (lookup-key map (kbd "<mouse-1>")) :not :to-be nil)))))
+
+  (it "renders code copy affordance on the fence line"
+    (let ((eca-chat-show-copy-buttons t))
+      (with-temp-buffer
+        (setq major-mode 'eca-chat-mode)
+        (insert "```elisp\n(+ 1 2)\n```\n")
+        (eca-chat--refresh-code-copy-buttons (point-min) (point-max))
+        (let ((ov (-first (lambda (overlay)
+                            (overlay-get overlay
+                                         'eca-chat--code-copy-button))
+                          (overlays-in (point-min) (point-max)))))
+          (expect (overlay-start ov) :to-be (point-min))
+          (expect (buffer-substring-no-properties
+                   (overlay-start ov)
+                   (overlay-end ov))
+                  :to-equal "```elisp\n")
+          (expect (substring-no-properties (overlay-get ov 'display))
+                  :to-equal "[copy]\n")))))
+
+  (it "adds copy overlays to each fenced code block"
+    (let ((eca-chat-show-copy-buttons t)
+          kill-ring
+          kill-ring-yank-pointer)
+      (with-temp-buffer
+        (setq major-mode 'eca-chat-mode)
+        (insert "```bash\naz webapp list-runtimes --os linux -o table\n```\n\n")
+        (insert "```bash\naz webapp show --name <APP_NAME> --resource-group <RG> ")
+        (insert "--query \"siteConfig.linuxFxVersion\" -o tsv\n```\n")
+        (eca-chat--refresh-code-copy-buttons (point-min) (point-max))
+        (let ((overlays (sort (seq-filter
+                               (lambda (overlay)
+                                 (overlay-get overlay
+                                              'eca-chat--code-copy-button))
+                               (overlays-in (point-min) (point-max)))
+                              (lambda (left right)
+                                (< (overlay-start left)
+                                   (overlay-start right))))))
+          (expect (length overlays) :to-be 2)
+          (dolist (ov overlays)
+            (let* ((button (overlay-get ov 'display))
+                   (action (get-text-property 0 'eca-button-on-action
+                                              button)))
+              (funcall action)))
+          (expect (car kill-ring)
+                  :to-equal
+                  "az webapp show --name <APP_NAME> --resource-group <RG> --query \"siteConfig.linuxFxVersion\" -o tsv")
+          (expect (cadr kill-ring)
+                  :to-equal
+                  "az webapp list-runtimes --os linux -o table")))))
+
+  (it "does not add fenced code block copy buttons when disabled"
+    (let ((eca-chat-show-copy-buttons nil))
+      (with-temp-buffer
+        (setq major-mode 'eca-chat-mode)
+        (insert "```elisp\n(+ 1 2)\n```\n")
+        (eca-chat--refresh-code-copy-buttons (point-min) (point-max))
+        (expect (-first (lambda (overlay)
+                          (overlay-get overlay 'eca-chat--code-copy-button))
+                        (overlays-in (point-min) (point-max)))
+                :to-be nil))))
+
+  (it "does not add response copy buttons when disabled"
+    (let ((eca-chat-show-copy-buttons nil))
+      (with-temp-buffer
+        (setq major-mode 'eca-chat-mode)
+        (insert "Answer\n")
+        (eca-chat--refresh-response-copy-button (point-min) (point-max))
+        (expect (-first (lambda (overlay)
+                          (overlay-get overlay 'eca-chat--response-copy-button))
+                        (overlays-in (point-min) (point-max)))
+                :to-be nil))))
+
+  (it "does not add copy buttons to rendered user messages"
+    (with-temp-buffer
+      (setq major-mode 'eca-chat-mode)
+      (insert "User says:\n```elisp\n(+ 1 2)\n```\n")
+      (setq-local eca-chat--last-user-message-pos (point-max))
+      (let ((ov (make-overlay (point-max) (point-max))))
+        (overlay-put ov 'eca-chat-prompt-area t))
+      (eca-chat--refresh-copy-buttons)
+      (expect (-first (lambda (overlay)
+                        (overlay-get overlay 'eca-chat--code-copy-button))
+                      (overlays-in (point-min) (point-max)))
+              :to-be nil)
+      (expect (-first (lambda (overlay)
+                        (overlay-get overlay 'eca-chat--response-copy-button))
+                      (overlays-in (point-min) (point-max)))
+              :to-be nil))))
+
 (describe "eca-chat--render-content"
   (describe "progress finished"
     (it "clears progress text and spinner when chat-loading is nil"
