@@ -97,11 +97,15 @@ Chat
 - `eca-chat-go-to-next-user-message`: Go to the next user message from point
 - `eca-chat-go-to-prev-expandable-block`: Go to the previous expandable block from point
 - `eca-chat-go-to-next-expandable-block`: Go to the next expandable block from point
+- `eca-chat-go-to-next-attention`: Go to the next chat waiting on you (pending tool call approval or question), cycling across sessions
+- `eca-chat-go-to-next-attention-in-project`: Same as `eca-chat-go-to-next-attention` but cycling only the current session chats
 - `eca-chat-toggle-expandable-block`: Toggle current expandable block at point
 - `eca-chat-expand-all-blocks`: Expand all expandable blocks in current chat
 - `eca-chat-collapse-all-blocks`: Collapse all expandable blocks in current chat
 - `eca-chat-timeline`: Show user prompt history as a timeline
+- `eca-chat-load-older-history`: Load and prepend the previous (older) page of the chat's history, also reachable via the "Load older messages" link at the top of the chat. Bound to `C-c C-S-o`.
 - `eca-chat-talk`: Use whisper.el to send a prompt via voice.
+- `eca-table-open`: Open the markdown table at point in a dedicated `*eca-table*` buffer where horizontal scrolling keeps the header aligned with the body, so wide tables can be read in full. Press `o` with point on any table to open it (the binding is scoped to the table, so it overrides `o` only there and works under evil/Doom too), or click `[o] open` on a wide table's action bar.
 - `eca-chat-save-to-file`: Save chat to a file.
 
 ### Variables
@@ -140,6 +144,8 @@ Chat
 - `eca-chat-prompt-separator`: Separator string between the chat content and the prompt area.
 - `eca-chat-prompt-prefix`: Prompt prefix string shown before user input.
 - `eca-chat-prompt-prefix-loading`: Prompt prefix string while a request is in progress.
+- `eca-chat-read-only-history`: Whether the chat history/output, the `---` separator and the task area are read-only so only the progress, `@`-context and prompt input lines stay editable (default `t`). Set to `nil` to keep the whole buffer writable.
+- `eca-chat-history-page-size`: Number of newest messages to load when opening a persisted chat (default `50`). When non-nil, `eca-chat-resume` opens chats with a bounded window and shows a "Load older messages" control to page through earlier history on demand; set to `nil` to replay the entire history on open.
 - `eca-chat-context-prefix`: Prefix used for context references in the chat buffer (default `@`).
 - `eca-chat-filepath-prefix`: Prefix used for file path references in the chat buffer (default `#`).
 - `eca-chat-expandable-block-open-symbol`: Symbol used for expandable blocks in open state.
@@ -178,6 +184,10 @@ Settings
 
 - `eca-settings-tab-line`: Whether to show a tab line in settings buffers (default `t`).
 - `eca-settings-display-params`: Display parameters for the settings panel side window.
+
+Doom Emacs
+
+- `eca-doom-workspace-tabs`: Whether to decorate the Doom workspace tabline with the ECA session status of each workspace (default `t`).
 
 MCP
 
@@ -261,6 +271,18 @@ accuracy and transcription speed.
 ### Custom workspaces
 
 Calling `M-x eca` with prefix `C-u` will ask for what workspaces to start the process.
+
+### Doom Emacs workspace tabs
+
+On Doom Emacs with the `:ui workspaces` module, the workspace tabline is
+colored with the ECA session status of each workspace: orange when a chat
+waits on you (pending approval or question), dim yellow while a chat is
+running. Customize the colors via the `eca-doom-workspace-tab-attention-face`
+and `eca-doom-workspace-tab-running-face` faces, or disable with:
+
+```elisp
+(setq eca-doom-workspace-tabs nil)
+```
 
 ## Sandboxing
 

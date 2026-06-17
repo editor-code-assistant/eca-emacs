@@ -11,16 +11,35 @@
 
 (defun eca-chat-test--make-prompt-buffer (prompt-text)
   "Create a test buffer with PROMPT-TEXT in a simulated prompt.
-Returns the buffer.  Caller must kill it."
+Mirrors the real prompt-block layout: history, then the
+separator, task, progress and context areas, then the prompt
+field.  Returns the buffer.  Caller must kill it."
   (let ((buf (generate-new-buffer " *test-chat-deletion*")))
     (with-current-buffer buf
-      ;; Simulate content above the prompt
-      (insert "header\n---\n@\n\n")
-      (let ((prompt-start (point)))
-        (insert prompt-text)
-        ;; 1-char prompt-field overlay, matching real layout
-        (let ((ov (make-overlay prompt-start (1+ prompt-start))))
-          (overlay-put ov 'eca-chat-prompt-field t)))
+      ;; History (read-only region).
+      (insert "header")
+      ;; Prompt area starts at the separator newline.
+      (let ((area-start (point)))
+        (insert "\n---")
+        (let ((task-start (point)))       ; task area (a space)
+          (insert " ")
+          (let ((progress-start (point))) ; progress area (a newline)
+            (insert "\n")
+            (let ((context-start (point))) ; context area ("@")
+              (insert "@\n")
+              (let ((prompt-start (point)))
+                (insert prompt-text)
+                ;; Overlays matching the real layout.
+                (overlay-put (make-overlay area-start (1+ area-start))
+                             'eca-chat-prompt-area t)
+                (overlay-put (make-overlay task-start task-start)
+                             'eca-chat-task-area t)
+                (overlay-put (make-overlay progress-start progress-start)
+                             'eca-chat-progress-area t)
+                (overlay-put (make-overlay context-start (1+ context-start))
+                             'eca-chat-context-area t)
+                (overlay-put (make-overlay prompt-start (1+ prompt-start))
+                             'eca-chat-prompt-field t))))))
       (setq major-mode 'eca-chat-mode))
     buf))
 
@@ -99,6 +118,92 @@ does not treat the first line as metadata.  Returns FN's value."
                 (expect (eca-chat-test--prompt-text buf)
                         :to-equal "hello")))
           (kill-buffer buf))))))
+
+(describe "eca-chat--protect-non-prompt"
+
+  (it "blocks editing inside the history area"
+    (let ((buf (eca-chat-test--make-prompt-buffer "hello"))
+          (eca-chat-read-only-history t))
+      (unwind-protect
+          (with-current-buffer buf
+            (eca-chat--protect-non-prompt)
+            (goto-char (+ (point-min) 3))
+            (expect (insert "x") :to-throw 'text-read-only)
+            (goto-char (+ (point-min) 3))
+            (expect (delete-char 1) :to-throw 'text-read-only))
+        (kill-buffer buf))))
+
+  (it "blocks inserting at the very top of the buffer"
+    (let ((buf (eca-chat-test--make-prompt-buffer "hello"))
+          (eca-chat-read-only-history t))
+      (unwind-protect
+          (with-current-buffer buf
+            (eca-chat--protect-non-prompt)
+            (goto-char (point-min))
+            (expect (insert "x") :to-throw 'text-read-only))
+        (kill-buffer buf))))
+
+  (it "keeps the prompt editable"
+    (let ((buf (eca-chat-test--make-prompt-buffer "hello"))
+          (eca-chat-read-only-history t))
+      (unwind-protect
+          (with-current-buffer buf
+            (eca-chat--protect-non-prompt)
+            (goto-char (point-max))
+            (insert " world")
+            (expect (eca-chat-test--prompt-text buf) :to-equal "hello world"))
+        (kill-buffer buf))))
+
+  (it "marks newly inserted (streamed) content read-only"
+    (let ((buf (eca-chat-test--make-prompt-buffer "hello"))
+          (eca-chat-read-only-history t))
+      (unwind-protect
+          (with-current-buffer buf
+            (eca-chat--protect-non-prompt)
+            (let ((inhibit-read-only t))
+              (goto-char (eca-chat--content-insertion-point))
+              (insert "streamed text"))
+            (eca-chat--protect-non-prompt)
+            (expect (get-text-property (+ (point-min) 8) 'read-only) :to-be t))
+        (kill-buffer buf))))
+
+  (it "does nothing when eca-chat-read-only-history is nil"
+    (let ((buf (eca-chat-test--make-prompt-buffer "hello"))
+          (eca-chat-read-only-history nil))
+      (unwind-protect
+          (with-current-buffer buf
+            (eca-chat--protect-non-prompt)
+            (goto-char (point-min))
+            (insert "x")
+            (expect (char-after (point-min)) :to-equal ?x))
+        (kill-buffer buf))))
+
+  (it "locks the separator and task area but keeps context/prompt editable"
+    (let ((buf (eca-chat-test--make-prompt-buffer "hi"))
+          (eca-chat-read-only-history t))
+      (unwind-protect
+          (with-current-buffer buf
+            (eca-chat--protect-non-prompt)
+            (let ((sep (eca-chat--prompt-area-start-point))
+                  (prog (overlay-start (eca-chat--prompt-progress-field-ov)))
+                  (ctx (overlay-start (eca-chat--prompt-context-field-ov))))
+              ;; The separator newline and the "---" text are read-only.
+              (goto-char sep)
+              (expect (insert "x") :to-throw 'text-read-only)
+              ;; The task area (last char before the progress) is read-only.
+              (goto-char (1- prog))
+              (expect (insert "x") :to-throw 'text-read-only)
+              ;; The progress area start stays editable.
+              (goto-char prog)
+              (insert "p")
+              ;; The context area stays editable.
+              (goto-char ctx)
+              (insert "c")
+              ;; The prompt stays editable.
+              (goto-char (point-max))
+              (insert "!")
+              (expect (eca-chat-test--prompt-text buf) :to-equal "hi!")))
+        (kill-buffer buf)))))
 
 (describe "eca-chat completion trigger detection"
   (it "triggers context completion when a char like ( precedes @"
@@ -399,5 +504,174 @@ does not treat the first line as metadata.  Returns FN's value."
        (eca-chat--follow-link-at-point)
        (expect 'markdown-follow-thing-at-point :to-have-been-called)
        (expect 'browse-url :not :to-have-been-called)))))
+
+(describe "eca-chat--apply-history-meta"
+  (it "sets buffer-local pagination cursors from a meta plist"
+    (with-temp-buffer
+      (eca-chat--apply-history-meta
+       '(:total 412 :returned 50 :beforeCursor "b" :afterCursor "a" :compactionCursor "c"))
+      (expect eca-chat--history-total :to-equal 412)
+      (expect eca-chat--history-before-cursor :to-equal "b")
+      (expect eca-chat--history-after-cursor :to-equal "a")
+      (expect eca-chat--history-compaction-cursor :to-equal "c")))
+
+  (it "stores nil cursors at the ends (nil-punning)"
+    (with-temp-buffer
+      (eca-chat--apply-history-meta
+       '(:total 3 :returned 3 :beforeCursor nil :afterCursor nil :compactionCursor nil))
+      (expect eca-chat--history-before-cursor :to-be nil)
+      (expect eca-chat--history-after-cursor :to-be nil))))
+
+(describe "eca-chat--refresh-load-older-control"
+  (it "inserts the control at the top when an older page is available"
+    (let ((buf (eca-chat-test--make-prompt-buffer "hi")))
+      (unwind-protect
+          (with-current-buffer buf
+            (setq-local eca-chat--history-before-cursor "cursor")
+            (eca-chat--refresh-load-older-control)
+            (expect (eca-chat--load-older-control-region) :not :to-be nil)
+            (expect (buffer-substring-no-properties
+                     (point-min) (cdr (eca-chat--load-older-control-region)))
+                    :to-match "Load older messages"))
+        (kill-buffer buf))))
+
+  (it "removes the control when there is no older page"
+    (let ((buf (eca-chat-test--make-prompt-buffer "hi")))
+      (unwind-protect
+          (with-current-buffer buf
+            (setq-local eca-chat--history-before-cursor "cursor")
+            (eca-chat--refresh-load-older-control)
+            (setq-local eca-chat--history-before-cursor nil)
+            (eca-chat--refresh-load-older-control)
+            (expect (eca-chat--load-older-control-region) :to-be nil))
+        (kill-buffer buf)))))
+
+(describe "eca-chat--content-insertion-point"
+  (it "returns the override marker position when bound"
+    (let ((buf (eca-chat-test--make-prompt-buffer "hi")))
+      (unwind-protect
+          (with-current-buffer buf
+            (let ((eca-chat--insertion-point-override (copy-marker (point-min))))
+              (expect (eca-chat--content-insertion-point) :to-equal (point-min))))
+        (kill-buffer buf))))
+
+  (it "falls back to just before the prompt area when override is nil"
+    (let ((buf (eca-chat-test--make-prompt-buffer "hi")))
+      (unwind-protect
+          (with-current-buffer buf
+            (expect (eca-chat--content-insertion-point)
+                    :to-equal (1- (eca-chat--prompt-area-start-point))))
+        (kill-buffer buf)))))
+
+(describe "eca-chat--render-history-contents"
+  ;; A plain buffer is enough: the insertion-point override short-circuits the
+  ;; prompt-area layout, and the table/fontify helpers are stubbed.
+  (it "prepends items in chronological order, separated from existing content"
+    (with-temp-buffer
+      (insert "EXISTING")
+      (let ((session (make-eca--session)))
+        (spy-on 'eca--session-workspace-folders :and-return-value nil)
+        (spy-on 'font-lock-ensure)
+        (spy-on 'eca-chat--align-tables)
+        (spy-on 'eca-chat--beautify-tables)
+        ;; Stub the renderer to insert the item text at the (overridable)
+        ;; insertion point, mirroring how the real renderer appends text.
+        (spy-on 'eca-chat--render-content :and-call-fake
+                (lambda (_session _buf _role content _roots &rest _)
+                  (goto-char (eca-chat--content-insertion-point))
+                  (insert (plist-get content :text))))
+        (eca-chat--render-history-contents
+         session (current-buffer)
+         (list '(:role "user" :content (:type "text" :text "m0"))
+               '(:role "assistant" :content (:type "text" :text "m1"))))
+        ;; Older page on top, in order, with a single separating newline so the
+        ;; last older line is not glued to the first existing line.
+        (expect (buffer-string) :to-equal "m0m1\nEXISTING"))))
+
+  (it "does not add a separator when the older page already ends with a newline"
+    (with-temp-buffer
+      (insert "EXISTING")
+      (let ((session (make-eca--session)))
+        (spy-on 'eca--session-workspace-folders :and-return-value nil)
+        (spy-on 'font-lock-ensure)
+        (spy-on 'eca-chat--align-tables)
+        (spy-on 'eca-chat--beautify-tables)
+        (spy-on 'eca-chat--render-content :and-call-fake
+                (lambda (_session _buf _role content _roots &rest _)
+                  (goto-char (eca-chat--content-insertion-point))
+                  (insert (plist-get content :text))))
+        (eca-chat--render-history-contents
+         session (current-buffer)
+         (list '(:role "assistant" :content (:type "text" :text "m0\n"))))
+        (expect (buffer-string) :to-equal "m0\nEXISTING"))))
+
+  (it "restores eca-chat--last-user-message-pos after prepending"
+    (with-temp-buffer
+      (insert "EXISTING")
+      (setq-local eca-chat--last-user-message-pos 42)
+      (let ((session (make-eca--session)))
+        (spy-on 'eca--session-workspace-folders :and-return-value nil)
+        (spy-on 'font-lock-ensure)
+        (spy-on 'eca-chat--align-tables)
+        (spy-on 'eca-chat--beautify-tables)
+        (spy-on 'eca-chat--render-content :and-call-fake
+                (lambda (_session _buf _role _content _roots &rest _)
+                  (setq-local eca-chat--last-user-message-pos 999)))
+        (eca-chat--render-history-contents
+         session (current-buffer) (list '(:role "user" :content (:type "text" :text "m0"))))
+        (expect eca-chat--last-user-message-pos :to-equal 42)))))
+
+(describe "eca-chat-opened"
+  ;; Regression: resuming after a restart must not replay into a stale
+  ;; closed buffer left in the registry by `eca-chat-exit'.
+  (it "creates a fresh buffer when the registered chat buffer is closed"
+    (spy-on 'eca-chat--force-tab-line-update)
+    (let* ((session (make-eca--session))
+           (closed-buf (generate-new-buffer " *test-closed-chat*")))
+      (unwind-protect
+          (progn
+            (with-current-buffer closed-buf
+              (setq major-mode 'eca-chat-mode)
+              (setq-local eca-chat--id "chat-AAA")
+              (setq-local eca-chat--closed t))
+            (setf (eca--session-chats session)
+                  (eca-assoc (eca--session-chats session) "chat-AAA" closed-buf))
+            (eca-chat-opened session (list :chatId "chat-AAA" :title "My chat"))
+            (let ((registered (eca-get (eca--session-chats session) "chat-AAA")))
+              ;; The registry now points at a brand new, live, writable buffer.
+              (expect (buffer-live-p registered) :to-be-truthy)
+              (expect registered :not :to-be closed-buf)
+              (expect (buffer-local-value 'eca-chat--closed registered) :to-be nil)
+              (expect (buffer-local-value 'eca-chat--id registered)
+                      :to-equal "chat-AAA")
+              ;; The stale closed buffer is cleaned up, not left lingering.
+              (expect (buffer-live-p closed-buf) :to-be nil)
+              (when (and (buffer-live-p registered)
+                         (not (eq registered closed-buf)))
+                (kill-buffer registered))))
+        (when (buffer-live-p closed-buf)
+          (kill-buffer closed-buf)))))
+
+  (it "reuses the existing buffer when it is live and not closed"
+    (spy-on 'eca-chat--force-tab-line-update)
+    (let* ((session (make-eca--session))
+           (live-buf (generate-new-buffer " *test-open-chat*")))
+      (unwind-protect
+          (progn
+            (with-current-buffer live-buf
+              (setq major-mode 'eca-chat-mode)
+              (setq-local eca-chat--id "chat-BBB")
+              (setq-local eca-chat--closed nil)
+              (setq-local eca-chat--title "old title"))
+            (setf (eca--session-chats session)
+                  (eca-assoc (eca--session-chats session) "chat-BBB" live-buf))
+            (eca-chat-opened session (list :chatId "chat-BBB" :title "new title"))
+            (let ((registered (eca-get (eca--session-chats session) "chat-BBB")))
+              ;; No duplicate buffer; the title is propagated in place.
+              (expect registered :to-be live-buf)
+              (expect (buffer-local-value 'eca-chat--title live-buf)
+                      :to-equal "new title")))
+        (when (buffer-live-p live-buf)
+          (kill-buffer live-buf))))))
 
 ;;; eca-chat-test.el ends here

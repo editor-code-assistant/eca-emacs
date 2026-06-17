@@ -24,6 +24,7 @@
 (defvar eca-chat--tool-call-argument-value-face)
 (declare-function eca-chat--insert "eca-chat")
 (declare-function eca-chat--content-insertion-point "eca-chat")
+(declare-function eca-chat--protect-non-prompt "eca-chat")
 
 ;;;; Macros
 
@@ -524,7 +525,8 @@ in parent."
   "Toggle the expandable-content of ID.
 If FORCE? decide to CLOSE? or not."
   (when-let* ((ov-label (eca-chat--get-expandable-content id)))
-    (let* ((ov-content (overlay-get ov-label 'eca-chat--expandable-content-ov-content))
+    (let* ((inhibit-read-only t)
+           (ov-content (overlay-get ov-label 'eca-chat--expandable-content-ov-content))
            (content (overlay-get ov-content 'eca-chat--expandable-content-content))
            (segments (overlay-get ov-label 'eca-chat--expandable-content-segments))
            (children (eca-chat--segments-children segments))
@@ -584,7 +586,11 @@ If FORCE? decide to CLOSE? or not."
                    (overlay-start ov-content) (overlay-end ov-content) block-face))
                 (overlay-put ov-label 'eca-chat--expandable-content-toggle t)))
             ;; Repaint nested label's line-prefix after icon swap
-            (eca-chat--paint-nested-label ov-label))))
+            (eca-chat--paint-nested-label ov-label)))
+        ;; Toggling open inserts block content into the read-only history
+        ;; region, so re-protect it (from point-min, since the block may
+        ;; belong to an earlier turn outside the streamed scope).
+        (eca-chat--protect-non-prompt))
       close?)))
 
 (defun eca-chat--content-table (key-vals)

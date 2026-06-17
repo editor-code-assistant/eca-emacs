@@ -81,7 +81,15 @@ Sets subtle background tints on header and even-row faces."
 
 (defvar-keymap eca-table-actions-map
   :doc "Keymap active on table overlays with an action bar."
-  "w" #'eca-table-toggle-wrap)
+  "w" #'eca-table-toggle-wrap
+  "o" #'eca-table-open)
+
+(defvar-keymap eca-table-open-map
+  :doc "Keymap put on every markdown table so `o' opens it.
+It is attached as an overlay (char-property) keymap, which takes
+precedence over `evil' state maps, so `o' opens the table when point
+is on it while leaving `o' untouched everywhere else."
+  "o" #'eca-table-open)
 
 ;; Markdown display width ------------------------------------------------
 
@@ -167,6 +175,20 @@ Matches **text** (4 chars) and *text* (2 chars)."
       (setq start (match-end 0)))
     count))
 
+(defun eca-table--button (text command help)
+  "Return TEXT as a clickable action-bar button running COMMAND.
+HELP is shown as the tooltip on hover.  COMMAND is also reachable
+from the keyboard via `eca-table-actions-map' when point is inside
+the table."
+  (let ((map (make-sparse-keymap)))
+    (define-key map [mouse-1] command)
+    (define-key map [mouse-2] command)
+    (propertize text
+                'face 'eca-table-action-key-face
+                'mouse-face 'highlight
+                'keymap map
+                'help-echo help)))
+
 (defun eca-table--action-bar-string (truncated-p)
   "Build the action bar before-string.
 TRUNCATED-P indicates the current display mode."
@@ -177,7 +199,10 @@ TRUNCATED-P indicates the current display mode."
                  (propertize (concat "(" mode-label ")  ") 'face 'eca-table-action-key-face)
                  (if (fboundp 'rmc--add-key-description)
                      (cdr (funcall 'rmc--add-key-description (list ?w toggle-label)))
-                   (concat "[w] " toggle-label)))))
+                   (concat "[w] " toggle-label))
+                 "  "
+                 (eca-table--button "[o] open" #'eca-table-open
+                                    "mouse-1: open in its own buffer"))))
     (concat label "\n")))
 
 (defun eca-table--refresh-action-bar (ov)
@@ -199,6 +224,51 @@ TRUNCATED-P indicates the current display mode."
       (setq-local truncate-lines (eca-table--any-truncated-p))
       (when (not truncate-lines)
         (setq-local word-wrap t)))))
+
+(defun eca-table-open (&optional event)
+  "Open the markdown table at point (or clicked) in a dedicated buffer.
+The table is shown aligned in a `*eca-table*' buffer with
+`truncate-lines' enabled, so horizontal scrolling keeps the header
+aligned with the body and you can search or copy the whole table
+freely.  The chat buffer is not modified.  EVENT, when non-nil, is
+the mouse click on the action bar."
+  (interactive (list last-command-event))
+  (let ((pos (if (mouse-event-p event)
+                 (posn-point (event-start event))
+               (point)))
+        (beg nil)
+        (end nil))
+    (save-excursion
+      (when pos (goto-char pos))
+      (let ((ov (seq-find (lambda (o) (overlay-get o 'eca-table-action))
+                          (overlays-at (point)))))
+        (cond
+         (ov (setq beg (overlay-start ov) end (overlay-end ov)))
+         ((markdown-table-at-point-p)
+          (setq beg (markdown-table-begin) end (markdown-table-end))))))
+    (unless (and beg end)
+      (user-error "Point is not on a markdown table"))
+    (let ((text (buffer-substring-no-properties beg end))
+          (buf (get-buffer-create "*eca-table*")))
+      (with-current-buffer buf
+        (let ((inhibit-read-only t))
+          (erase-buffer)
+          (gfm-mode)
+          (setq-local markdown-hide-markup t)
+          (add-to-invisibility-spec 'markdown-markup)
+          (setq-local markdown-fontify-code-blocks-natively t)
+          (face-remap-add-relative 'markdown-table-face '(:inherit fixed-pitch))
+          (insert text)
+          (unless (bolp) (insert "\n"))
+          (goto-char (point-min))
+          (when (markdown-table-at-point-p)
+            (markdown-table-align)
+            (eca-table--align-at-point))
+          (font-lock-ensure)
+          (goto-char (point-min)))
+        (setq-local truncate-lines t)
+        (setq buffer-read-only t))
+      (pop-to-buffer buf))))
 
 ;; Overlay management -----------------------------------------------------
 
@@ -225,14 +295,21 @@ All changes are overlay-only — buffer text is untouched."
     ;; Clean any previous overlays in this table region
     (eca-table-remove-overlays tbl-beg tbl-end)
     ;; Add action bar for wide tables
-    (when wide-p
-      (let ((action-ov (make-overlay tbl-beg tbl-end)))
-        (overlay-put action-ov 'eca-table-overlay t)
-        (overlay-put action-ov 'eca-table-action t)
-        (overlay-put action-ov 'eca-table-truncated nil)
-        (overlay-put action-ov 'keymap eca-table-actions-map)
-        (overlay-put action-ov 'evaporate t)
-        (eca-table--refresh-action-bar action-ov)))
+    (if wide-p
+        (let ((action-ov (make-overlay tbl-beg tbl-end)))
+          (overlay-put action-ov 'eca-table-overlay t)
+          (overlay-put action-ov 'eca-table-action t)
+          (overlay-put action-ov 'eca-table-truncated nil)
+          ;; `eca-table-actions-map' binds w (wrap) and o (open).
+          (overlay-put action-ov 'keymap eca-table-actions-map)
+          (overlay-put action-ov 'evaporate t)
+          (eca-table--refresh-action-bar action-ov))
+      ;; Narrower tables get no action bar, but still bind `o' so the
+      ;; table can be opened in its own buffer from anywhere on it.
+      (let ((open-ov (make-overlay tbl-beg tbl-end)))
+        (overlay-put open-ov 'eca-table-overlay t)
+        (overlay-put open-ov 'keymap eca-table-open-map)
+        (overlay-put open-ov 'evaporate t)))
     (save-excursion
       (goto-char tbl-beg)
       (while (< (point) tbl-end)

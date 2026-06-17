@@ -91,6 +91,14 @@ ECA chat opens in a regular buffer that follows standard
   :type 'string
   :group 'eca)
 
+(defcustom eca-chat-read-only-history t
+  "When non-nil, make the chat history/output area read-only.
+Only the prompt block at the bottom stays editable, which prevents
+accidental edits to previous messages and assistant output.  Set
+to nil to keep the whole chat buffer writable."
+  :type 'boolean
+  :group 'eca)
+
 (defcustom eca-chat-prompt-prefix-loading "⏳ "
   "The prompt prefix string used in eca chat buffer when loading."
   :type 'string
@@ -297,6 +305,17 @@ works normally."
   :type 'boolean
   :group 'eca)
 
+(defcustom eca-chat-history-page-size 50
+  "Number of newest messages to load when opening a persisted chat.
+When non-nil, `eca-chat-resume' opens chats with a bounded window of the
+newest messages and shows a \"Load older messages\" control to page
+through earlier history on demand, avoiding a full replay of very long
+chats.  When nil, the entire history is replayed on open (legacy
+behavior)."
+  :type '(choice (const :tag "Full replay (no pagination)" nil)
+                 (integer :tag "Newest messages per page"))
+  :group 'eca)
+
 ;; Faces
 
 (defface eca-chat-prompt-prefix-face
@@ -474,6 +493,12 @@ works normally."
   "Face for the resume session link in the welcome area."
   :group 'eca)
 
+(defface eca-chat-load-more-face
+  '((((background dark))  (:foreground "deep sky blue" :underline t))
+    (((background light)) (:foreground "dark cyan" :underline t)))
+  "Face for the \"Load older messages\" control in the chat."
+  :group 'eca)
+
 (defface eca-chat-option-key-face
   '((t :inherit font-lock-doc-face))
   "Face for the option keys in header-line of the chat."
@@ -608,6 +633,17 @@ whether the first user prompt should erase the banner first.")
   "Hash table mapping tool-call-id to a plist (:session-tokens N :context-limit N).
 Stores the latest usage data received for each running subagent.")
 
+(defvar-local eca-chat--history-before-cursor nil
+  "Opaque cursor for loading the older history page, or nil at the start.")
+(defvar-local eca-chat--history-after-cursor nil
+  "Opaque cursor for loading the newer history page, or nil at the tail.")
+(defvar-local eca-chat--history-compaction-cursor nil
+  "Opaque cursor at the last compaction boundary, or nil when never compacted.")
+(defvar-local eca-chat--history-total nil
+  "Total number of messages in the full chat history, from pagination meta.")
+(defvar-local eca-chat--history-loading nil
+  "Non-nil while an older-history page request is in flight.")
+
 (defvar-local eca-chat--server-version nil
   "Cached ECA server version string for mode-line display.")
 
@@ -694,6 +730,7 @@ and resume link are not left behind under the replayed messages.")
     (define-key map (kbd "C-c C-p") #'eca-chat-repeat-prompt)
     (define-key map (kbd "C-c C-d") #'eca-chat-clear-prompt)
     (define-key map (kbd "C-c C-S-h") #'eca-chat-timeline)
+    (define-key map (kbd "C-c C-S-o") #'eca-chat-load-older-history)
     (define-key map (kbd "C-c C-a") #'eca-chat-tool-call-accept-all)
     (define-key map (kbd "C-c C-S-a") #'eca-chat-tool-call-accept-next)
     (define-key map (kbd "C-c C-y") #'eca-chat-tool-call-accept-all-and-remember)
@@ -753,7 +790,8 @@ its real id and there is no `'empty' placeholder to migrate from."
 
 (defun eca-chat--insert (&rest contents)
   "Insert CONTENTS reseting undo-list to avoid buffer inconsistencies."
-  (apply #'insert contents)
+  (let ((inhibit-read-only t))
+    (apply #'insert contents))
   (setq-local buffer-undo-list nil))
 
 (defun eca-chat--spinner-start (callback)
@@ -994,12 +1032,14 @@ request, useful for subagent tool calls."
     (move-overlay context-area-ov (overlay-start context-area-ov) (1- (overlay-end context-area-ov))))
   (let ((prompt-field-ov (make-overlay (line-beginning-position) (1+ (line-beginning-position)) (current-buffer))))
     (overlay-put prompt-field-ov 'eca-chat-prompt-field t)
-    (overlay-put prompt-field-ov 'before-string (propertize eca-chat-prompt-prefix 'font-lock-face 'eca-chat-prompt-prefix-face))))
+    (overlay-put prompt-field-ov 'before-string (propertize eca-chat-prompt-prefix 'font-lock-face 'eca-chat-prompt-prefix-face)))
+  (eca-chat--protect-non-prompt))
 
 (defun eca-chat--clear (&optional new-prompt-content)
   "Clear the chat for SESSION and then insert NEW-PROMPT-CONTENT."
-  (erase-buffer)
-  (remove-overlays (point-min) (point-max))
+  (let ((inhibit-read-only t))
+    (erase-buffer)
+    (remove-overlays (point-min) (point-max)))
   (eca-chat--invalidate-overlay-caches)
   (eca-chat-expandable--reset-id-table)
   (setq-local eca-chat--task-state nil)
@@ -1014,6 +1054,12 @@ request, useful for subagent tool calls."
   (setq-local eca-chat--steered-prompt nil)
   (setq-local eca-chat--queued-prompt nil)
   (setq-local eca-chat--welcome-shown nil)
+  (setq-local eca-chat--last-user-message-pos nil)
+  (setq-local eca-chat--history-before-cursor nil)
+  (setq-local eca-chat--history-after-cursor nil)
+  (setq-local eca-chat--history-compaction-cursor nil)
+  (setq-local eca-chat--history-total nil)
+  (setq-local eca-chat--history-loading nil)
   (clrhash eca-chat--subagent-chat-id->tool-call-id)
   (clrhash eca-chat--subagent-usage)
   (eca-chat--insert "\n")
@@ -1238,10 +1284,64 @@ Should be called whenever overlays are wholesale removed, e.g. via
 (defconst eca-chat--task-block-id "eca-chat-task"
   "Fixed expandable block ID for the task area widget.")
 
+(defvar eca-chat--insertion-point-override nil
+  "When non-nil, a marker overriding `eca-chat--content-insertion-point'.
+Bound while prepending an older history page so the shared content
+renderer inserts above existing content instead of just above the
+prompt area.")
+
 (defun eca-chat--content-insertion-point ()
   "Return the point where new chat content should be inserted.
-Returns the position just before the prompt area start."
-  (1- (eca-chat--prompt-area-start-point)))
+When `eca-chat--insertion-point-override' is set, returns its position
+\(used to prepend older history above existing content); otherwise the
+position just before the prompt area start."
+  (or (and eca-chat--insertion-point-override
+           (marker-position eca-chat--insertion-point-override))
+      (1- (eca-chat--prompt-area-start-point))))
+
+(defun eca-chat--load-older-control-region ()
+  "Return (BEG . END) of the load-older control, or nil when absent.
+END is the position just after the control (start of the message area)."
+  (let ((beg (text-property-any (point-min) (point-max) 'eca-chat-load-older t)))
+    (when beg
+      (cons beg (or (text-property-not-all beg (point-max) 'eca-chat-load-older t)
+                    (point-max))))))
+
+(defun eca-chat--older-content-start ()
+  "Return the position where an older history page should be inserted.
+Just after the load-older control when present, else the top of the buffer."
+  (or (cdr (eca-chat--load-older-control-region))
+      (point-min)))
+
+(defun eca-chat--read-only-end-point ()
+  "Return the position where the read-only region ends.
+This is the start of the progress area, so the history, the
+separator and the task area are all read-only while the progress,
+context and prompt input stay editable.  Falls back to the prompt
+area start when the progress overlay does not exist yet."
+  (or (-some-> (eca-chat--prompt-progress-field-ov) (overlay-start))
+      (eca-chat--prompt-area-start-point)))
+
+(defun eca-chat--protect-non-prompt (&optional from)
+  "Make the chat history, separator and task area read-only.
+Apply the `read-only' text property from FROM (default
+`point-min') up to the progress area so the history, the prompt
+separator and the task area are locked, while the progress,
+context and prompt input stay editable.  The first protected char
+is `front-sticky' and the last is `rear-nonsticky' for
+`read-only', so the locked region rejects edits while typing in
+the progress/context/prompt still works.  No-op when
+`eca-chat-read-only-history' is nil or the boundary is absent."
+  (when eca-chat-read-only-history
+    (when-let* ((end (eca-chat--read-only-end-point)))
+      (let ((inhibit-read-only t)
+            (beg (max (point-min) (or from (point-min)))))
+        (when (< beg end)
+          (put-text-property beg end 'read-only t)
+          (put-text-property (1- end) end 'rear-nonsticky '(read-only))
+          (when (= beg (point-min))
+            (put-text-property (point-min) (1+ (point-min))
+                               'front-sticky '(read-only))))))))
 
 (defun eca-chat--ensure-prompt-visible ()
   "Scroll the chat window so the prompt area stays visible.
@@ -1834,6 +1934,32 @@ or \"Xm\" when seconds are zero."
     (not (null (text-property-search-forward
                 'eca-tool-call-pending-approval-accept t t)))))
 
+(defun eca-chat--needs-attention-p (buffer)
+  "Return non-nil when chat BUFFER is waiting on the user.
+A chat needs attention when it has a pending tool call approval
+or an unanswered question.  A still loading chat is busy, not
+waiting, so it is not considered."
+  (and (buffer-live-p buffer)
+       (with-current-buffer buffer
+         (and (derived-mode-p 'eca-chat-mode)
+              (or (eca-chat--has-pending-approvals-p)
+                  (and eca-chat--pending-question t))))))
+
+(defun eca-chat-session-status (session)
+  "Return the aggregated status of all chats in SESSION.
+Return the symbol `waiting-approval' when any chat waits on the
+user (pending tool call approval or question), `running' when any
+chat is loading, otherwise `idle'."
+  (let ((buffers (-filter #'buffer-live-p
+                          (eca-vals (eca--session-chats session)))))
+    (cond
+     ((-first #'eca-chat--needs-attention-p buffers) 'waiting-approval)
+     ((-first (lambda (buffer)
+                (buffer-local-value 'eca-chat--chat-loading buffer))
+              buffers)
+      'running)
+     (t 'idle))))
+
 (defun eca-chat--chat-status-prefix ()
   "Return a status prefix string for the current chat buffer.
 Returns \"🚧 \" for pending approvals, \"⏳ \" for loading, or \"\" otherwise."
@@ -2145,6 +2271,16 @@ If `eca-chat-focus-on-open' is non-nil, the window is selected."
   "Pop eca dedicated window if it exists."
   (let ((buffer (current-buffer)))
     (eca-chat--display-buffer buffer)))
+
+(defun eca-chat--switch-to-buffer (buffer session)
+  "Switch to chat BUFFER for SESSION."
+  (unless (buffer-live-p buffer)
+    (user-error "Chat buffer no longer exists"))
+  (if-let* ((window (get-buffer-window buffer)))
+      (select-window window)
+    (eca-chat--display-buffer buffer))
+  (setf (eca--session-last-chat-buffer session) buffer)
+  buffer)
 
 (defun eca-chat--mark-header ()
   "Mark last messages header."
@@ -3300,12 +3436,130 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
                     ((buffer-live-p parent-buffer)))
           (eca-chat--with-current-buffer parent-buffer
             (when-let* ((tool-call-id (gethash chat-id eca-chat--subagent-chat-id->tool-call-id)))
-              (eca-chat--render-content session parent-buffer role content roots tool-call-id chat-id))))
+              (eca-chat--render-content session parent-buffer role content roots tool-call-id chat-id)
+              (eca-chat--protect-non-prompt eca-chat--last-user-message-pos))))
       ;; Normal content
       (when-let* ((chat-buffer (eca-chat--get-chat-buffer session chat-id))
                   ((buffer-live-p chat-buffer)))
         (eca-chat--with-current-buffer chat-buffer
-          (eca-chat--render-content session chat-buffer role content roots))))))
+          (eca-chat--render-content session chat-buffer role content roots)
+          (eca-chat--protect-non-prompt eca-chat--last-user-message-pos))))))
+
+(defun eca-chat--render-history-contents (session chat-buffer contents)
+  "Prepend CONTENTS above existing content in CHAT-BUFFER for SESSION.
+CONTENTS is the list of `chat/history' items (each shaped like a
+`chat/contentReceived' payload); they are rendered in order at the top
+of the message area so older pages stack above newer ones.  Subagent
+items (those carrying :parentChatId) are routed into their parent tool
+call exactly as the streaming path does.
+
+The live-turn marker `eca-chat--last-user-message-pos' is saved and
+restored so prepending older content does not move the scope used by the
+streaming renderer; fontification and table styling are applied to the
+prepended region explicitly.  Callers are expected to re-apply
+`eca-chat--protect-non-prompt' afterwards."
+  (eca-chat--with-current-buffer chat-buffer
+    (let* ((roots (eca--session-workspace-folders session))
+           (start (eca-chat--older-content-start))
+           (m (copy-marker start t))
+           (saved-last-user-pos eca-chat--last-user-message-pos))
+      (unwind-protect
+          (let ((eca-chat--insertion-point-override m))
+            (seq-do
+             (lambda (item)
+               (let ((role (plist-get item :role))
+                     (content (plist-get item :content))
+                     (parent-chat-id (plist-get item :parentChatId))
+                     (item-chat-id (plist-get item :chatId)))
+                 (if parent-chat-id
+                     (when-let* ((tool-call-id (gethash item-chat-id eca-chat--subagent-chat-id->tool-call-id)))
+                       (eca-chat--render-content session chat-buffer role content roots tool-call-id item-chat-id))
+                   (eca-chat--render-content session chat-buffer role content roots))))
+             contents))
+        (setq-local eca-chat--last-user-message-pos saved-last-user-pos)
+        ;; Separate the prepended block from the content below with a single
+        ;; newline: historical content has no trailing turn-end newline, so the
+        ;; last older line would otherwise glue to the first existing line.
+        (let ((pos (marker-position m)))
+          (when (and (> pos (point-min))
+                     (< pos (point-max))
+                     (not (eq (char-before pos) ?\n))
+                     (not (eq (char-after pos) ?\n)))
+            (save-excursion (goto-char pos) (insert "\n"))))
+        (let ((end (marker-position m)))
+          (font-lock-ensure start end)
+          (eca-chat--align-tables start)
+          (eca-chat--beautify-tables start))
+        (set-marker m nil)))))
+
+(defun eca-chat--apply-history-meta (meta)
+  "Update buffer-local history pagination cursors from META plist."
+  (when meta
+    (setq-local eca-chat--history-before-cursor (plist-get meta :beforeCursor))
+    (setq-local eca-chat--history-after-cursor (plist-get meta :afterCursor))
+    (setq-local eca-chat--history-compaction-cursor (plist-get meta :compactionCursor))
+    (setq-local eca-chat--history-total (plist-get meta :total))))
+
+(defun eca-chat--refresh-load-older-control ()
+  "Insert or remove the clickable \"Load older messages\" control.
+Shown at the top of the buffer only when an older page is available
+\(`eca-chat--history-before-cursor' is non-nil)."
+  (let ((inhibit-read-only t))
+    (save-excursion
+      (when-let* ((region (eca-chat--load-older-control-region)))
+        (delete-region (car region) (cdr region)))
+      (when eca-chat--history-before-cursor
+        (goto-char (point-min))
+        (let ((beg (point)))
+          (eca-chat--insert
+           (eca-buttonize
+            eca-chat-mode-map
+            (propertize "Load older messages"
+                        'font-lock-face 'eca-chat-load-more-face)
+            #'eca-chat-load-older-history)
+           "\n")
+          (put-text-property beg (point) 'eca-chat-load-older t))))))
+
+(defun eca-chat-load-older-history ()
+  "Load and prepend the previous (older) page of this chat's history."
+  (interactive)
+  (let ((session (eca-session))
+        (buffer (current-buffer))
+        (chat-id eca-chat--id))
+    (cond
+     ((not eca-chat--history-before-cursor)
+      (message "No older messages to load."))
+     (eca-chat--history-loading
+      (message "Already loading older messages…"))
+     (t
+      (setq-local eca-chat--history-loading t)
+      (eca-api-request-async
+       session
+       :method "chat/history"
+       :params (append (list :chatId chat-id
+                             :before eca-chat--history-before-cursor)
+                       (when eca-chat-history-page-size
+                         (list :limit eca-chat-history-page-size)))
+       :success-callback
+       (lambda (res)
+         (when (buffer-live-p buffer)
+           (eca-chat--with-current-buffer buffer
+             (setq-local eca-chat--history-loading nil)
+             (if-let* ((err (plist-get res :error)))
+                 (if (string= (plist-get err :code) "cursor_expired")
+                     (message "Chat history changed; reopen the chat to continue paging.")
+                   (message "Failed to load older messages: %s" (plist-get err :message)))
+               (progn
+                 (eca-chat--render-history-contents session buffer (append (plist-get res :contents) nil))
+                 (eca-chat--apply-history-meta (plist-get res :meta))
+                 (eca-chat--refresh-load-older-control)
+                 (eca-chat--protect-non-prompt))))))
+       :error-callback
+       (lambda (err)
+         (when (buffer-live-p buffer)
+           (eca-chat--with-current-buffer buffer
+             (setq-local eca-chat--history-loading nil)
+             (message "Failed to load older messages: %s" err)))))))))
 
 (defun eca-chat-cleared (session params)
   "Clear chat for SESSION and PARAMS requested by server."
@@ -3393,18 +3647,27 @@ update the title and return without creating a duplicate buffer.
 Otherwise, creates a new chat buffer for a server-initiated chat
 \(e.g. /fork or replay via chat/open\) and registers it under the
 real chat-id so subsequent `chat/contentReceived' notifications
-render into it."
+render into it.
+
+A registered buffer marked `eca-chat--closed' (left behind by
+`eca-chat-exit' on restart) is treated as stale, not reused, so a
+resumed chat gets a fresh writable buffer."
   (let* ((chat-id (plist-get params :chatId))
          (title (plist-get params :title))
          (existing (eca-get (eca--session-chats session) chat-id)))
     (cond
-     ((and existing (buffer-live-p existing))
+     ((and existing (buffer-live-p existing)
+           (not (buffer-local-value 'eca-chat--closed existing)))
       ;; Already known: propagate title (if any) but do not duplicate.
       (when title
         (with-current-buffer existing
           (setq-local eca-chat--title title)))
       (eca-chat--force-tab-line-update))
      (t
+      ;; Any live buffer reaching here is a stale closed one; kill it so
+      ;; it doesn't linger as an orphan `:closed' buffer.
+      (when (and existing (buffer-live-p existing))
+        (kill-buffer existing))
       (cl-incf eca-chat--new-chat-id)
       (let ((new-buffer (eca-chat--create-buffer session)))
         (with-current-buffer new-buffer
@@ -3566,7 +3829,8 @@ Used as fallback when no toolCallId is available."
   "Replace the standalone question block with TEXT."
   (when-let* ((ov (eca-chat--question-block-ov)))
     (let ((start (overlay-start ov))
-          (end (overlay-end ov)))
+          (end (overlay-end ov))
+          (inhibit-read-only t))
       (delete-overlay ov)
       (save-excursion
         (goto-char start)
@@ -3926,6 +4190,73 @@ If there is no next user message, go to the chat prompt line."
   (eca-assert-session-running (eca-session))
   (eca-chat--go-to-overlay 'eca-chat--expandable-content-id (1+ (point)) (point-max) t))
 
+(defun eca-chat--session-chats-oldest-first (session)
+  "Return SESSION's chat buffers ordered oldest-first."
+  (nreverse (eca-vals (eca--session-chats session))))
+
+(defun eca-chat--rotate-after (items pos)
+  "Return ITEMS rotated to start right after position POS.
+The element at POS is moved to the end so it is visited last.
+When POS is nil, return ITEMS unchanged."
+  (if pos
+      (append (nthcdr (1+ pos) items)
+              (cl-subseq items 0 (1+ pos)))
+    items))
+
+;;;###autoload
+(defun eca-chat-go-to-next-attention-in-project ()
+  "Go to the next chat of the current project needing attention.
+A chat needs attention when it is waiting on you: a tool call
+pending approval or an unanswered question.  Cycles through the
+current session's chats, wrapping around, so repeated invocations
+visit every chat that is waiting."
+  (interactive)
+  (let ((session (eca-session)))
+    (eca-assert-session-running session)
+    (let* ((chats (eca-chat--session-chats-oldest-first session))
+           ;; Start searching after the current chat (wrapping) so each
+           ;; call advances instead of re-selecting the current one.
+           (ordered (eca-chat--rotate-after chats
+                                            (cl-position (current-buffer)
+                                                         chats)))
+           (target (seq-find #'eca-chat--needs-attention-p ordered)))
+      (if target
+          (eca-chat--switch-to-buffer target session)
+        (eca-info "No chat needs attention in this project")))))
+
+;;;###autoload
+(defun eca-chat-go-to-next-attention ()
+  "Go to the next chat needing attention, cycling across projects.
+A chat needs attention when it is waiting on you: a tool call
+pending approval or an unanswered question.  Exhausts the current
+project's chats first, then moves on to the next project (ECA
+session), eventually visiting them all and wrapping around."
+  (interactive)
+  (let ((sessions (sort (copy-sequence (eca-vals eca--sessions))
+                        (lambda (a b)
+                          (< (eca--session-id a) (eca--session-id b))))))
+    (eca-assert-session-running (car sessions))
+    (let* ((entries (cl-loop
+                     for session in sessions
+                     append (cl-loop
+                             for buffer in (eca-chat--session-chats-oldest-first
+                                            session)
+                             collect (cons session buffer))))
+           ;; Anchor at the current chat; when not in a chat, anchor just
+           ;; before the current session's entries so they are searched
+           ;; first.
+           (pos (or (cl-position (current-buffer) entries :key #'cdr)
+                    (when-let* ((session (eca-session))
+                                (idx (cl-position session entries
+                                                  :key #'car)))
+                      (1- idx))))
+           (target (seq-find (lambda (entry)
+                               (eca-chat--needs-attention-p (cdr entry)))
+                             (eca-chat--rotate-after entries pos))))
+      (if target
+          (eca-chat--switch-to-buffer (cdr target) (car target))
+        (eca-info "No chat needs attention in any project")))))
+
 ;;;###autoload
 (defun eca-chat-toggle-expandable-block (&optional force-open?)
   "Toggle current expandable block at point.
@@ -4220,7 +4551,9 @@ the empty buffer that was used to trigger the resume."
             (eca-api-request-async
              session
              :method "chat/open"
-             :params (list :chatId chat-id)
+             :params (append (list :chatId chat-id)
+                             (when eca-chat-history-page-size
+                               (list :limit eca-chat-history-page-size)))
              :success-callback
              (lambda (open-res)
                (cond
@@ -4231,6 +4564,10 @@ the empty buffer that was used to trigger the resume."
                 (t
                  (let ((chat-buf (eca-get (eca--session-chats session) chat-id)))
                    (setf (eca--session-last-chat-buffer session) chat-buf)
+                   (eca-chat--with-current-buffer chat-buf
+                     (eca-chat--apply-history-meta (plist-get open-res :meta))
+                     (eca-chat--refresh-load-older-control)
+                     (eca-chat--protect-non-prompt))
                    (eca-chat-open session)
                    (eca-chat--kill-empty-welcome-buffer session from-buf chat-buf)))))
              :error-callback

@@ -41,6 +41,7 @@
 (require 'eca-editor)
 (require 'eca-completion)
 (require 'eca-rewrite)
+(require 'eca-doom)
 
 (declare-function package-desc-version "package" (pkg-desc))
 (declare-function package-version-join "package" (vlist))
@@ -569,16 +570,6 @@ Candidate names are made unique when multiple chats share the same title."
           (category . eca-chat))
       (complete-with-action action (mapcar #'car candidates) string pred))))
 
-(defun eca--switch-to-chat-buffer (buffer session)
-  "Switch to chat BUFFER for SESSION."
-  (unless (buffer-live-p buffer)
-    (user-error "Chat buffer no longer exists"))
-  (if-let* ((window (get-buffer-window buffer)))
-      (select-window window)
-    (eca-chat--display-buffer buffer))
-  (setf (eca--session-last-chat-buffer session) buffer)
-  buffer)
-
 (defun eca--switch-to-chat-candidate (prompt candidates empty-message)
   "Switch to a chat selected from CANDIDATES using PROMPT.
 
@@ -592,7 +583,7 @@ Signal EMPTY-MESSAGE as a `user-error' when CANDIDATES is nil."
                    (cdr (assoc choice candidates)))))
          (buffer (plist-get info :buffer))
          (session (plist-get info :session)))
-    (eca--switch-to-chat-buffer buffer session)))
+    (eca-chat--switch-to-buffer buffer session)))
 
 ;;;###autoload
 (defun eca-switch-to-chat ()
