@@ -545,6 +545,44 @@ does not treat the first line as metadata.  Returns FN's value."
         (expect 'eca-chat--set-chat-loading :to-have-been-called-with
                 session 'stopping)))))
 
+(describe "eca-chat--dismiss-pending-question-for-tool-call"
+  ;; When another client answers/cancels the same `ask_user' question first,
+  ;; the server resolves the tool call and we receive a `toolCalled' /
+  ;; `toolCallRejected' for that id. This client must then drop its now-stale
+  ;; pending-question state so the prompt leaves answer mode.
+  (it "clears the pending question when the tool-call id matches"
+    (with-temp-buffer
+      (setq-local eca-chat--pending-question
+                  (list :session (make-eca--session) :request 1
+                        :tool-call-id "tc-1" :allow-freeform t))
+      (spy-on 'eca-chat--set-question-prompt-prefix)
+      (spy-on 'eca-chat--refresh-transient-area)
+      (eca-chat--dismiss-pending-question-for-tool-call "tc-1")
+      (expect eca-chat--pending-question :to-be nil)
+      (expect 'eca-chat--set-question-prompt-prefix
+              :to-have-been-called-with nil)
+      (expect 'eca-chat--refresh-transient-area :to-have-been-called)))
+
+  (it "leaves the pending question intact when the id does not match"
+    (with-temp-buffer
+      (let ((pending (list :session (make-eca--session) :request 1
+                           :tool-call-id "tc-1" :allow-freeform t)))
+        (setq-local eca-chat--pending-question pending)
+        (spy-on 'eca-chat--set-question-prompt-prefix)
+        (spy-on 'eca-chat--refresh-transient-area)
+        (eca-chat--dismiss-pending-question-for-tool-call "tc-2")
+        (expect eca-chat--pending-question :to-equal pending)
+        (expect 'eca-chat--set-question-prompt-prefix
+                :not :to-have-been-called))))
+
+  (it "does nothing when there is no pending question"
+    (with-temp-buffer
+      (setq-local eca-chat--pending-question nil)
+      (spy-on 'eca-chat--refresh-transient-area)
+      (eca-chat--dismiss-pending-question-for-tool-call "tc-1")
+      (expect eca-chat--pending-question :to-be nil)
+      (expect 'eca-chat--refresh-transient-area :not :to-have-been-called))))
+
 (describe "eca-chat--normalize-question-option"
   ;; Regression: a `chat/askQuestion' option that is a plain string or a
   ;; plist without `:label' must not crash rendering with
