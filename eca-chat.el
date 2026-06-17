@@ -634,6 +634,8 @@ whether the first user prompt should erase the banner first.")
 (defvar-local eca-chat--last-user-message-pos nil)
 (defvar-local eca-chat--last-response-copy-start nil
   "Buffer position where the latest assistant response starts.")
+(defvar-local eca-chat--last-response-copy-kind nil
+  "Kind of latest top-level assistant content for copy scoping.")
 (defvar-local eca-chat--chat-loading nil)
 (defvar-local eca-chat--session-cost nil)
 (defvar-local eca-chat--message-cost nil)
@@ -2402,6 +2404,19 @@ the new turn instead of the full chat history."
                     (or eca-chat--last-user-message-pos (point-min))
                     (point-max))))))))))
 
+(defun eca-chat--copy-region-text (beg end)
+  "Return text between BEG and END without copy button text."
+  (let ((pos beg)
+        parts)
+    (while (< pos end)
+      (let ((next (or (next-single-property-change
+                       pos 'eca-chat--copy-button-kind nil end)
+                      end)))
+        (unless (get-text-property pos 'eca-chat--copy-button-kind)
+          (push (buffer-substring-no-properties pos next) parts))
+        (setq pos next)))
+    (apply #'concat (nreverse parts))))
+
 (defun eca-chat--copy-region (start end description)
   "Copy text between START and END and show DESCRIPTION."
   (let ((buffer (or (and (markerp start) (marker-buffer start))
@@ -2410,26 +2425,77 @@ the new turn instead of the full chat history."
         (finish (if (markerp end) (marker-position end) end)))
     (with-current-buffer buffer
       (kill-new (string-trim-right
-                 (buffer-substring-no-properties beg finish))))
+                 (eca-chat--copy-region-text beg finish))))
     (message "Copied %s" description)))
 
-(defun eca-chat--copy-overlay-text (text callback help)
-  "Return overlay TEXT using CALLBACK and HELP."
-  (let* ((callback-int (lambda (&rest _)
+(defun eca-chat--copy-button-text (text callback help)
+  "Return actionable copy button TEXT using CALLBACK and HELP."
+  (let* ((button (eca-buttonize eca-chat-mode-map text callback))
+         (callback-int (lambda (&rest _)
                          (interactive)
                          (funcall callback)))
-         (map (make-sparse-keymap)))
+         (map (eca-chat--copy-button-keymap button)))
     (define-key map (kbd "<mouse-1>") callback-int)
-    (define-key map (kbd "<return>") callback-int)
-    (define-key map (kbd "RET") callback-int)
-    (propertize text
-                'font-lock-face 'eca-chat-copy-button-face
-                'mouse-face 'highlight
-                'pointer 'hand
-                'help-echo help
-                'eca-button-on-action callback
-                'local-map map
-                'keymap map)))
+    (add-text-properties
+     0 (length button)
+     `(font-lock-face eca-chat-copy-button-face
+       mouse-face highlight
+       help-echo ,help)
+     button)
+    button))
+
+(defun eca-chat--copy-button-keymap (button)
+  "Return the keymap from copy BUTTON."
+  (or (get-text-property 0 'keymap button)
+      (get-text-property 0 'local-map button)))
+
+(defun eca-chat--decorate-copy-button-overlay (overlay button prop)
+  "Decorate OVERLAY for copy BUTTON and mark it with PROP."
+  (overlay-put overlay prop t)
+  (overlay-put overlay 'keymap (eca-chat--copy-button-keymap button))
+  (overlay-put overlay 'local-map (eca-chat--copy-button-keymap button))
+  (overlay-put overlay 'mouse-face 'highlight)
+  (overlay-put overlay 'pointer 'hand)
+  (overlay-put overlay 'help-echo (get-text-property 0 'help-echo button)))
+
+(defun eca-chat--remove-copy-buttons (start end kind)
+  "Remove copy button text of KIND between START and END.
+Return the adjusted end position after deletion."
+  (let ((end-marker (copy-marker end)))
+    (save-excursion
+      (goto-char start)
+      (while (< (point) (marker-position end-marker))
+        (let ((next (or (next-single-property-change
+                         (point) 'eca-chat--copy-button-kind
+                         nil end-marker)
+                        (marker-position end-marker))))
+          (if (eq (get-text-property
+                   (point) 'eca-chat--copy-button-kind)
+                  kind)
+              (let ((inhibit-read-only t))
+                (delete-region (point) next))
+            (goto-char next)))))
+    (prog1 (marker-position end-marker)
+      (set-marker end-marker nil))))
+
+(defun eca-chat--insert-copy-button (pos button kind overlay-prop)
+  "Insert copy BUTTON at POS and mark it as KIND with OVERLAY-PROP.
+Return the position after the inserted button."
+  (let ((inhibit-read-only t))
+    (save-excursion
+      (goto-char pos)
+      (add-text-properties
+       0 (length button)
+       `(eca-chat--copy-button-kind ,kind
+         rear-nonsticky t)
+       button)
+      (let ((beg (point)))
+        (insert button)
+        (let ((ov (make-overlay beg (point) nil t t)))
+          (eca-chat--decorate-copy-button-overlay
+           ov button overlay-prop))
+        (setq-local buffer-undo-list nil)
+        (point)))))
 
 (defun eca-chat--code-fence-close-regexp (fence)
   "Return regexp matching the closing FENCE line."
@@ -2437,23 +2503,22 @@ the new turn instead of the full chat history."
 
 (defun eca-chat--refresh-code-copy-buttons (&optional from to)
   "Refresh copy buttons for fenced code blocks between FROM and TO."
-  (let ((start (or from (point-min)))
-        (end (or to (point-max))))
+  (let* ((start (or from (point-min)))
+         (end (eca-chat--remove-copy-buttons
+               start (or to (point-max)) 'code))
+         (limit (copy-marker end)))
     (remove-overlays start end 'eca-chat--code-copy-button t)
     (when eca-chat-show-copy-buttons
       (save-excursion
         (goto-char start)
-        (while (re-search-forward "^[ \t]*\\(``+\\|~~+\\).*$" end t)
+        (while (re-search-forward "^[ \t]*\\(``+\\|~~+\\).*$" limit t)
           (let* ((open-start (line-beginning-position))
                  (fence (match-string-no-properties 1))
                  (body-start (copy-marker (1+ (line-end-position)) t))
                  (close-regexp (eca-chat--code-fence-close-regexp fence)))
-            (when (re-search-forward close-regexp end t)
+            (when (re-search-forward close-regexp limit t)
               (let* ((body-end (copy-marker (match-beginning 0)))
-                     (ov (make-overlay open-start
-                                       (marker-position body-start)
-                                       nil t t))
-                     (button (eca-chat--copy-overlay-text
+                     (button (eca-chat--copy-button-text
                               "[copy]\n"
                               (lambda ()
                                 (interactive)
@@ -2462,43 +2527,45 @@ the new turn instead of the full chat history."
                                  body-end
                                  "code block"))
                               "Copy code block")))
-                (overlay-put ov 'eca-chat--code-copy-button t)
-                (overlay-put ov 'display button)))))))))
+                (eca-chat--insert-copy-button
+                 open-start button 'code 'eca-chat--code-copy-button)))))))
+    (set-marker limit nil)))
 
 (defun eca-chat--refresh-response-copy-button (&optional from to)
   "Refresh the copy button for assistant response between FROM and TO."
   (let* ((start (or from eca-chat--last-response-copy-start))
-         (end (or to (eca-chat--prompt-area-start-point))))
+         (end (or to (eca-chat--content-insertion-point))))
     (when (and start end (< start end))
+      (setq end (eca-chat--remove-copy-buttons start end 'response))
       (remove-overlays start end 'eca-chat--response-copy-button t)
       (when (and eca-chat-show-copy-buttons
                  (not (string-empty-p
                        (string-trim
                         (buffer-substring-no-properties start end)))))
-        (let* ((copy-start (copy-marker start t))
-               (copy-end (copy-marker end))
-               (ov (make-overlay start start nil t t))
-               (button (eca-chat--copy-overlay-text
-                        "[copy response]\n"
-                        (lambda ()
-                          (interactive)
-                          (eca-chat--copy-region
-                           copy-start
-                           copy-end
-                           "response"))
-                        "Copy response")))
-          (overlay-put ov 'eca-chat--response-copy-button t)
-          (overlay-put ov 'before-string button))))))
+        (let ((copy-start (make-marker))
+              (copy-end (copy-marker end)))
+          (let* ((button (eca-chat--copy-button-text
+                          "[copy response]\n"
+                          (lambda ()
+                            (interactive)
+                            (eca-chat--copy-region
+                             copy-start
+                             copy-end
+                             "response"))
+                          "Copy response"))
+                 (button-end (eca-chat--insert-copy-button
+                              start button 'response
+                              'eca-chat--response-copy-button)))
+            (set-marker copy-start button-end (current-buffer))))))))
 
 (defun eca-chat--refresh-copy-buttons ()
   "Refresh copy affordances for the latest assistant response."
-  (let ((start (or eca-chat--last-response-copy-start
-                   eca-chat--last-user-message-pos
-                   (point-min)))
-        (end (eca-chat--prompt-area-start-point)))
+  (let ((start eca-chat--last-response-copy-start)
+        (end (eca-chat--content-insertion-point)))
     (when (and start end (< start end))
       (eca-chat--refresh-response-copy-button start end)
-      (eca-chat--refresh-code-copy-buttons start end))))
+      (eca-chat--refresh-code-copy-buttons
+       start (eca-chat--content-insertion-point)))))
 
 (defun eca-chat--add-text-content (text &optional overlay-key overlay-value)
   "Add TEXT to the chat current position.
@@ -3059,6 +3126,23 @@ Only updates the label line, preserving all nested child content."
   "Build the expandable block content string from TASKS list."
   (mapconcat #'eca-chat--task-format-task tasks "\n"))
 
+(defun eca-chat--response-copy-break-content-p (type)
+  "Return non-nil when TYPE should restart response copy scope."
+  (member type
+          '("flag" "image"
+            "reasonStarted" "reasonText" "reasonFinished"
+            "hookActionStarted" "hookActionFinished"
+            "toolCallPrepare" "toolCallRun" "toolCallRunning"
+            "toolCalled" "toolCallRejected")))
+
+(defun eca-chat--mark-response-copy-break (type parent-tool-call-id)
+  "Mark TYPE as a top-level break for response copy scope.
+PARENT-TOOL-CALL-ID means content belongs to a tool block."
+  (when (and (not parent-tool-call-id)
+             (eca-chat--response-copy-break-content-p type))
+    (setq-local eca-chat--last-response-copy-start nil)
+    (setq-local eca-chat--last-response-copy-kind 'break)))
+
 (defun eca-chat--update-task-state (content)
   "Extract task state from tool-call CONTENT details and update the task area.
 Uses the expandable block system to render the task widget.
@@ -3099,8 +3183,9 @@ CHAT-ID is the chat session the content belongs to, used for tool call
 approval requests.  Falls back to the buffer-local `eca-chat--id'.
 Must be called with `eca-chat--with-current-buffer' or equivalent."
   (let* ((content-id (plist-get content :contentId))
+         (content-type (plist-get content :type))
          (tool-call-next-line-spacing (make-string (1+ (length eca-chat-expandable-block-open-symbol)) ?\s)))
-    (pcase (plist-get content :type)
+    (pcase content-type
       ("metadata"
        (unless parent-tool-call-id
          (setq-local eca-chat--title (plist-get content :title))))
@@ -3127,6 +3212,7 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
                   (overlay-put ov 'eca-chat--user-message-id content-id)
                   (overlay-put ov 'eca-chat--timestamp (float-time)))
                 (setq-local eca-chat--last-response-copy-start nil)
+                (setq-local eca-chat--last-response-copy-kind nil)
                 (eca-chat--mark-header)
                 (font-lock-ensure user-msg-start (point-max)))))
            ("system"
@@ -3139,9 +3225,10 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
                 ;; Subagent: append assistant text to the parent tool call content
                 (eca-chat--update-expandable-content
                  parent-tool-call-id nil text t)
-              (unless eca-chat--last-response-copy-start
+              (unless (eq eca-chat--last-response-copy-kind 'text)
                 (setq-local eca-chat--last-response-copy-start
                             (eca-chat--content-insertion-point)))
+              (setq-local eca-chat--last-response-copy-kind 'text)
               (eca-chat--add-text-content text)
               ;; Defer fontification: let jit-lock handle visible-area
               ;; updates and run a single final ensure in the
@@ -3542,7 +3629,9 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
            (setq-local eca-chat--message-cost          (plist-get content :messageCost))
            (setq-local eca-chat--session-cost          (plist-get content :sessionCost)))
          (force-mode-line-update)))
-      (_ nil))))
+      (_ nil))
+    (eca-chat--mark-response-copy-break
+     content-type parent-tool-call-id)))
 
 (defun eca-chat-content-received (session params)
   "Handle the content received notification with PARAMS for SESSION."
