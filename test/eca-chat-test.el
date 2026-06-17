@@ -62,6 +62,15 @@ does not treat the first line as metadata.  Returns FN's value."
     (goto-char (match-beginning 0))
     (funcall fn)))
 
+(defun eca-chat-test--overlay-text (overlay)
+  "Return text covered by OVERLAY."
+  (buffer-substring (overlay-start overlay) (overlay-end overlay)))
+
+(defun eca-chat-test--overlay-action (overlay)
+  "Return the ECA button action at OVERLAY start."
+  (get-text-property (overlay-start overlay)
+                     'eca-button-on-action))
+
 ;; ---------------------------------------------------------------------------
 ;; Tests
 ;; ---------------------------------------------------------------------------
@@ -312,8 +321,7 @@ does not treat the first line as metadata.  Returns FN's value."
                              (overlay-get overlay
                                           'eca-chat--code-copy-button))
                            (overlays-in (point-min) (point-max))))
-               (button (overlay-get ov 'display))
-               (action (get-text-property 0 'eca-button-on-action button)))
+               (action (eca-chat-test--overlay-action ov)))
           (funcall action)
           (expect (current-kill 0 t) :to-equal "(+ 1 2)")))))
 
@@ -327,8 +335,7 @@ does not treat the first line as metadata.  Returns FN's value."
                              (overlay-get overlay
                                           'eca-chat--code-copy-button))
                            (overlays-in (point-min) (point-max))))
-               (button (overlay-get ov 'display))
-               (action (get-text-property 0 'eca-button-on-action button)))
+               (action (eca-chat-test--overlay-action ov)))
           (funcall action)
           (expect (current-kill 0 t) :to-equal "az login")))))
 
@@ -342,8 +349,7 @@ does not treat the first line as metadata.  Returns FN's value."
                              (overlay-get overlay
                                           'eca-chat--response-copy-button))
                            (overlays-in (point-min) (point-max))))
-               (button (overlay-get ov 'before-string))
-               (action (get-text-property 0 'eca-button-on-action button)))
+               (action (eca-chat-test--overlay-action ov)))
           (funcall action)
           (expect (current-kill 0 t) :to-equal "Answer")))))
 
@@ -365,12 +371,13 @@ does not treat the first line as metadata.  Returns FN's value."
                                         'eca-chat--code-copy-button))
                          (overlays-in (point-min) (point-max)))))
           (expect (substring-no-properties
-                   (overlay-get response-ov 'before-string))
+                   (eca-chat-test--overlay-text response-ov))
                   :to-equal "[copy response]\n")
-          (expect (substring-no-properties (overlay-get code-ov 'display))
+          (expect (substring-no-properties
+                   (eca-chat-test--overlay-text code-ov))
                   :to-equal "[copy]\n")))))
 
-  (it "adds a direct mouse binding to copy overlays"
+  (it "adds keyboard and mouse bindings to copy overlays"
     (let ((eca-chat-show-copy-buttons t))
       (with-temp-buffer
         (setq major-mode 'eca-chat-mode)
@@ -380,11 +387,12 @@ does not treat the first line as metadata.  Returns FN's value."
                              (overlay-get overlay
                                           'eca-chat--code-copy-button))
                            (overlays-in (point-min) (point-max))))
-               (button (overlay-get ov 'display))
-               (map (get-text-property 0 'keymap button)))
-          (expect (lookup-key map (kbd "<mouse-1>")) :not :to-be nil)))))
+               (map (get-text-property (overlay-start ov) 'keymap)))
+          (expect (lookup-key map (kbd "<mouse-1>")) :not :to-be nil)
+          (expect (lookup-key map (kbd "RET")) :not :to-be nil)
+          (expect (overlay-get ov 'keymap) :not :to-be nil)))))
 
-  (it "renders code copy affordance on the fence line"
+  (it "renders code copy affordance as reachable buffer text"
     (let ((eca-chat-show-copy-buttons t))
       (with-temp-buffer
         (setq major-mode 'eca-chat-mode)
@@ -395,12 +403,13 @@ does not treat the first line as metadata.  Returns FN's value."
                                          'eca-chat--code-copy-button))
                           (overlays-in (point-min) (point-max)))))
           (expect (overlay-start ov) :to-be (point-min))
+          (expect (substring-no-properties
+                   (eca-chat-test--overlay-text ov))
+                  :to-equal "[copy]\n")
           (expect (buffer-substring-no-properties
-                   (overlay-start ov)
-                   (overlay-end ov))
-                  :to-equal "```elisp\n")
-          (expect (substring-no-properties (overlay-get ov 'display))
-                  :to-equal "[copy]\n")))))
+                   (overlay-end ov)
+                   (+ (overlay-end ov) 8))
+                  :to-equal "```elisp")))))
 
   (it "adds copy overlays to each fenced code block"
     (let ((eca-chat-show-copy-buttons t)
@@ -422,10 +431,7 @@ does not treat the first line as metadata.  Returns FN's value."
                                    (overlay-start right))))))
           (expect (length overlays) :to-be 2)
           (dolist (ov overlays)
-            (let* ((button (overlay-get ov 'display))
-                   (action (get-text-property 0 'eca-button-on-action
-                                              button)))
-              (funcall action)))
+            (funcall (eca-chat-test--overlay-action ov)))
           (expect (car kill-ring)
                   :to-equal
                   "az webapp show --name <APP_NAME> --resource-group <RG> --query \"siteConfig.linuxFxVersion\" -o tsv")
@@ -470,7 +476,96 @@ does not treat the first line as metadata.  Returns FN's value."
       (expect (-first (lambda (overlay)
                         (overlay-get overlay 'eca-chat--response-copy-button))
                       (overlays-in (point-min) (point-max)))
-              :to-be nil))))
+              :to-be nil)))
+
+  (it "copies only assistant text after a tool interruption"
+    (let ((eca-chat-show-copy-buttons t)
+          kill-ring
+          kill-ring-yank-pointer)
+      (with-temp-buffer
+        (setq major-mode 'eca-chat-mode)
+        (insert "Intro\n")
+        (eca-chat--mark-response-copy-break "toolCalled" nil)
+        (let ((final-start (point)))
+          (insert "Final answer\n")
+          (let ((ov (make-overlay (point) (point))))
+            (overlay-put ov 'eca-chat-prompt-area t))
+          (setq-local eca-chat--last-response-copy-start final-start)
+          (eca-chat--refresh-copy-buttons)
+          (let* ((ov (-first (lambda (overlay)
+                               (overlay-get overlay
+                                            'eca-chat--response-copy-button))
+                             (overlays-in (point-min) (point-max))))
+                 (action (eca-chat-test--overlay-action ov)))
+            (funcall action)
+            (expect (current-kill 0 t) :to-equal "Final answer"))))))
+
+  (it "excludes code copy buttons from response copy text"
+    (let ((eca-chat-show-copy-buttons t)
+          kill-ring
+          kill-ring-yank-pointer)
+      (with-temp-buffer
+        (setq major-mode 'eca-chat-mode)
+        (insert "Answer\n```elisp\n(+ 1 2)\n```\n")
+        (let ((ov (make-overlay (point) (point))))
+          (overlay-put ov 'eca-chat-prompt-area t))
+        (setq-local eca-chat--last-response-copy-start (point-min))
+        (eca-chat--refresh-copy-buttons)
+        (let* ((ov (-first (lambda (overlay)
+                             (overlay-get overlay
+                                          'eca-chat--response-copy-button))
+                           (overlays-in (point-min) (point-max))))
+               (action (eca-chat-test--overlay-action ov)))
+          (funcall action)
+          (expect (current-kill 0 t)
+                  :to-equal "Answer\n```elisp\n(+ 1 2)\n```")))))
+
+  (it "does not copy previous response or user question"
+    (let ((eca-chat-show-copy-buttons t)
+          kill-ring
+          kill-ring-yank-pointer)
+      (with-temp-buffer
+        (setq major-mode 'eca-chat-mode)
+        (insert "Previous assistant response\n")
+        (insert "User question that should not be copied\n")
+        (setq-local eca-chat--last-response-copy-start nil)
+        (let ((latest-start (point)))
+          (insert "Latest answer only\n")
+          (let ((ov (make-overlay (point) (point))))
+            (overlay-put ov 'eca-chat-prompt-area t))
+          (setq-local eca-chat--last-response-copy-start latest-start)
+          (eca-chat--refresh-copy-buttons)
+          (let* ((ov (-first (lambda (overlay)
+                               (overlay-get overlay
+                                            'eca-chat--response-copy-button))
+                             (overlays-in (point-min) (point-max))))
+                 (action (eca-chat-test--overlay-action ov)))
+            (funcall action)
+            (expect (current-kill 0 t)
+                    :to-equal "Latest answer only"))))))
+
+  (it "keeps an older response copy button scoped to that response"
+    (let ((eca-chat-show-copy-buttons t)
+          kill-ring
+          kill-ring-yank-pointer)
+      (with-temp-buffer
+        (setq major-mode 'eca-chat-mode)
+        (insert "Previous assistant response\n")
+        (let ((ov (make-overlay (point) (point))))
+          (overlay-put ov 'eca-chat-prompt-area t))
+        (setq-local eca-chat--last-response-copy-start (point-min))
+        (eca-chat--refresh-copy-buttons)
+        (let ((old-ov (-first (lambda (overlay)
+                                (overlay-get overlay
+                                             'eca-chat--response-copy-button))
+                              (overlays-in (point-min) (point-max)))))
+          (save-excursion
+            (goto-char (eca-chat--content-insertion-point))
+            (insert "User question that should not be copied\n")
+            (insert "Latest answer only\n"))
+          (funcall (eca-chat-test--overlay-action old-ov))
+          (expect (current-kill 0 t)
+                  :to-equal "Previous assistant response"))))))
 
 (describe "eca-chat--render-content"
   (describe "progress finished"
