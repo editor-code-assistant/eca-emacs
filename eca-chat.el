@@ -2763,6 +2763,16 @@ matches the region we considered."
         (setq pos next))))
   `(jit-lock-bounds ,beg . ,end))
 
+(defun eca-chat--font-lock-ensure (beg end)
+  "Fontify BEG to END without shifting visible chat windows.
+Hidden markdown markup can change display geometry after streaming.
+Preserve window starts and force a cheap redisplay update so fenced
+block layout settles before later point motion."
+  (prog1
+      (eca-chat--with-preserved-scroll
+        (font-lock-ensure beg end))
+    (force-window-update (current-buffer))))
+
 (defun eca-chat--schedule-fontify ()
   "Schedule a deferred `font-lock-ensure' for the current chat buffer.
 Cancels any previously scheduled timer.  Does nothing when
@@ -2785,7 +2795,7 @@ the new turn instead of the full chat history."
                (when (buffer-live-p buf)
                  (with-current-buffer buf
                    (setq eca-chat--fontify-timer nil)
-                   (font-lock-ensure
+                   (eca-chat--font-lock-ensure
                     (or eca-chat--last-user-message-pos (point-min))
                     (point-max))))))))))
 
@@ -3910,8 +3920,9 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
                ;; (re)fontification at end-of-stream; full-buffer
                ;; fontify is O(buffer size) and was the dominant
                ;; cost on long chats.
-               (font-lock-ensure (or eca-chat--last-user-message-pos (point-min))
-                                 (point-max))
+               (eca-chat--font-lock-ensure
+                (or eca-chat--last-user-message-pos (point-min))
+                (point-max))
                (eca-chat--refresh-copy-scopes)
                (eca-chat--set-chat-loading session nil)
                (eca-chat--refresh-progress chat-buffer)
@@ -3932,8 +3943,9 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
                ;; to the current turn so cost does not grow with
                ;; chat history; previous turns were already
                ;; fontified at their own end-of-stream.
-               (font-lock-ensure (or eca-chat--last-user-message-pos (point-min))
-                                 (point-max))
+               (eca-chat--font-lock-ensure
+                (or eca-chat--last-user-message-pos (point-min))
+                (point-max))
                (eca-chat--refresh-copy-scopes)
                ;; Table align/beautify default to scanning from
                ;; `eca-chat--last-user-message-pos' when called with
