@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Respect `eca-chat-window-side` (and width/height) even when `eca-chat-use-side-window` is nil, displaying the chat on that side via `display-buffer-in-direction`. To avoid overlapping/duplicate windows, placement now reuses the window already showing the chat, otherwise replaces another visible chat window in place (new-tab behavior), and only opens a new window when there is nothing to reuse.
 - Bugfix: don't move the cursor while the chat is streaming. `eca-chat-content-received` rendered without a `save-excursion`, so content streamed above the prompt (e.g. while "thinking") dragged point up to the middle of the buffer; point is now preserved.
 - Bugfix: keep the `:usage` and `:trust` mode-line segments visible after adding the context-usage bar. The right-alignment reserved space from `(length right)`, which counts the bar's pixel-width `display` spaces (and wide glyphs) as ~1 char each, so the segments overflowed off the right edge. It now measures the real rendered width via `string-pixel-width` and aligns flush to the right edge in pixels (Emacs 29+ only; on Emacs 28 right segments follow left without alignment).
 - Bugfix: closing a chat (`kill-buffer`, `C-c C-k`, or the tab close button) now switches the chat window to a sibling chat (the previous tab, or the only one left) instead of falling back to an unrelated buffer like the settings buffer, and drops the dead chat from the session registry. `C-c C-k` (`eca-chat-reset`) only starts a fresh chat when the closed chat was the last one.
