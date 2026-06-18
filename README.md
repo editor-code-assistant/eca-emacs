@@ -134,10 +134,10 @@ Chat
 - `eca-chat-parent-mode`: Set major-mode of chat parent, can be `markdown-mode`, `markdown-view-mode` or `gfm-view-mode` (default)
 - `eca-chat-mode-hook`: Hooks to run after entering `eca-chat-mode`.
 - `eca-chat-finished-hook`: Hooks to run after finishing a chat prompt.
-- `eca-chat-use-side-window`: Whether the chat buffer is displayed in a side window or a normal window.
-- `eca-chat-window-side`: On which side (`left`, `right`, `top`, `bottom`) the chat side window appears.
-- `eca-chat-window-width`: Width of the chat side window when on the left or right.
-- `eca-chat-window-height`: Height of the chat side window when on the top or bottom.
+- `eca-chat-use-side-window`: Whether the chat buffer is displayed in a dedicated side window or a normal window. Either way it is placed on `eca-chat-window-side`.
+- `eca-chat-window-side`: On which side (`left`, `right`, `top`, `bottom`) the chat window appears (respected for both side and normal windows).
+- `eca-chat-window-width`: Width of the chat window when on the left or right.
+- `eca-chat-window-height`: Height of the chat window when on the top or bottom.
 - `eca-chat-focus-on-open`: Whether to focus the chat window when it opens.
 - `eca-chat-auto-add-repomap`: Whether to automatically include repoMap context when opening ECA.
 - `eca-chat-auto-add-cursor`: Whether to automatically track the cursor position and add it as context.
