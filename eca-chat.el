@@ -202,7 +202,7 @@ Must be a valid model supported by server, check `eca-chat-select-model`."
   :group 'eca)
 
 (defcustom eca-chat-mode-line-format
-  '(:workspace-folders :add-workspace-button :remove-workspace-button :spacer :init-progress "  " :bg-jobs " " :elapsed-time "   " :usage " " :trust)
+  '(:workspace-folders :add-workspace-button :remove-workspace-button :spacer :init-progress "  " :bg-jobs " " :elapsed-time "   " :context-bar :usage " " :trust)
   "Format for the ECA chat mode line.
 
 When set to a list, each element is a module keyword or a
@@ -215,6 +215,7 @@ Available modules:
   `:remove-workspace-button' - clickable [-] button
   `:title' - chat title
   `:elapsed-time' - turn duration timer
+  `:context-bar' - colored context-window usage bar (hover for details)
   `:usage' - token/cost info (see `eca-chat-usage-string-format')
   `:server-version' - shows \"ECA <version>\"
   `:init-progress' - init progress (auto-hides when done)
@@ -236,6 +237,7 @@ This gives full control for powerline or doom-modeline users."
             (const :tag "Background jobs" :bg-jobs)
             (const :tag "Chat title" :title)
             (const :tag "Elapsed time" :elapsed-time)
+            (const :tag "Context usage bar" :context-bar)
             (const :tag "Usage info" :usage)
             (const :tag "ECA server version" :server-version)
             (const :tag "Init progress" :init-progress)
@@ -539,6 +541,53 @@ behavior)."
   "Face for the strings segments in usage string in mode-line of the chat."
   :group 'eca)
 
+(defface eca-chat-context-system-prompt-face
+  '((((background dark))  (:foreground "#61afef"))
+    (((background light)) (:foreground "#2c6fbf")))
+  "Face for the system-prompt segment of the context-usage bar."
+  :group 'eca)
+
+(defface eca-chat-context-tool-definitions-face
+  '((((background dark))  (:foreground "#e8924a"))
+    (((background light)) (:foreground "#c2772e")))
+  "Face for the tool-definitions segment of the context-usage bar."
+  :group 'eca)
+
+(defface eca-chat-context-conversation-face
+  '((((background dark))  (:foreground "#98c379"))
+    (((background light)) (:foreground "#4f8f2f")))
+  "Face for the conversation segment of the context-usage bar."
+  :group 'eca)
+
+(defface eca-chat-context-rules-face
+  '((((background dark))  (:foreground "#c678dd"))
+    (((background light)) (:foreground "#8a3fa0")))
+  "Face for the rules segment of the context-usage bar."
+  :group 'eca)
+
+(defface eca-chat-context-skills-face
+  '((((background dark))  (:foreground "#e5c07b"))
+    (((background light)) (:foreground "#b58900")))
+  "Face for the skills segment of the context-usage bar."
+  :group 'eca)
+
+(defface eca-chat-context-agents-face
+  '((((background dark))  (:foreground "#d19a66"))
+    (((background light)) (:foreground "#b5651d")))
+  "Face for the AGENTS.md segment of the context-usage bar."
+  :group 'eca)
+
+(defface eca-chat-context-tool-calls-face
+  '((((background dark))  (:foreground "#e06c75"))
+    (((background light)) (:foreground "#c0392b")))
+  "Face for the tool-calls segment of the context-usage bar."
+  :group 'eca)
+
+(defface eca-chat-context-free-face
+  '((t :inherit shadow))
+  "Face for the free-space segment of the context-usage bar."
+  :group 'eca)
+
 (defface eca-chat-elapsed-time-face
   '((t :height 0.9 :inherit font-lock-comment-face))
   "Face for the elapsed time indicator in mode-line of the chat."
@@ -644,6 +693,10 @@ whether the first user prompt should erase the banner first.")
 (defvar-local eca-chat--session-tokens nil)
 (defvar-local eca-chat--session-limit-context nil)
 (defvar-local eca-chat--session-limit-output nil)
+(defvar-local eca-chat--context-breakdown nil
+  "Latest context-window usage breakdown plist for the current chat.
+Keys: :categories (vector of :name/:tokens plists), :usedTokens,
+:freeTokens and :contextLimit, as sent in the `usage' content.")
 (defvar-local eca-chat--queued-prompt nil)
 (defvar-local eca-chat--steered-prompt nil)
 (defvar-local eca-chat--subagent-chat-id->tool-call-id (make-hash-table :test 'equal)
@@ -972,6 +1025,215 @@ Replace the job status emoji with NEW-EMOJI."
                               (funcall propertize-fn starting 'warning (> running 0))
                               (funcall propertize-fn running 'success))))
           (if (string-empty-p result) "0" result))))))
+
+(defcustom eca-chat-context-bar-width 16
+  "Width in characters of the context-usage bar in the mode-line."
+  :type 'integer
+  :group 'eca)
+
+(defconst eca-chat--context-category-faces
+  '(("System prompt" . eca-chat-context-system-prompt-face)
+    ("Rules" . eca-chat-context-rules-face)
+    ("Skills" . eca-chat-context-skills-face)
+    ("AGENTS.md" . eca-chat-context-agents-face)
+    ("Tool definitions" . eca-chat-context-tool-definitions-face)
+    ("Tool calls" . eca-chat-context-tool-calls-face)
+    ("Conversation" . eca-chat-context-conversation-face))
+  "Fallback alist mapping context category name to a bar face.
+Only used when the server does not provide a per-category color.")
+
+(defun eca-chat--context-category-face (name)
+  "Return the bar face for category NAME."
+  (or (cdr (assoc name eca-chat--context-category-faces))
+      'eca-chat-context-conversation-face))
+
+(defun eca-chat--context-category-face-spec (cat)
+  "Return a face spec for category CAT, preferring its server color.
+Falls back to the client face palette for older servers."
+  (let ((color (plist-get cat :color)))
+    (if (and (stringp color) (not (string-empty-p color)))
+        (list :foreground color)
+      (eca-chat--context-category-face (plist-get cat :name)))))
+
+(defun eca-chat--context-category-color (cat)
+  "Return the bar color (hex string) for category CAT.
+Prefers the server color, falling back to the client face foreground."
+  (let ((color (plist-get cat :color)))
+    (or (and (stringp color) (not (string-empty-p color)) color)
+        (face-foreground (eca-chat--context-category-face (plist-get cat :name))
+                         nil t)
+        "#888888")))
+
+(defun eca-chat--context-free-face-spec (breakdown)
+  "Return the face spec for the free portion from BREAKDOWN."
+  (let ((color (plist-get breakdown :freeColor)))
+    (if (and (stringp color) (not (string-empty-p color)))
+        (list :foreground color)
+      'eca-chat-context-free-face)))
+
+(defun eca-chat--context-free-color (breakdown)
+  "Return the free-portion color (hex string) from BREAKDOWN."
+  (let ((color (plist-get breakdown :freeColor)))
+    (or (and (stringp color) (not (string-empty-p color)) color)
+        (face-foreground 'eca-chat-context-free-face nil t)
+        "#5c6370")))
+
+(defun eca-chat--context-bar-help (breakdown used free limit)
+  "Build the help-echo legend for the context bar from BREAKDOWN.
+USED, FREE and LIMIT are the aggregate token counts.  Each line is
+prefixed with a colored swatch matching the bar so the colors map to
+their category."
+  (let* ((nf #'eca-chat--number->friendly-number)
+         ;; Prefer the server-provided emoji swatch (consistent with the
+         ;; /context text); fall back to a colored block for older servers.
+         (swatch (lambda (emoji spec)
+                   (or emoji (propertize "█" 'face spec))))
+         (head (if (and limit (> limit 0))
+                   (format "Context: %s / %s (%d%%)"
+                           (funcall nf used) (funcall nf limit)
+                           (round (* 100 (/ (float used) limit))))
+                 (format "Context: %s used" (funcall nf used))))
+         (rows (mapconcat
+                (lambda (cat)
+                  (format " %s %s: %s"
+                          (funcall swatch (plist-get cat :emoji)
+                                   (eca-chat--context-category-face-spec cat))
+                          (plist-get cat :name)
+                          (funcall nf (or (plist-get cat :tokens) 0))))
+                (append (plist-get breakdown :categories) nil)
+                "\n")))
+    (concat head "\n" rows
+            (when (and free (> free 0))
+              (format "\n %s Free space: %s"
+                      (funcall swatch (plist-get breakdown :freeEmoji)
+                               (eca-chat--context-free-face-spec breakdown))
+                      (funcall nf free)))
+            "\n\nClick to run /context")))
+
+(defvar eca-chat--context-bar-mode-line-map
+  (let ((map (make-sparse-keymap)))
+    (define-key map [mode-line mouse-1] #'eca-chat-show-context)
+    map)
+  "Keymap for the modeline context-usage bar.")
+
+(defconst eca-chat--context-bar-eighths
+  ["" "▏" "▎" "▍" "▌" "▋" "▊" "▉" "█"]
+  "Left-block glyphs indexed by eighths (0..8) for sub-cell precision.")
+
+(defun eca-chat--context-bar-indices-by-tokens (tokens)
+  "Return indices into TOKENS ordered by descending value."
+  (mapcar #'car
+          (sort (cl-loop for v in tokens for i from 0 collect (cons i v))
+                (lambda (a b) (> (cdr a) (cdr b))))))
+
+(defun eca-chat--context-bar-allocate (tokens cells)
+  "Allocate CELLS whole cells across TOKENS by proportion.
+Every positive entry gets at least one cell when CELLS allows it; the
+result is a list of non-negative integers summing to CELLS (or to the
+number of cells available when there are more categories than cells)."
+  (let* ((n (length tokens))
+         (positives (cl-count-if (lambda (tk) (> tk 0)) tokens)))
+    (cond
+     ((or (<= cells 0) (zerop positives)) (make-list n 0))
+     ((<= cells positives)
+      ;; Too tight for all: one cell each to the CELLS largest categories.
+      (let ((out (make-list n 0)))
+        (dolist (i (seq-take (eca-chat--context-bar-indices-by-tokens tokens) cells))
+          (when (> (nth i tokens) 0) (setf (nth i out) 1)))
+        out))
+     (t
+      ;; One cell per positive category, then the rest by proportion.
+      (let* ((total (apply #'+ tokens))
+             (remaining (- cells positives))
+             (running 0) (prev 0)
+             (extra (mapcar (lambda (tk)
+                              (setq running (+ running tk))
+                              (let ((cum (round (* remaining (/ (float running) total)))))
+                                (prog1 (- cum prev) (setq prev cum))))
+                            tokens)))
+        (cl-mapcar (lambda (tk e) (+ (if (> tk 0) 1 0) e)) tokens extra))))))
+
+(defun eca-chat--context-bar-edge-spec (categories alloc)
+  "Return the face spec for the sub-cell edge given CATEGORIES and ALLOC."
+  (let ((last nil))
+    (cl-loop for cat in categories for n in alloc
+             when (> n 0) do (setq last cat))
+    (eca-chat--context-category-face-spec (or last (car categories)))))
+
+(defun eca-chat--context-bar-chars (categories breakdown width frac)
+  "Build the block-character context bar string for terminal frames.
+CATEGORIES/BREAKDOWN carry the usage data, WIDTH is the cell count and
+FRAC the used fraction (0..1).  The used/free edge uses a fractional
+block for sub-cell precision."
+  (let* ((colored-exact (* width frac))
+         (colored-cells (min width (floor colored-exact)))
+         (edge-eighths (if (< colored-cells width)
+                           (min 7 (max 0 (round (* 8 (- colored-exact colored-cells)))))
+                         0))
+         (tokens (mapcar (lambda (c) (max 0 (or (plist-get c :tokens) 0))) categories))
+         (alloc (eca-chat--context-bar-allocate tokens colored-cells))
+         (bar ""))
+    (cl-loop for cat in categories for n in alloc
+             when (> n 0)
+             do (setq bar (concat bar (propertize (make-string n ?█)
+                                                  'face (eca-chat--context-category-face-spec cat)))))
+    (when (> edge-eighths 0)
+      (setq bar (concat bar (propertize (aref eca-chat--context-bar-eighths edge-eighths)
+                                        'face (eca-chat--context-bar-edge-spec categories alloc)))))
+    (let ((free-cells (- width (length bar))))
+      (when (> free-cells 0)
+        (setq bar (concat bar (propertize (make-string free-cells ?█)
+                                          'face (eca-chat--context-free-face-spec breakdown))))))
+    bar))
+
+(defun eca-chat--context-bar-pixels (categories breakdown width frac)
+  "Build the pixel-width thin-segment context bar for graphical frames.
+CATEGORIES/BREAKDOWN carry the usage data; each category is a
+`:background'-colored space whose pixel width is proportional to its
+share, giving sub-character granularity so small percentages still
+show as a thin sliver.  WIDTH is the footprint in characters and FRAC
+the used fraction (0..1)."
+  (let* ((char-px (max 1 (frame-char-width)))
+         (total-px (* width char-px))
+         (used-px (min total-px (round (* total-px frac))))
+         (tokens (mapcar (lambda (c) (max 0 (or (plist-get c :tokens) 0))) categories))
+         (alloc (eca-chat--context-bar-allocate tokens used-px))
+         (seg (lambda (px color)
+                (propertize " "
+                            'display (list 'space :width (list px))
+                            'face (list :background color))))
+         (bar "")
+         (drawn 0))
+    (cl-loop for cat in categories for px in alloc
+             when (> px 0)
+             do (setq bar (concat bar (funcall seg px (eca-chat--context-category-color cat)))
+                      drawn (+ drawn px)))
+    (let ((free-px (- total-px drawn)))
+      (when (> free-px 0)
+        (setq bar (concat bar (funcall seg free-px (eca-chat--context-free-color breakdown))))))
+    bar))
+
+(defun eca-chat--context-bar ()
+  "Return the propertized context-usage bar string, or nil.
+Renders nothing until the server has sent a context breakdown.  In
+graphical frames it draws pixel-width thin segments for high
+granularity; terminals fall back to block characters.  The bar maps
+the whole window (colored = used, dim = free); percentages and
+per-category tokens are in the tooltip."
+  (when-let* ((breakdown eca-chat--context-breakdown)
+              (categories (append (plist-get breakdown :categories) nil)))
+    (let* ((used (or (plist-get breakdown :usedTokens) 0))
+           (free (plist-get breakdown :freeTokens))
+           (limit (plist-get breakdown :contextLimit))
+           (width (max 1 eca-chat-context-bar-width))
+           (frac (if (and limit (> limit 0)) (min 1.0 (/ (float used) limit)) 1.0))
+           (help (eca-chat--context-bar-help breakdown used free limit))
+           (bar (if (display-graphic-p)
+                    (eca-chat--context-bar-pixels categories breakdown width frac)
+                  (eca-chat--context-bar-chars categories breakdown width frac))))
+      (propertize bar
+                  'help-echo help
+                  'local-map eca-chat--context-bar-mode-line-map))))
 
 (defun eca-chat--build-tool-call-approval-str-content (session id spacing-line-prefix &optional chat-id)
   "Build the tool call approval string for SESSION, ID and SPACING-LINE-PREFIX.
@@ -2186,6 +2448,9 @@ are in progress."
        (let ((icon (if (eca-chat--has-pending-approvals-p) "🚧" "⏱")))
          (propertize (concat icon " " str)
                      'font-lock-face 'eca-chat-elapsed-time-face))))
+    (:context-bar
+     (when-let* ((bar (eca-chat--context-bar)))
+       (concat bar " ")))
     (:usage
      (eca-chat--usage-str))
     (:server-version
@@ -3627,7 +3892,8 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
            (setq-local eca-chat--session-limit-context (plist-get (plist-get content :limit) :context))
            (setq-local eca-chat--session-limit-output  (plist-get (plist-get content :limit) :output))
            (setq-local eca-chat--message-cost          (plist-get content :messageCost))
-           (setq-local eca-chat--session-cost          (plist-get content :sessionCost)))
+           (setq-local eca-chat--session-cost          (plist-get content :sessionCost))
+           (setq-local eca-chat--context-breakdown     (plist-get content :contextBreakdown)))
          (force-mode-line-update)))
       (_ nil))
     (eca-chat--mark-response-copy-break
@@ -4582,6 +4848,15 @@ if ARG is current prefix, ask for file, otherwise drop current file."
   (eca-assert-session-running (eca-session))
   (eca-chat--with-current-buffer (eca-chat--get-last-buffer (eca-session))
     (eca-chat--send-prompt (eca-session) prompt)))
+
+;;;###autoload
+(defun eca-chat-show-context ()
+  "Show the context-window usage breakdown via the /context command."
+  (interactive)
+  (eca-chat--with-current-buffer (eca-chat--get-last-buffer (eca-session))
+    (let ((session (eca-session)))
+      (when (and session (not eca-chat--chat-loading))
+        (eca-chat--send-prompt session "/context")))))
 
 ;;;###autoload
 (defun eca-chat-send-prompt-at-chat ()

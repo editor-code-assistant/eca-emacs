@@ -940,4 +940,132 @@ does not treat the first line as metadata.  Returns FN's value."
         (when (buffer-live-p live-buf)
           (kill-buffer live-buf))))))
 
+(describe "eca-chat--context-category-face"
+  (it "maps known categories to their faces"
+    (expect (eca-chat--context-category-face "System prompt")
+            :to-be 'eca-chat-context-system-prompt-face)
+    (expect (eca-chat--context-category-face "Rules")
+            :to-be 'eca-chat-context-rules-face)
+    (expect (eca-chat--context-category-face "Skills")
+            :to-be 'eca-chat-context-skills-face)
+    (expect (eca-chat--context-category-face "AGENTS.md")
+            :to-be 'eca-chat-context-agents-face)
+    (expect (eca-chat--context-category-face "Tool definitions")
+            :to-be 'eca-chat-context-tool-definitions-face)
+    (expect (eca-chat--context-category-face "Tool calls")
+            :to-be 'eca-chat-context-tool-calls-face)
+    (expect (eca-chat--context-category-face "Conversation")
+            :to-be 'eca-chat-context-conversation-face))
+  (it "falls back to the conversation face for unknown categories"
+    (expect (eca-chat--context-category-face "Something else")
+            :to-be 'eca-chat-context-conversation-face)))
+
+(describe "eca-chat--context-bar-allocate"
+  (it "gives the single cell to the largest category when tight"
+    (let ((alloc (eca-chat--context-bar-allocate '(50 50) 1)))
+      (expect (apply #'+ alloc) :to-equal 1)
+      (expect (length alloc) :to-equal 2)))
+  (it "guarantees one cell per positive category then shares the rest"
+    (expect (eca-chat--context-bar-allocate '(80 20) 10) :to-equal '(7 3)))
+  (it "puts every cell in the single category"
+    (expect (eca-chat--context-bar-allocate '(100) 8) :to-equal '(8)))
+  (it "returns all zeros when there are no tokens"
+    (expect (eca-chat--context-bar-allocate '(0 0) 5) :to-equal '(0 0)))
+  (it "covers the largest categories when cells < categories"
+    (let ((alloc (eca-chat--context-bar-allocate '(50 50 50) 2)))
+      (expect (apply #'+ alloc) :to-equal 2)
+      (expect (seq-count (lambda (n) (> n 0)) alloc) :to-equal 2))))
+
+(describe "eca-chat--context-bar"
+  (it "returns nil when there is no breakdown"
+    (let ((eca-chat--context-breakdown nil))
+      (expect (eca-chat--context-bar) :to-be nil)))
+
+  (it "returns nil when the breakdown has no categories"
+    (let ((eca-chat--context-breakdown (list :categories [] :usedTokens 0)))
+      (expect (eca-chat--context-bar) :to-be nil)))
+
+  (it "renders a bar that totals the configured width, with no label"
+    (let ((eca-chat-context-bar-width 10)
+          (eca-chat--context-breakdown
+           (list :categories (vector (list :name "System prompt" :tokens 50)
+                                     (list :name "Conversation" :tokens 50))
+                 :usedTokens 100
+                 :freeTokens 900
+                 :contextLimit 1000)))
+      (let ((bar (eca-chat--context-bar)))
+        (expect (stringp bar) :to-be t)
+        ;; colored + edge + free cells always total the configured width
+        (expect (length bar) :to-equal 10)
+        ;; the visible bar carries no percentage/number, only blocks
+        (expect (string-match-p "[0-9%]" bar) :to-be nil))))
+
+  (it "uses a fractional block at the used/free edge for sub-cell precision"
+    (let ((eca-chat-context-bar-width 10)
+          (eca-chat--context-breakdown
+           (list :categories (vector (list :name "System prompt" :tokens 250))
+                 :usedTokens 250 :freeTokens 750 :contextLimit 1000)))
+      (let ((bar (eca-chat--context-bar)))
+        (expect (length bar) :to-equal 10)
+        ;; 25% of 10 cells = 2.5 -> 2 full cells plus a half block
+        (expect (string-match-p "[▏▎▍▌▋▊▉]" bar) :to-be-truthy))))
+
+  (it "renders a full-width bar when the context window is unknown"
+    (let ((eca-chat-context-bar-width 8)
+          (eca-chat--context-breakdown
+           (list :categories (vector (list :name "Conversation" :tokens 4000))
+                 :usedTokens 4000)))
+      (let ((bar (eca-chat--context-bar)))
+        (expect (length bar) :to-equal 8)
+        (expect (string-match-p "[0-9%]" bar) :to-be nil))))
+
+  (it "colors segments with the server-provided color"
+    (let ((eca-chat-context-bar-width 4)
+          (eca-chat--context-breakdown
+           (list :categories (vector (list :name "System prompt" :tokens 100 :color "#ff0000"))
+                 :usedTokens 100 :freeTokens 0 :contextLimit 100 :freeColor "#222222")))
+      (let ((bar (eca-chat--context-bar)))
+        (expect (length bar) :to-equal 4)
+        (expect (get-text-property 0 'face bar) :to-equal '(:foreground "#ff0000"))))))
+
+(describe "eca-chat--context-bar-help"
+  (it "lists categories with server emoji swatches, free space and the hint"
+    (let* ((breakdown (list :categories (vector (list :name "System prompt" :tokens 5300 :emoji "🟦")
+                                                (list :name "Conversation" :tokens 1600 :emoji "🟩"))
+                            :usedTokens 6900 :freeTokens 193100 :freeEmoji "⬜" :contextLimit 200000))
+           (help (eca-chat--context-bar-help breakdown 6900 193100 200000)))
+      (expect help :to-match "System prompt")
+      (expect help :to-match "Conversation")
+      (expect help :to-match "Free space")
+      (expect help :to-match "/context")
+      ;; server emoji swatches correlate colors to categories
+      (expect help :to-match "🟦")
+      (expect help :to-match "🟩")
+      (expect help :to-match "⬜")))
+
+  (it "falls back to a colored block swatch when no emoji is provided"
+    (let* ((breakdown (list :categories (vector (list :name "System prompt" :tokens 5300))
+                            :usedTokens 5300 :freeTokens 194700 :contextLimit 200000))
+           (help (eca-chat--context-bar-help breakdown 5300 194700 200000)))
+      (expect help :to-match "█"))))
+
+(describe "eca-chat--context-category-color"
+  (it "prefers the server-provided color"
+    (expect (eca-chat--context-category-color (list :name "Rules" :color "#abcdef"))
+            :to-equal "#abcdef"))
+  (it "falls back to a string color when the server sent none"
+    (expect (stringp (eca-chat--context-category-color (list :name "Conversation")))
+            :to-be t)))
+
+(describe "eca-chat--context-bar-pixels"
+  (it "renders pixel-width background-colored segments"
+    (let ((bar (eca-chat--context-bar-pixels
+                (list (list :name "System prompt" :tokens 100 :color "#ff0000"))
+                (list :freeColor "#222222")
+                16 0.5)))
+      (expect (stringp bar) :to-be t)
+      ;; the first segment is a pixel-width space colored via :background
+      (expect (car (get-text-property 0 'display bar)) :to-be 'space)
+      (expect (get-text-property 0 'face bar) :to-equal '(:background "#ff0000")))))
+
 ;;; eca-chat-test.el ends here
