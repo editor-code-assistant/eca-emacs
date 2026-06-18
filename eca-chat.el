@@ -4190,7 +4190,12 @@ to answer mode.  Returns :async — the response is sent later when
 the user answers or cancels."
   (let* ((chat-id (plist-get params :chatId))
          (question (plist-get params :question))
-         (options (append (plist-get params :options) nil))
+         ;; Guard against a non-sequence `:options` (e.g. a malformed
+         ;; string from a misbehaving server): `append' on a string would
+         ;; split it into character integers that render as random numbers.
+         (options (let ((raw (plist-get params :options)))
+                    (when (or (listp raw) (vectorp raw))
+                      (append raw nil))))
          (tool-call-id (plist-get params :toolCallId))
          (allow-freeform (plist-get params :allowFreeform))
          (chat-buffer (eca-chat--get-chat-buffer session chat-id)))
