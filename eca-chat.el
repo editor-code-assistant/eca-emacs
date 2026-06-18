@@ -46,6 +46,15 @@ For when chat went back to idle state."
   :type 'hook
   :group 'eca)
 
+(defvar eca-chat-session-status-changed-functions nil
+  "Abnormal hook run when a session aggregated status may have changed.
+Each function is called with a single argument, the session.  It is
+invoked on transitions that can change `eca-chat-session-status' (a chat
+starting or finishing, a tool call requesting or resolving an approval, a
+question being asked or answered).  Subscribers should be idempotent: the
+hook may run even when the status is unchanged.  Used by integrations
+such as the Doom workspaces tabline to refresh external indicators.")
+
 (defcustom eca-chat-window-side 'right
   "Side of the frame where the ECA chat window should appear.
 Can be `'left', `'right', `'top', or `'bottom'.  This setting will only
@@ -1454,7 +1463,8 @@ LOADING can be t (loading), \\='stopping (stop in progress), or nil (idle)."
          (cancel-timer eca-chat--modeline-timer)
          (setq-local eca-chat--modeline-timer nil))
        (eca-chat--force-tab-line-update)))
-    (eca-chat--refresh-transient-area)))
+    (eca-chat--refresh-transient-area)
+    (eca-chat--notify-status-changed session)))
 
 (defun eca-chat--set-prompt (text)
   "Set the chat prompt to be TEXT."
@@ -2230,16 +2240,34 @@ waiting, so it is not considered."
   "Return the aggregated status of all chats in SESSION.
 Return the symbol `waiting-approval' when any chat waits on the
 user (pending tool call approval or question), `running' when any
-chat is loading, otherwise `idle'."
+chat is actively loading, otherwise `idle'.  A chat in the
+transient `stopping' state is treated as idle since it is winding
+down and visually looks idle."
   (let ((buffers (-filter #'buffer-live-p
                           (eca-vals (eca--session-chats session)))))
     (cond
      ((-first #'eca-chat--needs-attention-p buffers) 'waiting-approval)
      ((-first (lambda (buffer)
-                (buffer-local-value 'eca-chat--chat-loading buffer))
+                (eq (buffer-local-value 'eca-chat--chat-loading buffer) t))
               buffers)
       'running)
      (t 'idle))))
+
+(defun eca-chat--notify-status-changed (session)
+  "Run `eca-chat-session-status-changed-functions' for SESSION.
+No-op when SESSION is nil.  Called on transitions that may change the
+aggregated session status so integrations can refresh."
+  (when session
+    (run-hook-with-args 'eca-chat-session-status-changed-functions session)))
+
+(defun eca-chat--maybe-notify-status-changed (session content)
+  "Notify a status change for SESSION when CONTENT can alter attention.
+Only tool-call lifecycle events add or clear a pending approval, so the
+status recompute is limited to those content types to avoid scanning the
+buffer on every streamed chunk."
+  (when (member (plist-get content :type)
+                '("toolCallRun" "toolCallRunning" "toolCalled" "toolCallRejected"))
+    (eca-chat--notify-status-changed session)))
 
 (defun eca-chat--chat-status-prefix ()
   "Return a status prefix string for the current chat buffer.
@@ -3913,13 +3941,15 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
           (eca-chat--with-current-buffer parent-buffer
             (when-let* ((tool-call-id (gethash chat-id eca-chat--subagent-chat-id->tool-call-id)))
               (eca-chat--render-content session parent-buffer role content roots tool-call-id chat-id)
-              (eca-chat--protect-non-prompt eca-chat--last-user-message-pos))))
+              (eca-chat--protect-non-prompt eca-chat--last-user-message-pos)
+              (eca-chat--maybe-notify-status-changed session content))))
       ;; Normal content
       (when-let* ((chat-buffer (eca-chat--get-chat-buffer session chat-id))
                   ((buffer-live-p chat-buffer)))
         (eca-chat--with-current-buffer chat-buffer
           (eca-chat--render-content session chat-buffer role content roots)
-          (eca-chat--protect-non-prompt eca-chat--last-user-message-pos))))))
+          (eca-chat--protect-non-prompt eca-chat--last-user-message-pos)
+          (eca-chat--maybe-notify-status-changed session content))))))
 
 (defun eca-chat--render-history-contents (session chat-buffer contents)
   "Prepend CONTENTS above existing content in CHAT-BUFFER for SESSION.
@@ -4220,7 +4250,8 @@ the user answers or cancels."
               (eca-chat--set-question-prompt-prefix t))
             ;; A pending question keeps the turn active server-side, so
             ;; surface the stop affordance even if the chat reports idle.
-            (eca-chat--refresh-transient-area))
+            (eca-chat--refresh-transient-area)
+            (eca-chat--notify-status-changed session))
           :async)
       (list :answer nil :cancelled t))))
 
@@ -4343,7 +4374,8 @@ Used as fallback when no toolCallId is available."
        (eca-chat--refresh-transient-area))
       (eca-api-send-request-response
        session request
-       (list :answer answer :cancelled :json-false)))))
+       (list :answer answer :cancelled :json-false))
+      (eca-chat--notify-status-changed session))))
 
 (defun eca-chat--cancel-question ()
   "Cancel the pending question and restore normal prompt."
@@ -4369,7 +4401,8 @@ Used as fallback when no toolCallId is available."
        (eca-chat--refresh-transient-area))
       (eca-api-send-request-response
        session request
-       (list :answer nil :cancelled t)))))
+       (list :answer nil :cancelled t))
+      (eca-chat--notify-status-changed session))))
 
 (defun eca-chat--dismiss-pending-question-for-tool-call (tool-call-id)
   "Dismiss the pending question when it belongs to TOOL-CALL-ID.
@@ -4384,7 +4417,8 @@ and prompt so this client does not stay stuck in answer mode."
       (setq eca-chat--pending-question nil)
       (when allow-freeform
         (eca-chat--set-question-prompt-prefix nil))
-      (eca-chat--refresh-transient-area))))
+      (eca-chat--refresh-transient-area)
+      (eca-chat--notify-status-changed (ignore-errors (eca-session))))))
 
 (defun eca-chat--set-question-prompt-prefix (active)
   "Toggle the prompt prefix for question mode.

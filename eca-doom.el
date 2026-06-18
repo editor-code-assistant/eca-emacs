@@ -24,6 +24,7 @@
 
 (declare-function +workspace-list-names "ext:workspaces" ())
 (declare-function +workspace-get "ext:workspaces" (name &optional noerror))
+(declare-function +workspace/display "ext:workspaces" ())
 (declare-function persp-buffers "ext:persp-mode" (persp))
 
 (defcustom eca-doom-workspace-tabs t
@@ -109,19 +110,68 @@ a string, so callers can fall back to the original value."
                                                      name face)))))
       result)))
 
+(defvar eca-doom--last-tabline nil
+  "The last tabline string produced by `eca-doom--tabline-advice'.
+Used to detect whether the workspace tabline is the message currently
+shown, so `eca-doom--do-refresh' only redraws an already-visible
+tabline.")
+
+(defvar eca-doom--refresh-timer nil
+  "Idle timer coalescing workspace tabline refreshes, or nil.")
+
 (defun eca-doom--tabline-advice (orig-fn &optional names)
   "Around advice for `+workspace--tabline' adding ECA status decoration.
 Call ORIG-FN with NAMES and decorate its result.  Any error falls
 back to the undecorated tabline so the Doom UI never breaks."
-  (let ((tabline (funcall orig-fn names)))
-    (or (ignore-errors
-          (eca-doom--tabline-decorate tabline
-                                      (or names (+workspace-list-names))))
-        tabline)))
+  (let* ((tabline (funcall orig-fn names))
+         (result (or (ignore-errors
+                       (eca-doom--tabline-decorate tabline
+                                                   (or names (+workspace-list-names))))
+                     tabline)))
+    (when (stringp result)
+      (setq eca-doom--last-tabline result))
+    result))
+
+(defun eca-doom--tabline-visible-p ()
+  "Return non-nil when the workspace tabline is the message shown now.
+Compares the echo-area message text with the last produced tabline.
+`string-equal' ignores text properties, so a status-only face change
+still matches the same workspace labels."
+  (when-let* ((shown (current-message)))
+    (and eca-doom--last-tabline
+         (string-equal shown eca-doom--last-tabline))))
+
+(defun eca-doom--do-refresh ()
+  "Re-display the workspace tabline with fresh ECA status.
+Only acts when the tabline is the message currently shown, so an
+unrelated or dismissed echo-area message is never clobbered nor
+resurrected."
+  (setq eca-doom--refresh-timer nil)
+  (when (and eca-doom-workspace-tabs
+             (fboundp '+workspace/display)
+             (eca-doom--tabline-visible-p))
+    (ignore-errors (+workspace/display))))
+
+(defun eca-doom--schedule-refresh ()
+  "Schedule a single idle workspace tabline refresh.
+Throttles bursts of status changes into one redraw: subsequent calls
+while a refresh is pending are ignored."
+  (unless (timerp eca-doom--refresh-timer)
+    (setq eca-doom--refresh-timer
+          (run-with-idle-timer 0.1 nil #'eca-doom--do-refresh))))
+
+(defun eca-doom--on-session-status-changed (&optional _session)
+  "Refresh the workspace tabline after an ECA session status change.
+Bound to `eca-chat-session-status-changed-functions'."
+  (when (and eca-doom-workspace-tabs
+             (fboundp '+workspace/display))
+    (eca-doom--schedule-refresh)))
 
 (defun eca-doom-setup ()
   "Enable the ECA Doom workspaces integration."
-  (advice-add '+workspace--tabline :around #'eca-doom--tabline-advice))
+  (advice-add '+workspace--tabline :around #'eca-doom--tabline-advice)
+  (add-hook 'eca-chat-session-status-changed-functions
+            #'eca-doom--on-session-status-changed))
 
 (when (and (featurep 'doom)
            (fboundp '+workspace--tabline))

@@ -13,9 +13,10 @@
 
 (defun eca-doom-test--make-chat-buffer (name &optional state session-id)
   "Create a chat-like buffer NAME with STATE caching SESSION-ID.
-STATE is one of `approval', `question', `loading' or nil.  The
-buffer only mimics `eca-chat-mode' by setting `major-mode' so
-`derived-mode-p' matches without running the full mode setup."
+STATE is one of `approval', `question', `loading', `stopping' or
+nil.  The buffer only mimics `eca-chat-mode' by setting
+`major-mode' so `derived-mode-p' matches without running the full
+mode setup."
   (let ((buf (generate-new-buffer name)))
     (with-current-buffer buf
       (setq-local major-mode 'eca-chat-mode)
@@ -26,7 +27,8 @@ buffer only mimics `eca-chat-mode' by setting `major-mode' so
                             "[accept]"
                             'eca-tool-call-pending-approval-accept t)))
         ('question (setq-local eca-chat--pending-question '(:question "q")))
-        ('loading (setq-local eca-chat--chat-loading t))))
+        ('loading (setq-local eca-chat--chat-loading t))
+        ('stopping (setq-local eca-chat--chat-loading 'stopping))))
     buf))
 
 (defun eca-doom-test--make-session (id buffers &optional folders)
@@ -89,6 +91,13 @@ WORKSPACES is an alist of (name . buffers) mimicking perspectives."
       (unwind-protect
           (expect (eca-chat-session-status session) :to-be 'running)
         (mapc #'kill-buffer (list b1 b2)))))
+
+  (it "is idle when a chat is only stopping (winding down)"
+    (let* ((buf (eca-doom-test--make-chat-buffer "*ds-stop*" 'stopping))
+           (session (eca-doom-test--make-session 1 (list buf))))
+      (unwind-protect
+          (expect (eca-chat-session-status session) :to-be 'idle)
+        (kill-buffer buf))))
 
   (it "is waiting-approval when a chat has a pending approval"
     (let* ((buf (eca-doom-test--make-chat-buffer "*ds-a1*" 'approval))
@@ -233,6 +242,119 @@ WORKSPACES is an alist of (name . buffers) mimicking perspectives."
                  (lambda () (error "Boom"))))
         (expect (eca-doom--tabline-advice (lambda (&optional _) tabline))
                 :to-be tabline)))))
+
+(describe "eca-chat--notify-status-changed"
+
+  (it "runs the status-changed hook with the session"
+    (let* ((session (eca-doom-test--make-session 1 nil))
+           (captured 'none)
+           (eca-chat-session-status-changed-functions
+            (list (lambda (s) (setq captured s)))))
+      (eca-chat--notify-status-changed session)
+      (expect captured :to-be session)))
+
+  (it "does nothing for a nil session"
+    (let* ((called nil)
+           (eca-chat-session-status-changed-functions
+            (list (lambda (_s) (setq called t)))))
+      (eca-chat--notify-status-changed nil)
+      (expect called :to-be nil)))
+
+  (it "notifies only for tool-call lifecycle content"
+    (let* ((session (eca-doom-test--make-session 1 nil))
+           (count 0)
+           (eca-chat-session-status-changed-functions
+            (list (lambda (_s) (cl-incf count)))))
+      (eca-chat--maybe-notify-status-changed session '(:type "text"))
+      (expect count :to-equal 0)
+      (eca-chat--maybe-notify-status-changed session '(:type "toolCallRun"))
+      (expect count :to-equal 1))))
+
+(describe "eca-doom workspace tabline refresh"
+
+  (it "records the produced tabline in `eca-doom--last-tabline'"
+    (let* ((chat (eca-doom-test--make-chat-buffer "*dr-rec*" 'loading 1))
+           (session (eca-doom-test--make-session 1 (list chat)))
+           (eca--sessions (list (cons 1 session)))
+           (eca-doom--last-tabline nil)
+           (tabline (eca-doom-test--tabline '("code"))))
+      (unwind-protect
+          (eca-doom-test--with-doom (list (cons "code" (list chat)))
+            (let ((result (eca-doom--tabline-advice
+                           (lambda (&optional _) tabline))))
+              (expect eca-doom--last-tabline :to-equal result)))
+        (kill-buffer chat))))
+
+  (it "re-displays only when the tabline is the current message"
+    (let ((eca-doom-workspace-tabs t)
+          (eca-doom--refresh-timer nil)
+          (eca-doom--last-tabline "TABLINE")
+          (displayed 0))
+      (cl-letf (((symbol-function '+workspace/display)
+                 (lambda () (cl-incf displayed)))
+                ((symbol-function 'current-message)
+                 (lambda () "TABLINE")))
+        (eca-doom--do-refresh)
+        (expect displayed :to-equal 1)
+        (expect eca-doom--refresh-timer :to-be nil))))
+
+  (it "matches ignoring face properties on the shown message"
+    (let ((eca-doom-workspace-tabs t)
+          (eca-doom--refresh-timer nil)
+          (eca-doom--last-tabline (propertize "TABLINE" 'face 'bold))
+          (displayed 0))
+      (cl-letf (((symbol-function '+workspace/display)
+                 (lambda () (cl-incf displayed)))
+                ((symbol-function 'current-message)
+                 (lambda () "TABLINE")))
+        (eca-doom--do-refresh)
+        (expect displayed :to-equal 1))))
+
+  (it "does nothing when another message is shown"
+    (let ((eca-doom-workspace-tabs t)
+          (eca-doom--refresh-timer nil)
+          (eca-doom--last-tabline "TABLINE")
+          (displayed 0))
+      (cl-letf (((symbol-function '+workspace/display)
+                 (lambda () (cl-incf displayed)))
+                ((symbol-function 'current-message)
+                 (lambda () "minibuffer noise")))
+        (eca-doom--do-refresh)
+        (expect displayed :to-equal 0))))
+
+  (it "does nothing when the echo area is empty"
+    (let ((eca-doom-workspace-tabs t)
+          (eca-doom--refresh-timer nil)
+          (eca-doom--last-tabline "TABLINE")
+          (displayed 0))
+      (cl-letf (((symbol-function '+workspace/display)
+                 (lambda () (cl-incf displayed)))
+                ((symbol-function 'current-message)
+                 (lambda () nil)))
+        (eca-doom--do-refresh)
+        (expect displayed :to-equal 0))))
+
+  (it "schedules a single refresh on status change when enabled"
+    (let ((eca-doom-workspace-tabs t)
+          (eca-doom--refresh-timer nil))
+      (cl-letf (((symbol-function '+workspace/display) (lambda () nil)))
+        (unwind-protect
+            (progn
+              (eca-doom--on-session-status-changed nil)
+              (let ((timer eca-doom--refresh-timer))
+                (expect (timerp timer) :to-be-truthy)
+                ;; A second change while pending does not create a new timer.
+                (eca-doom--on-session-status-changed nil)
+                (expect eca-doom--refresh-timer :to-be timer)))
+          (when (timerp eca-doom--refresh-timer)
+            (cancel-timer eca-doom--refresh-timer))))))
+
+  (it "does not schedule a refresh when disabled"
+    (let ((eca-doom-workspace-tabs nil)
+          (eca-doom--refresh-timer nil))
+      (cl-letf (((symbol-function '+workspace/display) (lambda () nil)))
+        (eca-doom--on-session-status-changed nil)
+        (expect eca-doom--refresh-timer :to-be nil)))))
 
 (provide 'eca-doom-test)
 ;;; eca-doom-test.el ends here
