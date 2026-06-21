@@ -372,10 +372,10 @@ does not treat the first line as metadata.  Returns FN's value."
                          (overlays-in (point-min) (point-max)))))
           (expect (substring-no-properties
                    (eca-chat-test--overlay-text response-ov))
-                  :to-equal "[copy response]\n")
+                  :to-equal (eca-chat--copy-button-label))
           (expect (substring-no-properties
                    (eca-chat-test--overlay-text code-ov))
-                  :to-equal "[copy]\n")))))
+                  :to-equal (eca-chat--copy-button-label))))))
 
   (it "adds keyboard and mouse bindings to copy overlays"
     (let ((eca-chat-show-copy-buttons t))
@@ -405,7 +405,7 @@ does not treat the first line as metadata.  Returns FN's value."
           (expect (overlay-start ov) :to-be (point-min))
           (expect (substring-no-properties
                    (eca-chat-test--overlay-text ov))
-                  :to-equal "[copy]\n")
+                  :to-equal (eca-chat--copy-button-label))
           (expect (buffer-substring-no-properties
                    (overlay-end ov)
                    (+ (overlay-end ov) 8))

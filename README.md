@@ -156,6 +156,8 @@ Chat
 - `eca-chat-expand-pending-approval-tools`: Whether to auto-expand tool calls that are pending approval.
 - `eca-chat-shrink-called-tools`: Whether to auto-shrink tool calls after they have been executed.
 - `eca-chat-show-copy-buttons`: Whether to show copy buttons for chat responses and fenced code blocks (default `t`).
+- `eca-chat-copy-button-symbol`: Glyph used for chat copy buttons on graphic frames (default `📋`).
+- `eca-chat-copy-button-symbol-tty`: Glyph used for chat copy buttons on terminal (non-graphic) frames.
 - `eca-chat-tab-line`: Whether to show a tab line with chat tabs at the top of each chat window (default `t`). Each tab shows the chat status (pending approval, loading) and title.
 - `eca-chat-custom-model`: Override the model used for chat (nil = server default).
 - `eca-chat-custom-agent`: Override the chat agent (nil = server default).

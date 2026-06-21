@@ -158,6 +158,16 @@ to nil to keep the whole chat buffer writable."
   :type 'string
   :group 'eca)
 
+(defcustom eca-chat-copy-button-symbol "📋"
+  "The glyph used in eca chat buffer for copy buttons on graphic frames."
+  :type 'string
+  :group 'eca)
+
+(defcustom eca-chat-copy-button-symbol-tty "⎘"
+  "Copy button glyph used on terminal (non-graphic) frames."
+  :type 'string
+  :group 'eca)
+
 (defcustom eca-chat-expand-pending-approval-tools t
   "Whether to auto expand tool calls when pending approval."
   :type 'boolean
@@ -856,18 +866,59 @@ time (see `eca-chat-open'), every known chat is registered under
 its real id and there is no `'empty' placeholder to migrate from."
   (eca-get (eca--session-chats session) chat-id))
 
+(defun eca-chat--sibling-chat-buffer (session buffer)
+  "Return the chat buffer to focus when BUFFER is closed in SESSION.
+Prefers the previous chat (the tab to the left of BUFFER); when
+BUFFER is the leftmost chat, returns the next one (to the right).
+When BUFFER is not registered, returns any other live chat.
+Returns nil when SESSION has no other live chat."
+  (let* ((chats (-filter #'buffer-live-p
+                         (eca-chat--session-chats-oldest-first session)))
+         (pos (cl-position buffer chats)))
+    (cond
+     ((null pos) (-first (lambda (b) (not (eq b buffer))) chats))
+     ((> pos 0) (nth (1- pos) chats))
+     ((< (1+ pos) (length chats)) (nth (1+ pos) chats))
+     (t nil))))
+
+(defun eca-chat--switch-windows-to-sibling (session buffer)
+  "Switch any window showing BUFFER to a sibling chat of SESSION.
+Updates the session `last-chat-buffer' and preserves each window's
+dedication flag so the dedicated chat window keeps showing a chat
+instead of falling back to an unrelated buffer.  Returns the
+sibling buffer switched to, or nil when SESSION has no other chat."
+  (when-let* ((other (eca-chat--sibling-chat-buffer session buffer)))
+    (setf (eca--session-last-chat-buffer session) other)
+    (dolist (win (get-buffer-window-list buffer nil t))
+      (let ((dedicated (window-dedicated-p win)))
+        (set-window-dedicated-p win nil)
+        (set-window-buffer win other)
+        (set-window-dedicated-p win dedicated)))
+    other))
+
 (defun eca-chat--delete-chat ()
-  "Delete current chat."
+  "Handle killing of the current chat buffer.
+Switches any window showing this chat to a sibling chat (so a
+dedicated chat window is not replaced by an unrelated buffer such
+as settings), drops the chat from the session registry, and, when
+confirmed, deletes it server-side."
   (when (and (or (eq #'kill-current-buffer this-command)
                  (eq #'kill-buffer this-command)
                  (and (symbolp this-command)
                       (string-prefix-p "eca-" (symbol-name this-command))))
              eca-chat--id
-             (not eca-chat--closed)
-             (yes-or-no-p "Delete chat from server side (otherwise it will just kill the buffer) ?"))
-    (eca-api-request-sync (eca-session)
-                          :method "chat/delete"
-                          :params (list :chatId eca-chat--id))))
+             (not eca-chat--closed))
+    (let ((buffer (current-buffer))
+          (chat-id eca-chat--id))
+      (when-let* ((session (ignore-errors (eca-session))))
+        (eca-chat--switch-windows-to-sibling session buffer)
+        (setf (eca--session-chats session)
+              (eca-dissoc (eca--session-chats session) chat-id))
+        (eca-chat--force-tab-line-update))
+      (when (yes-or-no-p "Delete chat from server side (otherwise it will just kill the buffer) ?")
+        (eca-api-request-sync (eca-session)
+                              :method "chat/delete"
+                              :params (list :chatId chat-id))))))
 
 (defun eca-chat--insert (&rest contents)
   "Insert CONTENTS reseting undo-list to avoid buffer inconsistencies."
@@ -2325,28 +2376,17 @@ Tabs are ordered oldest-first so new chats appear on the right."
 
 (defun eca-chat--tab-line-close-tab (&optional e)
   "Close the chat tab clicked on.
-If closing the current buffer, switch to another chat tab first.
-E is the mouse event."
+The chat's `kill-buffer' hook switches any window showing it to a
+sibling chat first, so the dedicated chat window keeps showing a
+chat.  E is the mouse event."
   (interactive "e")
   (let* ((posnp (event-start e))
-         (window (posn-window posnp))
          (tab-prop (get-pos-property 1 'tab (car (posn-string posnp))))
          (buffer (if (bufferp tab-prop)
                      tab-prop
                    (cdr (assq 'buffer tab-prop)))))
     (when (and buffer (buffer-live-p buffer))
-      (with-selected-window window
-        (when (eq buffer (current-buffer))
-          ;; Switch to another chat before killing
-          (let* ((session (ignore-errors (eca-session)))
-                 (other (-first (lambda (buf)
-                                  (and (buffer-live-p buf)
-                                       (not (eq buf buffer))))
-                                (eca-vals (eca--session-chats session)))))
-            (when other
-              (setf (eca--session-last-chat-buffer session) other)
-              (switch-to-buffer other))))
-        (kill-buffer buffer)))))
+      (kill-buffer buffer))))
 
 (defvar eca-chat--tab-close-map
   (let ((map (make-sparse-keymap)))
@@ -2794,6 +2834,14 @@ Return the position after the inserted button."
   "Return regexp matching the closing FENCE line."
   (concat "^[ \t]*" (regexp-quote fence) "[ \t]*$"))
 
+(defun eca-chat--copy-button-label ()
+  "Return the copy button glyph followed by a newline.
+Uses the TTY glyph on terminal (non-graphic) frames."
+  (concat (if (display-graphic-p)
+              eca-chat-copy-button-symbol
+            eca-chat-copy-button-symbol-tty)
+          "\n"))
+
 (defun eca-chat--refresh-code-copy-buttons (&optional from to)
   "Refresh copy buttons for fenced code blocks between FROM and TO."
   (let* ((start (or from (point-min)))
@@ -2812,7 +2860,7 @@ Return the position after the inserted button."
             (when (re-search-forward close-regexp limit t)
               (let* ((body-end (copy-marker (match-beginning 0)))
                      (button (eca-chat--copy-button-text
-                              "[copy]\n"
+                              (eca-chat--copy-button-label)
                               (lambda ()
                                 (interactive)
                                 (eca-chat--copy-region
@@ -2838,7 +2886,7 @@ Return the position after the inserted button."
         (let ((copy-start (make-marker))
               (copy-end (copy-marker end)))
           (let* ((button (eca-chat--copy-button-text
-                          "[copy response]\n"
+                          (eca-chat--copy-button-label)
                           (lambda ()
                             (interactive)
                             (eca-chat--copy-region
@@ -4135,10 +4183,18 @@ selectAgent, selectVariant, selectTrust) are scoped by `chatId':
         (eca-chat--apply-per-chat-config chat-config chat-buffer)))))
 
 (defun eca-chat-deleted (session params)
-  "Handle chat deleted notification for SESSION with PARAMS."
+  "Handle chat deleted notification for SESSION with PARAMS.
+Switches any window showing the deleted chat to a sibling chat
+before removing it (so a dedicated chat window keeps showing a
+chat), and marks it closed so the `kill-buffer' hook does not
+prompt or re-issue a redundant `chat/delete'."
   (let* ((chat-id (plist-get params :chatId))
          (chat-buffer (eca-get (eca--session-chats session) chat-id)))
     (when chat-buffer
+      (when (buffer-live-p chat-buffer)
+        (eca-chat--switch-windows-to-sibling session chat-buffer)
+        (with-current-buffer chat-buffer
+          (setq-local eca-chat--closed t)))
       (setf (eca--session-chats session)
             (eca-dissoc (eca--session-chats session) chat-id))
       (when (buffer-live-p chat-buffer)
@@ -4668,12 +4724,19 @@ Starting from the beginning of the buffer."
 
 ;;;###autoload
 (defun eca-chat-reset ()
-  "Kill current chat (asking to keep or not history) and start a new."
+  "Kill the current chat (asking whether to delete it server-side).
+Switch to the previous chat when the session has others, or start
+a fresh chat when this was the only one."
   (interactive)
-  (eca-chat--with-current-buffer (eca-chat--get-last-buffer (eca-session))
-    (when eca-chat--id
-      (kill-buffer)
-      (eca-chat-new))))
+  (let* ((session (eca-session))
+         (buffer (eca-chat--get-last-buffer session)))
+    (eca-assert-session-running session)
+    (when (and (buffer-live-p buffer)
+               (buffer-local-value 'eca-chat--id buffer))
+      (let ((sibling (eca-chat--sibling-chat-buffer session buffer)))
+        (kill-buffer buffer)
+        (unless sibling
+          (eca-chat--new-chat session))))))
 
 ;;;###autoload
 (defun eca-chat-go-to-prev-user-message ()
@@ -5131,15 +5194,7 @@ another chat first."
                          (buffer-local-value 'eca-chat--id buffer))))
       (unless (and (buffer-live-p buffer) chat-id)
         (user-error "No active chat to delete"))
-      (when-let ((other (-first (lambda (buf)
-                                  (and (buffer-live-p buf) (not (eq buf buffer))))
-                                (eca-vals (eca--session-chats session)))))
-        (setf (eca--session-last-chat-buffer session) other)
-        (dolist (win (get-buffer-window-list buffer nil t))
-          (let ((dedicated (window-dedicated-p win)))
-            (set-window-dedicated-p win nil)
-            (set-window-buffer win other)
-            (set-window-dedicated-p win dedicated))))
+      (eca-chat--switch-windows-to-sibling session buffer)
       ;; Mark closed so the kill-buffer hook neither prompts nor sends a
       ;; second chat/delete when BUFFER is killed below.
       (with-current-buffer buffer
@@ -5156,10 +5211,17 @@ another chat first."
   (interactive)
   (let ((session (eca-session)))
     (eca-assert-session-running session)
-    (let ((_ (cl-incf eca-chat--new-chat-id))
-          (new-chat-buffer (eca-chat--create-buffer session)))
-      (setf (eca--session-last-chat-buffer session) new-chat-buffer)
-      (eca-chat-open session))))
+    (eca-chat--new-chat session)))
+
+(defun eca-chat--new-chat (session)
+  "Create and open a fresh chat buffer for SESSION.
+Unlike `eca-chat-new', SESSION is passed explicitly so this works
+even when called right after the previous chat buffer was killed
+\(and `eca-session' could no longer resolve from the dead buffer)."
+  (let ((_ (cl-incf eca-chat--new-chat-id))
+        (new-chat-buffer (eca-chat--create-buffer session)))
+    (setf (eca--session-last-chat-buffer session) new-chat-buffer)
+    (eca-chat-open session)))
 
 (declare-function whisper-run "ext:whisper" ())
 
