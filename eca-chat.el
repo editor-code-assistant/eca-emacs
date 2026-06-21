@@ -607,6 +607,13 @@ behavior)."
   "Face for the free-space segment of the context-usage bar."
   :group 'eca)
 
+(defface eca-chat-context-compaction-marker-face
+  '((((background dark))  (:foreground "#d7dae0"))
+    (((background light)) (:foreground "#383a42")))
+  "Face for the auto-compaction threshold marker on the context bar.
+Its foreground is also used as the marker color in graphical frames."
+  :group 'eca)
+
 (defface eca-chat-elapsed-time-face
   '((t :height 0.9 :inherit font-lock-comment-face))
   "Face for the elapsed time indicator in mode-line of the chat."
@@ -712,6 +719,9 @@ whether the first user prompt should erase the banner first.")
 (defvar-local eca-chat--session-tokens nil)
 (defvar-local eca-chat--session-limit-context nil)
 (defvar-local eca-chat--session-limit-output nil)
+(defvar-local eca-chat--session-auto-compact-percentage nil
+  "Context-window percentage at which the server auto-compacts.
+Nil when auto-compaction is disabled or unknown.")
 (defvar-local eca-chat--context-breakdown nil
   "Latest context-window usage breakdown plist for the current chat.
 Keys: :categories (vector of :name/:tokens plists), :usedTokens,
@@ -1091,6 +1101,14 @@ Replace the job status emoji with NEW-EMOJI."
   :type 'integer
   :group 'eca)
 
+(defcustom eca-chat-context-bar-show-compaction-marker t
+  "Whether to mark the auto-compaction threshold on the context bar."
+  :type 'boolean
+  :group 'eca)
+
+(defconst eca-chat--context-bar-marker-px 2
+  "Width in pixels of the auto-compaction marker in graphical frames.")
+
 (defconst eca-chat--context-category-faces
   '(("System prompt" . eca-chat-context-system-prompt-face)
     ("Rules" . eca-chat-context-rules-face)
@@ -1138,11 +1156,12 @@ Prefers the server color, falling back to the client face foreground."
         (face-foreground 'eca-chat-context-free-face nil t)
         "#5c6370")))
 
-(defun eca-chat--context-bar-help (breakdown used free limit)
+(defun eca-chat--context-bar-help (breakdown used free limit &optional compact-pct)
   "Build the help-echo legend for the context bar from BREAKDOWN.
 USED, FREE and LIMIT are the aggregate token counts.  Each line is
 prefixed with a colored swatch matching the bar so the colors map to
-their category."
+their category.  COMPACT-PCT, when set, notes the auto-compaction
+threshold percentage."
   (let* ((nf #'eca-chat--number->friendly-number)
          ;; Prefer the server-provided emoji swatch (consistent with the
          ;; /context text); fall back to a colored block for older servers.
@@ -1168,6 +1187,11 @@ their category."
                       (funcall swatch (plist-get breakdown :freeEmoji)
                                (eca-chat--context-free-face-spec breakdown))
                       (funcall nf free)))
+            (when (and compact-pct (numberp compact-pct) (> compact-pct 0))
+              (format "\nAuto-compaction at %s%%"
+                      (if (= compact-pct (round compact-pct))
+                          (number-to-string (round compact-pct))
+                        (format "%.1f" compact-pct))))
             "\n\nClick to run /context")))
 
 (defvar eca-chat--context-bar-mode-line-map
@@ -1220,11 +1244,12 @@ number of cells available when there are more categories than cells)."
              when (> n 0) do (setq last cat))
     (eca-chat--context-category-face-spec (or last (car categories)))))
 
-(defun eca-chat--context-bar-chars (categories breakdown width frac)
+(defun eca-chat--context-bar-chars (categories breakdown width frac &optional marker-frac)
   "Build the block-character context bar string for terminal frames.
 CATEGORIES/BREAKDOWN carry the usage data, WIDTH is the cell count and
 FRAC the used fraction (0..1).  The used/free edge uses a fractional
-block for sub-cell precision."
+block for sub-cell precision.  MARKER-FRAC, when non-nil, draws the
+auto-compaction threshold marker on the matching cell."
   (let* ((colored-exact (* width frac))
          (colored-cells (min width (floor colored-exact)))
          (edge-eighths (if (< colored-cells width)
@@ -1244,34 +1269,69 @@ block for sub-cell precision."
       (when (> free-cells 0)
         (setq bar (concat bar (propertize (make-string free-cells ?█)
                                           'face (eca-chat--context-free-face-spec breakdown))))))
+    (when (and marker-frac (> (length bar) 0))
+      (let ((idx (min (1- (length bar))
+                      (max 0 (floor (* width (min 1.0 (max 0.0 marker-frac))))))))
+        (setq bar (concat (substring bar 0 idx)
+                          (propertize "│" 'face 'eca-chat-context-compaction-marker-face)
+                          (substring bar (1+ idx))))))
     bar))
 
-(defun eca-chat--context-bar-pixels (categories breakdown width frac)
+(defun eca-chat--context-bar-pixels-insert-marker (segs marker-x)
+  "Overlay the auto-compaction marker on SEGS near MARKER-X pixels.
+SEGS is a list of (PX . COLOR); return a new list with the same total
+width, the marker overwriting `eca-chat--context-bar-marker-px' pixels
+clamped to stay fully visible."
+  (let* ((total (apply #'+ 0 (mapcar #'car segs)))
+         (mw (min eca-chat--context-bar-marker-px total))
+         (m-start (max 0 (min marker-x (- total mw))))
+         (m-end (+ m-start mw))
+         (mcolor (or (face-foreground 'eca-chat-context-compaction-marker-face nil t)
+                     "#888888"))
+         (x 0)
+         (out nil))
+    (dolist (s segs)
+      (let* ((px (car s)) (color (cdr s))
+             (start x) (end (+ x px))
+             (le (max start (min end m-start)))
+             (me (max start (min end m-end))))
+        (when (> (- le start) 0) (push (cons (- le start) color) out))
+        (when (> (- me le) 0) (push (cons (- me le) mcolor) out))
+        (when (> (- end me) 0) (push (cons (- end me) color) out))
+        (setq x end)))
+    (nreverse out)))
+
+(defun eca-chat--context-bar-pixels (categories breakdown width frac &optional marker-frac)
   "Build the pixel-width thin-segment context bar for graphical frames.
 CATEGORIES/BREAKDOWN carry the usage data; each category is a
 `:background'-colored space whose pixel width is proportional to its
 share, giving sub-character granularity so small percentages still
 show as a thin sliver.  WIDTH is the footprint in characters and FRAC
-the used fraction (0..1)."
+the used fraction (0..1).  MARKER-FRAC, when non-nil, overlays the
+auto-compaction threshold marker at that fraction of the bar."
   (let* ((char-px (max 1 (frame-char-width)))
          (total-px (* width char-px))
          (used-px (min total-px (round (* total-px frac))))
          (tokens (mapcar (lambda (c) (max 0 (or (plist-get c :tokens) 0))) categories))
          (alloc (eca-chat--context-bar-allocate tokens used-px))
-         (seg (lambda (px color)
-                (propertize " "
-                            'display (list 'space :width (list px))
-                            'face (list :background color))))
-         (bar "")
+         (segs nil)
          (drawn 0))
     (cl-loop for cat in categories for px in alloc
              when (> px 0)
-             do (setq bar (concat bar (funcall seg px (eca-chat--context-category-color cat)))
-                      drawn (+ drawn px)))
+             do (push (cons px (eca-chat--context-category-color cat)) segs)
+                (setq drawn (+ drawn px)))
     (let ((free-px (- total-px drawn)))
       (when (> free-px 0)
-        (setq bar (concat bar (funcall seg free-px (eca-chat--context-free-color breakdown))))))
-    bar))
+        (push (cons free-px (eca-chat--context-free-color breakdown)) segs)))
+    (setq segs (nreverse segs))
+    (when (and marker-frac segs)
+      (setq segs (eca-chat--context-bar-pixels-insert-marker
+                  segs (round (* total-px (min 1.0 (max 0.0 marker-frac)))))))
+    (mapconcat (lambda (s)
+                 (propertize " "
+                             'display (list 'space :width (list (car s)))
+                             'face (list :background (cdr s))))
+               segs "")))
 
 (defun eca-chat--context-bar ()
   "Return the propertized context-usage bar string, or nil.
@@ -1287,10 +1347,15 @@ per-category tokens are in the tooltip."
            (limit (plist-get breakdown :contextLimit))
            (width (max 1 eca-chat-context-bar-width))
            (frac (if (and limit (> limit 0)) (min 1.0 (/ (float used) limit)) 1.0))
-           (help (eca-chat--context-bar-help breakdown used free limit))
+           (compact-pct (when (and eca-chat-context-bar-show-compaction-marker
+                                   (numberp eca-chat--session-auto-compact-percentage)
+                                   (> eca-chat--session-auto-compact-percentage 0))
+                          eca-chat--session-auto-compact-percentage))
+           (marker-frac (when compact-pct (min 1.0 (/ (float compact-pct) 100.0))))
+           (help (eca-chat--context-bar-help breakdown used free limit compact-pct))
            (bar (if (display-graphic-p)
-                    (eca-chat--context-bar-pixels categories breakdown width frac)
-                  (eca-chat--context-bar-chars categories breakdown width frac))))
+                    (eca-chat--context-bar-pixels categories breakdown width frac marker-frac)
+                  (eca-chat--context-bar-chars categories breakdown width frac marker-frac))))
       (propertize bar
                   'help-echo help
                   'local-map eca-chat--context-bar-mode-line-map))))
@@ -3981,6 +4046,7 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
            (setq-local eca-chat--session-limit-output  (plist-get (plist-get content :limit) :output))
            (setq-local eca-chat--message-cost          (plist-get content :messageCost))
            (setq-local eca-chat--session-cost          (plist-get content :sessionCost))
+           (setq-local eca-chat--session-auto-compact-percentage (plist-get content :autoCompactPercentage))
            (setq-local eca-chat--context-breakdown     (plist-get content :contextBreakdown)))
          (force-mode-line-update)))
       (_ nil))

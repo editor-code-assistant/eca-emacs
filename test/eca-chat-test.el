@@ -1088,4 +1088,27 @@ does not treat the first line as metadata.  Returns FN's value."
                 16 0.5)))
       (expect (> (eca-chat--string-pixel-width bar) (length bar)) :to-be t))))
 
+(describe "eca-chat context-bar compaction marker"
+  (it "keeps the pixel-bar total width when the marker is overlaid"
+    (let* ((cats (list (list :name "System prompt" :tokens 100 :color "#ff0000")))
+           (bd (list :freeColor "#222222"))
+           (plain (eca-chat--context-bar-pixels cats bd 16 0.5))
+           (marked (eca-chat--context-bar-pixels cats bd 16 0.5 0.75)))
+      (expect (eca-chat--string-pixel-width marked)
+              :to-equal (eca-chat--string-pixel-width plain))))
+
+  (it "draws the marker glyph on the terminal bar without changing length"
+    (let* ((cats (list (list :name "System prompt" :tokens 100 :color "#ff0000")))
+           (bd (list :freeColor "#222222"))
+           (plain (eca-chat--context-bar-chars cats bd 8 1.0))
+           (marked (eca-chat--context-bar-chars cats bd 8 1.0 0.5)))
+      (expect (length marked) :to-equal (length plain))
+      (expect (string-match-p "│" marked) :to-be-truthy)))
+
+  (it "notes the auto-compaction threshold in the tooltip"
+    (let* ((breakdown (list :categories (vector (list :name "System prompt" :tokens 5300 :emoji "🟦"))
+                            :usedTokens 5300 :freeTokens 194700 :contextLimit 200000))
+           (help (eca-chat--context-bar-help breakdown 5300 194700 200000 75)))
+      (expect help :to-match "Auto-compaction at 75%"))))
+
 ;;; eca-chat-test.el ends here
