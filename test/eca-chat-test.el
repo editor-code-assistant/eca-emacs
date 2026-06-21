@@ -1068,4 +1068,24 @@ does not treat the first line as metadata.  Returns FN's value."
       (expect (car (get-text-property 0 'display bar)) :to-be 'space)
       (expect (get-text-property 0 'face bar) :to-equal '(:background "#ff0000")))))
 
+(describe "eca-chat--string-pixel-width"
+  (it "returns 0 for the empty string"
+    (expect (eca-chat--string-pixel-width "") :to-equal 0))
+
+  (it "honors pixel-width display specs instead of counting chars"
+    ;; A single space carrying a 40px display width must measure ~40, not
+    ;; 1 (its `length').  Counting it as 1 char is what pushed the :usage
+    ;; and :trust mode-line segments off the right edge once the context
+    ;; bar started emitting pixel-width spaces.
+    (let ((s (propertize " " 'display (list 'space :width (list 40)))))
+      (expect (length s) :to-equal 1)
+      (expect (eca-chat--string-pixel-width s) :to-equal 40)))
+
+  (it "measures a pixel context-bar wider than its char length"
+    (let ((bar (eca-chat--context-bar-pixels
+                (list (list :name "System prompt" :tokens 100 :color "#ff0000"))
+                (list :freeColor "#222222")
+                16 0.5)))
+      (expect (> (eca-chat--string-pixel-width bar) (length bar)) :to-be t))))
+
 ;;; eca-chat-test.el ends here

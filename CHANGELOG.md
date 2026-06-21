@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Bugfix: keep the `:usage` and `:trust` mode-line segments visible after adding the context-usage bar. The right-alignment reserved space from `(length right)`, which counts the bar's pixel-width `display` spaces (and wide glyphs) as ~1 char each, so the segments overflowed off the right edge. It now measures the real rendered width via `string-pixel-width` (with a `buffer-text-pixel-size` fallback on Emacs < 29) and aligns flush to the right edge in pixels.
 - Bugfix: closing a chat (`kill-buffer`, `C-c C-k`, or the tab close button) now switches the chat window to a sibling chat (the previous tab, or the only one left) instead of falling back to an unrelated buffer like the settings buffer, and drops the dead chat from the session registry. `C-c C-k` (`eca-chat-reset`) only starts a fresh chat when the closed chat was the last one.
 - Replace the `[copy response]` and `[copy]` chat button labels with a clipboard icon (same click/RET/mouse behavior and tooltips). Customizable via `eca-chat-copy-button-symbol` and `eca-chat-copy-button-symbol-tty` (terminal fallback).
 - Bugfix: guard `chat/askQuestion` against a non-sequence `:options` (e.g. a malformed string from a misbehaving server). `append` was splitting such a string into character integers that rendered as a list of random numbers; non-sequence options are now treated as empty.
