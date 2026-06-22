@@ -988,6 +988,8 @@ does not treat the first line as metadata.  Returns FN's value."
     (expect (eca-chat--string-pixel-width "") :to-equal 0))
 
   (it "honors pixel-width display specs instead of counting chars"
+    (unless (fboundp 'string-pixel-width)
+      (buttercup-skip "string-pixel-width not available"))
     ;; A single space carrying a 40px display width must measure ~40, not
     ;; 1 (its `length').  Counting it as 1 char is what pushed the :usage
     ;; and :trust mode-line segments off the right edge once the context
@@ -997,6 +999,8 @@ does not treat the first line as metadata.  Returns FN's value."
       (expect (eca-chat--string-pixel-width s) :to-equal 40)))
 
   (it "measures a pixel context-bar wider than its char length"
+    (unless (fboundp 'string-pixel-width)
+      (buttercup-skip "string-pixel-width not available"))
     (let ((bar (eca-chat--context-bar-pixels
                 (list (list :name "System prompt" :tokens 100 :color "#ff0000"))
                 (list :freeColor "#222222")
@@ -1005,6 +1009,8 @@ does not treat the first line as metadata.  Returns FN's value."
 
 (describe "eca-chat context-bar compaction marker"
   (it "keeps the pixel-bar total width when the marker is overlaid"
+    (unless (fboundp 'string-pixel-width)
+      (buttercup-skip "string-pixel-width not available"))
     (let* ((cats (list (list :name "System prompt" :tokens 100 :color "#ff0000")))
            (bd (list :freeColor "#222222"))
            (plain (eca-chat--context-bar-pixels cats bd 16 0.5))

@@ -2595,15 +2595,10 @@ are in progress."
   "Return the rendered pixel width of STRING for mode-line alignment.
 Honors `display' specs (e.g. the context bar's pixel-width spaces) and
 wide glyphs, unlike `length'.  Uses `string-pixel-width' when
-available, otherwise `buffer-text-pixel-size', falling back to
-`string-width' on Emacsen without either."
+available, falling back to `string-width' on Emacsen without it."
   (cond
    ((string-empty-p string) 0)
    ((fboundp 'string-pixel-width) (string-pixel-width string))
-   ((fboundp 'buffer-text-pixel-size)
-    (with-temp-buffer
-      (insert string)
-      (car (buffer-text-pixel-size nil nil t))))
    (t (string-width string))))
 
 (defun eca-chat--mode-line-string (session)
@@ -2629,7 +2624,8 @@ available, otherwise `buffer-text-pixel-size', falling back to
                              (eca-chat--mode-line-module session m))
                            right-modules))
                     "")))
-           (fill (if (string-empty-p right)
+           (fill (if (or (string-empty-p right)
+                         (not (fboundp 'string-pixel-width)))
                      ""
                    (let ((px (eca-chat--string-pixel-width right)))
                      (propertize
