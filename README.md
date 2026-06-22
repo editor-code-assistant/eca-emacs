@@ -88,6 +88,7 @@ Chat
 - `eca-chat-send-prompt-at-chat` Open chat and send any prompt written there
 - `eca-chat-clear-prompt`: Clear written prompt in chat
 - `eca-chat-repeat-prompt`: Repeat a previously sent prompt
+- `eca-chat-copy-at-point`: Copy the code block or assistant response at point
 - `eca-chat-stop-prompt`: Stop a running prompt in chat
 - `eca-chat-tool-call-accept-all`: Accept all pending tool calls in chat
 - `eca-chat-tool-call-accept-all-and-remember`: Accept all pending tool calls in chat and remember for session
@@ -155,9 +156,6 @@ Chat
 - `eca-chat-mcp-tool-call-success-symbol`: Symbol used for MCP tool calls when they succeed.
 - `eca-chat-expand-pending-approval-tools`: Whether to auto-expand tool calls that are pending approval.
 - `eca-chat-shrink-called-tools`: Whether to auto-shrink tool calls after they have been executed.
-- `eca-chat-show-copy-buttons`: Whether to show copy buttons for chat responses and fenced code blocks (default `t`).
-- `eca-chat-copy-button-symbol`: Glyph used for chat copy buttons on graphic frames (default `📋`).
-- `eca-chat-copy-button-symbol-tty`: Glyph used for chat copy buttons on terminal (non-graphic) frames.
 - `eca-chat-tab-line`: Whether to show a tab line with chat tabs at the top of each chat window (default `t`). Each tab shows the chat status (pending approval, loading) and title.
 - `eca-chat-custom-model`: Override the model used for chat (nil = server default).
 - `eca-chat-custom-agent`: Override the chat agent (nil = server default).
@@ -221,6 +219,7 @@ You can access the transient menu with common commands via `M-x eca-transient-me
 | Chat: select chat                             | <kbd>C-c</kbd> <kbd>C-f</kbd>      |
 | Chat: repeat last prompt                      | <kbd>C-c</kbd> <kbd>C-p</kbd>      |
 | Chat: clear prompt                            | <kbd>C-c</kbd> <kbd>C-d</kbd>      |
+| Chat: copy at point                           | <kbd>C-c</kbd> <kbd>C-w</kbd>      |
 | Chat: timeline                                | <kbd>C-c</kbd> <kbd>C-h</kbd>      |
 | Chat: send prompt at chat buffer              | <kbd>C-c</kbd> <kbd>C-RET</kbd>    |
 | Chat: accept all pending tool calls           | <kbd>C-c</kbd> <kbd>C-a</kbd>      |
