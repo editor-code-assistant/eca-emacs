@@ -428,6 +428,244 @@ Returns a benchmark plist with op label
       (advice-remove 'face-background #'eca-chat-bench--safe-face-background)
       (kill-buffer buf))))
 
+;;;; Streaming regression benchmarks
+
+(defvar eca-chat-bench-stream-chunks 2000
+  "Number of chunks for focused streaming regression benchmarks.")
+
+(defvar eca-chat-bench-mode-line-iters 10000
+  "Number of iterations for focused mode-line benchmarks.")
+
+(defvar eca-chat-bench-usage-iters 10000
+  "Number of iterations for focused usage-event benchmarks.")
+
+(defvar eca-chat-bench-context-categories
+  (vector
+   (list :name "System prompt" :tokens 8000 :color "#61afef" :emoji "🔧")
+   (list :name "Rules" :tokens 6000 :color "#c678dd" :emoji "📏")
+   (list :name "Skills" :tokens 3500 :color "#56b6c2" :emoji "🧰")
+   (list :name "AGENTS.md" :tokens 2500 :color "#d19a66" :emoji "📘")
+   (list :name "Tool definitions" :tokens 12000 :color "#e8924a" :emoji "🛠")
+   (list :name "Tool calls" :tokens 18000 :color "#e06c75" :emoji "⚙")
+   (list :name "Conversation" :tokens 30000 :color "#98c379" :emoji "💬"))
+  "Representative context categories for streaming regression benches.")
+
+(defvar eca-chat-bench-mode-line-format-no-context
+  '(:workspace-folders :add-workspace-button :remove-workspace-button
+    :spacer :init-progress "  " :bg-jobs " " :elapsed-time "   "
+    :usage " " :trust)
+  "Default mode-line benchmark format without the context bar.")
+
+(defun eca-chat-bench--context-breakdown ()
+  "Return a representative context breakdown plist."
+  (list :usedTokens 80000
+        :freeTokens 120000
+        :contextLimit 200000
+        :freeColor "#5c6370"
+        :freeEmoji "⬚"
+        :categories eca-chat-bench-context-categories))
+
+(defun eca-chat-bench--usage-content ()
+  "Return a representative usage content payload."
+  (list :type "usage"
+        :messageInputTokens 1234
+        :messageOutputTokens 5678
+        :sessionTokens 80000
+        :limit (list :context 200000 :output 16000)
+        :messageCost "0.0123"
+        :sessionCost "0.4567"
+        :autoCompactPercentage 70
+        :contextBreakdown (eca-chat-bench--context-breakdown)))
+
+(defun eca-chat-bench--configure-context ()
+  "Populate buffer-local context values for mode-line benchmarks."
+  (setq-local eca-chat--message-input-tokens 1234)
+  (setq-local eca-chat--message-output-tokens 5678)
+  (setq-local eca-chat--session-tokens 80000)
+  (setq-local eca-chat--session-limit-context 200000)
+  (setq-local eca-chat--session-limit-output 16000)
+  (setq-local eca-chat--message-cost "0.0123")
+  (setq-local eca-chat--session-cost "0.4567")
+  (setq-local eca-chat--session-auto-compact-percentage 70)
+  (setq-local eca-chat--context-breakdown
+              (eca-chat-bench--context-breakdown)))
+
+(defun eca-chat-bench--stream-chunk ()
+  "Return one representative assistant stream chunk."
+  "The model is streaming markdown with `inline code`, **bold text**, \
+_a little emphasis_, and enough prose to exercise insertion paths.\n")
+
+(defun eca-chat-bench--bench-stream-render (buf iters label mode-format)
+  "Time assistant streaming in BUF for ITERS chunks.
+LABEL names the result row.  MODE-FORMAT controls optional mode-line
+work: nil skips mode-line rendering, otherwise it is bound around
+`eca-chat--mode-line-string' after each chunk to approximate redisplay."
+  (with-current-buffer buf
+    (eca-chat-bench--configure-context)
+    (let ((session (eca-chat-bench--ensure-session))
+          (chunk (eca-chat-bench--stream-chunk))
+          (eca-chat-fontify-debounce-interval nil))
+      (eca-chat-bench--time
+       label
+       (lambda ()
+         (let ((inhibit-read-only t))
+           (eca-chat--render-content
+            session buf "assistant"
+            (list :type "text" :text chunk)
+            (eca--session-workspace-folders session))
+           (eca-chat--protect-non-prompt eca-chat--last-user-message-pos)
+           (when mode-format
+             (let ((eca-chat-mode-line-format mode-format))
+               (eca-chat--mode-line-string session)))))
+       iters))))
+
+(defun eca-chat-bench--bench-mode-line (buf iters label mode-format)
+  "Time mode-line rendering in BUF for ITERS iterations.
+LABEL names the result row.  MODE-FORMAT is bound during each render
+so default and no-context variants are directly comparable."
+  (with-current-buffer buf
+    (eca-chat-bench--configure-context)
+    (let ((session (eca-chat-bench--ensure-session)))
+      (eca-chat-bench--time
+       label
+       (lambda ()
+         (let ((eca-chat-mode-line-format mode-format))
+           (eca-chat--mode-line-string session)))
+       iters))))
+
+(defun eca-chat-bench--bench-context-bar-direct (buf iters label pixel?)
+  "Time direct context-bar construction in BUF for ITERS iterations.
+LABEL names the result row.  When PIXEL? is non-nil, call the
+pixel-segment builder directly so batch mode still covers the
+post-context-bar graphical hot path."
+  (with-current-buffer buf
+    (eca-chat-bench--configure-context)
+    (let* ((breakdown eca-chat--context-breakdown)
+           (categories (append (plist-get breakdown :categories) nil))
+           (used (or (plist-get breakdown :usedTokens) 0))
+           (limit (plist-get breakdown :contextLimit))
+           (frac (if (and limit (> limit 0))
+                     (min 1.0 (/ (float used) limit))
+                   1.0))
+           (marker-frac 0.7))
+      (eca-chat-bench--time
+       label
+       (lambda ()
+         (if pixel?
+             (eca-chat--context-bar-pixels
+              categories breakdown eca-chat-context-bar-width frac marker-frac)
+           (eca-chat--context-bar)))
+       iters))))
+
+(defun eca-chat-bench--bench-usage-event (buf iters label mode-format)
+  "Time usage events plus mode-line rendering in BUF.
+LABEL names the result row.  MODE-FORMAT is bound while rendering the
+mode-line after each event to approximate post-update redisplay work."
+  (with-current-buffer buf
+    (let ((session (eca-chat-bench--ensure-session)))
+      (eca-chat-bench--time
+       label
+       (lambda ()
+         (eca-chat--render-content
+          session buf "system" (eca-chat-bench--usage-content)
+          (eca--session-workspace-folders session))
+         (let ((eca-chat-mode-line-format mode-format))
+           (eca-chat--mode-line-string session)))
+       iters))))
+
+(defun eca-chat-bench-run-streaming ()
+  "Run focused benchmarks for streaming-response regressions.
+These rows isolate post-base suspects that the general benchmark does
+not cover: context-bar mode-line rendering, usage-event refreshes,
+and repeated current-turn protection during assistant text streaming."
+  (interactive)
+  (eca-chat-bench--reset)
+  (let ((stream-iters eca-chat-bench-stream-chunks)
+        (mode-iters eca-chat-bench-mode-line-iters)
+        (usage-iters eca-chat-bench-usage-iters))
+    (let ((buf (eca-chat-bench--make-fixture 10)))
+      (unwind-protect
+          (progn
+            (message "[eca-chat-bench] stream default ...")
+            (eca-chat-bench--add-result
+             stream-iters
+             (eca-chat-bench--bench-stream-render
+              buf stream-iters 'stream-render-default
+              eca-chat-mode-line-format)))
+        (kill-buffer buf)))
+    (let ((buf (eca-chat-bench--make-fixture 10)))
+      (unwind-protect
+          (progn
+            (message "[eca-chat-bench] stream no-context ...")
+            (eca-chat-bench--add-result
+             stream-iters
+             (eca-chat-bench--bench-stream-render
+              buf stream-iters 'stream-render-no-context
+              eca-chat-bench-mode-line-format-no-context)))
+        (kill-buffer buf)))
+    (let ((buf (eca-chat-bench--make-fixture 10)))
+      (unwind-protect
+          (progn
+            (message "[eca-chat-bench] stream no-modeline ...")
+            (eca-chat-bench--add-result
+             stream-iters
+             (eca-chat-bench--bench-stream-render
+              buf stream-iters 'stream-render-no-modeline nil)))
+        (kill-buffer buf)))
+    (let ((buf (eca-chat-bench--make-fixture 10)))
+      (unwind-protect
+          (progn
+            (message "[eca-chat-bench] mode-line default ...")
+            (eca-chat-bench--add-result
+             mode-iters
+             (eca-chat-bench--bench-mode-line
+              buf mode-iters 'modeline-default eca-chat-mode-line-format))
+            (message "[eca-chat-bench] mode-line no-context ...")
+            (eca-chat-bench--add-result
+             mode-iters
+             (eca-chat-bench--bench-mode-line
+              buf mode-iters 'modeline-no-context
+              eca-chat-bench-mode-line-format-no-context))
+            (message "[eca-chat-bench] context bar ...")
+            (eca-chat-bench--add-result
+             mode-iters
+             (eca-chat-bench--bench-context-bar-direct
+              buf mode-iters 'context-bar-terminal nil))
+            (message "[eca-chat-bench] context bar pixels ...")
+            (eca-chat-bench--add-result
+             mode-iters
+             (eca-chat-bench--bench-context-bar-direct
+              buf mode-iters 'context-bar-pixels t)))
+        (kill-buffer buf)))
+    (let ((buf (eca-chat-bench--make-fixture 10)))
+      (unwind-protect
+          (progn
+            (message "[eca-chat-bench] usage default ...")
+            (eca-chat-bench--add-result
+             usage-iters
+             (eca-chat-bench--bench-usage-event
+              buf usage-iters 'usage-default eca-chat-mode-line-format))
+            (message "[eca-chat-bench] usage no-context ...")
+            (eca-chat-bench--add-result
+             usage-iters
+             (eca-chat-bench--bench-usage-event
+              buf usage-iters 'usage-no-context
+              eca-chat-bench-mode-line-format-no-context)))
+        (kill-buffer buf))))
+  (let ((table (eca-chat-bench--format-results)))
+    (cond
+     (noninteractive
+      (princ "\n")
+      (princ table)
+      (princ "\n"))
+     (t
+      (with-current-buffer (get-buffer-create "*eca-chat-bench-streaming*")
+        (let ((inhibit-read-only t))
+          (erase-buffer)
+          (insert table))
+        (display-buffer (current-buffer)))))
+    table))
+
 ;;;; Driver
 
 (defvar eca-chat-bench--results nil
