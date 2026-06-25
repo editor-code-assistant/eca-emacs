@@ -223,7 +223,8 @@ cached value is preserved and returned."
   (if (eca-process--releases-cache-valid-p)
       (cdr eca-process--releases-cache)
     (condition-case err
-        (let* ((json-string
+        (let* ((coding-system-for-read 'utf-8)
+               (json-string
                 (eca--curl-download-string
                  eca-process--releases-url))
                (releases (with-temp-buffer
