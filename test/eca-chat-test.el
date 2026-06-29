@@ -482,6 +482,35 @@ does not treat the first line as metadata.  Returns FN's value."
         (expect (current-kill 0 t)
                 :to-equal "Previous assistant response")))))
 
+(describe "eca-chat--font-lock-ensure"
+  (it "fontifies and requests a redisplay update"
+    (with-temp-buffer
+      (spy-on 'font-lock-ensure :and-return-value 'fontified)
+      (spy-on 'force-window-update)
+      (expect (eca-chat--font-lock-ensure 1 1) :to-equal 'fontified)
+      (expect 'font-lock-ensure :to-have-been-called-with 1 1)
+      (expect 'force-window-update
+              :to-have-been-called-with (current-buffer)))))
+
+(describe "eca-chat--schedule-fontify"
+  (it "uses stable fontification from the current turn"
+    (with-temp-buffer
+      (insert "abc")
+      (setq-local eca-chat--last-user-message-pos 2)
+      (setq-local eca-chat-fontify-debounce-interval 0.15)
+      (let (scheduled)
+        (cl-letf (((symbol-function 'run-with-idle-timer)
+                   (lambda (_secs _repeat fn &rest args)
+                     (setq scheduled (lambda () (apply fn args)))
+                     'test-timer)))
+          (spy-on 'eca-chat--font-lock-ensure)
+          (eca-chat--schedule-fontify)
+          (expect scheduled :to-be-truthy)
+          (funcall scheduled)
+          (expect 'eca-chat--font-lock-ensure
+                  :to-have-been-called-with 2 (point-max))
+          (expect eca-chat--fontify-timer :to-be nil))))))
+
 (describe "eca-chat--render-content"
   (describe "progress finished"
     (it "clears progress text and spinner when chat-loading is nil"
@@ -512,6 +541,31 @@ does not treat the first line as metadata.  Returns FN's value."
                       :to-have-been-called))
           (when (timerp eca-chat--spinner-timer)
             (cancel-timer eca-chat--spinner-timer))
+          (kill-buffer buf))))
+
+    (it "uses stable fontification for normal completion"
+      (let ((buf (eca-chat-test--make-prompt-buffer ""))
+            (session (make-eca--session)))
+        (unwind-protect
+            (with-current-buffer buf
+              (setq-local eca-chat--progress-text "thinking...")
+              (setq-local eca-chat--chat-loading t)
+              (setq-local eca-chat--last-user-message-pos (point-min))
+              (spy-on 'eca-chat--font-lock-ensure)
+              (spy-on 'eca-chat--align-tables)
+              (spy-on 'eca-chat--beautify-tables)
+              (spy-on 'eca-chat--refresh-progress)
+              (spy-on 'eca-chat--set-chat-loading)
+              (spy-on 'eca-chat--send-steered-prompt)
+              (spy-on 'eca-chat--send-queued-prompt)
+              (eca-chat--render-content
+               session buf "system"
+               (list :type "progress" :state "finished")
+               nil)
+              (expect 'eca-chat--font-lock-ensure
+                      :to-have-been-called-with (point-min) (point-max))
+              (expect 'eca-chat--align-tables :to-have-been-called)
+              (expect 'eca-chat--beautify-tables :to-have-been-called))
           (kill-buffer buf))))))
 
 (describe "eca-chat--transient-segment-loading"
