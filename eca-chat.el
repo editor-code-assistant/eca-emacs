@@ -701,6 +701,10 @@ Nil when auto-compaction is disabled or unknown.")
   "Latest context-window usage breakdown plist for the current chat.
 Keys: :categories (vector of :name/:tokens plists), :usedTokens,
 :freeTokens and :contextLimit, as sent in the `usage' content.")
+(defvar-local eca-chat--context-bar-cache-key nil
+  "Cache key for the rendered context-usage mode-line bar.")
+(defvar-local eca-chat--context-bar-cache-value nil
+  "Cached rendered context-usage mode-line bar string.")
 (defvar-local eca-chat--queued-prompt nil)
 (defvar-local eca-chat--steered-prompt nil)
 (defvar-local eca-chat--subagent-chat-id->tool-call-id (make-hash-table :test 'equal)
@@ -1309,6 +1313,28 @@ auto-compaction threshold marker at that fraction of the bar."
                              'face (list :background (cdr s))))
                segs "")))
 
+(defun eca-chat--context-bar-make-cache-key
+    (breakdown categories width graphic? compact-pct)
+  "Return a cache key for the context bar rendering inputs."
+  (list width
+        graphic?
+        (when graphic? (frame-char-width))
+        compact-pct
+        (plist-get breakdown :usedTokens)
+        (plist-get breakdown :freeTokens)
+        (plist-get breakdown :contextLimit)
+        (plist-get breakdown :freeColor)
+        (plist-get breakdown :freeEmoji)
+        (when graphic? (eca-chat--context-free-color breakdown))
+        (mapcar (lambda (cat)
+                  (list (plist-get cat :name)
+                        (plist-get cat :tokens)
+                        (plist-get cat :color)
+                        (plist-get cat :emoji)
+                        (when graphic?
+                          (eca-chat--context-category-color cat))))
+                categories)))
+
 (defun eca-chat--context-bar ()
   "Return the propertized context-usage bar string, or nil.
 Renders nothing until the server has sent a context breakdown.  In
@@ -1322,19 +1348,33 @@ per-category tokens are in the tooltip."
            (free (plist-get breakdown :freeTokens))
            (limit (plist-get breakdown :contextLimit))
            (width (max 1 eca-chat-context-bar-width))
-           (frac (if (and limit (> limit 0)) (min 1.0 (/ (float used) limit)) 1.0))
+           (graphic? (display-graphic-p))
            (compact-pct (when (and eca-chat-context-bar-show-compaction-marker
                                    (numberp eca-chat--session-auto-compact-percentage)
                                    (> eca-chat--session-auto-compact-percentage 0))
                           eca-chat--session-auto-compact-percentage))
-           (marker-frac (when compact-pct (min 1.0 (/ (float compact-pct) 100.0))))
-           (help (eca-chat--context-bar-help breakdown used free limit compact-pct))
-           (bar (if (display-graphic-p)
-                    (eca-chat--context-bar-pixels categories breakdown width frac marker-frac)
-                  (eca-chat--context-bar-chars categories breakdown width frac marker-frac))))
-      (propertize bar
-                  'help-echo help
-                  'local-map eca-chat--context-bar-mode-line-map))))
+           (key (eca-chat--context-bar-make-cache-key
+                 breakdown categories width graphic? compact-pct)))
+      (if (equal key eca-chat--context-bar-cache-key)
+          eca-chat--context-bar-cache-value
+        (let* ((frac (if (and limit (> limit 0))
+                         (min 1.0 (/ (float used) limit))
+                       1.0))
+               (marker-frac (when compact-pct
+                              (min 1.0 (/ (float compact-pct) 100.0))))
+               (help (eca-chat--context-bar-help
+                      breakdown used free limit compact-pct))
+               (bar (if graphic?
+                        (eca-chat--context-bar-pixels
+                         categories breakdown width frac marker-frac)
+                      (eca-chat--context-bar-chars
+                       categories breakdown width frac marker-frac)))
+               (result (propertize
+                        bar
+                        'help-echo help
+                        'local-map eca-chat--context-bar-mode-line-map)))
+          (setq-local eca-chat--context-bar-cache-key key)
+          (setq-local eca-chat--context-bar-cache-value result))))))
 
 (defun eca-chat--build-tool-call-approval-str-content (session id spacing-line-prefix &optional chat-id)
   "Build the tool call approval string for SESSION, ID and SPACING-LINE-PREFIX.
