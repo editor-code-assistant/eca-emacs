@@ -514,6 +514,33 @@ does not treat the first line as metadata.  Returns FN's value."
             (cancel-timer eca-chat--spinner-timer))
           (kill-buffer buf))))))
 
+(describe "eca-chat-content-received"
+  ;; Regression: streaming content into the chat must not move the user's
+  ;; cursor.  The render runs from the async process filter, so without a
+  ;; `save-excursion' guard a block/label rewrite above the prompt would drag
+  ;; point up (the "cursor bounces to the middle while thinking" bug).
+  (it "keeps point where the user left it while streaming"
+    (let ((buf (eca-chat-test--make-prompt-buffer "hi"))
+          (session (make-eca--session)))
+      (unwind-protect
+          (with-current-buffer buf
+            (setq-local eca-chat--last-user-message-pos nil)
+            (spy-on 'eca-chat--get-chat-buffer :and-return-value buf)
+            (spy-on 'eca--session-workspace-folders :and-return-value nil)
+            (spy-on 'eca-chat--protect-non-prompt)
+            (spy-on 'eca-chat--maybe-notify-status-changed)
+            ;; Simulate a streamed render that moves point up into the
+            ;; history, like a mid-stream block/label rewrite does.
+            (spy-on 'eca-chat--render-content :and-call-fake
+                    (lambda (&rest _) (goto-char (point-min))))
+            (goto-char (point-max))
+            (let ((before (point)))
+              (eca-chat-content-received
+               session (list :chatId "chat-1" :role "assistant"
+                             :content (list :type "text" :text "x")))
+              (expect (point) :to-equal before)))
+        (kill-buffer buf)))))
+
 (describe "eca-chat--transient-segment-loading"
   (it "shows the stop button while a question is pending even when idle"
     ;; A pending question keeps the turn active server-side, so the stop

@@ -3997,16 +3997,20 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
                     ((buffer-live-p parent-buffer)))
           (eca-chat--with-current-buffer parent-buffer
             (when-let* ((tool-call-id (gethash chat-id eca-chat--subagent-chat-id->tool-call-id)))
-              (eca-chat--render-content session parent-buffer role content roots tool-call-id chat-id)
-              (eca-chat--protect-non-prompt eca-chat--last-user-message-pos)
-              (eca-chat--maybe-notify-status-changed session content))))
+              ;; Preserve the user's point: streaming must not move the cursor.
+              (save-excursion
+                (eca-chat--render-content session parent-buffer role content roots tool-call-id chat-id)
+                (eca-chat--protect-non-prompt eca-chat--last-user-message-pos)
+                (eca-chat--maybe-notify-status-changed session content)))))
       ;; Normal content
       (when-let* ((chat-buffer (eca-chat--get-chat-buffer session chat-id))
                   ((buffer-live-p chat-buffer)))
         (eca-chat--with-current-buffer chat-buffer
-          (eca-chat--render-content session chat-buffer role content roots)
-          (eca-chat--protect-non-prompt eca-chat--last-user-message-pos)
-          (eca-chat--maybe-notify-status-changed session content))))))
+          ;; Preserve the user's point: streaming must not move the cursor.
+          (save-excursion
+            (eca-chat--render-content session chat-buffer role content roots)
+            (eca-chat--protect-non-prompt eca-chat--last-user-message-pos)
+            (eca-chat--maybe-notify-status-changed session content)))))))
 
 (defun eca-chat--render-history-contents (session chat-buffer contents)
   "Prepend CONTENTS above existing content in CHAT-BUFFER for SESSION.
