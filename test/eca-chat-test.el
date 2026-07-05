@@ -66,6 +66,22 @@ does not treat the first line as metadata.  Returns FN's value."
 ;; Tests
 ;; ---------------------------------------------------------------------------
 
+(describe "eca-chat--apply-markdown-markup-visibility"
+  (it "keeps the historical hidden-markup default"
+    (with-temp-buffer
+      (let ((eca-chat-hide-markdown-markup t))
+        (eca-chat--apply-markdown-markup-visibility)
+        (expect (memq 'markdown-markup buffer-invisibility-spec)
+                :to-be-truthy))))
+
+  (it "allows markdown markup to stay visible"
+    (with-temp-buffer
+      (add-to-invisibility-spec 'markdown-markup)
+      (let ((eca-chat-hide-markdown-markup nil))
+        (eca-chat--apply-markdown-markup-visibility)
+        (expect (memq 'markdown-markup buffer-invisibility-spec)
+                :to-be nil)))))
+
 (describe "eca-chat--key-pressed-deletion"
 
   (describe "multi-line prompt"
