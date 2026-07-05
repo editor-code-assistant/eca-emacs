@@ -1113,4 +1113,35 @@ does not treat the first line as metadata.  Returns FN's value."
            (help (eca-chat--context-bar-help breakdown 5300 194700 200000 75)))
       (expect help :to-match "Auto-compaction at 75%"))))
 
+;; ---------------------------------------------------------------------------
+;; eca-chat--select-window
+;; ---------------------------------------------------------------------------
+
+(describe "eca-chat--select-window"
+
+  (it "selects the window already showing the chat buffer"
+    (let ((buf (generate-new-buffer " *test-chat-select-window*")))
+      (unwind-protect
+          (progn
+            (set-window-buffer (selected-window) buf)
+            (with-current-buffer buf
+              (eca-chat--select-window))
+            (expect (window-buffer (selected-window)) :to-be buf))
+        (kill-buffer buf))))
+
+  (it "displays and selects the chat buffer when not visible (#266)"
+    (let ((buf (generate-new-buffer " *test-chat-select-window*")))
+      (unwind-protect
+          (progn
+            (delete-other-windows)
+            (expect (get-buffer-window buf) :to-be nil)
+            (with-current-buffer buf
+              (eca-chat--select-window))
+            (expect (window-buffer (selected-window)) :to-be buf))
+        (progn
+          (when-let* ((win (get-buffer-window buf)))
+            (when (window-parent win)
+              (delete-window win)))
+          (kill-buffer buf))))))
+
 ;;; eca-chat-test.el ends here

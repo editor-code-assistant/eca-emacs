@@ -2678,8 +2678,11 @@ available, falling back to `string-width' on Emacsen without it."
           result)))))
 
 (defun eca-chat--select-window ()
-  "Select the Window."
-  (select-window (get-buffer-window (buffer-name))))
+  "Select the chat window, displaying the buffer first if not visible."
+  (let ((window (or (get-buffer-window (buffer-name))
+                    (eca-chat--display-buffer (current-buffer)))))
+    (when (window-live-p window)
+      (select-window window))))
 
 (defun eca-chat--display-buffer (buffer)
   "Display BUFFER in a side window according to customization.
@@ -4952,40 +4955,48 @@ Just open if FORCE-OPEN? is non-nil."
         (eca-chat--add-context context)))))
 
 ;;;###autoload
-(defun eca-chat-add-context-to-user-prompt ()
+(defun eca-chat-add-context-to-user-prompt (&optional arg)
   "Add context to user prompt in chat in a DWIM manner.
 
 - If a region selected, add file with lines range selected.
 - If in Dired, add the marked files/dirs or current file/dir at point.
 - If in Treemacs, add selected file/dir.
-- Else add current file."
-  (interactive)
+- Else add current file.
+
+With prefix ARG, add the context without selecting the chat
+window, leaving point where it was."
+  (interactive "P")
   (eca-assert-session-running (eca-session))
   (let* ((contexts (eca-chat--get-contexts-dwim)))
     (eca-chat--with-current-buffer (eca-chat--get-last-buffer (eca-session))
       (seq-doseq (context contexts)
         (eca-chat--insert-prompt (concat (eca-chat--context->str context 'static)
                                          " ")))
-      (eca-chat--select-window)
-      (goto-char (line-end-position)))))
+      (unless arg
+        (eca-chat--select-window)
+        (goto-char (line-end-position))))))
 
 ;;;###autoload
-(defun eca-chat-add-filepath-to-user-prompt ()
+(defun eca-chat-add-filepath-to-user-prompt (&optional arg)
   "Add filepath to user prompt in chat in a DWIM manner.
 
 - If a region selected, add filepath with lines range selected.
 - If in Dired, add the marked files/dirs / current file/dir paths at point.
 - If in Treemacs, add selected file/dir path.
-- Else add current filepath."
-  (interactive)
+- Else add current filepath.
+
+With prefix ARG, add the filepath without selecting the chat
+window, leaving point where it was."
+  (interactive "P")
   (eca-assert-session-running (eca-session))
   (let* ((contexts (eca-chat--get-contexts-dwim)))
     (eca-chat--with-current-buffer (eca-chat--get-last-buffer (eca-session))
       (seq-doseq (context contexts)
         (eca-chat--insert-prompt (concat (eca-chat--filepath->str (plist-get context :path) (plist-get context :linesRange))
                                          " ")))
-      (eca-chat--select-window)
-      (goto-char (line-end-position)))))
+      (unless arg
+        (eca-chat--select-window)
+        (goto-char (line-end-position))))))
 
 ;;;###autoload
 (defun eca-chat-drop-context-from-system-prompt (&optional arg)

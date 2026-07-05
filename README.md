@@ -80,8 +80,8 @@ Chat
 - `eca-chat-select-agent`: Change chat agent
 - `eca-chat-cycle-agent`: Change chat agent to next available
 - `eca-chat-add-context-to-system-prompt`: Add file/dirs to system prompt checking multiple modes with range support
-- `eca-chat-add-context-to-user-prompt`: Add file/dirs to user prompt checking multiple modes with range support
-- `eca-chat-add-filepath-to-user-prompt`: Add filepath mention only to user prompt checking multiple modes with range support
+- `eca-chat-add-context-to-user-prompt`: Add file/dirs to user prompt checking multiple modes with range support, jumping to the chat window (with prefix arg, keep point where it was)
+- `eca-chat-add-filepath-to-user-prompt`: Add filepath mention only to user prompt checking multiple modes with range support, jumping to the chat window (with prefix arg, keep point where it was)
 - `eca-chat-drop-context-from-system-prompt`: Drop a context from system prompt
 - `eca-chat-add-flag`: Add a named flag after the nearest message block at or before point
 - `eca-chat-send-prompt`: Send a prompt in chat interactively
