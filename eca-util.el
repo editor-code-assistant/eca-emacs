@@ -350,11 +350,12 @@ a mapping (\"/docker:container:/workspace/project\" . \"/workspace/project\")."
    eca-local-to-remote-prefix-map
    (when-let* ((session (ignore-errors (eca-session)))
                (folders (eca--session-workspace-folders session)))
-     (seq-keep
-      (lambda (folder)
-        (when-let (remote (file-remote-p folder))
-          (cons folder (file-local-name folder))))
-      folders))))
+     (delq nil
+           (mapcar
+            (lambda (folder)
+              (when (file-remote-p folder)
+                (cons folder (file-local-name folder))))
+            folders)))))
 
 (defun eca--path--translate (path from-fn to-fn expand-from-p)
   "Translate PATH using explicit and TRAMP-derived path mappings.

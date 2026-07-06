@@ -621,7 +621,7 @@ Call HANDLE-MSG for new msgs processed."
                                eca-server-install-path)))
               (output (ignore-errors
                         (string-trim
-                         (if-let ((remote (file-remote-p binary)))
+                         (if (file-remote-p binary)
                              (let ((default-directory (file-name-directory binary)))
                                (shell-command-to-string
                                 (format "%s --version 2>/dev/null"
@@ -630,9 +630,9 @@ Call HANDLE-MSG for new msgs processed."
                            (shell-command-to-string
                             (format "%s --version 2>/dev/null"
                                     (shell-quote-argument
-                                     (expand-file-name binary))))))))))
-  (unless (string-empty-p output)
-    output))
+                                     (expand-file-name binary)))))))))
+    (unless (string-empty-p output)
+      output)))
 
 ;;;###autoload
 (defun eca-show-stderr ()
