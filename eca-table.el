@@ -23,7 +23,8 @@
 (require 'seq)
 (require 'eca-util)
 
-;; Forward-declare defcustom defined in eca-chat.el.
+;; Forward-declare defcustoms defined in eca-chat.el.
+(defvar eca-chat-hide-markdown-markup t)
 (defvar eca-chat-table-beautify)
 (defvar eca-chat-parent-mode)
 
@@ -96,6 +97,12 @@ is on it while leaving `o' untouched everywhere else."
 (defvar eca-table--fontlock-buffer nil
   "Reusable buffer for font-lock based width measurement.")
 
+(defun eca-table--apply-markdown-markup-visibility ()
+  "Apply ECA chat markdown markup visibility in current buffer."
+  (if eca-chat-hide-markdown-markup
+      (add-to-invisibility-spec 'markdown-markup)
+    (remove-from-invisibility-spec 'markdown-markup)))
+
 (defun eca-table--get-fontlock-buffer ()
   "Return a reusable buffer configured for width measurement.
 Uses the chat parent mode and markdown-hide-markup to match
@@ -107,9 +114,9 @@ the actual display rendering."
         (mode (or eca-chat-parent-mode 'gfm-mode)))
     (with-current-buffer buf
       (unless (derived-mode-p mode)
-        (funcall mode)
-        (setq-local markdown-hide-markup t)
-        (add-to-invisibility-spec 'markdown-markup)))
+        (funcall mode))
+      (setq-local markdown-hide-markup t)
+      (eca-table--apply-markdown-markup-visibility))
     buf))
 
 (defun eca-table--display-width (str)
@@ -255,7 +262,7 @@ the mouse click on the action bar."
           (erase-buffer)
           (gfm-mode)
           (setq-local markdown-hide-markup t)
-          (add-to-invisibility-spec 'markdown-markup)
+          (eca-table--apply-markdown-markup-visibility)
           (setq-local markdown-fontify-code-blocks-natively t)
           (face-remap-add-relative 'markdown-table-face '(:inherit fixed-pitch))
           (insert text)

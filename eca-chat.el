@@ -293,6 +293,21 @@ updates during streaming)."
                  (number :tag "Seconds"))
   :group 'eca)
 
+(defcustom eca-chat-hide-markdown-markup t
+  "Whether ECA chat renders `markdown-markup' as invisible.
+When non-nil, preserve the historical hidden-markup look.  When
+nil, keep markup visible while leaving `markdown-hide-markup'
+enabled.  This is recommended if fenced code blocks jump while
+typing or streaming."
+  :type 'boolean
+  :group 'eca)
+
+(defun eca-chat--apply-markdown-markup-visibility ()
+  "Apply `eca-chat-hide-markdown-markup' in current buffer."
+  (if eca-chat-hide-markdown-markup
+      (add-to-invisibility-spec 'markdown-markup)
+    (remove-from-invisibility-spec 'markdown-markup)))
+
 (defvar-local eca-chat--tool-call-prepare-counters (make-hash-table :test 'equal)
   "Hash table mapping toolCall ID to message count.")
 
@@ -3135,9 +3150,9 @@ CHILD, NAME, DOCSTRING and BODY are passed down."
 
   ;; Show diff blocks in markdown-mode with colors.
   (setq-local markdown-fontify-code-blocks-natively t)
-  ;; Enable gfm-view-mode-like rendering without read-only
+  ;; Enable gfm-view-mode-like rendering without read-only.
   (setq-local markdown-hide-markup t)
-  (add-to-invisibility-spec 'markdown-markup)
+  (eca-chat--apply-markdown-markup-visibility)
 
   ;; markdown-mode declares keymap, help-echo, and mouse-face as
   ;; font-lock-extra-managed-props, which causes font-lock-ensure to

@@ -28,6 +28,11 @@
     (expect (eca-table--display-width "**bold**")
             :to-equal 4))
 
+  (it "can keep markup visible in display width calculations"
+    (let ((eca-chat-hide-markdown-markup nil))
+      (expect (eca-table--display-width "**bold**")
+              :to-equal 8)))
+
   (it "returns display width for italic with asterisks"
     (expect (eca-table--display-width "*italic*")
             :to-equal 6))
@@ -220,6 +225,25 @@
         (expect truncate-lines :to-be-truthy)
         (expect (> (buffer-size) 0) :to-be-truthy)
         (expect (string-match-p "Setting" (buffer-string)) :to-be-truthy))
+      (kill-buffer buf)))
+
+  (it "can keep markdown markup visible in the table buffer"
+    (when (get-buffer "*eca-table*") (kill-buffer "*eca-table*"))
+    (let ((eca-chat-hide-markdown-markup nil))
+      (with-temp-buffer
+        (gfm-mode)
+        (setq-local markdown-hide-markup t)
+        (insert "| Setting | What it does |\n")
+        (insert "|---|---|\n")
+        (insert "| alpha | **bold** things |\n")
+        (goto-char (point-min))
+        (forward-line 2)
+        (eca-table-open)))
+    (let ((buf (get-buffer "*eca-table*")))
+      (expect buf :to-be-truthy)
+      (with-current-buffer buf
+        (expect (memq 'markdown-markup buffer-invisibility-spec)
+                :to-be nil))
       (kill-buffer buf)))
 
   (it "errors when point is not on a table"
