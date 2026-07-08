@@ -243,10 +243,189 @@ does not treat the first line as metadata.  Returns FN's value."
     (spy-on 'eca-chat--point-at-prompt-field-p :and-return-value nil)
     (with-temp-buffer
       (insert "foo@bar")
-      (let* ((capf-res (eca-chat-completion-at-point))
-             (completion-fn (nth 2 capf-res)))
-        (funcall completion-fn "" nil t)
-        (expect 'eca-api-request-while-no-input :not :to-have-been-called)))))
+      (expect (eca-chat-completion-at-point) :to-be nil)
+      (expect 'eca-api-request-while-no-input :not :to-have-been-called)))
+
+  (it "spans the completion region from just after @ to point"
+    (let ((eca-chat--id "chat-123")
+          (eca-chat--context '())
+          (session (make-eca--session)))
+      (spy-on 'eca-session :and-return-value session)
+      (spy-on 'eca--session-workspace-folders :and-return-value '("/ws"))
+      (spy-on 'eca-chat--point-at-new-context-p :and-return-value nil)
+      (with-temp-buffer
+        (insert "see @src/ec")
+        (let ((capf-res (eca-chat-completion-at-point)))
+          (expect (nth 0 capf-res)
+                  :to-equal (+ (point-min) (length "see @")))
+          (expect (nth 1 capf-res) :to-equal (point)))))))
+
+(describe "eca-chat--completion-path-label"
+  (it "keeps the typed directory part as the label prefix"
+    (expect (eca-chat--completion-path-label "src/e" '("/ws") "/ws/src/eca/chat.el" nil)
+            :to-equal "src/eca/chat.el"))
+
+  (it "appends a slash to directory labels"
+    (expect (eca-chat--completion-path-label "src/e" '("/ws") "/ws/src/eca" t)
+            :to-equal "src/eca/"))
+
+  (it "relativizes against a workspace root for plain queries"
+    (expect (eca-chat--completion-path-label "chat" '("/ws") "/ws/src/eca/chat.el" nil)
+            :to-equal "src/eca/chat.el"))
+
+  (it "keeps ~ prefixed queries as typed"
+    (expect (eca-chat--completion-path-label "~/dev/fo" '("/ws")
+                                             (expand-file-name "~/dev/foo") nil)
+            :to-equal "~/dev/foo"))
+
+  (it "falls back to the absolute path outside any root"
+    (expect (eca-chat--completion-path-label "x" '("/ws") "/other/x.el" nil)
+            :to-equal "/other/x.el")))
+
+(describe "eca-chat completion directory drill-in"
+  (it "keeps completing instead of finalizing a directory item"
+    (spy-on 'eca-chat--completion-retrigger)
+    (with-temp-buffer
+      (let ((item (propertize "src/eca/"
+                              'eca-chat-completion-item
+                              '(:type "directory" :path "/ws/src/eca")
+                              'face 'eca-chat-context-file-face)))
+        (insert "@" item)
+        (eca-chat--completion-context-from-prompt-exit-function item 'finished))
+      (expect (buffer-string) :to-equal "@src/eca/")
+      (expect (get-text-property 2 'eca-chat-completion-item) :to-be nil)
+      (expect 'eca-chat--completion-retrigger :to-have-been-called)))
+
+  (it "finalizes a file item into a chip with trailing space"
+    (let ((session (make-eca--session :workspace-folders '("/ws"))))
+      (spy-on 'eca-session :and-return-value session)
+      (with-temp-buffer
+        (let ((item (propertize "src/eca/chat.el"
+                                'eca-chat-completion-item
+                                '(:type "file" :path "/ws/src/eca/chat.el"))))
+          (insert "@" item)
+          (eca-chat--completion-context-from-prompt-exit-function item 'finished))
+        (expect (buffer-string) :to-equal "@chat.el "))))
+
+  (it "keeps completing for directories from the # prompt"
+    (spy-on 'eca-chat--completion-retrigger)
+    (with-temp-buffer
+      (let ((item (propertize "src/eca/"
+                              'eca-chat-completion-item
+                              '(:type "directory" :path "/ws/src/eca"))))
+        (insert "#" item)
+        (eca-chat--completion-file-from-prompt-exit-function item 'finished))
+      (expect (buffer-string) :to-equal "#src/eca/")
+      (expect 'eca-chat--completion-retrigger :to-have-been-called))))
+
+(describe "eca-chat--completion-cached-items"
+  (it "does not cache interrupted (nil) responses"
+    (with-temp-buffer
+      (let* ((calls 0)
+             (fetch (lambda () (setq calls (1+ calls)) nil)))
+        (expect (eca-chat--completion-cached-items
+                 'eca-chat--context-completion-cache "q" fetch :contexts #'identity)
+                :to-be nil)
+        (eca-chat--completion-cached-items
+         'eca-chat--context-completion-cache "q" fetch :contexts #'identity)
+        (expect calls :to-equal 2))))
+
+  (it "caches successful responses including empty ones"
+    (with-temp-buffer
+      (let* ((calls 0)
+             (fetch (lambda () (setq calls (1+ calls)) '(:contexts []))))
+        (eca-chat--completion-cached-items
+         'eca-chat--context-completion-cache "q" fetch :contexts #'identity)
+        (expect (eca-chat--completion-cached-items
+                 'eca-chat--context-completion-cache "q" fetch :contexts #'identity)
+                :to-equal nil)
+        (expect calls :to-equal 1))))
+
+  (it "caches per query"
+    (with-temp-buffer
+      (expect (eca-chat--completion-cached-items
+               'eca-chat--context-completion-cache "a"
+               (lambda () '(:contexts ["a"])) :contexts #'identity)
+              :to-equal '("a"))
+      (expect (eca-chat--completion-cached-items
+               'eca-chat--context-completion-cache "b"
+               (lambda () '(:contexts ["b"])) :contexts #'identity)
+              :to-equal '("b"))
+      (expect (eca-chat--completion-cached-items
+               'eca-chat--context-completion-cache "a"
+               (lambda () (error "should not fetch")) :contexts #'identity)
+              :to-equal '("a")))))
+
+(describe "eca-chat--raw-prompt-contexts"
+  (it "resolves workspace-relative raw tokens into contexts"
+    (let* ((root (make-temp-file "eca-test-ws" t))
+           (file (expand-file-name "foo.el" root))
+           (dir (expand-file-name "sub" root))
+           (session (make-eca--session)))
+      (unwind-protect
+          (progn
+            (write-region "" nil file)
+            (make-directory dir)
+            (setf (eca--session-workspace-folders session) (list root))
+            (spy-on 'eca-session :and-return-value session)
+            (let ((buf (eca-chat-test--make-prompt-buffer
+                        "check @foo.el and @sub/ and @missing.el")))
+              (unwind-protect
+                  (with-current-buffer buf
+                    (expect (eca-chat--raw-prompt-contexts)
+                            :to-equal (list (list :type "file" :path file)
+                                            (list :type "directory" :path dir))))
+                (kill-buffer buf))))
+        (delete-directory root t))))
+
+  (it "skips chip tokens and absolute or ~ mentions"
+    (let ((session (make-eca--session))
+          (buf (eca-chat-test--make-prompt-buffer "")))
+      (spy-on 'eca-session :and-return-value session)
+      (unwind-protect
+          (with-current-buffer buf
+            (goto-char (point-max))
+            (insert (propertize "@chip.el" 'eca-chat-context-item
+                                '(:type "file" :path "/x/chip.el")))
+            (insert " @/absolute/path @~/thing")
+            (expect (eca-chat--raw-prompt-contexts) :to-be nil))
+        (kill-buffer buf)))))
+
+(describe "eca-chat--maybe-finalize-context-token"
+  (it "turns a raw @dir token into a context chip after a space"
+    (let* ((root (make-temp-file "eca-test-ws" t))
+           (dir (expand-file-name "sub" root))
+           (session (make-eca--session)))
+      (unwind-protect
+          (progn
+            (make-directory dir)
+            (setf (eca--session-workspace-folders session) (list root))
+            (spy-on 'eca-session :and-return-value session)
+            (spy-on 'eca-chat--point-at-new-context-p :and-return-value nil)
+            (let ((buf (eca-chat-test--make-prompt-buffer "@sub/ ")))
+              (unwind-protect
+                  (with-current-buffer buf
+                    (goto-char (point-max))
+                    (eca-chat--maybe-finalize-context-token)
+                    (expect (eca-chat-test--prompt-text buf) :to-equal "@sub ")
+                    (expect (get-text-property
+                             (eca-chat--prompt-field-start-point)
+                             'eca-chat-context-item)
+                            :to-equal (list :type "directory" :path dir)))
+                (kill-buffer buf))))
+        (delete-directory root t))))
+
+  (it "leaves non-path tokens alone"
+    (let ((session (make-eca--session))
+          (buf (eca-chat-test--make-prompt-buffer "hello @nope ")))
+      (spy-on 'eca-session :and-return-value session)
+      (spy-on 'eca-chat--point-at-new-context-p :and-return-value nil)
+      (unwind-protect
+          (with-current-buffer buf
+            (goto-char (point-max))
+            (eca-chat--maybe-finalize-context-token)
+            (expect (eca-chat-test--prompt-text buf) :to-equal "hello @nope "))
+        (kill-buffer buf)))))
 
 (describe "eca-chat path mapping"
   (describe "chat/queryContext"

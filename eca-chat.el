@@ -1899,7 +1899,10 @@ the prompt/context line."
 
 (defun eca-chat--extract-contexts-from-prompt ()
   "Extract contexts from prompt text properties.
-Resteps a list of context plists found in the prompt field."
+Resteps a list of context plists found in the prompt field, plus
+raw @path tokens that resolve to existing files or directories
+under a workspace root (e.g. after drilling into a directory
+without finalizing it)."
   (when-let ((prompt-start (eca-chat--prompt-field-start-point)))
     (let ((contexts '())
           (pos prompt-start)
@@ -1909,7 +1912,8 @@ Resteps a list of context plists found in the prompt field."
           (unless (member context contexts)
             (push context contexts)))
         (setq pos (next-single-property-change pos 'eca-chat-context-item nil end)))
-      (nreverse contexts))))
+      (append (nreverse contexts)
+              (eca-chat--raw-prompt-contexts)))))
 
 (defun eca-chat--send-prompt (session prompt)
   "Send PROMPT to server for SESSION."
@@ -2188,6 +2192,11 @@ characters as part of the URL."
    ;; context completion
    ((and (eca-chat--prompt-context-field-ov)
          (eolp))
+    (completion-at-point))
+
+   ;; prompt completion for @context, #file or /command tokens
+   ((and (eca-chat--point-at-prompt-field-p)
+         (eca-chat--completion-type-at-point))
     (completion-at-point))
 
    (t t)))
@@ -3148,6 +3157,17 @@ CHILD, NAME, DOCSTRING and BODY are passed down."
 
   (make-local-variable 'completion-at-point-functions)
   (setq-local completion-at-point-functions (list #'eca-chat-completion-at-point))
+
+  ;; The server filters candidates by substring over full paths; make
+  ;; sure client-side completion styles keep those candidates visible
+  ;; regardless of the user's global completion configuration.
+  (setq-local completion-category-defaults
+              (cons '(eca-capf (styles basic substring))
+                    completion-category-defaults))
+  (setq-local completion-ignore-case t)
+
+  ;; Turn raw @path/#path tokens into proper items after a space.
+  (add-hook 'post-self-insert-hook #'eca-chat--post-self-insert nil t)
 
   (make-local-variable 'company-box-icons-functions)
   (when (featurep 'company-box)

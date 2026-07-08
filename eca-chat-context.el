@@ -101,9 +101,9 @@
 
 ;;;; Variables
 
-(defvar-local eca-chat--context-completion-cache (make-hash-table :test 'equal))
-(defvar-local eca-chat--file-completion-cache (make-hash-table :test 'equal))
-(defvar-local eca-chat--command-completion-cache (make-hash-table :test 'equal))
+(defvar-local eca-chat--context-completion-cache nil)
+(defvar-local eca-chat--file-completion-cache nil)
+(defvar-local eca-chat--command-completion-cache nil)
 (defvar-local eca-chat--context '())
 (defvar-local eca-chat--cursor-context nil)
 
@@ -367,6 +367,87 @@ string."
           (string-trim (buffer-substring-no-properties (+ last-prefix-pos (length prefix)) end))
         ""))))
 
+(defun eca-chat--resolve-path-token (token)
+  "Resolve TOKEN to an existing absolute path, else nil.
+TOKEN may be absolute, start with ~, or be relative to one of
+the session workspace roots (including ./ and ../ tokens)."
+  (when (and token (not (string-empty-p token)))
+    (if (file-name-absolute-p token)
+        (let ((expanded (directory-file-name (expand-file-name token))))
+          (when (f-exists? expanded) expanded))
+      (-some (lambda (root)
+               (let ((expanded (directory-file-name (expand-file-name token root))))
+                 (when (f-exists? expanded) expanded)))
+             (eca--session-workspace-folders (eca-session))))))
+
+(defun eca-chat--raw-prompt-contexts ()
+  "Return contexts for raw @path tokens typed in the prompt field.
+Only workspace-relative tokens are considered: absolute, ~ and
+dot prefixed mentions are already parsed by the server from the
+message text, and tokens already linked to a context chip are
+skipped."
+  (when-let ((prompt-start (eca-chat--prompt-field-start-point)))
+    (let ((contexts '())
+          (regexp (concat "\\(?:^\\|[^[:alnum:]]\\)"
+                          (regexp-quote eca-chat-context-prefix)
+                          "\\([^[:space:]]+\\)")))
+      (save-excursion
+        (goto-char prompt-start)
+        (while (re-search-forward regexp nil t)
+          (let ((token (match-string-no-properties 1)))
+            (unless (or (get-text-property (match-beginning 1) 'eca-chat-context-item)
+                        (file-name-absolute-p token)
+                        (string-prefix-p "." token))
+              (when-let ((path (eca-chat--resolve-path-token token)))
+                (let ((context (list :type (if (f-dir? path) "directory" "file")
+                                     :path path)))
+                  (unless (member context contexts)
+                    (push context contexts))))))))
+      (nreverse contexts))))
+
+(defun eca-chat--maybe-finalize-context-token ()
+  "Turn a raw @path or #path token before point into a proper item.
+Meant to be called right after a space was inserted.  Does
+nothing when the previous word does not resolve to an existing
+file or directory."
+  (let* ((end (1- (point)))
+         (start (save-excursion
+                  (goto-char end)
+                  (if (re-search-backward "[[:space:]]" (line-beginning-position) t)
+                      (1+ (point))
+                    (line-beginning-position)))))
+    (when (< start end)
+      (let ((word (buffer-substring-no-properties start end)))
+        (when (and (> (length word) 1)
+                   (or (string-prefix-p eca-chat-context-prefix word)
+                       (string-prefix-p eca-chat-filepath-prefix word))
+                   (not (get-text-property start 'eca-chat-item-type)))
+          (when-let ((path (eca-chat--resolve-path-token (substring word 1))))
+            (let ((context? (string-prefix-p eca-chat-context-prefix word)))
+              (cond
+               ;; On the context line: add to the context list; the
+               ;; refresh wipes the typed text.
+               ((and context? (eca-chat--point-at-new-context-p))
+                (eca-chat--add-context
+                 (list :type (if (f-dir? path) "directory" "file")
+                       :path path)))
+               ;; In the prompt: replace the raw token with an item.
+               ((eca-chat--point-at-prompt-field-p)
+                (let ((item-str (if context?
+                                    (eca-chat--context->str
+                                     (list :type (if (f-dir? path) "directory" "file")
+                                           :path path)
+                                     'static)
+                                  (eca-chat--filepath->str path nil))))
+                  (delete-region start (point))
+                  (eca-chat--insert item-str)
+                  (eca-chat--insert " ")))))))))))
+
+(defun eca-chat--post-self-insert ()
+  "Finalize raw context tokens after inserting a space."
+  (when (eq last-command-event ?\s)
+    (eca-chat--maybe-finalize-context-token)))
+
 (declare-function dired-get-marked-files "dired")
 (declare-function treemacs-node-at-point "treemacs")
 (declare-function treemacs-button-get "treemacs")
@@ -442,31 +523,84 @@ string."
             (when description
               (truncate-string-to-width description (* 100 eca-chat-window-width))))))
 
+(defvar eca-chat--completion-retrigger-timer nil)
+
+(defun eca-chat--completion-retrigger ()
+  "Schedule a new completion session at point.
+Used after completing a directory so the user can keep
+completing its contents without retyping the trigger."
+  (when (timerp eca-chat--completion-retrigger-timer)
+    (cancel-timer eca-chat--completion-retrigger-timer))
+  (let ((buffer (current-buffer)))
+    (setq eca-chat--completion-retrigger-timer
+          (run-at-time
+           0 nil
+           (lambda ()
+             (setq eca-chat--completion-retrigger-timer nil)
+             (when (and (buffer-live-p buffer)
+                        (eq buffer (window-buffer (selected-window))))
+               (with-current-buffer buffer
+                 (cond
+                  ((and (bound-and-true-p company-mode)
+                        (fboundp 'company-manual-begin))
+                   (company-manual-begin))
+                  (t (completion-at-point))))))))))
+
+(defun eca-chat--completion-drill-in (prefix)
+  "Keep completing after PREFIX instead of finalizing the item.
+Strips the completion text properties from the just inserted
+directory text and re-triggers completion so the user can drill
+into the directory contents."
+  (let ((start-pos (save-excursion
+                     (search-backward prefix (line-beginning-position) t))))
+    (when start-pos
+      (remove-text-properties (+ start-pos (length prefix)) (point)
+                              '(eca-chat-completion-item nil face nil))))
+  (eca-chat--completion-retrigger))
+
+(defun eca-chat--completion-item-directory-p (item)
+  "Return non-nil when completion ITEM points to a directory."
+  (string= "directory"
+           (plist-get (get-text-property 0 'eca-chat-completion-item item)
+                      :type)))
+
 (defun eca-chat--completion-context-from-new-context-exit-function (item _status)
-  "Add to context the selected ITEM."
-  (eca-chat--add-context (get-text-property 0 'eca-chat-completion-item item))
-  (end-of-line))
+  "Add to context the selected ITEM.
+Directories are not finalized: completion keeps going inside
+them; typing a space adds the directory itself as context."
+  (if (eca-chat--completion-item-directory-p item)
+      (eca-chat--completion-drill-in eca-chat-context-prefix)
+    (eca-chat--add-context (get-text-property 0 'eca-chat-completion-item item))
+    (end-of-line)))
 
 (defun eca-chat--completion-context-from-prompt-exit-function (item _status)
   "Add to context the selected ITEM.
-Add text property to prompt text to match context."
-  (let ((context (get-text-property 0 'eca-chat-completion-item item)))
-    (let ((start-pos (save-excursion
-                       (search-backward eca-chat-context-prefix (line-beginning-position) t)))
-          (end-pos (point)))
-      (delete-region start-pos end-pos)
-      (eca-chat--insert (eca-chat--context->str context 'static))))
-  (eca-chat--insert " "))
+Add text property to prompt text to match context.  Directories
+are not finalized: completion keeps going inside them; typing a
+space turns the directory into a context."
+  (if (eca-chat--completion-item-directory-p item)
+      (eca-chat--completion-drill-in eca-chat-context-prefix)
+    (let ((context (get-text-property 0 'eca-chat-completion-item item)))
+      (let ((start-pos (save-excursion
+                         (search-backward eca-chat-context-prefix (line-beginning-position) t)))
+            (end-pos (point)))
+        (delete-region start-pos end-pos)
+        (eca-chat--insert (eca-chat--context->str context 'static))))
+    (eca-chat--insert " ")))
 
 (defun eca-chat--completion-file-from-prompt-exit-function (item _status)
-  "Add to files the selected ITEM."
-  (let* ((file (get-text-property 0 'eca-chat-completion-item item))
-         (start-pos (save-excursion
-                      (search-backward eca-chat-filepath-prefix (line-beginning-position) t)))
-         (end-pos (point)))
-    (delete-region start-pos end-pos)
-    (eca-chat--insert (eca-chat--filepath->str (plist-get file :path) nil)))
-  (eca-chat--insert " "))
+  "Add to files the selected ITEM.
+Directories are not finalized: completion keeps going inside
+them; typing a space turns the directory into a filepath."
+  (if (eca-chat--completion-item-directory-p item)
+      (eca-chat--completion-drill-in eca-chat-filepath-prefix)
+    (let* ((file (get-text-property 0 'eca-chat-completion-item item))
+           (start-pos (save-excursion
+                        (search-backward eca-chat-filepath-prefix (line-beginning-position) t)))
+           (end-pos (point)))
+      (delete-region start-pos end-pos)
+      (eca-chat--insert (eca-chat--filepath->str (plist-get file :path) nil)))
+    (eca-chat--insert " ")))
 
 (defun eca-chat--completion-prompt-exit-function (item _status)
   "Finish prompt completion for ITEM."
@@ -486,13 +620,39 @@ Add text property to prompt text to match context."
               (eca-chat--insert arg-text)))))
       (end-of-line))))
 
-(defun eca-chat--context-to-completion (context)
-  "Convert CONTEXT to a completion item."
+(defun eca-chat--completion-path-label (query roots path directory?)
+  "Return the completion label for PATH given typed QUERY and ROOTS.
+Keeps the directory part the user typed as the label prefix so
+the probe keeps matching while drilling into folders, falling
+back to a workspace-relative path.  Appends a trailing slash
+when DIRECTORY? is non-nil."
+  (let* ((qdir (file-name-directory query))
+         (label
+          (or
+           ;; Keep what the user typed as prefix (handles ~, ./, ../,
+           ;; absolute and workspace-relative directory parts).
+           (when qdir
+             (-some (lambda (base)
+                      (let ((resolved (file-name-as-directory
+                                       (expand-file-name qdir base))))
+                        (when (string-prefix-p resolved path)
+                          (concat qdir (substring path (length resolved))))))
+                    (if (file-name-absolute-p qdir) (list nil) roots)))
+           ;; Fallback: relativize to a workspace root.
+           (-some (lambda (root)
+                    (when (f-ancestor-of? root path)
+                      (f-relative path root)))
+                  roots)
+           path)))
+    (if directory? (file-name-as-directory label) label)))
+
+(defun eca-chat--context-to-completion (query roots context)
+  "Convert CONTEXT to a completion item for typed QUERY and ROOTS."
   (let* ((ctx-type (plist-get context :type))
          (ctx-path (plist-get context :path))
          (raw-label (pcase ctx-type
-                      ("file" (f-filename ctx-path))
-                      ("directory" (f-filename ctx-path))
+                      ("file" (eca-chat--completion-path-label query roots ctx-path nil))
+                      ("directory" (eca-chat--completion-path-label query roots ctx-path t))
                       ("repoMap" "repoMap")
                       ("cursor" "cursor")
                       ("mcpResource" (concat (plist-get context :server) ":" (plist-get context :name)))
@@ -508,9 +668,12 @@ Add text property to prompt text to match context."
                 'eca-chat-completion-item context
                 'face face)))
 
-(defun eca-chat--file-to-completion (file)
-  "Convert FILE to a completion item."
-  (propertize (f-filename (plist-get file :path))
+(defun eca-chat--file-to-completion (query roots file)
+  "Convert FILE to a completion item for typed QUERY and ROOTS."
+  (propertize (eca-chat--completion-path-label
+               query roots
+               (plist-get file :path)
+               (string= "directory" (plist-get file :type)))
               'eca-chat-completion-item file
               'face 'eca-chat-context-file-face))
 
@@ -560,109 +723,149 @@ Calls CB with the resulting message."
 
 ;;;; Completion-at-point function
 
+(defun eca-chat--completion-type-at-point ()
+  "Return the kind of completion available at point, or nil."
+  (let ((full-text (buffer-substring-no-properties (line-beginning-position) (point))))
+    (cond
+     ;; completing contexts
+     ((eca-chat--point-at-new-context-p)
+      'contexts-from-new-context)
+
+     ((when-let (last-word (car (last (string-split full-text "[\s]"))))
+        (string-match-p (concat "\\(?:^\\|[^[:alnum:]]\\)" (regexp-quote eca-chat-context-prefix)) last-word))
+      'contexts-from-prompt)
+
+     ((when-let (last-word (car (last (string-split full-text "[\s]"))))
+        (string-match-p (concat "\\(?:^\\|[^[:alnum:]]\\)" (regexp-quote eca-chat-filepath-prefix)) last-word))
+      'files-from-prompt)
+
+     ;; completing commands with `/`
+     ((and (eca-chat--point-at-prompt-field-p)
+           (string-prefix-p "/" full-text))
+      'prompts)
+
+     (t nil))))
+
+(defun eca-chat--completion-prefix-end (prefix)
+  "Return the position right after the last PREFIX before point.
+Searches only in the current line; return nil when PREFIX is not
+found."
+  (save-excursion
+    (when (search-backward prefix (line-beginning-position) t)
+      (+ (point) (length prefix)))))
+
+(defconst eca-chat--completion-cache-max-size 100
+  "Max cached queries per completion cache before it is reset.")
+
+(defun eca-chat--completion-cached-items (cache-var query fetch-fn key to-item-fn)
+  "Return completion items for QUERY, caching them in CACHE-VAR.
+CACHE-VAR is a buffer-local hash table variable, created on
+demand.  On cache miss call FETCH-FN; when it returns a response
+plist, convert each element of its KEY list with TO-ITEM-FN and
+cache the result.  Interrupted requests (nil response) are not
+cached so they are retried on the next keystroke."
+  (let* ((cache (or (symbol-value cache-var)
+                    (set cache-var (make-hash-table :test 'equal))))
+         (cached (gethash query cache :eca-chat--miss)))
+    (if (not (eq cached :eca-chat--miss))
+        cached
+      (when-let ((resp (funcall fetch-fn)))
+        (let ((items (-map to-item-fn (append (plist-get resp key) nil))))
+          (when (> (hash-table-count cache) eca-chat--completion-cache-max-size)
+            (clrhash cache))
+          (puthash query items cache)
+          items)))))
+
 (defun eca-chat-completion-at-point ()
   "Complete at point in the chat."
-  (let* ((full-text (buffer-substring-no-properties (line-beginning-position) (point)))
-         (type (cond
-                ;; completing contexts
-                ((eca-chat--point-at-new-context-p)
-                 'contexts-from-new-context)
+  (when-let ((type (eca-chat--completion-type-at-point)))
+    (let* ((bounds-start (pcase type
+                           ('prompts (1+ (line-beginning-position)))
+                           ('files-from-prompt (or (eca-chat--completion-prefix-end eca-chat-filepath-prefix)
+                                                   (point)))
+                           (_ (or (eca-chat--completion-prefix-end eca-chat-context-prefix)
+                                  (point)))))
+           (candidates-fn (lambda ()
+                            (eca-api-catch 'input
+                                (eca-api-while-no-input
+                                  (pcase type
+                                    ((or 'contexts-from-prompt
+                                         'contexts-from-new-context)
+                                     (let ((query (eca-chat--find-typed-query eca-chat-context-prefix))
+                                           (roots (eca--session-workspace-folders (eca-session))))
+                                       (eca-chat--completion-cached-items
+                                        'eca-chat--context-completion-cache query
+                                        (lambda ()
+                                          (eca-api-request-while-no-input
+                                           (eca-session)
+                                           :method "chat/queryContext"
+                                           :params (list :chatId eca-chat--id
+                                                         :query query
+                                                         :contexts (vconcat (mapcar #'eca-chat--refine-context
+                                                                                    eca-chat--context)))))
+                                        :contexts
+                                        (lambda (context)
+                                          (eca-chat--context-to-completion query roots context)))))
 
-                ((when-let (last-word (car (last (string-split full-text "[\s]"))))
-                   (string-match-p (concat "\\(?:^\\|[^[:alnum:]]\\)" (regexp-quote eca-chat-context-prefix)) last-word))
-                 'contexts-from-prompt)
+                                    ('files-from-prompt
+                                     (let ((query (eca-chat--find-typed-query eca-chat-filepath-prefix))
+                                           (roots (eca--session-workspace-folders (eca-session))))
+                                       (eca-chat--completion-cached-items
+                                        'eca-chat--file-completion-cache query
+                                        (lambda ()
+                                          (eca-api-request-while-no-input
+                                           (eca-session)
+                                           :method "chat/queryFiles"
+                                           :params (list :chatId eca-chat--id
+                                                         :query query)))
+                                        :files
+                                        (lambda (file)
+                                          (eca-chat--file-to-completion query roots file)))))
 
-                ((when-let (last-word (car (last (string-split full-text "[\s]"))))
-                   (string-match-p (concat "\\(?:^\\|[^[:alnum:]]\\)" (regexp-quote eca-chat-filepath-prefix)) last-word))
-                 'files-from-prompt)
+                                    ('prompts
+                                     (let ((query (buffer-substring-no-properties
+                                                   (1+ (line-beginning-position)) (point))))
+                                       (eca-chat--completion-cached-items
+                                        'eca-chat--command-completion-cache query
+                                        (lambda ()
+                                          (eca-api-request-while-no-input
+                                           (eca-session)
+                                           :method "chat/queryCommands"
+                                           :params (list :chatId eca-chat--id
+                                                         :query query)))
+                                        :commands
+                                        #'eca-chat--command-to-completion)))
 
-                ;; completing commands with `/`
-                ((and (eca-chat--point-at-prompt-field-p)
-                      (string-prefix-p "/" full-text))
-                 'prompts)
-
-                (t nil)))
-         (bounds-start (pcase type
-                         ('prompts (1+ (line-beginning-position)))
-                         (_ (or
-                             (cl-first (bounds-of-thing-at-point 'symbol))
-                             (point)))))
-         (candidates-fn (lambda ()
-                          (eca-api-catch 'input
-                              (eca-api-while-no-input
-                                (pcase type
-                                  ((or 'contexts-from-prompt
-                                       'contexts-from-new-context)
-                                   (let ((query (eca-chat--find-typed-query eca-chat-context-prefix)))
-                                     (or (gethash query eca-chat--context-completion-cache)
-                                         (-let* (((&plist :contexts contexts) (eca-api-request-while-no-input
-                                                                               (eca-session)
-                                                                               :method "chat/queryContext"
-                                                                               :params (list :chatId eca-chat--id
-                                                                                             :query query
-                                                                                             :contexts (vconcat (mapcar #'eca-chat--refine-context
-                                                                      eca-chat--context)))))
-                                                 (items (-map #'eca-chat--context-to-completion contexts)))
-                                           (clrhash eca-chat--context-completion-cache)
-                                           (puthash query items eca-chat--context-completion-cache)
-                                           items))))
-
-                                  ('files-from-prompt
-                                   (let ((query (eca-chat--find-typed-query eca-chat-filepath-prefix)))
-                                     (or (gethash query eca-chat--file-completion-cache)
-                                         (-let* (((&plist :files files) (eca-api-request-while-no-input
-                                                                         (eca-session)
-                                                                         :method "chat/queryFiles"
-                                                                         :params (list :chatId eca-chat--id
-                                                                                       :query query)))
-                                                 (items (-map #'eca-chat--file-to-completion files)))
-                                           (clrhash eca-chat--file-completion-cache)
-                                           (puthash query items eca-chat--file-completion-cache)
-                                           items))))
-
-                                  ('prompts
-                                   (let ((query (substring full-text 1)))
-                                     (or (gethash query eca-chat--command-completion-cache)
-                                         (-let* (((&plist :commands commands) (eca-api-request-while-no-input
-                                                                               (eca-session)
-                                                                               :method "chat/queryCommands"
-                                                                               :params (list :chatId eca-chat--id
-                                                                                             :query query)))
-                                                 (items (-map #'eca-chat--command-to-completion commands)))
-                                           (clrhash eca-chat--command-completion-cache)
-                                           (puthash query items eca-chat--command-completion-cache)
-                                           items))))
-
-                                  (_ nil)))
-                            (:interrupted nil)
-                            (`,res res))))
-         (exit-fn (pcase type
-                    ('contexts-from-new-context #'eca-chat--completion-context-from-new-context-exit-function)
-                    ('contexts-from-prompt #'eca-chat--completion-context-from-prompt-exit-function)
-                    ('files-from-prompt #'eca-chat--completion-file-from-prompt-exit-function)
-                    ('prompts #'eca-chat--completion-prompt-exit-function)
-                    (_ nil)))
-         (annotation-fn (pcase type
-                          ((or 'contexts-from-prompt
-                               'contexts-from-new-context) (-partial #'eca-chat--completion-context-annotate (eca--session-workspace-folders (eca-session))))
-                          ('files-from-prompt (-partial #'eca-chat--completion-file-annotate (eca--session-workspace-folders (eca-session))))
-                          ('prompts #'eca-chat--completion-prompts-annotate))))
-    (list
-     bounds-start
-     (point)
-     (lambda (probe pred action)
-       (cond
-        ((eq action 'metadata)
-         '(metadata (category . eca-capf)
-                    (display-sort-function . identity)
-                    (cycle-sort-function . identity)))
-        ((eq (car-safe action) 'boundaries) nil)
-        (t
-         (complete-with-action action (funcall candidates-fn) probe pred))))
-     :company-kind #'eca-chat--completion-item-label-kind
-     :company-require-match 'never
-     :annotation-function annotation-fn
-     :exit-function exit-fn)))
+                                    (_ nil)))
+                              (:interrupted nil)
+                              (`,res res))))
+           (exit-fn (pcase type
+                      ('contexts-from-new-context #'eca-chat--completion-context-from-new-context-exit-function)
+                      ('contexts-from-prompt #'eca-chat--completion-context-from-prompt-exit-function)
+                      ('files-from-prompt #'eca-chat--completion-file-from-prompt-exit-function)
+                      ('prompts #'eca-chat--completion-prompt-exit-function)
+                      (_ nil)))
+           (annotation-fn (pcase type
+                            ((or 'contexts-from-prompt
+                                 'contexts-from-new-context) (-partial #'eca-chat--completion-context-annotate (eca--session-workspace-folders (eca-session))))
+                            ('files-from-prompt (-partial #'eca-chat--completion-file-annotate (eca--session-workspace-folders (eca-session))))
+                            ('prompts #'eca-chat--completion-prompts-annotate))))
+      (list
+       bounds-start
+       (point)
+       (lambda (probe pred action)
+         (cond
+          ((eq action 'metadata)
+           '(metadata (category . eca-capf)
+                      (display-sort-function . identity)
+                      (cycle-sort-function . identity)))
+          ((eq (car-safe action) 'boundaries) nil)
+          (t
+           (complete-with-action action (funcall candidates-fn) probe pred))))
+       :company-kind #'eca-chat--completion-item-label-kind
+       :company-require-match 'never
+       :annotation-function annotation-fn
+       :exit-function exit-fn))))
 
 (provide 'eca-chat-context)
 ;;; eca-chat-context.el ends here
