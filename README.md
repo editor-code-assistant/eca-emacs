@@ -61,7 +61,12 @@ Server / process
 - `eca`: Starts eca server/session + open chat
 - `eca-stop`: Stop eca server/session
 - `eca-restart`: Restart eca server/session
-- `eca-workspaces`: show a view with all worskpaces and chats
+- `eca-workspaces`: show a view with all worskpaces and chats. In the
+  buffer, press `q` to close the window, `TAB` to fold/unfold a
+  workspace, `RET` to fold/unfold a workspace or switch to the chat
+  under point, `n`/`p` to move to the next/previous workspace, and `g`
+  to refresh. When `eca-buttons-allow-mouse` is enabled, clicking the
+  workspace text folds/unfolds it and clicking a chat switches to it
 - `eca-settings`: Open the centralized settings panel (MCP servers, and more in the future)
 - `eca-open-global-config`: Open ECA global config file
 
