@@ -365,6 +365,7 @@ non-nil, expand the from-side path.  The longest matching prefix
 wins; explicit user mappings take priority over TRAMP-derived ones
 for equal-length prefixes."
   (let* ((ensure-slash (lambda (s) (if (string-suffix-p "/" s) s (concat s "/"))))
+         (strip-slash (lambda (s) (if (string-suffix-p "/" s) (substring s 0 -1) s)))
          (sorted (sort (copy-sequence (eca--path-mappings))
                        (lambda (a b)
                          (let ((la (length (funcall from-fn a)))
@@ -386,15 +387,14 @@ for equal-length prefixes."
                                  (if (and expand-from-p (not (file-remote-p from-raw)))
                                      (expand-file-name from-raw)
                                    from-raw)))
-                  (to (funcall ensure-slash
-                               (if (and (not expand-from-p) (not (file-remote-p to-raw)))
+                  (to-expanded (if (and (not expand-from-p) (not (file-remote-p to-raw)))
                                    (expand-file-name to-raw)
-                                 to-raw))))
+                                 to-raw)))
              (cond
-              ((string= path (directory-file-name from))
-               (directory-file-name to))
+              ((string= path (funcall strip-slash from))
+               (funcall strip-slash to-expanded))
               ((string-prefix-p from path)
-               (concat to (substring path (length from)))))))
+               (concat (funcall ensure-slash to-expanded) (substring path (length from)))))))
          sorted)
         path)))
 
