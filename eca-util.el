@@ -383,9 +383,13 @@ for equal-length prefixes."
            (let* ((from-raw (funcall from-fn m))
                   (to-raw (funcall to-fn m))
                   (from (funcall ensure-slash
-                                 (if expand-from-p (expand-file-name from-raw) from-raw)))
+                                 (if (and expand-from-p (not (file-remote-p from-raw)))
+                                     (expand-file-name from-raw)
+                                   from-raw)))
                   (to (funcall ensure-slash
-                               (if (not expand-from-p) (expand-file-name to-raw) to-raw))))
+                               (if (and (not expand-from-p) (not (file-remote-p to-raw)))
+                                   (expand-file-name to-raw)
+                                 to-raw))))
              (cond
               ((string= path (directory-file-name from))
                (directory-file-name to))
