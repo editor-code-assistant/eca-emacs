@@ -135,7 +135,7 @@ This affects update detection at session start and on `eca-restart',
 so longer-running Emacs sessions can still pick up newer eca releases.
 See also `eca-server-check-updates'."
   :type '(choice (const :tag "Never expire" nil)
-          (integer :tag "Seconds"))
+                 (integer :tag "Seconds"))
   :group 'eca)
 
 (defvar eca-process--releases-cache nil
@@ -614,8 +614,15 @@ Call HANDLE-MSG for new msgs processed."
              (eca--session-id session))))
 
 (defun eca-process--server-version ()
-  "Return the server version by running the eca binary with --version."
-  (when-let* ((binary (or (car eca-custom-command)
+  "Return the server version by running the eca binary with --version.
+Anchors at the session's first workspace folder when a session
+exists, so remote (TRAMP) sessions report the remote binary
+version regardless of the buffer this is called from."
+  (when-let* ((default-directory (or (-some-> (eca-session)
+                                       (eca--session-workspace-folders)
+                                       (car))
+                                     default-directory))
+              (binary (or (car eca-custom-command)
                           (executable-find "eca" (file-remote-p default-directory))
                           (and (f-exists? eca-server-install-path)
                                eca-server-install-path)))

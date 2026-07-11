@@ -340,15 +340,24 @@ The longest matching prefix wins.
   :type '(alist :key-type string :value-type string)
   :group 'eca)
 
+(defvar eca--path-session nil
+  "Session used to derive TRAMP path mappings.
+Bound dynamically while handling server messages so path
+translation uses the session owning the message instead of
+resolving one from the current buffer.")
+
 (defun eca--path-mappings ()
   "Return merged path mappings for translation.
 Combines explicit `eca-local-to-remote-prefix-map' entries with
 implicit mappings derived from TRAMP workspace folders.  Each
 TRAMP folder like \"/docker:container:/workspace/project\" yields
-a mapping (\"/docker:container:/workspace/project\" . \"/workspace/project\")."
+a mapping (\"/docker:container:/workspace/project\" . \"/workspace/project\").
+Folders come from `eca--path-session' when bound, otherwise from
+the current buffer's session."
   (append
    eca-local-to-remote-prefix-map
-   (when-let* ((session (ignore-errors (eca-session)))
+   (when-let* ((session (or eca--path-session
+                            (ignore-errors (eca-session))))
                (folders (eca--session-workspace-folders session)))
      (delq nil
            (mapcar

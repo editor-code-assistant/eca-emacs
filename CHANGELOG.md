@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Support TRAMP / remote hosts: the eca server starts on the remote host, the binary is resolved from the remote `PATH`, and paths are translated both ways using mappings derived from TRAMP workspace folders (explicit `eca-local-to-remote-prefix-map` entries win). Auto-install is local only: install `eca` on the remote or point `eca-custom-command` at it. #270
+
 - Improve chat `@`/`#` completion: selecting a directory now drills into it (keeps completing its contents) instead of finalizing; candidates are workspace-relative paths with directories ending in `/`; candidates no longer vanish mid-token depending on the user's `completion-styles`; TAB in the prompt triggers completion for `@`/`#`/`/` tokens; typing a space after a raw `@path` turns it into a context chip and raw `@path` tokens still count as contexts when the prompt is sent.
 - Respect `eca-chat-window-side` (and width/height) even when `eca-chat-use-side-window` is nil, displaying the chat on that side via `display-buffer-in-direction`. To avoid overlapping/duplicate windows, placement now reuses the window already showing the chat, otherwise replaces another visible chat window in place (new-tab behavior), and only opens a new window when there is nothing to reuse.
 - Bugfix: `eca-chat-add-context-to-user-prompt` and `eca-chat-add-filepath-to-user-prompt` no longer error with `window-live-p, nil` when the chat buffer is not visible; the chat window is now displayed first. With a prefix arg (`C-u`) they add the context without selecting the chat window, leaving point where it was. #266

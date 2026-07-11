@@ -285,7 +285,8 @@ backtrace.  On older Emacs, runs BODY without capture."
   "Handle raw message JSON-DATA for SESSION."
   (let ((id (plist-get json-data :id))
         (result (plist-get json-data :result))
-        (backtrace nil))
+        (backtrace nil)
+        (eca--path-session session))
     (eca--with-backtrace backtrace
       (condition-case err
           (pcase (eca--get-message-type json-data)

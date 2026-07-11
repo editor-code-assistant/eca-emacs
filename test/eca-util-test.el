@@ -197,5 +197,29 @@
       (expect (eca--path-remote-to-local "/unmapped/path/file.el")
               :to-equal "/unmapped/path/file.el"))))
 
+(describe "eca--path-session"
+  (it "takes precedence over the current buffer's session"
+    (let ((session (make-eca--session))
+          (other (make-eca--session))
+          (eca-local-to-remote-prefix-map nil))
+      (setf (eca--session-workspace-folders session)
+            '("/docker:container:/workspace/project"))
+      (setf (eca--session-workspace-folders other)
+            '("/Users/me/local-project"))
+      (spy-on 'eca-session :and-return-value other)
+      (let ((eca--path-session session))
+        (expect (eca--path-remote-to-local "/workspace/project/src/file.el")
+                :to-equal "/docker:container:/workspace/project/src/file.el"))))
+
+  (it "avoids buffer session lookup entirely when bound"
+    (let ((session (make-eca--session))
+          (eca-local-to-remote-prefix-map nil))
+      (setf (eca--session-workspace-folders session)
+            '("/docker:container:/workspace/project"))
+      (spy-on 'eca-session :and-throw-error 'error)
+      (let ((eca--path-session session))
+        (expect (eca--path-remote-to-local "/workspace/project/src/file.el")
+                :to-equal "/docker:container:/workspace/project/src/file.el")))))
+
 (provide 'eca-util-test)
 ;;; eca-util-test.el ends here
