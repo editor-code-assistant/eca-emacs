@@ -287,6 +287,32 @@ and `eca-doom-workspace-tab-running-face` faces, or disable with:
 (setq eca-doom-workspace-tabs nil)
 ```
 
+## TRAMP / remote hosts
+
+ECA can run when the current buffer is on a remote file (TRAMP: Docker, SSH, etc.). In
+that case eca-emacs starts the ECA server on the remote host using TRAMP’s process
+file handler, so the server runs where your project files live.
+
+Auto-install of the ECA binary is **local only**. On a remote host you must either
+install the `eca` binary on the remote machine so it appears on `PATH`, or point
+`eca-custom-command` at the remote binary. See the [installation
+guide](https://eca.dev/installation/) for how to install `eca`. To use a specific
+path on the remote, set for example:
+
+```elisp
+(setq eca-custom-command '("/workspace/.local/bin/eca" "server"))
+```
+
+**Path translation:** by default, eca-emacs derives local-to-remote path prefix
+mappings from your TRAMP workspace folders so file URIs sent to the server match
+paths inside the container or remote host. For manual control, set
+`eca-local-to-remote-prefix-map`, for example:
+
+```elisp
+(setq eca-local-to-remote-prefix-map
+      '(("/Users/me/dev/project" . "/workspace/project")))
+```
+
 ## Sandboxing
 
 You can run the eca server under any sandbox tool that wraps a command

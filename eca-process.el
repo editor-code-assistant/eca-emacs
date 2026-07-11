@@ -135,7 +135,7 @@ This affects update detection at session start and on `eca-restart',
 so longer-running Emacs sessions can still pick up newer eca releases.
 See also `eca-server-check-updates'."
   :type '(choice (const :tag "Never expire" nil)
-                 (integer :tag "Seconds"))
+          (integer :tag "Seconds"))
   :group 'eca)
 
 (defvar eca-process--releases-cache nil
@@ -402,7 +402,7 @@ the given VERSION."
 
 (defun eca-process--server-command ()
   "Return the command to start server."
-  (let ((system-command (executable-find "eca")))
+  (let ((system-command (executable-find "eca" (file-remote-p default-directory))))
     (cond
      (eca-custom-command (list :decision 'custom
                                :command eca-custom-command))
@@ -410,6 +410,10 @@ the given VERSION."
      (system-command
       (list :decision 'system
             :command (list system-command "server")))
+
+     ((file-remote-p default-directory)
+      (list :decision 'error-download
+            :message "ECA not found on remote host. Install `eca` on the remote PATH or set `eca-custom-command` to the remote binary path. ECA does not auto-install over TRAMP."))
 
      ((and (not (f-exists? eca-server-install-path))
            (not (eca-process--get-latest-server-version)))
@@ -551,7 +555,7 @@ Call HANDLE-MSG for new msgs processed."
                                          :sentinel (lambda (process exit-str)
                                                      (unless (process-live-p process)
                                                        (when-let* ((name (eca-process--stderr-buffer-name session))
-                                                                    (buf (get-buffer name)))
+                                                                   (buf (get-buffer name)))
                                                          (with-current-buffer buf
                                                            (rename-buffer (concat (buffer-name) ":closed") t)
                                                            (setq-local mode-line-format '("*Closed session*"))))
@@ -612,14 +616,21 @@ Call HANDLE-MSG for new msgs processed."
 (defun eca-process--server-version ()
   "Return the server version by running the eca binary with --version."
   (when-let* ((binary (or (car eca-custom-command)
-                          (executable-find "eca")
-                          (when (f-exists? eca-server-install-path)
-                            eca-server-install-path)))
+                          (executable-find "eca" (file-remote-p default-directory))
+                          (and (f-exists? eca-server-install-path)
+                               eca-server-install-path)))
               (output (ignore-errors
                         (string-trim
-                         (shell-command-to-string
-                          (format "%s --version 2>/dev/null"
-                                  (shell-quote-argument (expand-file-name binary))))))))
+                         (if (file-remote-p binary)
+                             (let ((default-directory (file-name-directory binary)))
+                               (shell-command-to-string
+                                (format "%s --version 2>/dev/null"
+                                        (shell-quote-argument
+                                         (file-local-name binary)))))
+                           (shell-command-to-string
+                            (format "%s --version 2>/dev/null"
+                                    (shell-quote-argument
+                                     (expand-file-name binary)))))))))
     (unless (string-empty-p output)
       output)))
 

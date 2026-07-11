@@ -127,5 +127,75 @@
       (expect (eca--path-remote-to-local "/workspace/win-project/src/main.rs")
               :to-equal (expand-file-name "C:/Users/me/ws/win-project/src/main.rs")))))
 
+(describe "eca--path-local-to-remote with TRAMP"
+  (it "strips TRAMP prefix before applying prefix map"
+    (let ((eca-local-to-remote-prefix-map
+           '(("/workspace/project" . "/mnt/project"))))
+      (expect (eca--path-local-to-remote
+               "/docker:container:/workspace/project/src/file.el")
+              :to-equal "/mnt/project/src/file.el")))
+
+  (it "strips TRAMP and returns expanded local part when no mapping matches"
+    (let ((eca-local-to-remote-prefix-map nil))
+      (expect (eca--path-local-to-remote
+               "/docker:container:/workspace/project/src/file.el")
+              :to-equal (expand-file-name
+                         "/workspace/project/src/file.el"))))
+
+  (it "handles non-TRAMP paths unchanged (no double-stripping)"
+    (let ((eca-local-to-remote-prefix-map
+           '(("/Users/me/dev" . "/workspace"))))
+      (expect (eca--path-local-to-remote "/Users/me/dev/src/file.el")
+              :to-equal "/workspace/src/file.el"))))
+
+(describe "eca--path-remote-to-local with TRAMP workspace folders"
+  (it "uses TRAMP workspace folder when no explicit mapping matches"
+    (let ((session (make-eca--session))
+          (eca-local-to-remote-prefix-map nil))
+      (setf (eca--session-workspace-folders session)
+            '("/docker:container:/workspace/project"))
+      (spy-on 'eca-session :and-return-value session)
+      (expect (eca--path-remote-to-local "/workspace/project/src/file.el")
+              :to-equal "/docker:container:/workspace/project/src/file.el")))
+
+  (it "matches the most specific TRAMP workspace folder"
+    (let ((session (make-eca--session))
+          (eca-local-to-remote-prefix-map nil))
+      (setf (eca--session-workspace-folders session)
+            '("/docker:a:/workspace"
+              "/docker:b:/workspace/project"))
+      (spy-on 'eca-session :and-return-value session)
+      (expect (eca--path-remote-to-local "/workspace/project/src/file.el")
+              :to-equal "/docker:b:/workspace/project/src/file.el")))
+
+  (it "handles exact TRAMP workspace folder match (no trailing slash)"
+    (let ((session (make-eca--session))
+          (eca-local-to-remote-prefix-map nil))
+      (setf (eca--session-workspace-folders session)
+            '("/docker:container:/workspace/project"))
+      (spy-on 'eca-session :and-return-value session)
+      (expect (eca--path-remote-to-local "/workspace/project")
+              :to-equal "/docker:container:/workspace/project")))
+
+  (it "prefers explicit prefix map over TRAMP workspace folders"
+    (let ((session (make-eca--session))
+          (eca-local-to-remote-prefix-map
+           '(("/Users/me/dev" . "/workspace/project"))))
+      (setf (eca--session-workspace-folders session)
+            '("/docker:container:/workspace/project"))
+      (spy-on 'eca-session :and-return-value session)
+      (expect (eca--path-remote-to-local "/workspace/project/src/file.el")
+              :to-equal (expand-file-name
+                         "/Users/me/dev/src/file.el"))))
+
+  (it "returns path unchanged when neither mapping nor TRAMP matches"
+    (let ((session (make-eca--session))
+          (eca-local-to-remote-prefix-map nil))
+      (setf (eca--session-workspace-folders session)
+            '("/Users/me/local-project"))
+      (spy-on 'eca-session :and-return-value session)
+      (expect (eca--path-remote-to-local "/unmapped/path/file.el")
+              :to-equal "/unmapped/path/file.el"))))
+
 (provide 'eca-util-test)
 ;;; eca-util-test.el ends here

@@ -313,7 +313,7 @@ workspace folder. Falls back to \"unknown\"."
   (concat eca--uri-file-prefix
           (--> path
                (expand-file-name it)
-               (or (file-remote-p it 'localname t) it)
+               (or (file-remote-p it 'localname) it)
                (eca--path-local-to-remote it))))
 
 (defun eca--uri-to-path (uri)
@@ -340,44 +340,77 @@ The longest matching prefix wins.
   :type '(alist :key-type string :value-type string)
   :group 'eca)
 
+(defun eca--path-mappings ()
+  "Return merged path mappings for translation.
+Combines explicit `eca-local-to-remote-prefix-map' entries with
+implicit mappings derived from TRAMP workspace folders.  Each
+TRAMP folder like \"/docker:container:/workspace/project\" yields
+a mapping (\"/docker:container:/workspace/project\" . \"/workspace/project\")."
+  (append
+   eca-local-to-remote-prefix-map
+   (when-let* ((session (ignore-errors (eca-session)))
+               (folders (eca--session-workspace-folders session)))
+     (delq nil
+           (mapcar
+            (lambda (folder)
+              (when (file-remote-p folder)
+                (cons folder (file-local-name folder))))
+            folders)))))
+
 (defun eca--path--translate (path from-fn to-fn expand-from-p)
-  "Translate PATH using `eca-local-to-remote-prefix-map'.
+  "Translate PATH using explicit and TRAMP-derived path mappings.
 FROM-FN extracts the side of each mapping to match against PATH;
-TO-FN extracts the side to substitute in.  If EXPAND-FROM-P is non-nil,
-expand the from-side path.  The longest matching prefix wins."
+TO-FN extracts the side to substitute in.  If EXPAND-FROM-P is
+non-nil, expand the from-side path.  The longest matching prefix
+wins; explicit user mappings take priority over TRAMP-derived ones
+for equal-length prefixes."
   (let* ((ensure-slash (lambda (s) (if (string-suffix-p "/" s) s (concat s "/"))))
-         (sorted (sort (copy-sequence eca-local-to-remote-prefix-map)
+         (strip-slash (lambda (s) (if (string-suffix-p "/" s) (substring s 0 -1) s)))
+         (sorted (sort (copy-sequence (eca--path-mappings))
                        (lambda (a b)
                          (let ((la (length (funcall from-fn a)))
                                (lb (length (funcall from-fn b))))
                            (if (= la lb)
-                               (> (length (funcall to-fn a))
-                                  (length (funcall to-fn b)))
+                               (let ((explicit-a (member a eca-local-to-remote-prefix-map))
+                                     (explicit-b (member b eca-local-to-remote-prefix-map)))
+                                 (cond
+                                  ((and explicit-a (not explicit-b)) t)
+                                  ((and (not explicit-a) explicit-b) nil)
+                                  (t (> (length (funcall to-fn a))
+                                        (length (funcall to-fn b))))))
                              (> la lb)))))))
     (or (seq-some
          (lambda (m)
            (let* ((from-raw (funcall from-fn m))
                   (to-raw (funcall to-fn m))
                   (from (funcall ensure-slash
-                                 (if expand-from-p (expand-file-name from-raw) from-raw)))
-                  (to (funcall ensure-slash
-                               (if (not expand-from-p) (expand-file-name to-raw) to-raw))))
+                                 (if (and expand-from-p (not (file-remote-p from-raw)))
+                                     (expand-file-name from-raw)
+                                   from-raw)))
+                  (to-expanded (if (and (not expand-from-p) (not (file-remote-p to-raw)))
+                                   (expand-file-name to-raw)
+                                 to-raw)))
              (cond
-              ((string= path (directory-file-name from))
-               (directory-file-name to))
+              ((string= path (funcall strip-slash from))
+               (funcall strip-slash to-expanded))
               ((string-prefix-p from path)
-               (concat to (substring path (length from)))))))
+               (concat (funcall ensure-slash to-expanded) (substring path (length from)))))))
          sorted)
         path)))
 
 (defun eca--path-local-to-remote (path)
-  "Translate a local Emacs PATH to a remote path using `eca-local-to-remote-prefix-map'.
-Uses the longest (most specific) matching prefix to avoid ambiguity."
-  (eca--path--translate (expand-file-name path) #'car #'cdr t))
+  "Translate a local Emacs PATH to a remote path.
+First strips any TRAMP prefix from PATH, then applies path
+mappings (explicit `eca-local-to-remote-prefix-map' plus TRAMP
+workspace folder mappings).  The longest matching prefix wins."
+  (let ((local-path (or (file-remote-p path 'localname) path)))
+    (eca--path--translate (expand-file-name local-path) #'car #'cdr t)))
 
 (defun eca--path-remote-to-local (path)
-  "Translate a remote server PATH to a local Emacs path using `eca-local-to-remote-prefix-map'.
-Uses the longest (most specific) matching prefix to avoid ambiguity."
+  "Translate a remote server PATH to a local Emacs path.
+Applies path mappings (explicit `eca-local-to-remote-prefix-map'
+plus TRAMP workspace folder mappings).  The longest matching prefix
+wins; explicit user mappings take priority over TRAMP-derived ones."
   (eca--path--translate path #'cdr #'car nil))
 
 (defun eca-info (format &rest args)
