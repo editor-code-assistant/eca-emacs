@@ -388,9 +388,13 @@ does not treat the first line as metadata.  Returns FN's value."
                         "check @foo.el and @sub/ and @missing.el")))
               (unwind-protect
                   (with-current-buffer buf
-                    (expect (eca-chat--raw-prompt-contexts)
-                            :to-equal (list (list :type "file" :path file)
-                                            (list :type "directory" :path dir))))
+                    ;; Built outside `expect': on Emacs 29 buttercup's
+                    ;; interpreted oclosure thunks shadow the `:type'
+                    ;; keyword inside expect args.
+                    (let ((expected (list (list :type "file" :path file)
+                                          (list :type "directory" :path dir))))
+                      (expect (eca-chat--raw-prompt-contexts)
+                              :to-equal expected)))
                 (kill-buffer buf))))
         (delete-directory root t))))
 
@@ -424,10 +428,13 @@ does not treat the first line as metadata.  Returns FN's value."
                     (goto-char (point-max))
                     (eca-chat--maybe-finalize-context-token)
                     (expect (eca-chat-test--prompt-text buf) :to-equal "@sub ")
-                    (expect (get-text-property
-                             (eca-chat--prompt-field-start-point)
-                             'eca-chat-context-item)
-                            :to-equal (list :type "directory" :path dir)))
+                    ;; Built outside `expect', see eca-chat--raw-prompt-contexts
+                    ;; test above.
+                    (let ((expected (list :type "directory" :path dir)))
+                      (expect (get-text-property
+                               (eca-chat--prompt-field-start-point)
+                               'eca-chat-context-item)
+                              :to-equal expected)))
                 (kill-buffer buf))))
         (delete-directory root t))))
 
