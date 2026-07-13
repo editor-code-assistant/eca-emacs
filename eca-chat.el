@@ -467,6 +467,31 @@ behavior)."
   "Face for file paths in chat."
   :group 'eca)
 
+(defface eca-chat-shell-command-face
+  '((t :weight bold))
+  "Face for breakdown commands that can never be auto-approved."
+  :group 'eca)
+
+(defface eca-chat-shell-command-remembered-face
+  '((t :inherit success :weight bold))
+  "Face for breakdown commands whose approval is already remembered."
+  :group 'eca)
+
+(defface eca-chat-shell-command-not-remembered-face
+  '((t :inherit warning :weight bold))
+  "Face for breakdown commands whose approval is not remembered yet."
+  :group 'eca)
+
+(defface eca-chat-shell-command-breakdown-prefix-face
+  '((t :inherit font-lock-comment-face))
+  "Face for the prefix of derived lines in shell command breakdowns."
+  :group 'eca)
+
+(defface eca-chat-shell-command-always-asks-face
+  '((t :inherit font-lock-comment-face :slant italic :height 0.9))
+  "Face for the annotation of commands that always ask for approval."
+  :group 'eca)
+
 (defface eca-chat--tool-call-table-key-face
   '((t :height 0.9 :inherit font-lock-comment-face))
   "Face for the MCP tool call table keys in chat."
@@ -1395,15 +1420,41 @@ per-category tokens are in the tooltip."
           (setq-local eca-chat--context-bar-cache-key key)
           (setq-local eca-chat--context-bar-cache-value result))))))
 
-(defun eca-chat--build-tool-call-approval-str-content (session id spacing-line-prefix &optional chat-id)
+(defun eca-chat--build-tool-call-approval-str-content (session id spacing-line-prefix &optional chat-id details)
   "Build the tool call approval string for SESSION, ID and SPACING-LINE-PREFIX.
 CHAT-ID overrides the buffer-local `eca-chat--id' for the approval
-request, useful for subagent tool calls."
-  (let ((keybinding-for (lambda (command)
-                          (concat "("
-                                  (key-description (car (where-is-internal command eca-chat-mode-map)))
-                                  ")")))
-        (effective-chat-id (or chat-id eca-chat--id)))
+request, useful for subagent tool calls.
+DETAILS is the tool call details, used for shellCommand breakdowns to
+show which commands an approve & remember would remember, hiding the
+remember action when nothing can be remembered."
+  (let* ((keybinding-for (lambda (command)
+                           (concat "("
+                                   (key-description (car (where-is-internal command eca-chat-mode-map)))
+                                   ")")))
+         (effective-chat-id (or chat-id eca-chat--id))
+         (shell-command? (string= "shellCommand" (plist-get details :type)))
+         ;; Only the keys that would be newly remembered: already-remembered
+         ;; commands are excluded from the label.
+         (remember-keys (when shell-command?
+                          (delete-dups
+                           (delq nil (mapcar (lambda (cmd)
+                                               (-let* (((&plist :approvalKey approval-key :remembered remembered) cmd))
+                                                 (when (and approval-key (not remembered))
+                                                   approval-key)))
+                                             (plist-get details :commands))))))
+         ;; When remembering would save nothing new (no generalizable command,
+         ;; or everything already remembered), hide the remember action.
+         (hide-remember? (and shell-command? (null remember-keys)))
+         (remember-suffix
+          (if remember-keys
+              (concat (propertize " " 'font-lock-face 'eca-chat-tool-call-approval-content-face)
+                      (mapconcat (lambda (key)
+                                   (propertize key 'font-lock-face 'eca-chat--tool-call-argument-value-face))
+                                 remember-keys
+                                 (propertize ", " 'font-lock-face 'eca-chat-tool-call-approval-content-face))
+                      (propertize " " 'font-lock-face 'eca-chat-tool-call-approval-content-face))
+            (propertize " for this session "
+                        'font-lock-face 'eca-chat-tool-call-approval-content-face))))
     (concat (propertize "\n" 'font-lock-face 'eca-chat-tool-call-spacing-face)
             (eca-buttonize
              eca-chat-mode-map
@@ -1419,23 +1470,24 @@ request, useful for subagent tool calls."
             (propertize " " 'font-lock-face 'eca-chat-tool-call-approval-content-face)
             (propertize (funcall keybinding-for #'eca-chat-tool-call-accept-all)
                         'font-lock-face 'eca-chat-tool-call-keybinding-face)
-            (propertize "\n" 'font-lock-face 'eca-chat-tool-call-spacing-face)
-            (eca-buttonize
-             eca-chat-mode-map
-             (propertize "Accept and remember"
-                         'eca-tool-call-pending-approval-accept-and-remember t
-                         'line-prefix spacing-line-prefix
-                         'font-lock-face 'eca-chat-tool-call-accept-and-remember-face)
-             (lambda ()
-               (eca-api-notify session
-                               :method "chat/toolCallApprove"
-                               :params (list :chatId effective-chat-id
-                                             :save "session"
-                                             :toolCallId id))))
-            (propertize " for this session "
-                        'font-lock-face 'eca-chat-tool-call-approval-content-face)
-            (propertize (funcall keybinding-for #'eca-chat-tool-call-accept-all-and-remember)
-                        'font-lock-face 'eca-chat-tool-call-keybinding-face)
+            (unless hide-remember?
+              (concat
+               (propertize "\n" 'font-lock-face 'eca-chat-tool-call-spacing-face)
+               (eca-buttonize
+                eca-chat-mode-map
+                (propertize "Accept and remember"
+                            'eca-tool-call-pending-approval-accept-and-remember t
+                            'line-prefix spacing-line-prefix
+                            'font-lock-face 'eca-chat-tool-call-accept-and-remember-face)
+                (lambda ()
+                  (eca-api-notify session
+                                  :method "chat/toolCallApprove"
+                                  :params (list :chatId effective-chat-id
+                                                :save "session"
+                                                :toolCallId id))))
+               remember-suffix
+               (propertize (funcall keybinding-for #'eca-chat-tool-call-accept-all-and-remember)
+                           'font-lock-face 'eca-chat-tool-call-keybinding-face)))
             (propertize "\n" 'font-lock-face 'eca-chat-tool-call-spacing-face)
             (eca-buttonize
              eca-chat-mode-map
@@ -3398,6 +3450,81 @@ Append STATUS, ROOTS and optional PARENT-ID."
      nil
      parent-id)))
 
+(defun eca-chat--shell-command-state-face (cmd)
+  "Return the face conveying the remember state of CMD, a breakdown entry."
+  (-let* (((&plist :approvalKey approval-key :remembered remembered) cmd))
+    (cond ((not approval-key) 'eca-chat-shell-command-face)
+          (remembered 'eca-chat-shell-command-remembered-face)
+          (t 'eca-chat-shell-command-not-remembered-face))))
+
+(defun eca-chat--shell-command-breakdown-line (cmd prefix annotate-always-asks?)
+  "Build a single breakdown line for CMD, a shellCommand details entry.
+PREFIX is the line prefix string (`$ ' for the first command,
+`↳ ' for the chained ones).
+When ANNOTATE-ALWAYS-ASKS? is non-nil, commands that can never be
+auto-approved get an annotation; only meaningful while the tool call is
+pending approval (not on trusted/auto-allowed/finished calls)."
+  (-let* (((&plist :command command :args args :approvalKey approval-key) cmd))
+    (concat (propertize prefix 'font-lock-face 'eca-chat-shell-command-breakdown-prefix-face)
+            (propertize command 'font-lock-face (eca-chat--shell-command-state-face cmd))
+            (when (and args (> (length args) 0))
+              (concat " " (string-join (append args nil) " ")))
+            (when (and annotate-always-asks? (not approval-key))
+              (propertize "  (always asks)" 'font-lock-face 'eca-chat-shell-command-always-asks-face)))))
+
+(defun eca-chat--tool-call-shell-command-details (content label approval-text time status &optional parent-id output-text)
+  "Update tool call UI showing the shell command breakdown details.
+CONTENT is the tool call content, LABEL is the label.
+The raw command is always shown verbatim; the derived per-command
+breakdown lines are added only when they help: chained commands or
+always-asks annotations while pending approval.
+Can include optional APPROVAL-TEXT and TIME.
+Append STATUS and optional PARENT-ID and OUTPUT-TEXT."
+  (-let* (((&plist :arguments args :details details :id id) content)
+          (commands (plist-get details :commands))
+          (raw-command (or (plist-get args :command) ""))
+          (work-dir (plist-get args :working_directory))
+          (background (plist-get args :background))
+          (annotate? (and approval-text t))
+          (show-breakdown? (or (> (length commands) 1)
+                               (and annotate?
+                                    (seq-some (lambda (cmd) (not (plist-get cmd :approvalKey)))
+                                              commands))))
+          (raw-face (if (= 1 (length commands))
+                        ;; Single command: the raw line is the command itself,
+                        ;; so it carries the remember-state color directly.
+                        (eca-chat--shell-command-state-face (elt commands 0))
+                      'eca-chat--tool-call-argument-value-face))
+          (body (concat (propertize "$ " 'font-lock-face 'eca-chat-shell-command-breakdown-prefix-face)
+                        (propertize raw-command
+                                    'font-lock-face raw-face
+                                    'eca-no-fontify t)
+                        (when show-breakdown?
+                          (concat "\n\n"
+                                  (mapconcat #'identity
+                                             (seq-map-indexed
+                                              (lambda (cmd idx)
+                                                (eca-chat--shell-command-breakdown-line
+                                                 cmd (if (zerop idx) "$ " "↳ ") annotate?))
+                                              commands)
+                                             "\n")))
+                        (when (and work-dir (not (string-empty-p work-dir)))
+                          (concat "\n" (propertize (concat "in " work-dir)
+                                                   'font-lock-face 'eca-chat--tool-call-table-key-face)))
+                        (when background
+                          (concat "\n" (propertize (format "background: %s" background)
+                                                   'font-lock-face 'eca-chat--tool-call-table-key-face)))
+                        (when (and output-text (not (string-empty-p output-text)))
+                          (concat "\n" (eca-chat--content-table `(("Output" . ,output-text))))))))
+    (eca-chat--update-expandable-content
+     id
+     (concat (propertize label 'font-lock-face 'eca-chat-mcp-tool-call-label-face)
+             " " status time
+             approval-text)
+     body
+     nil
+     parent-id)))
+
 (defun eca-chat--tool-call-json-outputs-details (content time status &optional parent-id)
   "Update tool call UI for json output given CONTENT, TIME, STATUS and PARENT-ID."
   (-let* (((&plist :name name :arguments arguments :server server :details details :id
@@ -3823,15 +3950,16 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
                 (status (if manual?
                             eca-chat-mcp-tool-call-pending-approval-symbol
                           eca-chat-mcp-tool-call-loading-symbol))
+                (details (plist-get content :details))
                 (approval-text (when manual?
-                                 (eca-chat--build-tool-call-approval-str-content session id tool-call-next-line-spacing chat-id)))
-                (details (plist-get content :details)))
+                                 (eca-chat--build-tool-call-approval-str-content session id tool-call-next-line-spacing chat-id details))))
            ;; Register subagent mapping only for top-level tool calls
            (when (and (not parent-tool-call-id)
                       (string= "subagent" (plist-get details :type)))
              (puthash (plist-get details :subagentChatId) id eca-chat--subagent-chat-id->tool-call-id))
            (pcase (plist-get details :type)
              ("fileChange" (eca-chat--tool-call-file-change-details content label approval-text nil status tool-call-next-line-spacing roots parent-tool-call-id))
+             ("shellCommand" (eca-chat--tool-call-shell-command-details content label approval-text nil status parent-tool-call-id))
              ("subagent" (eca-chat--tool-call-subagent-details id args label approval-text nil status parent-tool-call-id details))
              (_ (eca-chat--update-expandable-content
                  id
@@ -3881,6 +4009,7 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
                  (puthash subagent-chat-id id eca-chat--subagent-chat-id->tool-call-id))))
            (pcase (plist-get details :type)
              ("fileChange" (eca-chat--tool-call-file-change-details content label nil elapsed-time status tool-call-next-line-spacing roots parent-tool-call-id))
+             ("shellCommand" (eca-chat--tool-call-shell-command-details content label nil elapsed-time status parent-tool-call-id))
              ("subagent" (eca-chat--tool-call-subagent-details id args label nil elapsed-time status parent-tool-call-id details))
              (_ (eca-chat--update-expandable-content
                  id
@@ -3932,6 +4061,7 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
              (remhash (plist-get details :subagentChatId) eca-chat--subagent-chat-id->tool-call-id))
            (pcase (plist-get details :type)
              ("fileChange" (eca-chat--tool-call-file-change-details content label nil time status tool-call-next-line-spacing roots parent-tool-call-id))
+             ("shellCommand" (eca-chat--tool-call-shell-command-details content label nil time status parent-tool-call-id output-text))
              ("jsonOutputs" (eca-chat--tool-call-json-outputs-details content time status parent-tool-call-id))
              ("subagent" (eca-chat--tool-call-subagent-details id args label nil time status parent-tool-call-id details output-text))
              (_ (eca-chat--update-expandable-content
@@ -3974,6 +4104,7 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
              (remhash (plist-get details :subagentChatId) eca-chat--subagent-chat-id->tool-call-id))
            (pcase (plist-get details :type)
              ("fileChange" (eca-chat--tool-call-file-change-details content label nil nil status tool-call-next-line-spacing roots parent-tool-call-id))
+             ("shellCommand" (eca-chat--tool-call-shell-command-details content label nil nil status parent-tool-call-id))
              ("subagent" (eca-chat--tool-call-subagent-details id args label nil nil status parent-tool-call-id details))
              (_ (eca-chat--update-expandable-content
                  id

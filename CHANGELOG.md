@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Show the shell/git command breakdown in tool call approvals: raw command plus per-command lines colored by remember state (green saved, yellow not yet), and `Accept and remember` lists the command keys it would newly save (e.g. `git status, rg`), hiding when nothing new would be remembered.
+
 - Support TRAMP / remote hosts: the eca server starts on the remote host, the binary is resolved from the remote `PATH`, and paths are translated both ways using mappings derived from TRAMP workspace folders (explicit `eca-local-to-remote-prefix-map` entries win). Auto-install is local only: install `eca` on the remote or point `eca-custom-command` at it. #270
 
 - Improve chat `@`/`#` completion: selecting a directory now drills into it (keeps completing its contents) instead of finalizing; candidates are workspace-relative paths with directories ending in `/`; candidates no longer vanish mid-token depending on the user's `completion-styles`; TAB in the prompt triggers completion for `@`/`#`/`/` tokens; typing a space after a raw `@path` turns it into a context chip and raw `@path` tokens still count as contexts when the prompt is sent.
