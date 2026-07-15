@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Bugfix: a forward deletion of the first prompt character now works instead of dinging. `eca-chat--key-pressed-deletion` guarded the prompt boundary by rejecting any deletion at the prompt-field start regardless of direction, so `C-d` and, under evil, the `~` (`evil-invert-char`), `r`, `x` and `s` operators left the first char in place (`~` prepended the inverted char instead of replacing it). At the prompt-field start the guard now blocks only backward-deleting commands (`delete-backward-char`, `backward-kill-word`, `evil-delete-backward-char`, ...); deletions above the prompt (context/progress area) and everywhere else are unchanged.
 - Show the shell/git command breakdown in tool call approvals: raw command plus per-command lines colored by remember state (green saved, yellow not yet), and `Accept and remember` lists the command keys it would newly save (e.g. `git status, rg`), hiding when nothing new would be remembered.
 
 - Support TRAMP / remote hosts: the eca server starts on the remote host, the binary is resolved from the remote `PATH`, and paths are translated both ways using mappings derived from TRAMP workspace folders (explicit `eca-local-to-remote-prefix-map` entries win). Auto-install is local only: install `eca` on the remote or point `eca-custom-command` at it. #270

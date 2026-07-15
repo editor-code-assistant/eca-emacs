@@ -1857,6 +1857,23 @@ scrolling is suppressed so the view does not jump."
   (-some-> (eca-chat--prompt-context-field-ov)
     (overlay-start)))
 
+(defconst eca-chat--prompt-boundary-guard-commands
+  '(delete-backward-char
+    backward-delete-char
+    backward-delete-char-untabify
+    backward-kill-word
+    evil-delete-backward-word
+    evil-delete-back-to-indentation
+    evil-delete-backward-char)
+  "Backward-deleting commands blocked at the prompt-field start.
+At the start itself, `eca-chat--key-pressed-deletion' dings only for
+these commands (and for a negative delete count).  Forward deletions
+there - `delete-char' with a positive count, as used by
+`evil-invert-char' (~), `evil-replace' (r), `evil-delete-char' (x) and
+`evil-substitute' (s) - remove the first prompt character and fall
+through to the wrapped command.  Above the prompt field the guard is
+unconditional.")
+
 (defun eca-chat--key-pressed-deletion (side-effect-fn &rest args)
   "Apply SIDE-EFFECT-FN with ARGS before point.
 Unless at the prompt field boundary.
@@ -1896,9 +1913,19 @@ the prompt/context line."
           (setf (nth 2 args) nil) ;; do not delete prompt line passing nil argument
           (apply side-effect-fn args))
 
-         ;; start of the prompt
+         ;; start of the prompt - keep the guard everywhere above the
+         ;; prompt-field start, but at the start itself block only *backward*
+         ;; deletions.  A forward deletion there (`delete-char' from
+         ;; evil-invert-char ~, evil-replace r, evil-delete-char x,
+         ;; evil-substitute s, or C-d) removes the first prompt char, which
+         ;; is legitimate; everything else is unchanged.  A negative count
+         ;; (e.g. `C-u - C-d') makes `delete-char' delete backward, so still
+         ;; guard that.
          ((and prompt-ov
-               (or (<= (point) (overlay-start prompt-ov))
+               (or (< (point) (overlay-start prompt-ov))
+                   (and (= (point) (overlay-start prompt-ov))
+                        (or (memq this-command eca-chat--prompt-boundary-guard-commands)
+                            (and (integerp (car args)) (< (car args) 0))))
                    (and (eq 'backward-kill-word this-command)
                         (string-blank-p (buffer-substring-no-properties
                                          (overlay-start prompt-ov) (point))))))

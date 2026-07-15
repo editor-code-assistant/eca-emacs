@@ -133,7 +133,31 @@ does not treat the first line as metadata.  Returns FN's value."
                 (expect side-effect-called :to-be nil)
                 (expect (eca-chat-test--prompt-text buf)
                         :to-equal "hello")))
-          (kill-buffer buf))))))
+          (kill-buffer buf))))
+
+    (it "allows forward deletion at prompt field start"
+      ;; Regression: a forward `delete-char' at the prompt start - plain C-d
+      ;; and, under evil, `evil-invert-char' (~), `evil-replace' (r),
+      ;; `evil-delete-char' (x) and `evil-substitute' (s) - must remove the
+      ;; first prompt char.  The boundary guard used to block it too, so ~
+      ;; prepended the inverted char instead of replacing it in place.
+      (dolist (cmd '(delete-char evil-invert-char evil-replace
+                     evil-delete-char evil-substitute))
+        (let ((buf (eca-chat-test--make-prompt-buffer "hello")))
+          (unwind-protect
+              (with-current-buffer buf
+                (goto-char (eca-chat--prompt-field-start-point))
+                (let ((this-command cmd)
+                      (side-effect-called nil))
+                  (eca-chat--key-pressed-deletion
+                   (lambda (n &optional _)
+                     (setq side-effect-called t)
+                     (delete-char n))
+                   1)
+                  (expect side-effect-called :to-be t)
+                  (expect (eca-chat-test--prompt-text buf)
+                          :to-equal "ello")))
+            (kill-buffer buf)))))))
 
 (describe "eca-chat--protect-non-prompt"
 
