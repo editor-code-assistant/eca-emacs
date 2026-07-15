@@ -114,6 +114,193 @@
                     :to-be-truthy))
         (eca-selection-test--kill-buffers a b)))))
 
+(describe "chat open selection hydration"
+  (it "hydrates an atomic selection without changing other chats"
+    (let ((session
+           (make-eca--session
+            :opening-chat-id "A"
+            :chat-default-model "default-model"
+            :chat-default-agent "default-agent"
+            :chat-default-variant "default-variant"
+            :chat-default-trust nil))
+          a b source)
+      (spy-on 'eca-chat-open)
+      (spy-on 'eca-chat--kill-empty-welcome-buffer)
+      (spy-on 'eca-chat--refresh-load-older-control)
+      (spy-on 'eca-chat--protect-non-prompt)
+      (unwind-protect
+          (progn
+            (setq a (eca-selection-test--make-chat session "A")
+                  b (eca-selection-test--make-chat session "B")
+                  source (generate-new-buffer " *eca-selection-source*"))
+            (with-current-buffer a
+              (setq-local eca-chat--selected-model "old-model")
+              (setq-local eca-chat--selected-agent "old-agent")
+              (setq-local eca-chat--selected-variant "old-variant")
+              (setq-local eca-chat--available-variants '("old-variant"))
+              (setq-local eca-chat--selected-trust nil))
+            (with-current-buffer b
+              (setq-local eca-chat--selected-model "model-b")
+              (setq-local eca-chat--selected-agent "agent-b")
+              (setq-local eca-chat--selected-variant "variant-b")
+              (setq-local eca-chat--available-variants '("variant-b"))
+              (setq-local eca-chat--selected-trust nil))
+            (eca-chat--handle-open-response
+             session source "A"
+             '(:found t
+               :title "Restored chat"
+               :selection (:model "restored-model"
+                           :agent "plan"
+                           :variant "low"
+                           :variants ["high" "low"]
+                           :trust t)
+               :meta (:total 42 :beforeCursor "older")))
+            (expect (eca--session-opening-chat-id session) :to-be nil)
+            (expect (eca--session-last-chat-buffer session) :to-be a)
+            (expect (buffer-local-value 'eca-chat--selected-model a)
+                    :to-equal "restored-model")
+            (expect (buffer-local-value 'eca-chat--selected-agent a)
+                    :to-equal "plan")
+            (expect (buffer-local-value 'eca-chat--selected-variant a)
+                    :to-equal "low")
+            (expect (buffer-local-value 'eca-chat--available-variants a)
+                    :to-equal '("high" "low"))
+            (expect (buffer-local-value 'eca-chat--selected-trust a)
+                    :to-be-truthy)
+            (expect (buffer-local-value 'eca-chat--title a)
+                    :to-equal "Restored chat")
+            (expect (buffer-local-value 'eca-chat--history-total a)
+                    :to-equal 42)
+            (expect (buffer-local-value 'eca-chat--selected-model b)
+                    :to-equal "model-b")
+            (expect (buffer-local-value 'eca-chat--selected-agent b)
+                    :to-equal "agent-b")
+            (expect (buffer-local-value 'eca-chat--selected-variant b)
+                    :to-equal "variant-b")
+            (expect (buffer-local-value 'eca-chat--available-variants b)
+                    :to-equal '("variant-b"))
+            (expect (buffer-local-value 'eca-chat--selected-trust b)
+                    :to-be nil)
+            (expect (eca--session-chat-default-model session)
+                    :to-equal "default-model")
+            (expect (eca--session-chat-default-agent session)
+                    :to-equal "default-agent")
+            (expect (eca--session-chat-default-variant session)
+                    :to-equal "default-variant")
+            (expect (eca--session-chat-default-trust session)
+                    :to-be nil))
+        (eca-selection-test--kill-buffers a b source))))
+
+  (it "applies nullable and partial atomic selection fields"
+    (let ((session (make-eca--session))
+          chat)
+      (unwind-protect
+          (progn
+            (setq chat (eca-selection-test--make-chat session "A"))
+            (with-current-buffer chat
+              (setq-local eca-chat--selected-model "model")
+              (setq-local eca-chat--selected-agent "agent")
+              (setq-local eca-chat--selected-variant "variant")
+              (setq-local eca-chat--available-variants '("variant"))
+              (setq-local eca-chat--selected-trust t))
+            (eca-chat--apply-selection-snapshot
+             '(:model nil :variant nil :trust nil)
+             chat)
+            (expect (buffer-local-value 'eca-chat--selected-model chat)
+                    :to-be nil)
+            (expect (buffer-local-value 'eca-chat--selected-agent chat)
+                    :to-equal "agent")
+            (expect (buffer-local-value 'eca-chat--selected-variant chat)
+                    :to-be nil)
+            (expect (buffer-local-value 'eca-chat--available-variants chat)
+                    :to-equal '("variant"))
+            (expect (buffer-local-value 'eca-chat--selected-trust chat)
+                    :to-be nil))
+        (eca-selection-test--kill-buffers chat))))
+
+  (it "scopes legacy restore notifications to the opening chat"
+    (let ((session
+           (make-eca--session
+            :opening-chat-id "A"
+            :chat-default-model "default-model"
+            :chat-default-variant "default-variant"
+            :chat-default-trust nil))
+          a b source)
+      (spy-on 'eca-chat-open)
+      (spy-on 'eca-chat--kill-empty-welcome-buffer)
+      (spy-on 'eca-chat--refresh-load-older-control)
+      (spy-on 'eca-chat--protect-non-prompt)
+      (unwind-protect
+          (progn
+            (setq a (eca-selection-test--make-chat session "A")
+                  b (eca-selection-test--make-chat session "B")
+                  source (generate-new-buffer " *eca-selection-source*"))
+            (with-current-buffer a
+              (setq-local eca-chat--selected-model "model-a")
+              (setq-local eca-chat--selected-variant "variant-a")
+              (setq-local eca-chat--selected-trust nil))
+            (with-current-buffer b
+              (setq-local eca-chat--selected-model "model-b")
+              (setq-local eca-chat--selected-variant "variant-b")
+              (setq-local eca-chat--selected-trust nil))
+            (eca-config-updated
+             session
+             '(:chat (:selectModel "restored-model"
+                      :variants ["low"]
+                      :selectVariant "low")))
+            (eca-config-updated session '(:chat (:selectTrust t)))
+            (expect (buffer-local-value 'eca-chat--selected-model a)
+                    :to-equal "restored-model")
+            (expect (buffer-local-value 'eca-chat--selected-variant a)
+                    :to-equal "low")
+            (expect (buffer-local-value 'eca-chat--selected-trust a)
+                    :to-be-truthy)
+            (expect (buffer-local-value 'eca-chat--selected-model b)
+                    :to-equal "model-b")
+            (expect (buffer-local-value 'eca-chat--selected-variant b)
+                    :to-equal "variant-b")
+            (expect (buffer-local-value 'eca-chat--selected-trust b)
+                    :to-be nil)
+            (expect (eca--session-chat-default-model session)
+                    :to-equal "default-model")
+            (expect (eca--session-chat-default-variant session)
+                    :to-equal "default-variant")
+            (expect (eca--session-chat-default-trust session)
+                    :to-be nil)
+            (eca-chat--handle-open-response
+             session source "A" '(:found? t))
+            (expect (eca--session-opening-chat-id session) :to-be nil))
+        (eca-selection-test--kill-buffers a b source))))
+
+  (it "keeps catalog-bearing legacy updates session-wide"
+    (let ((session (make-eca--session :opening-chat-id "A"))
+          a b)
+      (unwind-protect
+          (progn
+            (setq a (eca-selection-test--make-chat session "A")
+                  b (eca-selection-test--make-chat session "B"))
+            (eca-config-updated
+             session
+             '(:chat (:models ["model-default"]
+                      :selectModel "model-default")))
+            (expect (buffer-local-value 'eca-chat--selected-model a)
+                    :to-equal "model-default")
+            (expect (buffer-local-value 'eca-chat--selected-model b)
+                    :to-equal "model-default")
+            (expect (eca--session-chat-default-model session)
+                    :to-equal "model-default"))
+        (eca-selection-test--kill-buffers a b))))
+
+  (it "accepts both current and legacy found response fields"
+    (expect (eca-chat--open-response-found-p '(:found t))
+            :to-be-truthy)
+    (expect (eca-chat--open-response-found-p '(:found? t))
+            :to-be-truthy)
+    (expect (eca-chat--open-response-found-p '(:found nil))
+            :to-be nil)
+    (expect (eca-chat--open-response-found-p '(:found? nil))
+            :to-be nil)))
+
 (describe "chat variant isolation"
   (it "scopes available variants without changing session defaults"
     (let ((session (make-eca--session :chat-variants '("default")))

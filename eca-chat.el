@@ -4398,6 +4398,24 @@ Shown at the top of the buffer only when an older page is available
         (when messages?
           (eca-chat--clear))))))
 
+(defun eca-chat--legacy-open-config-p (chat-config)
+  "Return non-nil for a legacy unscoped chat/open restore update."
+  (and (or (plist-member chat-config :selectModel)
+           (plist-member chat-config :selectVariant)
+           (plist-member chat-config :selectTrust))
+       (not (or (plist-member chat-config :models)
+                (plist-member chat-config :agents)
+                (plist-member chat-config :welcomeMessage)))))
+
+(defun eca-chat--config-target-id (session chat-config chat-id)
+  "Return the chat targeted by CHAT-CONFIG for SESSION and CHAT-ID.
+When CHAT-ID is nil, recognize selection-only restore updates from
+legacy servers while a `chat/open' request is pending."
+  (or chat-id
+      (when (and (eca--session-opening-chat-id session)
+                 (eca-chat--legacy-open-config-p chat-config))
+        (eca--session-opening-chat-id session))))
+
 (defun eca-chat--apply-session-defaults (session chat-config)
   "Apply selection defaults from CHAT-CONFIG to SESSION."
   (when (plist-member chat-config :selectModel)
@@ -4441,6 +4459,23 @@ a `config/updated' broadcast."
                   (eq t (plist-get chat-config :selectTrust))))
     (force-mode-line-update)))
 
+(defun eca-chat--apply-selection-snapshot (selection buffer)
+  "Apply atomic chat/open SELECTION fields to BUFFER."
+  (when (and selection (buffer-live-p buffer))
+    (let (chat-config)
+      (dolist (mapping '((:model . :selectModel)
+                         (:agent . :selectAgent)
+                         (:variant . :selectVariant)
+                         (:variants . :variants)
+                         (:trust . :selectTrust)))
+        (when (plist-member selection (car mapping))
+          (setq chat-config
+                (plist-put chat-config
+                           (cdr mapping)
+                           (plist-get selection (car mapping))))))
+      (when chat-config
+        (eca-chat--apply-per-chat-config chat-config buffer)))))
+
 (defun eca-chat-config-updated (session chat-config &optional chat-id)
   "Update chat based on CHAT-CONFIG for SESSION and optional CHAT-ID.
 
@@ -4453,28 +4488,33 @@ CHAT-ID:
   chat's buffer (eca-emacs#231 - prevents one chat's model change
   from leaking into other chats);
 
-- when CHAT-ID is absent the legacy session-wide path is used
-  (per-chat fields broadcast to every chat buffer).  This path is still
-  needed for the initial `config/updated' the server sends right after
-  `initialize' which pushes session-default model/agent to all chats."
-  (-some->> (plist-get chat-config :welcomeMessage)
-    (setf (eca--session-chat-welcome-message session)))
-  (-some->> (plist-get chat-config :models)
-    (setf (eca--session-models session)))
-  (-some->> (plist-get chat-config :agents)
-    (setf (eca--session-chat-agents session)))
-  (unless chat-id
-    (eca-chat--apply-session-defaults session chat-config)
-    (when (plist-member chat-config :variants)
-      (setf (eca--session-chat-variants session)
-            (append (plist-get chat-config :variants) nil))))
-  (if chat-id
-      (when-let* ((chat-buffer (eca-get (eca--session-chats session) chat-id))
-                  ((buffer-live-p chat-buffer)))
-        (eca-chat--apply-per-chat-config chat-config chat-buffer))
-    (seq-doseq (chat-buffer (eca-vals (eca--session-chats session)))
-      (when (buffer-live-p chat-buffer)
-        (eca-chat--apply-per-chat-config chat-config chat-buffer)))))
+- while a legacy `chat/open' request is pending, an unscoped
+  selection-only restore update applies to the opening chat;
+
+- otherwise, when CHAT-ID is absent the legacy session-wide path is
+  used.  This path is still needed for the initial `config/updated'
+  after `initialize', which pushes session defaults to all chats."
+  (let ((target-chat-id
+         (eca-chat--config-target-id session chat-config chat-id)))
+    (-some->> (plist-get chat-config :welcomeMessage)
+      (setf (eca--session-chat-welcome-message session)))
+    (-some->> (plist-get chat-config :models)
+      (setf (eca--session-models session)))
+    (-some->> (plist-get chat-config :agents)
+      (setf (eca--session-chat-agents session)))
+    (unless target-chat-id
+      (eca-chat--apply-session-defaults session chat-config)
+      (when (plist-member chat-config :variants)
+        (setf (eca--session-chat-variants session)
+              (append (plist-get chat-config :variants) nil))))
+    (if target-chat-id
+        (when-let* ((chat-buffer
+                     (eca-get (eca--session-chats session) target-chat-id))
+                    ((buffer-live-p chat-buffer)))
+          (eca-chat--apply-per-chat-config chat-config chat-buffer))
+      (seq-doseq (chat-buffer (eca-vals (eca--session-chats session)))
+        (when (buffer-live-p chat-buffer)
+          (eca-chat--apply-per-chat-config chat-config chat-buffer))))))
 
 (defun eca-chat--initialize-selection-state (session)
   "Initialize the current chat's selection state from SESSION."
@@ -5417,6 +5457,56 @@ the empty buffer that was used to trigger the resume."
     (kill-buffer buffer)
     (eca-chat--force-tab-line-update)))
 
+(defun eca-chat--open-response-found-p (response)
+  "Return whether RESPONSE says the requested chat was found."
+  (if (plist-member response :found)
+      (plist-get response :found)
+    (plist-get response :found?)))
+
+(defun eca-chat--begin-opening (session chat-id)
+  "Record that SESSION is opening CHAT-ID."
+  (when (eca--session-opening-chat-id session)
+    (user-error "Another chat is already opening"))
+  (setf (eca--session-opening-chat-id session) chat-id))
+
+(defun eca-chat--finish-opening (session chat-id)
+  "Clear SESSION's opening marker when it still targets CHAT-ID."
+  (when (equal chat-id (eca--session-opening-chat-id session))
+    (setf (eca--session-opening-chat-id session) nil)))
+
+(defun eca-chat--handle-open-response
+    (session from-buffer chat-id response)
+  "Hydrate CHAT-ID from chat/open RESPONSE for SESSION.
+FROM-BUFFER is the buffer where the resume command started."
+  (eca-chat--finish-opening session chat-id)
+  (cond
+   ((not (eca-chat--open-response-found-p response))
+    (user-error "Server could not open chat %s" chat-id))
+   ((plist-get response :error)
+    (user-error
+     "Server could not open chat %s: %s"
+     chat-id
+     (plist-get (plist-get response :error) :message)))
+   ((not (buffer-live-p (eca-get (eca--session-chats session) chat-id)))
+    (user-error "Resume: no buffer was registered for chat %s" chat-id))
+   (t
+    (let ((chat-buffer (eca-get (eca--session-chats session) chat-id)))
+      (when (plist-member response :selection)
+        (eca-chat--apply-selection-snapshot
+         (plist-get response :selection)
+         chat-buffer))
+      (setf (eca--session-last-chat-buffer session) chat-buffer)
+      (eca-chat--with-current-buffer chat-buffer
+        (when-let* ((title (plist-get response :title)))
+          (setq-local eca-chat--title title))
+        (eca-chat--apply-history-meta (plist-get response :meta))
+        (eca-chat--refresh-load-older-control)
+        (eca-chat--protect-non-prompt))
+      (eca-chat-open session)
+      (eca-chat--kill-empty-welcome-buffer
+       session from-buffer chat-buffer)
+      chat-buffer))))
+
 ;;;###autoload
 (defun eca-chat-resume ()
   "Select and resume a previous ECA session."
@@ -5427,8 +5517,8 @@ the empty buffer that was used to trigger the resume."
     (let* ((res (eca-api-request-sync session :method "chat/list"))
            ;; Drop entries the server can't actually re-open: nil ids show up
            ;; for legacy DB rows that pre-date the per-chat `:id` field, and
-           ;; picking them would silently no-op because `chat/open {:chatId
-           ;; nil}` returns `{:found? false}`.
+           ;; picking them would silently no-op because `chat/open' returns
+           ;; a false `found' or legacy `found?' field.
            (chats (cl-remove-if-not (lambda (c) (plist-get c :id))
                                     (append (plist-get res :chats) nil))))
       (if (null chats)
@@ -5471,31 +5561,25 @@ the empty buffer that was used to trigger the resume."
                                    (complete-with-action action labels string pred)))
                                nil t))
                       (chat-id (gethash chosen id-by-label)))
-            (eca-api-request-async
-             session
-             :method "chat/open"
-             :params (append (list :chatId chat-id)
-                             (when eca-chat-history-page-size
-                               (list :limit eca-chat-history-page-size)))
-             :success-callback
-             (lambda (open-res)
-               (cond
-                ((not (plist-get open-res :found?))
-                 (user-error "Server could not open chat %s" chat-id))
-                ((not (buffer-live-p (eca-get (eca--session-chats session) chat-id)))
-                 (user-error "Resume: no buffer was registered for chat %s" chat-id))
-                (t
-                 (let ((chat-buf (eca-get (eca--session-chats session) chat-id)))
-                   (setf (eca--session-last-chat-buffer session) chat-buf)
-                   (eca-chat--with-current-buffer chat-buf
-                     (eca-chat--apply-history-meta (plist-get open-res :meta))
-                     (eca-chat--refresh-load-older-control)
-                     (eca-chat--protect-non-prompt))
-                   (eca-chat-open session)
-                   (eca-chat--kill-empty-welcome-buffer session from-buf chat-buf)))))
-             :error-callback
-             (lambda (err)
-               (user-error "Failed to resume: %s" err)))))))))
+            (eca-chat--begin-opening session chat-id)
+            (condition-case err
+                (eca-api-request-async
+                 session
+                 :method "chat/open"
+                 :params (append (list :chatId chat-id)
+                                 (when eca-chat-history-page-size
+                                   (list :limit eca-chat-history-page-size)))
+                 :success-callback
+                 (lambda (open-res)
+                   (eca-chat--handle-open-response
+                    session from-buf chat-id open-res))
+                 :error-callback
+                 (lambda (request-err)
+                   (eca-chat--finish-opening session chat-id)
+                   (user-error "Failed to resume: %s" request-err)))
+              (error
+               (eca-chat--finish-opening session chat-id)
+               (signal (car err) (cdr err))))))))))
 
 ;;;###autoload
 (defun eca-chat-rename ()

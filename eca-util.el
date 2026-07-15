@@ -104,6 +104,9 @@ for client-generated `chatId' values sent to the eca server."
 
   (last-chat-buffer nil)
 
+  ;; The chat currently being hydrated by a chat/open request.
+  (opening-chat-id nil)
+
   ;; A list of workspace folders of this session
   (workspace-folders '())
 
