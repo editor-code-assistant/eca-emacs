@@ -90,6 +90,115 @@
                     :to-equal "model-default"))
         (eca-selection-test--kill-buffers a b)))))
 
+(describe "chat variant isolation"
+  (it "scopes available variants without changing session defaults"
+    (let ((session (make-eca--session :chat-variants '("default")))
+          a b)
+      (unwind-protect
+          (progn
+            (setq a (eca-selection-test--make-chat session "A")
+                  b (eca-selection-test--make-chat session "B"))
+            (with-current-buffer a
+              (setq-local eca-chat--available-variants '("old-a")))
+            (with-current-buffer b
+              (setq-local eca-chat--available-variants '("old-b")))
+            (eca-config-updated
+             session
+             '(:chatId "A" :chat (:variants ["focused" "fast"])))
+            (expect (buffer-local-value 'eca-chat--available-variants a)
+                    :to-equal '("focused" "fast"))
+            (expect (buffer-local-value 'eca-chat--available-variants b)
+                    :to-equal '("old-b"))
+            (expect (eca--session-chat-variants session)
+                    :to-equal '("default")))
+        (eca-selection-test--kill-buffers a b))))
+
+  (it "applies unscoped variants as the default for all chats"
+    (let ((session (make-eca--session :chat-variants '("old")))
+          a b)
+      (unwind-protect
+          (progn
+            (setq a (eca-selection-test--make-chat session "A")
+                  b (eca-selection-test--make-chat session "B"))
+            (with-current-buffer a
+              (setq-local eca-chat--available-variants '("old-a")))
+            (with-current-buffer b
+              (setq-local eca-chat--available-variants '("old-b")))
+            (eca-config-updated
+             session
+             '(:chat (:variants ["new-low" "new-high"])))
+            (expect (eca--session-chat-variants session)
+                    :to-equal '("new-low" "new-high"))
+            (expect (buffer-local-value 'eca-chat--available-variants a)
+                    :to-equal '("new-low" "new-high"))
+            (expect (buffer-local-value 'eca-chat--available-variants b)
+                    :to-equal '("new-low" "new-high")))
+        (eca-selection-test--kill-buffers a b))))
+
+  (it "uses the last chat local variants from a source buffer"
+    (let ((session (make-eca--session
+                    :chat-variants '("session-only")))
+          chat source seen-candidates)
+      (spy-on 'eca-session :and-return-value session)
+      (spy-on 'completing-read :and-call-fake
+              (lambda (_prompt collection &rest _)
+                (setq seen-candidates (all-completions "" collection))
+                "zeta"))
+      (unwind-protect
+          (progn
+            (setq chat (eca-selection-test--make-chat session "A")
+                  source (generate-new-buffer " *eca-selection-source*"))
+            (with-current-buffer chat
+              (setq-local eca-chat--available-variants '("zeta" "alpha")))
+            (setf (eca--session-last-chat-buffer session) chat)
+            (with-current-buffer source
+              (eca-chat-select-variant))
+            (expect seen-candidates :to-equal '("-" "alpha" "zeta"))
+            (expect (buffer-local-value 'eca-chat--selected-variant chat)
+                    :to-equal "zeta"))
+        (eca-selection-test--kill-buffers chat source))))
+
+  (it "stores the no-variant UI choice as nil"
+    (let ((eca-chat--last-known-variant "old")
+          (session (make-eca--session :chat-variants '("high")))
+          chat)
+      (spy-on 'eca-session :and-return-value session)
+      (spy-on 'completing-read :and-return-value "-")
+      (unwind-protect
+          (progn
+            (setq chat (eca-selection-test--make-chat session "A"))
+            (with-current-buffer chat
+              (setq-local eca-chat--available-variants '("high"))
+              (setq-local eca-chat--selected-variant "high"))
+            (setf (eca--session-last-chat-buffer session) chat)
+            (with-current-buffer chat
+              (eca-chat-select-variant))
+            (expect (buffer-local-value 'eca-chat--selected-variant chat)
+                    :to-be nil)
+            (expect eca-chat--last-known-variant :to-be nil))
+        (eca-selection-test--kill-buffers chat))))
+
+  (it "omits a legacy no-variant sentinel from model notifications"
+    (let ((eca-chat--last-known-model nil)
+          (session (make-eca--session :models '("new-model")))
+          chat)
+      (spy-on 'eca-session :and-return-value session)
+      (spy-on 'completing-read :and-return-value "new-model")
+      (spy-on 'eca-api-notify)
+      (unwind-protect
+          (progn
+            (setq chat (eca-selection-test--make-chat session "A"))
+            (with-current-buffer chat
+              (setq-local eca-chat--selected-variant "-"))
+            (setf (eca--session-last-chat-buffer session) chat)
+            (with-current-buffer chat
+              (eca-chat-select-model))
+            (expect 'eca-api-notify :to-have-been-called-with
+                    session
+                    :method "chat/selectedModelChanged"
+                    :params '(:model "new-model" :chatId "A")))
+        (eca-selection-test--kill-buffers chat)))))
+
 (describe "eca-chat--get-active-buffer"
   (it "prefers the current registered chat over last-chat-buffer"
     (let ((session (make-eca--session)) a b)
