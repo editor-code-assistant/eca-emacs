@@ -804,14 +804,6 @@ A plist with :session :request :question :options :tool-call-id :allow-freeform.
 
 
 (defvar eca-chat--new-chat-id 0)
-(defvar eca-chat--last-known-model nil)
-(defvar eca-chat--last-known-agent nil)
-(defvar eca-chat--last-known-variant nil)
-(defvar eca-chat--last-known-trust eca-chat-trust-enable
-  "Session-wide trust default for new chats.
-Seeded from `eca-chat-trust-enable' and kept in sync with the server's
-`config/updated' selectTrust, so the server `chat.defaultTrust' config
-applies to new chats too.")
 
 (defvar eca--chat-init-session nil
   "Dynamically bound session during `eca-chat-mode' initialization.")
@@ -1087,17 +1079,26 @@ Replace the job status emoji with NEW-EMOJI."
         (when (re-search-forward "🟡\\|✅\\|🔴\\|⚫" end t)
           (replace-match new-emoji t t))))))
 
+(defun eca-chat--selection-session ()
+  "Return the session providing defaults for the current chat."
+  (or eca--chat-init-session
+      (ignore-errors (eca-session))))
+
 (defun eca-chat--agent ()
   "The chat agent considering default and user option."
   (or eca-chat-custom-agent
-      eca-chat--selected-agent
-      eca-chat--last-known-agent))
+      (if (local-variable-p 'eca-chat--selected-agent)
+          eca-chat--selected-agent
+        (-some-> (eca-chat--selection-session)
+          (eca--session-chat-default-agent)))))
 
 (defun eca-chat--model ()
   "The chat model considering default and user option."
   (or eca-chat-custom-model
-      eca-chat--selected-model
-      eca-chat--last-known-model))
+      (if (local-variable-p 'eca-chat--selected-model)
+          eca-chat--selected-model
+        (-some-> (eca-chat--selection-session)
+          (eca--session-chat-default-model)))))
 
 (defun eca-chat--normalize-variant (variant)
   "Return nil when VARIANT is the UI no-variant sentinel."
@@ -1106,11 +1107,18 @@ Replace the job status emoji with NEW-EMOJI."
 
 (defun eca-chat--variant ()
   "The chat variant for the current model."
-  (eca-chat--normalize-variant eca-chat--selected-variant))
+  (eca-chat--normalize-variant
+   (if (local-variable-p 'eca-chat--selected-variant)
+       eca-chat--selected-variant
+     (-some-> (eca-chat--selection-session)
+       (eca--session-chat-default-variant)))))
 
 (defun eca-chat--trust ()
   "Non-nil when trust mode is on, auto-accepts tool call."
-  eca-chat--selected-trust)
+  (if (local-variable-p 'eca-chat--selected-trust)
+      eca-chat--selected-trust
+    (-some-> (eca-chat--selection-session)
+      (eca--session-chat-default-trust))))
 
 (defun eca-chat--mcps-summary (session)
   "The summary of MCP servers for SESSION."
@@ -3420,8 +3428,8 @@ the last chat buffer of SESSION."
          (chat-id (when (buffer-live-p target)
                     (buffer-local-value 'eca-chat--id target))))
     (eca-chat--with-current-buffer target
-      (setq-local eca-chat--selected-agent new-agent)
-      (setq eca-chat--last-known-agent new-agent))
+      (setq-local eca-chat--selected-agent new-agent))
+    (setf (eca--session-chat-default-agent session) new-agent)
     (eca-api-notify session
                     :method "chat/selectedAgentChanged"
                     :params (append (list :agent new-agent)
@@ -3433,7 +3441,8 @@ When BUFFER is provided, set in that buffer instead of
 the last chat buffer of SESSION."
   (eca-chat--with-current-buffer (or buffer (eca-chat--get-last-buffer session))
     (setq-local eca-chat--selected-trust value)
-    (force-mode-line-update)))
+    (force-mode-line-update))
+  (setf (eca--session-chat-default-trust session) value))
 
 (defun eca-chat--tool-call-file-change-details
     (content label approval-text time status _tool-call-next-line-spacing roots &optional parent-id)
@@ -4389,6 +4398,22 @@ Shown at the top of the buffer only when an older page is available
         (when messages?
           (eca-chat--clear))))))
 
+(defun eca-chat--apply-session-defaults (session chat-config)
+  "Apply selection defaults from CHAT-CONFIG to SESSION."
+  (when (plist-member chat-config :selectModel)
+    (setf (eca--session-chat-default-model session)
+          (plist-get chat-config :selectModel)))
+  (when (plist-member chat-config :selectAgent)
+    (setf (eca--session-chat-default-agent session)
+          (plist-get chat-config :selectAgent)))
+  (when (plist-member chat-config :selectVariant)
+    (setf (eca--session-chat-default-variant session)
+          (eca-chat--normalize-variant
+           (plist-get chat-config :selectVariant))))
+  (when (plist-member chat-config :selectTrust)
+    (setf (eca--session-chat-default-trust session)
+          (eq t (plist-get chat-config :selectTrust)))))
+
 (defun eca-chat--apply-per-chat-config (chat-config buffer)
   "Apply the per-chat fields of CHAT-CONFIG to BUFFER's local state.
 Used by `eca-chat-config-updated' to drive a single chat's UI from
@@ -4397,26 +4422,23 @@ a `config/updated' broadcast."
     (when (plist-member chat-config :variants)
       (setq-local eca-chat--available-variants
                   (append (plist-get chat-config :variants) nil)))
-    (when-let* ((new-model (plist-get chat-config :selectModel)))
-      (setq-local eca-chat--selected-model new-model)
-      (setq eca-chat--last-known-model new-model))
-    (when-let* ((new-agent (plist-get chat-config :selectAgent)))
-      (setq-local eca-chat--selected-agent new-agent)
-      (setq eca-chat--last-known-agent new-agent))
+    (when (plist-member chat-config :selectModel)
+      (setq-local eca-chat--selected-model
+                  (plist-get chat-config :selectModel)))
+    (when (plist-member chat-config :selectAgent)
+      (setq-local eca-chat--selected-agent
+                  (plist-get chat-config :selectAgent)))
     (when (plist-member chat-config :selectVariant)
-      (let ((new-variant
-             (eca-chat--normalize-variant
-              (plist-get chat-config :selectVariant))))
-        (setq-local eca-chat--selected-variant new-variant)
-        (setq eca-chat--last-known-variant new-variant)))
+      (setq-local eca-chat--selected-variant
+                  (eca-chat--normalize-variant
+                   (plist-get chat-config :selectVariant))))
     ;; Server-driven trust restore on chat resume (eca #426): keep the
     ;; mode-line shield/flame indicator in sync with the persisted
     ;; per-chat trust state so it matches the server's auto-approval
     ;; behavior for subsequent tool calls.
     (when (plist-member chat-config :selectTrust)
-      (let ((new-trust (eq t (plist-get chat-config :selectTrust))))
-        (setq-local eca-chat--selected-trust new-trust)
-        (setq eca-chat--last-known-trust new-trust)))
+      (setq-local eca-chat--selected-trust
+                  (eq t (plist-get chat-config :selectTrust))))
     (force-mode-line-update)))
 
 (defun eca-chat-config-updated (session chat-config &optional chat-id)
@@ -4441,10 +4463,11 @@ CHAT-ID:
     (setf (eca--session-models session)))
   (-some->> (plist-get chat-config :agents)
     (setf (eca--session-chat-agents session)))
-  (when (and (not chat-id)
-             (plist-member chat-config :variants))
-    (setf (eca--session-chat-variants session)
-          (append (plist-get chat-config :variants) nil)))
+  (unless chat-id
+    (eca-chat--apply-session-defaults session chat-config)
+    (when (plist-member chat-config :variants)
+      (setf (eca--session-chat-variants session)
+            (append (plist-get chat-config :variants) nil))))
   (if chat-id
       (when-let* ((chat-buffer (eca-get (eca--session-chats session) chat-id))
                   ((buffer-live-p chat-buffer)))
@@ -4452,6 +4475,19 @@ CHAT-ID:
     (seq-doseq (chat-buffer (eca-vals (eca--session-chats session)))
       (when (buffer-live-p chat-buffer)
         (eca-chat--apply-per-chat-config chat-config chat-buffer)))))
+
+(defun eca-chat--initialize-selection-state (session)
+  "Initialize the current chat's selection state from SESSION."
+  (setq-local eca-chat--selected-agent
+              (eca--session-chat-default-agent session))
+  (setq-local eca-chat--selected-model
+              (eca--session-chat-default-model session))
+  (setq-local eca-chat--selected-variant
+              (eca--session-chat-default-variant session))
+  (setq-local eca-chat--available-variants
+              (copy-sequence (eca--session-chat-variants session)))
+  (setq-local eca-chat--selected-trust
+              (eca--session-chat-default-trust session)))
 
 (defun eca-chat-deleted (session params)
   "Handle chat deleted notification for SESSION with PARAMS.
@@ -4509,13 +4545,7 @@ resumed chat gets a fresh writable buffer."
             (eca-chat-mode))
           (setq-local eca-chat--id chat-id)
           (setq-local eca-chat--title title)
-          (setq-local eca-chat--selected-agent eca-chat--last-known-agent)
-          (setq-local eca-chat--selected-model eca-chat--last-known-model)
-          (setq-local eca-chat--selected-variant eca-chat--last-known-variant)
-          (setq-local eca-chat--available-variants
-                      (copy-sequence
-                       (eca--session-chat-variants session)))
-          (setq-local eca-chat--selected-trust eca-chat--last-known-trust))
+          (eca-chat--initialize-selection-state session))
         (setf (eca--session-chats session)
               (eca-assoc (eca--session-chats session) chat-id new-buffer))
         (eca-chat--force-tab-line-update))))))
@@ -4773,13 +4803,7 @@ When ACTIVE is non-nil, show the question prefix; otherwise restore normal."
       ;; the very first chat/prompt) carries a real id.  The server
       ;; treats a previously-unknown id as a new empty chat.
       (setq-local eca-chat--id (eca-uuid))
-      (setq-local eca-chat--selected-agent eca-chat--last-known-agent)
-      (setq-local eca-chat--selected-model eca-chat--last-known-model)
-      (setq-local eca-chat--selected-variant eca-chat--last-known-variant)
-      (setq-local eca-chat--available-variants
-                  (copy-sequence
-                   (eca--session-chat-variants session)))
-      (setq-local eca-chat--selected-trust eca-chat--last-known-trust)
+      (eca-chat--initialize-selection-state session)
       (eca-chat--track-cursor-position-schedule)
       (when eca-chat-auto-add-cursor
         (eca-chat--add-context (list :type "cursor")))
@@ -4858,12 +4882,11 @@ When ACTIVE is non-nil, show the question prefix; otherwise restore normal."
                         nil t))
                 (target (eca-chat--get-active-buffer session)))
       (let ((chat-id (buffer-local-value 'eca-chat--id target))
-            (variant
-             (eca-chat--normalize-variant
-              (buffer-local-value 'eca-chat--selected-variant target))))
+            (variant (with-current-buffer target
+                       (eca-chat--variant))))
         (eca-chat--with-current-buffer target
-          (setq-local eca-chat--selected-model model)
-          (setq eca-chat--last-known-model model))
+          (setq-local eca-chat--selected-model model))
+        (setf (eca--session-chat-default-model session) model)
         (eca-api-notify session
                         :method "chat/selectedModelChanged"
                         :params (append (list :model model)
@@ -4899,8 +4922,9 @@ When ACTIVE is non-nil, show the question prefix; otherwise restore normal."
         (let ((normalized-variant
                (eca-chat--normalize-variant variant)))
           (eca-chat--with-current-buffer target
-            (setq-local eca-chat--selected-variant normalized-variant)
-            (setq eca-chat--last-known-variant normalized-variant)))))))
+            (setq-local eca-chat--selected-variant normalized-variant))
+          (setf (eca--session-chat-default-variant session)
+                normalized-variant))))))
 
 ;;;###autoload
 (defun eca-chat-select-agent ()

@@ -28,11 +28,12 @@
 
 (describe "eca config chat scoping"
   (it "applies a top-level chatId update only to its chat"
-    (let ((eca-chat--last-known-model nil)
-          (eca-chat--last-known-agent nil)
-          (eca-chat--last-known-variant nil)
-          (eca-chat--last-known-trust nil)
-          (session (make-eca--session))
+    (let ((session
+           (make-eca--session
+            :chat-default-model "default-model"
+            :chat-default-agent "default-agent"
+            :chat-default-variant "default-variant"
+            :chat-default-trust nil))
           a b)
       (unwind-protect
           (progn
@@ -70,12 +71,19 @@
             (expect (buffer-local-value 'eca-chat--selected-variant b)
                     :to-equal "medium")
             (expect (buffer-local-value 'eca-chat--selected-trust b)
+                    :to-be nil)
+            (expect (eca--session-chat-default-model session)
+                    :to-equal "default-model")
+            (expect (eca--session-chat-default-agent session)
+                    :to-equal "default-agent")
+            (expect (eca--session-chat-default-variant session)
+                    :to-equal "default-variant")
+            (expect (eca--session-chat-default-trust session)
                     :to-be nil))
         (eca-selection-test--kill-buffers a b))))
 
   (it "keeps legacy unscoped updates session-wide"
-    (let ((eca-chat--last-known-model nil)
-          (session (make-eca--session))
+    (let ((session (make-eca--session))
           a b)
       (unwind-protect
           (progn
@@ -83,11 +91,27 @@
                   b (eca-selection-test--make-chat session "B"))
             (eca-config-updated
              session
-             '(:chat (:selectModel "model-default")))
-            (expect (buffer-local-value 'eca-chat--selected-model a)
+             '(:chat (:selectModel "model-default"
+                      :selectAgent "agent-default"
+                      :selectVariant "variant-default"
+                      :selectTrust t)))
+            (dolist (buffer (list a b))
+              (expect (buffer-local-value 'eca-chat--selected-model buffer)
+                      :to-equal "model-default")
+              (expect (buffer-local-value 'eca-chat--selected-agent buffer)
+                      :to-equal "agent-default")
+              (expect (buffer-local-value 'eca-chat--selected-variant buffer)
+                      :to-equal "variant-default")
+              (expect (buffer-local-value 'eca-chat--selected-trust buffer)
+                      :to-be-truthy))
+            (expect (eca--session-chat-default-model session)
                     :to-equal "model-default")
-            (expect (buffer-local-value 'eca-chat--selected-model b)
-                    :to-equal "model-default"))
+            (expect (eca--session-chat-default-agent session)
+                    :to-equal "agent-default")
+            (expect (eca--session-chat-default-variant session)
+                    :to-equal "variant-default")
+            (expect (eca--session-chat-default-trust session)
+                    :to-be-truthy))
         (eca-selection-test--kill-buffers a b)))))
 
 (describe "chat variant isolation"
@@ -159,8 +183,9 @@
         (eca-selection-test--kill-buffers chat source))))
 
   (it "stores the no-variant UI choice as nil"
-    (let ((eca-chat--last-known-variant "old")
-          (session (make-eca--session :chat-variants '("high")))
+    (let ((session (make-eca--session
+                    :chat-variants '("high")
+                    :chat-default-variant "old"))
           chat)
       (spy-on 'eca-session :and-return-value session)
       (spy-on 'completing-read :and-return-value "-")
@@ -175,12 +200,12 @@
               (eca-chat-select-variant))
             (expect (buffer-local-value 'eca-chat--selected-variant chat)
                     :to-be nil)
-            (expect eca-chat--last-known-variant :to-be nil))
+            (expect (eca--session-chat-default-variant session)
+                    :to-be nil))
         (eca-selection-test--kill-buffers chat))))
 
   (it "omits a legacy no-variant sentinel from model notifications"
-    (let ((eca-chat--last-known-model nil)
-          (session (make-eca--session :models '("new-model")))
+    (let ((session (make-eca--session :models '("new-model")))
           chat)
       (spy-on 'eca-session :and-return-value session)
       (spy-on 'completing-read :and-return-value "new-model")
@@ -193,11 +218,114 @@
             (setf (eca--session-last-chat-buffer session) chat)
             (with-current-buffer chat
               (eca-chat-select-model))
+            (expect (eca--session-chat-default-model session)
+                    :to-equal "new-model")
             (expect 'eca-api-notify :to-have-been-called-with
                     session
                     :method "chat/selectedModelChanged"
                     :params '(:model "new-model" :chatId "A")))
         (eca-selection-test--kill-buffers chat)))))
+
+(describe "session-scoped selection defaults"
+  (it "keeps user selections within their session for new chats"
+    (let ((session-a
+           (make-eca--session
+            :models '("a-model-new")
+            :chat-agents '("a-agent-new")
+            :chat-variants '("a-variant-new")
+            :chat-default-model "a-model-old"
+            :chat-default-agent "a-agent-old"
+            :chat-default-variant "a-variant-old"
+            :chat-default-trust nil))
+          (session-b
+           (make-eca--session
+            :chat-default-model "b-model"
+            :chat-default-agent "b-agent"
+            :chat-default-variant "b-variant"
+            :chat-default-trust nil))
+          chat-a new-a new-b)
+      (spy-on 'eca-session :and-return-value session-a)
+      (spy-on 'completing-read :and-call-fake
+              (lambda (prompt &rest _)
+                (pcase prompt
+                  ("Select a model:" "a-model-new")
+                  ("Select a variant:" "a-variant-new")
+                  ("Select an agent:" "a-agent-new"))))
+      (spy-on 'eca-api-notify)
+      (spy-on 'eca-api-request-sync)
+      (unwind-protect
+          (progn
+            (setq chat-a (eca-selection-test--make-chat session-a "A"))
+            (with-current-buffer chat-a
+              (setq-local eca-chat--selected-model "a-model-old")
+              (setq-local eca-chat--selected-agent "a-agent-old")
+              (setq-local eca-chat--selected-variant "a-variant-old")
+              (setq-local eca-chat--available-variants
+                          '("a-variant-new"))
+              (setq-local eca-chat--selected-trust nil))
+            (setf (eca--session-last-chat-buffer session-a) chat-a)
+            (with-current-buffer chat-a
+              (eca-chat-select-model)
+              (eca-chat-select-variant)
+              (eca-chat-select-agent)
+              (eca-chat-toggle-trust))
+            (expect (eca--session-chat-default-model session-a)
+                    :to-equal "a-model-new")
+            (expect (eca--session-chat-default-agent session-a)
+                    :to-equal "a-agent-new")
+            (expect (eca--session-chat-default-variant session-a)
+                    :to-equal "a-variant-new")
+            (expect (eca--session-chat-default-trust session-a)
+                    :to-be-truthy)
+            (setq new-a (generate-new-buffer " *eca-selection-new-a*")
+                  new-b (generate-new-buffer " *eca-selection-new-b*"))
+            (with-current-buffer new-a
+              (eca-chat--initialize-selection-state session-a))
+            (with-current-buffer new-b
+              (eca-chat--initialize-selection-state session-b))
+            (expect (buffer-local-value 'eca-chat--selected-model new-a)
+                    :to-equal "a-model-new")
+            (expect (buffer-local-value 'eca-chat--selected-agent new-a)
+                    :to-equal "a-agent-new")
+            (expect (buffer-local-value 'eca-chat--selected-variant new-a)
+                    :to-equal "a-variant-new")
+            (expect (buffer-local-value 'eca-chat--selected-trust new-a)
+                    :to-be-truthy)
+            (expect (buffer-local-value 'eca-chat--selected-model new-b)
+                    :to-equal "b-model")
+            (expect (buffer-local-value 'eca-chat--selected-agent new-b)
+                    :to-equal "b-agent")
+            (expect (buffer-local-value 'eca-chat--selected-variant new-b)
+                    :to-equal "b-variant")
+            (expect (buffer-local-value 'eca-chat--selected-trust new-b)
+                    :to-be nil))
+        (eca-selection-test--kill-buffers chat-a new-a new-b))))
+
+  (it "preserves explicit local clears over session defaults"
+    (let ((session
+           (make-eca--session
+            :chat-default-model "model"
+            :chat-default-agent "agent"
+            :chat-default-variant "variant"
+            :chat-default-trust t)))
+      (let ((eca--chat-init-session session))
+        (with-temp-buffer
+          (expect (eca-chat--model) :to-equal "model")
+          (expect (eca-chat--agent) :to-equal "agent")
+          (expect (eca-chat--variant) :to-equal "variant")
+          (expect (eca-chat--trust) :to-be-truthy)
+          (setq-local eca-chat--selected-variant nil)
+          (setq-local eca-chat--selected-trust nil)
+          (expect (eca-chat--variant) :to-be nil)
+          (expect (eca-chat--trust) :to-be nil)))))
+
+  (it "seeds a created session from the trust user option"
+    (let ((eca-chat-trust-enable t)
+          (eca--sessions nil)
+          (eca--session-ids 0))
+      (let ((session (eca-create-session '("/tmp/project"))))
+        (expect (eca--session-chat-default-trust session)
+                :to-be-truthy)))))
 
 (describe "eca-chat--get-active-buffer"
   (it "prefers the current registered chat over last-chat-buffer"
@@ -224,8 +352,7 @@
 
 (describe "chat agent selection routing"
   (it "targets last-chat-buffer when invoked from a source buffer"
-    (let ((eca-chat--last-known-agent nil)
-          (session (make-eca--session :chat-agents '("old" "new")))
+    (let ((session (make-eca--session :chat-agents '("old" "new")))
           chat source)
       (spy-on 'eca-session :and-return-value session)
       (spy-on 'completing-read :and-return-value "new")
@@ -243,6 +370,8 @@
                     :to-equal "new")
             (expect (buffer-local-value 'eca-chat--selected-agent source)
                     :to-be nil)
+            (expect (eca--session-chat-default-agent session)
+                    :to-equal "new")
             (expect 'eca-api-notify :to-have-been-called-with
                     session
                     :method "chat/selectedAgentChanged"
