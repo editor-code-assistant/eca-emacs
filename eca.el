@@ -206,7 +206,7 @@ frames captured via `backtrace-get-frames'."
 (defun eca-config-updated (session config)
   "Handle CONFIG updated notification for SESSION."
   (when-let ((chat (plist-get config :chat)))
-    (eca-chat-config-updated session chat)))
+    (eca-chat-config-updated session chat (plist-get config :chatId))))
 
 (defun eca--tool-server-updated (session server)
   "Handle tool server updated message with SERVER for SESSION."

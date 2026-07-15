@@ -1,5 +1,7 @@
 ;; -*- mode: eask; lexical-binding: t -*-
 
+(setq load-prefer-newer t)
+
 (package "eca"
          "0.0.1"
          "AI pair programming via ECA (Editor Code Assistant)")
