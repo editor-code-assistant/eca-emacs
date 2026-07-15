@@ -889,6 +889,16 @@ and resume link are not left behind under the replayed messages.")
           last-buff))
       (get-buffer (eca-chat-new-buffer-name session))))
 
+(defun eca-chat--get-active-buffer (session)
+  "Return the active chat buffer for SESSION.
+Prefer the current buffer when it is a live registered chat for
+SESSION; otherwise return the session's last chat buffer."
+  (if (and (derived-mode-p 'eca-chat-mode)
+           (not eca-chat--closed)
+           (memq (current-buffer) (eca-vals (eca--session-chats session))))
+      (current-buffer)
+    (eca-chat--get-last-buffer session)))
+
 (defun eca-chat--create-buffer (session)
   "Create the eca chat buffer for SESSION."
   (get-buffer-create (generate-new-buffer-name (eca-chat-new-buffer-name session))))
@@ -4400,18 +4410,18 @@ a `config/updated' broadcast."
         (setq eca-chat--last-known-trust new-trust)))
     (force-mode-line-update)))
 
-(defun eca-chat-config-updated (session chat-config)
-  "Update chat based on the CHAT-CONFIG for SESSION.
+(defun eca-chat-config-updated (session chat-config &optional chat-id)
+  "Update chat based on CHAT-CONFIG for SESSION and optional CHAT-ID.
 
 Session-level fields (welcomeMessage, models, agents, variants) are
 always applied to the session record.  Per-chat fields (selectModel,
-selectAgent, selectVariant, selectTrust) are scoped by `chatId':
+selectAgent, selectVariant, selectTrust) are scoped by CHAT-ID:
 
-- when CHAT-CONFIG contains a `chatId' the per-chat fields apply only
-  to that chat's buffer (eca-emacs#231 - prevents one chat's model
-  change from leaking into other chats);
+- when CHAT-ID is present the per-chat fields apply only to that
+  chat's buffer (eca-emacs#231 - prevents one chat's model change
+  from leaking into other chats);
 
-- when no `chatId' is present the legacy session-wide path is used
+- when CHAT-ID is absent the legacy session-wide path is used
   (per-chat fields broadcast to every chat buffer).  This path is still
   needed for the initial `config/updated' the server sends right after
   `initialize' which pushes session-default model/agent to all chats."
@@ -4424,7 +4434,7 @@ selectAgent, selectVariant, selectTrust) are scoped by `chatId':
   (when (plist-member chat-config :variants)
     (setf (eca--session-chat-variants session)
           (append (plist-get chat-config :variants) nil)))
-  (if-let* ((chat-id (plist-get chat-config :chatId)))
+  (if chat-id
       (when-let* ((chat-buffer (eca-get (eca--session-chats session) chat-id))
                   ((buffer-live-p chat-buffer)))
         (eca-chat--apply-per-chat-config chat-config chat-buffer))
@@ -4817,73 +4827,88 @@ When ACTIVE is non-nil, show the question prefix; otherwise restore normal."
 
 ;;;###autoload
 (defun eca-chat-select-model ()
-  "Select which model to use in the chat from what server supports."
+  "Select which model to use in the active chat."
   (interactive)
-  (eca-assert-session-running (eca-session))
-  (when eca-chat-custom-model
-    (error (eca-error "The eca-chat-custom-model variable is already set: %s" eca-chat-custom-model)))
-  (when-let* ((model (completing-read "Select a model:" (append (eca--session-models (eca-session)) nil) nil t)))
-    ;; Target the chat the user is interacting with (the current buffer
-    ;; when invoked from inside a chat, otherwise the session's
-    ;; last-chat-buffer fallback), not whichever chat was last globally
-    ;; tracked.  This keeps the model selection from leaking across
-    ;; chats in the session (eca-emacs#231).
-    (let* ((target (if (derived-mode-p 'eca-chat-mode)
-                       (current-buffer)
-                     (eca-chat--get-last-buffer (eca-session))))
-           (chat-id (when (buffer-live-p target)
-                      (buffer-local-value 'eca-chat--id target)))
-           (variant (when (buffer-live-p target)
-                      (buffer-local-value 'eca-chat--selected-variant target))))
-      (eca-chat--with-current-buffer target
-        (setq-local eca-chat--selected-model model)
-        (setq eca-chat--last-known-model model))
-      (eca-api-notify (eca-session)
-                      :method "chat/selectedModelChanged"
-                      :params (append (list :model model :variant variant)
-                                      (when chat-id (list :chatId chat-id)))))))
+  (let ((session (eca-session)))
+    (eca-assert-session-running session)
+    (when eca-chat-custom-model
+      (error (eca-error
+              "The eca-chat-custom-model variable is already set: %s"
+              eca-chat-custom-model)))
+    (when-let* ((model (completing-read
+                        "Select a model:"
+                        (append (eca--session-models session) nil)
+                        nil t))
+                (target (eca-chat--get-active-buffer session)))
+      (let ((chat-id (buffer-local-value 'eca-chat--id target))
+            (variant (buffer-local-value
+                      'eca-chat--selected-variant target)))
+        (eca-chat--with-current-buffer target
+          (setq-local eca-chat--selected-model model)
+          (setq eca-chat--last-known-model model))
+        (eca-api-notify session
+                        :method "chat/selectedModelChanged"
+                        :params (append (list :model model :variant variant)
+                                        (when chat-id
+                                          (list :chatId chat-id))))))))
 
 ;;;###autoload
 (defun eca-chat-select-variant ()
-  "Select which variant to use for the current model."
+  "Select which variant to use in the active chat."
   (interactive)
-  (eca-assert-session-running (eca-session))
-  (let* ((variants (append (eca--session-chat-variants (eca-session)) nil))
-         (candidates (cons "-" (sort variants #'string-lessp)))
-         (table (lambda (string pred action)
-                  (if (eq action 'metadata)
-                      `(metadata (display-sort-function . ,#'identity)
-                                 (cycle-sort-function . ,#'identity))
-                    (complete-with-action action candidates string pred)))))
-    (when-let* ((variant (completing-read "Select a variant:" table nil t)))
-      ;; Target the active chat buffer (see `eca-chat-select-model').
-      (let ((target (if (derived-mode-p 'eca-chat-mode)
-                        (current-buffer)
-                      (eca-chat--get-last-buffer (eca-session)))))
+  (let ((session (eca-session)))
+    (eca-assert-session-running session)
+    (let* ((variants (append (eca--session-chat-variants session) nil))
+           (candidates (cons "-" (sort variants #'string-lessp)))
+           (table (lambda (string pred action)
+                    (if (eq action 'metadata)
+                        `(metadata
+                          (display-sort-function . ,#'identity)
+                          (cycle-sort-function . ,#'identity))
+                      (complete-with-action action candidates string pred)))))
+      (when-let* ((variant (completing-read
+                            "Select a variant:" table nil t))
+                  (target (eca-chat--get-active-buffer session)))
         (eca-chat--with-current-buffer target
           (setq-local eca-chat--selected-variant variant)
           (setq eca-chat--last-known-variant variant))))))
 
 ;;;###autoload
 (defun eca-chat-select-agent ()
-  "Select which chat agent to use from what server supports."
+  "Select which chat agent to use in the active chat."
   (interactive)
-  (eca-assert-session-running (eca-session))
-  (when-let* ((agent (completing-read "Select an agent:" (append (eca--session-chat-agents (eca-session)) nil) nil t)))
-    (eca-chat--set-agent (eca-session) agent (current-buffer))))
+  (let ((session (eca-session)))
+    (eca-assert-session-running session)
+    (when-let* ((agent (completing-read
+                        "Select an agent:"
+                        (append (eca--session-chat-agents session) nil)
+                        nil t))
+                (target (eca-chat--get-active-buffer session)))
+      (eca-chat--set-agent session agent target))))
 
 ;;;###autoload
 (defun eca-chat-cycle-agent ()
-  "Cycle between existing chat agents to use."
+  "Cycle between chat agents in the active chat."
   (interactive)
-  (eca-assert-session-running (eca-session))
-  (let* ((session (eca-session))
-         (current-agent (eca-chat--agent))
-         (all-agents (append (eca--session-chat-agents session) nil))
-         (current-agent-index (seq-position all-agents current-agent))
-         (next-agent (or (nth (1+ current-agent-index) all-agents)
-                         (nth 0 all-agents))))
-    (eca-chat--set-agent session next-agent (current-buffer))))
+  (let ((session (eca-session)))
+    (eca-assert-session-running session)
+    (let ((target (eca-chat--get-active-buffer session))
+          (all-agents (append (eca--session-chat-agents session) nil)))
+      (unless all-agents
+        (user-error "No chat agents are available"))
+      (unless (buffer-live-p target)
+        (user-error "No active chat"))
+      (let* ((current-agent
+              (with-current-buffer target
+                (eca-chat--agent)))
+             (current-agent-index
+              (seq-position all-agents current-agent))
+             (next-agent
+              (if current-agent-index
+                  (or (nth (1+ current-agent-index) all-agents)
+                      (car all-agents))
+                (car all-agents))))
+        (eca-chat--set-agent session next-agent target)))))
 
 ;;;###autoload
 (defun eca-chat-add-flag ()
@@ -5438,30 +5463,34 @@ the empty buffer that was used to trigger the resume."
 ;;;###autoload
 (defun eca-chat-delete ()
   "Delete the active chat of the current session from the server.
-Operates on the session's last visited chat buffer, so it can be
-called from any buffer in the project, not only from the chat
-buffer itself.  Unlike killing the chat buffer, this never
-prompts; the chat is always removed server-side.  When the session
-has other chats, any window showing the deleted chat switches to
-another chat first."
+When called from a registered chat buffer, delete that chat.
+Otherwise, delete the session's last visited chat.  Unlike killing
+its buffer, this never prompts; the chat is always removed
+server-side.  When the session has other chats, any window showing
+the deleted chat switches to another chat first."
   (interactive)
   (let ((session (eca-session)))
     (eca-assert-session-running session)
-    (let* ((buffer (eca-chat--get-last-buffer session))
+    (let* ((buffer (eca-chat--get-active-buffer session))
            (chat-id (and (buffer-live-p buffer)
                          (buffer-local-value 'eca-chat--id buffer))))
       (unless (and (buffer-live-p buffer) chat-id)
         (user-error "No active chat to delete"))
       (eca-chat--switch-windows-to-sibling session buffer)
-      ;; Mark closed so the kill-buffer hook neither prompts nor sends a
-      ;; second chat/delete when BUFFER is killed below.
-      (with-current-buffer buffer
-        (setq-local eca-chat--closed t))
       (eca-api-request-sync session
                             :method "chat/delete"
                             :params (list :chatId chat-id))
+      ;; The server normally sends `chat/deleted' before the response,
+      ;; but clean up locally too so a missed notification cannot leave a
+      ;; dead buffer in the session registry.
+      (setf (eca--session-chats session)
+            (eca-dissoc (eca--session-chats session) chat-id))
       (when (buffer-live-p buffer)
-        (kill-buffer buffer)))))
+        ;; Keep the kill hook from prompting or sending a second delete.
+        (with-current-buffer buffer
+          (setq-local eca-chat--closed t))
+        (kill-buffer buffer))
+      (eca-chat--force-tab-line-update))))
 
 ;;;###autoload
 (defun eca-chat-new ()
