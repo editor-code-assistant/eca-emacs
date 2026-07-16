@@ -1370,4 +1370,30 @@ does not treat the first line as metadata.  Returns FN's value."
               (delete-window win)))
           (kill-buffer buf))))))
 
+(describe "eca-chat subagent elapsed time"
+  (it "keeps elapsed tracking isolated when another chat finishes"
+    (spy-on 'eca-chat--force-tab-line-update)
+    (let ((session (make-eca--session))
+          chat-a chat-b)
+      (unwind-protect
+          (progn
+            (eca-chat-opened session '(:chatId "chat-A" :title "A"))
+            (eca-chat-opened session '(:chatId "chat-B" :title "B"))
+            (setq chat-a (eca-get (eca--session-chats session) "chat-A")
+                  chat-b (eca-get (eca--session-chats session) "chat-B"))
+            (with-current-buffer chat-a
+              (puthash "subagent-tool-call" (current-time)
+                       eca-chat--tool-call-elapsed-times))
+            (with-current-buffer chat-b
+              (eca-chat--tool-call-elapsed-stop-all))
+            (with-current-buffer chat-a
+              (expect (gethash "subagent-tool-call"
+                               eca-chat--tool-call-elapsed-times)
+                      :to-be-truthy)))
+        (dolist (buffer (list chat-a chat-b))
+          (when (buffer-live-p buffer)
+            (with-current-buffer buffer
+              (setq-local eca-chat--closed t))
+            (kill-buffer buffer)))))))
+
 ;;; eca-chat-test.el ends here

@@ -3249,6 +3249,20 @@ CHILD, NAME, DOCSTRING and BODY are passed down."
   (setq-local eca-chat--history '())
   (setq-local eca-chat--history-index -1)
 
+  ;; Mutable defaults would otherwise be shared until locally assigned.
+  (setq-local eca-chat-expandable--id->ov
+              (make-hash-table :test 'equal))
+  (setq-local eca-chat--tool-call-prepare-counters
+              (make-hash-table :test 'equal))
+  (setq-local eca-chat--tool-call-prepare-content-cache
+              (make-hash-table :test 'equal))
+  (setq-local eca-chat--tool-call-elapsed-times
+              (make-hash-table :test 'equal))
+  (setq-local eca-chat--subagent-chat-id->tool-call-id
+              (make-hash-table :test 'equal))
+  (setq-local eca-chat--subagent-usage
+              (make-hash-table :test 'equal))
+
   ;; Show diff blocks in markdown-mode with colors.
   (setq-local markdown-fontify-code-blocks-natively t)
   ;; Enable gfm-view-mode-like rendering without read-only.
