@@ -4958,7 +4958,7 @@ When ACTIVE is non-nil, show the question prefix; otherwise restore normal."
               "The eca-chat-custom-model variable is already set: %s"
               eca-chat-custom-model)))
     (when-let* ((model (completing-read
-                        "Select a model:"
+                        "Select a model: "
                         (append (eca--session-models session) nil)
                         nil t))
                 (target (eca-chat--get-active-buffer session)))
