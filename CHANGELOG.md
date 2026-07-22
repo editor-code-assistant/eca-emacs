@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Add current-window chat display: set `eca-chat-window-side` to nil to open a new chat in the selected window without creating a split. This takes precedence over `eca-chat-use-side-window` and does not replace another chat visible in a different window on the selected frame.
 - Bugfix: a forward deletion of the first prompt character now works instead of dinging. `eca-chat--key-pressed-deletion` guarded the prompt boundary by rejecting any deletion at the prompt-field start regardless of direction, so `C-d` and, under evil, the `~` (`evil-invert-char`), `r`, `x` and `s` operators left the first char in place (`~` prepended the inverted char instead of replacing it). At the prompt-field start the guard now blocks only backward-deleting commands (`delete-backward-char`, `backward-kill-word`, `evil-delete-backward-char`, ...); deletions above the prompt (context/progress area) and everywhere else are unchanged.
 - Show the shell/git command breakdown in tool call approvals: raw command plus per-command lines colored by remember state (green saved, yellow not yet), and `Accept and remember` lists the command keys it would newly save (e.g. `git status, rg`), hiding when nothing new would be remembered.
 
