@@ -113,6 +113,95 @@ With EVENT, show a mouse popup.  Without it, prompt in minibuffer."
     ("requires-auth" "🟠")
     (_ "⚪")))
 
+(defun eca-mcp--status-face (status)
+  "Return the face used to display MCP STATUS."
+  (pcase status
+    ("running" 'success)
+    ("starting" 'warning)
+    ("failed" 'error)
+    ((or "stopped" "stopping" "disabled") 'shadow)
+    ("requires-auth" 'eca-mcp-details-requires-auth-face)
+    (_ 'shadow)))
+
+(defun eca-mcp--server-state-label (server)
+  "Return the operational state label for MCP SERVER."
+  (pcase (plist-get server :status)
+    ("running" "Running")
+    ("starting" "Starting")
+    ("stopping" "Stopping")
+    ((or "stopped" "disabled") "Stopped")
+    ("failed" "Failed")
+    ("requires-auth" "Needs auth")
+    (_ "Unknown")))
+
+(defun eca-mcp--server-runtime-action (server)
+  "Return the runtime action available for MCP SERVER."
+  (pcase (plist-get server :status)
+    ((or "running" "starting") 'stop)
+    ((or "stopped" "failed" "disabled") 'start)
+    ("requires-auth" 'connect)
+    (_ nil)))
+
+(defun eca-mcp--server-action-label (server)
+  "Return the user-facing runtime action label for MCP SERVER."
+  (pcase (plist-get server :status)
+    ("failed" "Retry")
+    ("stopping" "Wait")
+    (_ (or (pcase (eca-mcp--server-runtime-action server)
+             ('start "Start")
+             ('stop "Stop")
+             ('connect "Connect"))
+           "Unavailable"))))
+
+(defun eca-mcp--pad-right (string width)
+  "Pad STRING with spaces to display WIDTH columns."
+  (concat string
+          (make-string (max 0 (- width (string-width string))) ?\s)))
+
+(defun eca-mcp--server-candidate (server name-width state-width)
+  "Describe MCP SERVER using aligned NAME-WIDTH and STATE-WIDTH columns."
+  (let* ((status (plist-get server :status))
+         (state (eca-mcp--server-state-label server))
+         (colored-state (propertize state
+                                    'face
+                                    (eca-mcp--status-face status))))
+    (concat (eca-mcp--pad-right (plist-get server :name) name-width)
+            "  "
+            (eca-mcp--pad-right colored-state state-width)
+            "  "
+            (eca-mcp--server-action-label server))))
+
+(defun eca-mcp--server-candidates (servers)
+  "Return aligned completion candidates for MCP SERVERS."
+  (when servers
+    (let ((name-width
+           (apply #'max
+                  (mapcar (lambda (server)
+                            (string-width (plist-get server :name)))
+                          servers)))
+          (state-width
+           (apply #'max
+                  (mapcar (lambda (server)
+                            (string-width
+                             (eca-mcp--server-state-label server)))
+                          servers))))
+      (mapcar (lambda (server)
+                (cons (eca-mcp--server-candidate
+                       server name-width state-width)
+                      (plist-get server :name)))
+              servers))))
+
+(defun eca-mcp--notify-server-action (session server action)
+  "Notify SESSION to perform ACTION for MCP SERVER."
+  (let ((method (pcase action
+                  ('start "mcp/startServer")
+                  ('stop "mcp/stopServer")
+                  ('connect "mcp/connectServer")
+                  (_ (error "Unsupported MCP server action: %S" action)))))
+    (eca-api-notify session
+                    :method method
+                    :params (list :name (plist-get server :name)))))
+
 ;; Buffer-local UI state for the MCPs settings tab.
 
 (defvar-local eca-mcp--add-form-state nil
@@ -423,6 +512,7 @@ Works with both standalone and settings panel buffers."
                           :status status :tools tools) server))
             (insert (propertize (eca-mcp--status-emoji status)
                                 'eca-mcp-status status
+                                'face (eca-mcp--status-face status)
                                 'help-echo status))
             (insert " ")
             (insert (propertize name 'font-lock-face 'bold))
@@ -449,17 +539,17 @@ Works with both standalone and settings panel buffers."
                         keymap
                         (propertize "connect"
                                     'font-lock-face 'eca-mcp-details-button-face)
-                        (lambda () (eca-api-notify session
-                                                    :method "mcp/connectServer"
-                                                    :params (list :name name))))))
+                        (lambda ()
+                          (eca-mcp--notify-server-action
+                           session server 'connect)))))
               ((or "running" "starting")
                (insert (eca-buttonize
                         keymap
                         (propertize "stop"
                                     'font-lock-face 'eca-mcp-details-button-stop-face)
-                        (lambda () (eca-api-notify session
-                                                    :method "mcp/stopServer"
-                                                    :params (list :name name)))))
+                        (lambda ()
+                          (eca-mcp--notify-server-action
+                           session server 'stop))))
                (if (plist-get server :disabled)
                    (insert " "
                            (eca-buttonize
@@ -491,9 +581,9 @@ Works with both standalone and settings panel buffers."
                         keymap
                         (propertize "start"
                                     'font-lock-face 'eca-mcp-details-button-face)
-                        (lambda () (eca-api-notify session
-                                                    :method "mcp/startServer"
-                                                    :params (list :name name)))))
+                        (lambda ()
+                          (eca-mcp--notify-server-action
+                           session server 'start))))
                (insert " "
                        (eca-buttonize
                         keymap
@@ -507,9 +597,9 @@ Works with both standalone and settings panel buffers."
                         keymap
                         (propertize "start"
                                     'font-lock-face 'eca-mcp-details-button-face)
-                        (lambda () (eca-api-notify session
-                                                    :method "mcp/startServer"
-                                                    :params (list :name name)))))
+                        (lambda ()
+                          (eca-mcp--notify-server-action
+                           session server 'start))))
                (when (plist-get server :disabled)
                  (insert " "
                          (eca-buttonize
@@ -620,6 +710,39 @@ When point is on a tool or status emoji, call CB with docs."
 (defun eca-mcp-servers (session)
   "Return all servers that are not from eca server SESSION, the MCP servers."
   (eca-vals (eca-dissoc (eca--session-tool-servers session) "ECA")))
+
+;;;###autoload
+(defun eca-mcp-toggle-server ()
+  "Select an MCP server and toggle its runtime state.
+Running servers are stopped, stopped servers are started, and servers
+requiring authentication are connected.  Persistent enablement is unchanged."
+  (interactive)
+  (let ((session (eca-session)))
+    (eca-assert-session-running session)
+    (let ((servers (sort (copy-sequence (eca-mcp-servers session))
+                         (lambda (a b)
+                           (string-lessp (plist-get a :name)
+                                         (plist-get b :name))))))
+      (unless servers
+        (user-error "No MCP servers are configured"))
+      (let* ((candidates (eca-mcp--server-candidates servers))
+             (choice (completing-read "Toggle MCP server: "
+                                      candidates nil t))
+             (name (cdr (assoc choice candidates)))
+             (server (eca-get (eca--session-tool-servers session) name)))
+        (unless server
+          (user-error "MCP server %s is no longer available" name))
+        (let ((action (eca-mcp--server-runtime-action server)))
+          (cond
+           (action
+            (eca-mcp--notify-server-action session server action))
+           ((string= (plist-get server :status) "stopping")
+            (user-error "MCP server %s is stopping; try again shortly"
+                        name))
+           (t
+            (user-error "MCP server %s has unsupported status: %s"
+                        name
+                        (or (plist-get server :status) "unknown")))))))))
 
 (defun eca-mcp--handle-mcp-server-updated (session _server)
   "Handle mcp SERVER updated for SESSION."
