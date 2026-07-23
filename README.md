@@ -140,11 +140,11 @@ Chat
 - `eca-chat-parent-mode`: Set major-mode of chat parent, can be `markdown-mode`, `markdown-view-mode` or `gfm-view-mode` (default)
 - `eca-chat-mode-hook`: Hooks to run after entering `eca-chat-mode`.
 - `eca-chat-finished-hook`: Hooks to run after finishing a chat prompt.
-- `eca-chat-use-side-window`: Whether the chat buffer is displayed in a dedicated side window or a normal window. Either way it is placed on `eca-chat-window-side`.
-- `eca-chat-window-side`: On which side (`left`, `right`, `top`, `bottom`) the chat window appears (respected for both side and normal windows).
+- `eca-chat-use-side-window`: Whether the chat buffer uses a dedicated side window or a regular directional window. Ignored when `eca-chat-window-side` is `nil`.
+- `eca-chat-window-side`: Where the chat appears (`left`, `right`, `top`, or `bottom`). Set to `nil` to open a chat that is not already visible on the selected frame in the selected window without creating a split. An already visible chat on that frame stays in its existing window; dedicated and minibuffer windows cannot be reused.
 - `eca-chat-window-width`: Width of the chat window when on the left or right.
 - `eca-chat-window-height`: Height of the chat window when on the top or bottom.
-- `eca-chat-focus-on-open`: Whether to focus the chat window when it opens.
+- `eca-chat-focus-on-open`: Whether to focus the chat when it opens in another window. Same-window display is already focused.
 - `eca-chat-auto-add-repomap`: Whether to automatically include repoMap context when opening ECA.
 - `eca-chat-auto-add-cursor`: Whether to automatically track the cursor position and add it as context.
 - `eca-chat-cursor-context-debounce`: Seconds to debounce updates when tracking cursor context.

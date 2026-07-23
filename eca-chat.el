@@ -56,40 +56,43 @@ hook may run even when the status is unchanged.  Used by integrations
 such as the Doom workspaces tabline to refresh external indicators.")
 
 (defcustom eca-chat-window-side 'right
-  "Side of the frame where the ECA chat window should appear.
-Can be `'left', `'right', `'top', or `'bottom'.  This setting is respected
-both when `eca-chat-use-side-window' is non-nil (dedicated side window)
-and when it is nil (regular window displayed in the corresponding
-direction)."
-  :type '(choice (const :tag "Left" left)
+  "Where the ECA chat window should appear.
+Can be `'left', `'right', `'top', `'bottom', or nil.  When nil, a chat
+that is not already visible on the selected frame opens in the selected
+window.  A visible chat on that frame remains in its existing window.
+Dedicated and minibuffer windows cannot be reused.  Otherwise,
+`eca-chat-use-side-window' controls whether the chat uses a dedicated
+side window or a regular directional window."
+  :type '(choice (const :tag "Current window" nil)
+                 (const :tag "Left" left)
                  (const :tag "Right" right)
                  (const :tag "Top" top)
                  (const :tag "Bottom" bottom))
   :group 'eca)
 
 (defcustom eca-chat-window-width 0.40
-  "Width of the ECA chat side window when opened on left or right."
+  "Width of ECA chat windows opened on the left or right."
   :type 'number
   :group 'eca)
 
 (defcustom eca-chat-window-height 0.30
-  "Height of the ECA chat side window when opened on top or bottom."
+  "Height of ECA chat windows opened on the top or bottom."
   :type 'number
   :group 'eca)
 
 (defcustom eca-chat-use-side-window t
   "Whether to display ECA chat in a dedicated side window.
-When non-nil (default), ECA chat opens in a dedicated side window
-controlled by `eca-chat-window-side' and related settings.  When nil,
-ECA chat opens in a regular window, still placed on the side given by
-`eca-chat-window-side' with the corresponding width/height, but without
-the side-window restrictions (so it can be split or replaced like any
-other window)."
+When non-nil (default), ECA chat opens in a dedicated side window.
+When nil, it opens in a regular directional window.  This setting is
+ignored when `eca-chat-window-side' is nil, which displays the chat in
+the selected window."
   :type 'boolean
   :group 'eca)
 
 (defcustom eca-chat-focus-on-open t
-  "Whether to focus the ECA chat window when it opens."
+  "Whether to focus the ECA chat window when it opens.
+This has no effect when a new chat replaces the selected window because
+that window is already focused."
   :type 'boolean
   :group 'eca)
 
@@ -2820,44 +2823,67 @@ available, falling back to `string-width' on Emacsen without it."
     (when (window-live-p window)
       (select-window window))))
 
+(defun eca-chat--display-in-selected-window (buffer)
+  "Display BUFFER in the selected window without allowing a split.
+Signal a user error when the selected window cannot display BUFFER."
+  (when (or (window-minibuffer-p (selected-window))
+            (window-dedicated-p (selected-window)))
+    (user-error "Selected window cannot display an ECA chat"))
+  ;; Current-window mode promises not to split, so it overrides display rules.
+  (let ((display-buffer-overriding-action
+         '((display-buffer-same-window)
+           (inhibit-same-window . nil))))
+    (display-buffer buffer)))
+
 (defun eca-chat--display-buffer (buffer)
   "Display BUFFER according to customization.
-BUFFER is displayed on the side given by `eca-chat-window-side'
-with the size from `eca-chat-window-width' or
-`eca-chat-window-height'.  When `eca-chat-use-side-window' is
-non-nil a dedicated side window is used, otherwise a regular
-window in the same direction.
-If `eca-chat-focus-on-open' is non-nil, the window is selected."
+When `eca-chat-window-side' is nil, display BUFFER in the selected
+window unless it is already visible on the selected frame.  Otherwise,
+display it on the configured side using either a side window or a
+regular directional window.  If `eca-chat-focus-on-open' is non-nil,
+select the resulting window."
   (let* ((side eca-chat-window-side)
-         (size (if (memq side '(left right))
-                   `((window-width . ,eca-chat-window-width))
-                 `((window-height . ,eca-chat-window-height))))
+         (size (when side
+                 (if (memq side '(left right))
+                     `((window-width . ,eca-chat-window-width))
+                   `((window-height . ,eca-chat-window-height)))))
          (display-action
-          (if eca-chat-use-side-window
-              ;; Dedicated side window.
-              `((display-buffer-in-side-window)
-                (side . ,side)
-                (slot . 0)
-                (dedicated . side)
-                ,@size
-                (window-parameters . ((no-delete-other-windows . t))))
-            ;; Regular window in the same direction.
-            `((display-buffer-in-direction)
-              (direction . ,(pcase side ('top 'above) ('bottom 'below) (_ side)))
-              ,@size)))
+          (when side
+            (if eca-chat-use-side-window
+                `((display-buffer-in-side-window)
+                  (side . ,side)
+                  (slot . 0)
+                  (dedicated . side)
+                  ,@size
+                  (window-parameters . ((no-delete-other-windows . t))))
+              `((display-buffer-in-direction)
+                (direction . ,(pcase side
+                                ('top 'above)
+                                ('bottom 'below)
+                                (_ side)))
+                ,@size))))
          (window
           (or
            ;; Already visible: keep it where it is.
            (get-buffer-window buffer)
-           ;; Another chat is visible: replace it (new-tab behavior).
-           (when-let* ((win (get-window-with-predicate
+           ;; Side-based modes reuse a visible chat (new-tab behavior).
+           (when side
+             (when-let* ((win
+                          (if (buffer-local-value
+                               'eca-chat--id
+                               (window-buffer (selected-window)))
+                              (selected-window)
+                            (get-window-with-predicate
                              (lambda (w)
-                               (buffer-local-value 'eca-chat--id (window-buffer w))))))
-             (set-window-buffer win buffer)
-             win)
-           ;; Nothing to reuse: open a new window.
-           (display-buffer buffer display-action))))
-    ;; Select the window to give it focus if configured to do so
+                               (buffer-local-value
+                                'eca-chat--id (window-buffer w)))))))
+               (set-window-buffer win buffer)
+               win))
+           ;; Nothing to reuse: open according to the configured mode.
+           (if side
+               (display-buffer buffer display-action)
+             (eca-chat--display-in-selected-window buffer)))))
+    ;; Select the window to give it focus if configured to do so.
     (when (and window eca-chat-focus-on-open)
       (select-window window))
     window))
@@ -5404,13 +5430,13 @@ if ARG is current prefix, ask for file, otherwise drop current file."
 
 ;;;###autoload
 (defun eca-chat-toggle-window ()
-  "Toggle presenting ECA chat window."
+  "Toggle presenting ECA chat window on the selected frame."
   (interactive)
   (let ((session (eca-session)))
     (eca-assert-session-running session)
     (let ((buffer (eca-chat--get-last-buffer session)))
       (if (buffer-live-p buffer)
-          (if-let ((win (get-buffer-window buffer t)))
+          (if-let ((win (get-buffer-window buffer)))
               ;; If visible, hide it
               (quit-window nil win)
             ;; If not visible, display it according to user settings

@@ -62,6 +62,28 @@ does not treat the first line as metadata.  Returns FN's value."
     (goto-char (match-beginning 0))
     (funcall fn)))
 
+(defmacro eca-chat-test--with-display-buffers (buffers &rest body)
+  "Create BUFFERS and evaluate BODY in an isolated display setup."
+  (declare (indent 1) (debug (sexp body)))
+  `(let (,@(mapcar (lambda (buffer)
+                     `(,buffer
+                       (generate-new-buffer
+                        ,(format " *test-chat-display-%s*" buffer))))
+                   buffers)
+         (display-buffer-alist nil)
+         (display-buffer-overriding-action nil)
+         (display-buffer-base-action nil)
+         (display-buffer-fallback-action nil)
+         (pop-up-frames nil)
+         (pop-up-windows t))
+     (unwind-protect
+         (save-window-excursion
+           (delete-other-windows)
+           ,@body)
+       (dolist (buffer (list ,@buffers))
+         (when (buffer-live-p buffer)
+           (kill-buffer buffer))))))
+
 ;; ---------------------------------------------------------------------------
 ;; Tests
 ;; ---------------------------------------------------------------------------
@@ -1372,6 +1394,173 @@ does not treat the first line as metadata.  Returns FN's value."
                             :usedTokens 5300 :freeTokens 194700 :contextLimit 200000))
            (help (eca-chat--context-bar-help breakdown 5300 194700 200000 75)))
       (expect help :to-match "Auto-compaction at 75%"))))
+
+;; ---------------------------------------------------------------------------
+;; eca-chat--display-buffer
+;; ---------------------------------------------------------------------------
+
+(describe "eca-chat--display-buffer"
+
+  (it "uses the selected window when no side is configured"
+    (eca-chat-test--with-display-buffers (source chat)
+      (let ((window (selected-window))
+            (eca-chat-window-side nil)
+            (eca-chat-use-side-window t)
+            (eca-chat-focus-on-open t))
+        (set-window-buffer window source)
+        (expect (eca-chat--display-buffer chat) :to-be window)
+        (expect (window-buffer window) :to-be chat)
+        (expect (length (window-list)) :to-equal 1)
+        (expect (window-dedicated-p window) :to-be nil)
+        (expect (window-parameter window 'window-side) :to-be nil))))
+
+  (it "overrides display rules that would create another window"
+    (eca-chat-test--with-display-buffers (source chat)
+      (let* ((window (selected-window))
+             (display-buffer-alist
+              `((,(regexp-quote (buffer-name chat))
+                 (display-buffer-pop-up-window)
+                 (inhibit-same-window . t))))
+             (display-buffer-overriding-action
+              '((display-buffer-pop-up-window)
+                (inhibit-same-window . t)))
+             (eca-chat-window-side nil)
+             (eca-chat-focus-on-open nil))
+        (set-window-buffer window source)
+        (expect (eca-chat--display-buffer chat) :to-be window)
+        (expect (window-buffer window) :to-be chat)
+        (expect (length (window-list)) :to-equal 1))))
+
+  (it "does not split when the selected window is dedicated"
+    (eca-chat-test--with-display-buffers (source chat)
+      (let ((window (selected-window))
+            (eca-chat-window-side nil))
+        (set-window-buffer window source)
+        (set-window-dedicated-p window 'side)
+        (unwind-protect
+            (progn
+              (expect (eca-chat--display-buffer chat)
+                      :to-throw 'user-error)
+              (expect (window-buffer window) :to-be source)
+              (expect (length (window-list)) :to-equal 1))
+          (set-window-dedicated-p window nil)))))
+
+  (it "does not split when the selected window is a minibuffer"
+    (eca-chat-test--with-display-buffers (source chat)
+      (let ((window (selected-window))
+            (eca-chat-window-side nil))
+        (set-window-buffer window source)
+        (spy-on 'window-minibuffer-p :and-return-value t)
+        (expect (eca-chat--display-buffer chat) :to-throw 'user-error)
+        (expect (window-buffer window) :to-be source)
+        (expect (length (window-list)) :to-equal 1))))
+
+  (it "opens a new chat in the selected window instead of another chat window"
+    (eca-chat-test--with-display-buffers (source visible-chat new-chat)
+      (let* ((selected (selected-window))
+             (chat-window (split-window selected nil 'below))
+             (eca-chat-window-side nil)
+             (eca-chat-use-side-window nil)
+             (eca-chat-focus-on-open t))
+        (set-window-buffer selected source)
+        (set-window-buffer chat-window visible-chat)
+        (with-current-buffer visible-chat
+          (setq-local eca-chat--id "visible-chat"))
+        (select-window selected)
+        (expect (eca-chat--display-buffer new-chat) :to-be selected)
+        (expect (window-buffer selected) :to-be new-chat)
+        (expect (window-buffer chat-window) :to-be visible-chat)
+        (expect (length (window-list)) :to-equal 2))))
+
+  (it "keeps an already visible chat in its existing window"
+    (eca-chat-test--with-display-buffers (source chat)
+      (let* ((selected (selected-window))
+             (chat-window (split-window selected nil 'below))
+             (eca-chat-window-side nil)
+             (eca-chat-focus-on-open nil))
+        (set-window-buffer selected source)
+        (set-window-buffer chat-window chat)
+        (select-window selected)
+        (expect (eca-chat--display-buffer chat) :to-be chat-window)
+        (expect (selected-window) :to-be selected)
+        (setq eca-chat-focus-on-open t)
+        (expect (eca-chat--display-buffer chat) :to-be chat-window)
+        (expect (selected-window) :to-be chat-window))))
+
+  (it "restores the previous buffer when the chat is toggled"
+    (eca-chat-test--with-display-buffers (source chat)
+      (let ((window (selected-window))
+            (eca-chat-window-side nil)
+            (eca-chat-focus-on-open t))
+        (set-window-buffer window source)
+        (spy-on 'eca-session :and-return-value 'session)
+        (spy-on 'eca-assert-session-running)
+        (spy-on 'eca-chat--get-last-buffer :and-return-value chat)
+        (eca-chat--display-buffer chat)
+        (expect (window-buffer window) :to-be chat)
+        (eca-chat-toggle-window)
+        (expect (window-buffer window) :to-be source)
+        (eca-chat-toggle-window)
+        (expect (window-buffer window) :to-be chat)
+        (expect (length (window-list)) :to-equal 1))))
+
+  (it "uses a dedicated side window when a side is configured"
+    (eca-chat-test--with-display-buffers (source chat)
+      (set-window-buffer (selected-window) source)
+      (let ((eca-chat-window-side 'right)
+            (eca-chat-use-side-window t)
+            (eca-chat-focus-on-open nil))
+        (let ((window (eca-chat--display-buffer chat)))
+          (expect (window-buffer window) :to-be chat)
+          (expect (window-parameter window 'window-side) :to-be 'right)
+          (expect (window-dedicated-p window) :to-be 'side)))))
+
+  (it "reuses the selected chat window when the chat is visible twice"
+    (eca-chat-test--with-display-buffers (visible-chat new-chat)
+      (let* ((selected (selected-window))
+             (other-window (split-window selected nil 'below))
+             (eca-chat-window-side 'right)
+             (eca-chat-use-side-window t)
+             (eca-chat-focus-on-open nil))
+        (set-window-buffer selected visible-chat)
+        (set-window-buffer other-window visible-chat)
+        (with-current-buffer visible-chat
+          (setq-local eca-chat--id "visible-chat"))
+        (select-window selected)
+        (expect (eca-chat--display-buffer new-chat) :to-be selected)
+        (expect (selected-window) :to-be selected)
+        (expect (window-buffer selected) :to-be new-chat)
+        (expect (window-buffer other-window) :to-be visible-chat)
+        (expect (length (window-list)) :to-equal 2))))
+
+  (it "reuses another visible chat window in side-based modes"
+    (eca-chat-test--with-display-buffers (source visible-chat new-chat)
+      (let* ((selected (selected-window))
+             (chat-window (split-window selected nil 'below))
+             (eca-chat-window-side 'right)
+             (eca-chat-use-side-window t)
+             (eca-chat-focus-on-open nil))
+        (set-window-buffer selected source)
+        (set-window-buffer chat-window visible-chat)
+        (with-current-buffer visible-chat
+          (setq-local eca-chat--id "visible-chat"))
+        (expect (eca-chat--display-buffer new-chat) :to-be chat-window)
+        (expect (window-buffer chat-window) :to-be new-chat)
+        (expect (length (window-list)) :to-equal 2))))
+
+  (it "uses a regular directional window when side windows are disabled"
+    (eca-chat-test--with-display-buffers (source chat)
+      (let ((selected (selected-window))
+            (eca-chat-window-side 'right)
+            (eca-chat-use-side-window nil)
+            (eca-chat-focus-on-open nil))
+        (set-window-buffer selected source)
+        (let ((window (eca-chat--display-buffer chat)))
+          (expect window :not :to-be selected)
+          (expect (window-buffer window) :to-be chat)
+          (expect (window-parameter window 'window-side) :to-be nil)
+          (expect (window-dedicated-p window) :to-be nil)
+          (expect (length (window-list)) :to-equal 2))))))
 
 ;; ---------------------------------------------------------------------------
 ;; eca-chat--select-window
