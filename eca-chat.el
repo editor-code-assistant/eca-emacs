@@ -1864,17 +1864,20 @@ the progress/context/prompt still works.  No-op when
             (put-text-property (point-min) (1+ (point-min))
                                'front-sticky '(read-only))))))))
 
-(defun eca-chat--ensure-prompt-visible ()
+(defun eca-chat--ensure-prompt-visible (&optional force)
   "Scroll the chat window so the prompt area stays visible.
 Only acts when the user is currently viewing the bottom of the
 buffer.  When the user has scrolled up to read earlier content,
-scrolling is suppressed so the view does not jump."
+scrolling is suppressed so the view does not jump.  When FORCE is
+non-nil, scroll unconditionally: used right after sending a
+prompt, when a long user message may already have pushed the
+prompt below the window end, making the guard always fail."
   (when-let* ((win (get-buffer-window (current-buffer))))
     (let* ((prompt-start (eca-chat--prompt-area-start-point))
            (win-end (window-end win t)))
       ;; Only auto-scroll when the prompt separator was already
       ;; visible — meaning the user is at the bottom of the chat.
-      (when (and prompt-start (>= win-end prompt-start))
+      (when (and prompt-start (or force (>= win-end prompt-start)))
         (with-selected-window win
           (goto-char (point-max))
           (recenter -1))))))
@@ -3862,7 +3865,14 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
                 (setq-local eca-chat--last-response-copy-start nil)
                 (setq-local eca-chat--last-response-copy-kind nil)
                 (eca-chat--mark-header)
-                (font-lock-ensure user-msg-start (point-max)))))
+                (font-lock-ensure user-msg-start (point-max))
+                ;; The user was at the prompt to send, so keep it
+                ;; visible even when the message is long: the guard in
+                ;; `eca-chat--ensure-prompt-visible' cannot pass then,
+                ;; as the insertion pushes the prompt below the window
+                ;; end.  Skip when prepending older history pages.
+                (unless eca-chat--insertion-point-override
+                  (eca-chat--ensure-prompt-visible t)))))
            ("system"
             (eca-chat--add-text-content
              (propertize text

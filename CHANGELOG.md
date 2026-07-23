@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Bugfix: auto-scroll the chat so the prompt stays visible after sending a long message. Rendering the sent user message pushed the prompt below the window end, which also made the guarded auto-scroll a no-op (its window-end check runs after the insertion, so it always failed for long messages); the send path now forces the scroll, skipped when prepending older history pages. #279
 - Make the `eca-workspaces` tree buffer more user-friendly. It now uses a dedicated `eca-workspaces-mode` (derived from `special-mode`), so `q` closes the window and `g` refreshes. Folding/unfolding a workspace no longer requires hitting the small arrow icon: pressing `TAB`/`RET` on its line toggles it, and pressing `RET` anywhere on a chat line switches to that chat. `n`/`p` move to the next/previous workspace entry. When `eca-buttons-allow-mouse` is enabled, clicking the workspace text folds/unfolds it and clicking a chat switches to it.
 - Add `eca-mcp-toggle-server`, available as `M` in the ECA transient menu and `C-c C-S-m` in chat buffers, to filter configured MCP servers and start, stop, or connect the selected server from aligned, color-coded operational-state candidates.
 - Bugfix: TAB now accepts the selected candidate in completion popups (corfu) in GUI Emacs. `eca-chat-mode-map` bound the raw `<tab>` event, which blocked the `<tab>` -> `TAB` key translation and shadowed the completion UI's own `TAB` binding, restarting the completion session instead; only `TAB` is bound now, so keymap precedence decides while a popup is open. #281
