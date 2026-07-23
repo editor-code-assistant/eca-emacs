@@ -2861,10 +2861,15 @@ select the resulting window."
            (get-buffer-window buffer)
            ;; Side-based modes reuse a visible chat (new-tab behavior).
            (when side
-             (when-let* ((win (get-window-with-predicate
-                               (lambda (w)
-                                 (buffer-local-value
-                                  'eca-chat--id (window-buffer w))))))
+             (when-let* ((win
+                          (if (buffer-local-value
+                               'eca-chat--id
+                               (window-buffer (selected-window)))
+                              (selected-window)
+                            (get-window-with-predicate
+                             (lambda (w)
+                               (buffer-local-value
+                                'eca-chat--id (window-buffer w)))))))
                (set-window-buffer win buffer)
                win))
            ;; Nothing to reuse: open according to the configured mode.

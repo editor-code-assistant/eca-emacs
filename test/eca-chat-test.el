@@ -1481,6 +1481,24 @@ does not treat the first line as metadata.  Returns FN's value."
           (expect (window-parameter window 'window-side) :to-be 'right)
           (expect (window-dedicated-p window) :to-be 'side)))))
 
+  (it "reuses the selected chat window when the chat is visible twice"
+    (eca-chat-test--with-display-buffers (visible-chat new-chat)
+      (let* ((selected (selected-window))
+             (other-window (split-window selected nil 'below))
+             (eca-chat-window-side 'right)
+             (eca-chat-use-side-window t)
+             (eca-chat-focus-on-open nil))
+        (set-window-buffer selected visible-chat)
+        (set-window-buffer other-window visible-chat)
+        (with-current-buffer visible-chat
+          (setq-local eca-chat--id "visible-chat"))
+        (select-window selected)
+        (expect (eca-chat--display-buffer new-chat) :to-be selected)
+        (expect (selected-window) :to-be selected)
+        (expect (window-buffer selected) :to-be new-chat)
+        (expect (window-buffer other-window) :to-be visible-chat)
+        (expect (length (window-list)) :to-equal 2))))
+
   (it "reuses another visible chat window in side-based modes"
     (eca-chat-test--with-display-buffers (source visible-chat new-chat)
       (let* ((selected (selected-window))
