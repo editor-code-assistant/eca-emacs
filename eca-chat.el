@@ -2009,7 +2009,12 @@ the prompt/context line."
                                  (cond
                                   ((eq item-type 'filepath)
                                    (eca--path-local-to-remote (substring expanded-str 1)))
-                                  ((eq item-type 'context)
+                                  ;; Only path-based contexts go through path
+                                  ;; translation; labels like buffer names
+                                  ;; must be kept as-is.
+                                  ((and (eq item-type 'context)
+                                        (let ((ctx (get-text-property pos 'eca-chat-context-item prompt)))
+                                          (or (null ctx) (plist-get ctx :path))))
                                    (concat "@" (eca--path-local-to-remote
                                                 (substring expanded-str 1))))
                                   (t expanded-str))))
@@ -2047,8 +2052,9 @@ without finalizing it)."
   (when eca-chat--closed
     (user-error (eca-error "This chat is closed")))
   (let* ((prompt-contexts (eca-chat--extract-contexts-from-prompt))
-         (refined-contexts (-map #'eca-chat--refine-context
-                                 (append eca-chat--context prompt-contexts))))
+         (refined-contexts (->> (append eca-chat--context prompt-contexts)
+                                (-map #'eca-chat--refine-context)
+                                (-keep #'eca-chat--materialize-context))))
     (when eca-chat--welcome-shown (eca-chat--clear))
     (add-to-list 'eca-chat--history prompt)
     (setq eca-chat--history-index -1)
@@ -5373,8 +5379,9 @@ window, leaving point where it was."
   (let* ((contexts (eca-chat--get-contexts-dwim)))
     (eca-chat--with-current-buffer (eca-chat--get-last-buffer (eca-session))
       (seq-doseq (context contexts)
-        (eca-chat--insert-prompt (concat (eca-chat--filepath->str (plist-get context :path) (plist-get context :linesRange))
-                                         " ")))
+        (when-let ((path (plist-get context :path)))
+          (eca-chat--insert-prompt (concat (eca-chat--filepath->str path (plist-get context :linesRange))
+                                           " "))))
       (unless arg
         (eca-chat--select-window)
         (goto-char (line-end-position))))))

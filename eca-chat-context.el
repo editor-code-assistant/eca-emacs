@@ -67,6 +67,19 @@
                  (const :tag "user context area" user))
   :group 'eca)
 
+(defcustom eca-chat-context-buffer-predicate #'eca-chat-context-buffer-include-p
+  "Predicate deciding if a buffer can be offered as text context.
+Called with a buffer, should return non-nil to offer it in the
+`@' completion and DWIM context commands."
+  :type 'function
+  :group 'eca)
+
+(defcustom eca-chat-context-buffer-max-chars 100000
+  "Max chars of buffer content sent as text context, keeping its tail.
+When nil, send the whole buffer content."
+  :type '(choice (const :tag "No limit" nil) integer)
+  :group 'eca)
+
 ;;;; Faces
 
 (defface eca-chat-context-unlinked-face
@@ -99,6 +112,12 @@
   "Face for contexts of cursor type."
   :group 'eca)
 
+(defface eca-chat-context-buffer-face
+  '((((background dark))  (:foreground "orchid" :underline t :height 0.9))
+    (((background light)) (:foreground "dark magenta" :underline t :height 0.9)))
+  "Face for contexts of text (buffer) type."
+  :group 'eca)
+
 ;;;; Variables
 
 (defvar-local eca-chat--context-completion-cache nil)
@@ -119,6 +138,7 @@
     ("cursor" . class)
     ("mcpPrompt" . function)
     ("mcpResource" . file)
+    ("text" . text)
     ("native" . variable)
     ("custom-prompt" . method)))
 
@@ -142,6 +162,81 @@
                     (eca--session-workspace-folders (eca-session)))
         (f-filename filename))
       filename))
+
+(defun eca-chat-context-buffer-include-p (buffer)
+  "Return non-nil when BUFFER can be offered as a text context.
+Excludes file-visiting, hidden, minibuffer and ECA own buffers."
+  (let ((name (buffer-name buffer)))
+    (and (buffer-live-p buffer)
+         (not (buffer-file-name buffer))
+         (not (minibufferp buffer))
+         (not (string-prefix-p " " name))
+         (not (string-match-p "\\`\\(\\*eca\\|<eca-\\)" name)))))
+
+(defun eca-chat--buffer-context (buffer)
+  "Return the text context plist for BUFFER."
+  (list :type "text" :label (buffer-name buffer)))
+
+(defvar eca-chat--buffer-list-tick 0
+  "Counter bumped whenever the buffer list changes.")
+
+(defvar eca-chat--buffer-contexts-cache nil
+  "Cons of (TICK . CONTEXTS) caching eligible buffer contexts.")
+
+(defvar eca-chat--buffer-completion-items-cache nil
+  "Cons of (TICK . ITEMS) caching buffer completion items.")
+
+(defun eca-chat--buffer-list-changed ()
+  "Invalidate buffer context caches after a buffer list update."
+  (setq eca-chat--buffer-list-tick (1+ eca-chat--buffer-list-tick)))
+
+(add-hook 'buffer-list-update-hook #'eca-chat--buffer-list-changed)
+
+(defun eca-chat--all-buffer-contexts ()
+  "Return text contexts for all eligible buffers.
+Recomputed only when the buffer list changes."
+  (let ((tick eca-chat--buffer-list-tick))
+    (unless (and eca-chat--buffer-contexts-cache
+                 (eq (car eca-chat--buffer-contexts-cache) tick))
+      (setq eca-chat--buffer-contexts-cache
+            (cons tick
+                  (->> (buffer-list)
+                       (-filter (lambda (buffer)
+                                  (funcall eca-chat-context-buffer-predicate buffer)))
+                       (-map #'eca-chat--buffer-context)))))
+    (cdr eca-chat--buffer-contexts-cache)))
+
+(defun eca-chat--buffer-contexts ()
+  "Return text contexts for eligible buffers not already added."
+  (-remove (lambda (context) (member context eca-chat--context))
+           (eca-chat--all-buffer-contexts)))
+
+(defun eca-chat--buffer-context-content (buffer)
+  "Return BUFFER text limited to `eca-chat-context-buffer-max-chars'.
+When over the limit the tail is kept, where recent output lives."
+  (with-current-buffer buffer
+    (save-restriction
+      (widen)
+      (let* ((max-chars eca-chat-context-buffer-max-chars)
+             (end (point-max))
+             (start (if (and max-chars (> (- end (point-min)) max-chars))
+                        (- end max-chars)
+                      (point-min))))
+        (buffer-substring-no-properties start end)))))
+
+(defun eca-chat--materialize-context (context)
+  "Return CONTEXT filled with content needed right before sending.
+Text contexts get fresh buffer content by label; contexts of
+killed buffers return nil so callers can drop them."
+  (pcase (plist-get context :type)
+    ("text" (let* ((label (plist-get context :label))
+                   (buffer (get-buffer label)))
+              (if (buffer-live-p buffer)
+                  (plist-put (copy-sequence context)
+                             :content (eca-chat--buffer-context-content buffer))
+                (progn (eca-info "Skipping killed buffer context: %s" label)
+                       nil))))
+    (_ context)))
 
 (defun eca-chat--context->str (context &optional static?)
   "Convert CONTEXT to a presentable str in buffer.
@@ -191,6 +286,9 @@ If STATIC? return strs with no dynamic values."
                                              ")"))
                                    'eca-chat-expanded-item-str (concat eca-chat-context-prefix "cursor")
                                    'font-lock-face 'eca-chat-context-cursor-face))
+             ("text" (propertize (concat eca-chat-context-prefix (plist-get context :label))
+                                 'eca-chat-expanded-item-str (concat eca-chat-context-prefix (plist-get context :label))
+                                 'font-lock-face 'eca-chat-context-buffer-face))
              (_ (concat eca-chat-context-prefix "unknown:" type)))))
     (propertize context-str
                 'eca-chat-item-type 'context
@@ -477,7 +575,10 @@ file or directory."
 
    ((buffer-file-name)
     (list
-     (list :type "file" :path (buffer-file-name))))))
+     (list :type "file" :path (buffer-file-name))))
+
+   ((funcall eca-chat-context-buffer-predicate (current-buffer))
+    (list (eca-chat--buffer-context (current-buffer))))))
 
 ;;;; Completion functions
 
@@ -507,6 +608,7 @@ file or directory."
       ("repoMap" "Summary view of workspaces files")
       ("cursor" "Current cursor file + position")
       ("mcpResource" description)
+      ("text" "Buffer content")
       (_ ""))))
 
 (defun eca-chat--completion-file-annotate (roots item-label)
@@ -656,6 +758,7 @@ when DIRECTORY? is non-nil."
                       ("repoMap" "repoMap")
                       ("cursor" "cursor")
                       ("mcpResource" (concat (plist-get context :server) ":" (plist-get context :name)))
+                      ("text" (plist-get context :label))
                       (_ (concat "Unknown - " ctx-type))))
          (face (pcase ctx-type
                  ("file" 'eca-chat-context-file-face)
@@ -663,10 +766,34 @@ when DIRECTORY? is non-nil."
                  ("repoMap" 'eca-chat-context-repo-map-face)
                  ("cursor" 'eca-chat-context-cursor-face)
                  ("mcpResource" 'eca-chat-context-mcp-resource-face)
+                 ("text" 'eca-chat-context-buffer-face)
                  (_ nil))))
     (propertize raw-label
                 'eca-chat-completion-item context
                 'face face)))
+
+(defun eca-chat--buffer-completion-items ()
+  "Return completion items for eligible buffers not already added.
+Items are recomputed only when the buffer list changes; the
+already-added filter always runs against the live context list."
+  (let ((tick eca-chat--buffer-list-tick))
+    (unless (and eca-chat--buffer-completion-items-cache
+                 (eq (car eca-chat--buffer-completion-items-cache) tick))
+      (setq eca-chat--buffer-completion-items-cache
+            (cons tick
+                  (-map (lambda (context)
+                          (eca-chat--context-to-completion nil nil context))
+                        (eca-chat--all-buffer-contexts)))))
+    (let ((items (cdr eca-chat--buffer-completion-items-cache))
+          (added-text-contexts (-filter (lambda (context)
+                                          (equal "text" (plist-get context :type)))
+                                        eca-chat--context)))
+      (if added-text-contexts
+          (-remove (lambda (item)
+                     (member (get-text-property 0 'eca-chat-completion-item item)
+                             added-text-contexts))
+                   items)
+        items))))
 
 (defun eca-chat--file-to-completion (query roots file)
   "Convert FILE to a completion item for typed QUERY and ROOTS."
@@ -791,21 +918,23 @@ cached so they are retried on the next keystroke."
                                   (pcase type
                                     ((or 'contexts-from-prompt
                                          'contexts-from-new-context)
-                                     (let ((query (eca-chat--find-typed-query eca-chat-context-prefix))
-                                           (roots (eca--session-workspace-folders (eca-session))))
-                                       (eca-chat--completion-cached-items
-                                        'eca-chat--context-completion-cache query
-                                        (lambda ()
-                                          (eca-api-request-while-no-input
-                                           (eca-session)
-                                           :method "chat/queryContext"
-                                           :params (list :chatId eca-chat--id
-                                                         :query query
-                                                         :contexts (vconcat (mapcar #'eca-chat--refine-context
-                                                                                    eca-chat--context)))))
-                                        :contexts
-                                        (lambda (context)
-                                          (eca-chat--context-to-completion query roots context)))))
+                                     (let* ((query (eca-chat--find-typed-query eca-chat-context-prefix))
+                                            (roots (eca--session-workspace-folders (eca-session)))
+                                            (server-items (eca-chat--completion-cached-items
+                                                           'eca-chat--context-completion-cache query
+                                                           (lambda ()
+                                                             (eca-api-request-while-no-input
+                                                              (eca-session)
+                                                              :method "chat/queryContext"
+                                                              :params (list :chatId eca-chat--id
+                                                                            :query query
+                                                                            :contexts (vconcat (mapcar #'eca-chat--refine-context
+                                                                                                       eca-chat--context)))))
+                                                           :contexts
+                                                           (lambda (context)
+                                                             (eca-chat--context-to-completion query roots context))))
+                                            (buffer-items (eca-chat--buffer-completion-items)))
+                                       (append server-items buffer-items)))
 
                                     ('files-from-prompt
                                      (let ((query (eca-chat--find-typed-query eca-chat-filepath-prefix))
