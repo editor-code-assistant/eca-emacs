@@ -435,9 +435,9 @@
       (spy-on 'completing-read :and-call-fake
               (lambda (prompt &rest _)
                 (pcase prompt
-                  ("Select a model:" "a-model-new")
-                  ("Select a variant:" "a-variant-new")
-                  ("Select an agent:" "a-agent-new"))))
+                  ("Select a model: " "a-model-new")
+                  ("Select a variant: " "a-variant-new")
+                  ("Select an agent: " "a-agent-new"))))
       (spy-on 'eca-api-notify)
       (spy-on 'eca-api-request-sync)
       (unwind-protect
