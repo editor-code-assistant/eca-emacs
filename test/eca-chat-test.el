@@ -1396,4 +1396,21 @@ does not treat the first line as metadata.  Returns FN's value."
               (setq-local eca-chat--closed t))
             (kill-buffer buffer)))))))
 
+;; ---------------------------------------------------------------------------
+;; eca-chat-mode-map TAB bindings
+;; ---------------------------------------------------------------------------
+
+(describe "eca-chat-mode-map TAB bindings"
+
+  (it "binds TAB to eca-chat--key-pressed-tab"
+    (expect (lookup-key eca-chat-mode-map (kbd "TAB"))
+            :to-be #'eca-chat--key-pressed-tab))
+
+  ;; Binding raw <tab> would block the <tab> -> TAB key translation in
+  ;; GUI frames and shadow completion UIs' TAB bindings (corfu-map).
+  ;; lookup-key follows the parent map, so this also catches a future
+  ;; <tab> binding inherited from markdown-mode-map.  See #281.
+  (it "does not bind the raw <tab> event (#281)"
+    (expect (lookup-key eca-chat-mode-map (kbd "<tab>")) :to-be nil)))
+
 ;;; eca-chat-test.el ends here
