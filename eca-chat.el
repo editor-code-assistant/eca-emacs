@@ -834,7 +834,10 @@ and resume link are not left behind under the replayed messages.")
     (define-key map (kbd "<return>") #'eca-chat--key-pressed-return)
     (define-key map (kbd "RET") #'eca-chat--key-pressed-return)
     (define-key map (kbd "C-c C-<return>") #'eca-chat-send-prompt-at-chat)
-    (define-key map (kbd "<tab>") #'eca-chat--key-pressed-tab)
+    ;; Bind only TAB, never the raw <tab> function-key event: binding
+    ;; <tab> would block Emacs's <tab> -> TAB key translation in GUI
+    ;; frames and shadow completion UIs' TAB bindings (e.g. corfu-map),
+    ;; so TAB could not accept the selected candidate.  See #281.
     (define-key map (kbd "TAB") #'eca-chat--key-pressed-tab)
     (define-key map (kbd "C-c C-k") #'eca-chat-reset)
     (define-key map (kbd "C-c C-S-k") #'eca-chat-delete)
@@ -844,6 +847,7 @@ and resume link are not left behind under the replayed messages.")
     (define-key map (kbd "C-c C-S-b") #'eca-chat-select-agent)
     (define-key map (kbd "C-c C-b") #'eca-chat-cycle-agent)
     (define-key map (kbd "C-c C-m") #'eca-chat-select-model)
+    (define-key map (kbd "C-c C-S-m") #'eca-mcp-toggle-server)
     (define-key map (kbd "C-c C-v") #'eca-chat-select-variant)
     (define-key map (kbd "C-c C-n") #'eca-chat-new)
     (define-key map (kbd "C-c C-f") #'eca-chat-select)
@@ -1863,17 +1867,20 @@ the progress/context/prompt still works.  No-op when
             (put-text-property (point-min) (1+ (point-min))
                                'front-sticky '(read-only))))))))
 
-(defun eca-chat--ensure-prompt-visible ()
+(defun eca-chat--ensure-prompt-visible (&optional force)
   "Scroll the chat window so the prompt area stays visible.
 Only acts when the user is currently viewing the bottom of the
 buffer.  When the user has scrolled up to read earlier content,
-scrolling is suppressed so the view does not jump."
+scrolling is suppressed so the view does not jump.  When FORCE is
+non-nil, scroll unconditionally: used right after sending a
+prompt, when a long user message may already have pushed the
+prompt below the window end, making the guard always fail."
   (when-let* ((win (get-buffer-window (current-buffer))))
     (let* ((prompt-start (eca-chat--prompt-area-start-point))
            (win-end (window-end win t)))
       ;; Only auto-scroll when the prompt separator was already
       ;; visible — meaning the user is at the bottom of the chat.
-      (when (and prompt-start (>= win-end prompt-start))
+      (when (and prompt-start (or force (>= win-end prompt-start)))
         (with-selected-window win
           (goto-char (point-max))
           (recenter -1))))))
@@ -3884,7 +3891,14 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
                 (setq-local eca-chat--last-response-copy-start nil)
                 (setq-local eca-chat--last-response-copy-kind nil)
                 (eca-chat--mark-header)
-                (font-lock-ensure user-msg-start (point-max)))))
+                (font-lock-ensure user-msg-start (point-max))
+                ;; The user was at the prompt to send, so keep it
+                ;; visible even when the message is long: the guard in
+                ;; `eca-chat--ensure-prompt-visible' cannot pass then,
+                ;; as the insertion pushes the prompt below the window
+                ;; end.  Skip when prepending older history pages.
+                (unless eca-chat--insertion-point-override
+                  (eca-chat--ensure-prompt-visible t)))))
            ("system"
             (eca-chat--add-text-content
              (propertize text
@@ -5025,7 +5039,7 @@ When ACTIVE is non-nil, show the question prefix; otherwise restore normal."
                           (cycle-sort-function . ,#'identity))
                       (complete-with-action action candidates string pred)))))
       (when-let* ((variant (completing-read
-                            "Select a variant:" table nil t)))
+                            "Select a variant: " table nil t)))
         (let ((normalized-variant
                (eca-chat--normalize-variant variant)))
           (eca-chat--with-current-buffer target
@@ -5040,7 +5054,7 @@ When ACTIVE is non-nil, show the question prefix; otherwise restore normal."
   (let ((session (eca-session)))
     (eca-assert-session-running session)
     (when-let* ((agent (completing-read
-                        "Select an agent:"
+                        "Select an agent: "
                         (append (eca--session-chat-agents session) nil)
                         nil t))
                 (target (eca-chat--get-active-buffer session)))

@@ -492,6 +492,7 @@ Inheirits BASE-MAP."
       ("p" "Repeat prompt" eca-chat-repeat-prompt)
       ("C" "Clear prompt" eca-chat-clear-prompt)
       ("m" "Select model" eca-chat-select-model)
+      ("M" "Toggle MCP server" eca-mcp-toggle-server)
       ("v" "Select variant" eca-chat-select-variant)
       ("b" "Change agent" eca-chat-select-agent)
       ("o" "Open/close chat window" eca-chat-toggle-window)

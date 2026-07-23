@@ -1131,6 +1131,40 @@ does not treat the first line as metadata.  Returns FN's value."
          session (current-buffer) (list '(:role "user" :content (:type "text" :text "m0"))))
         (expect eca-chat--last-user-message-pos :to-equal 42)))))
 
+(describe "eca-chat--render-content user message scrolling"
+  ;; Issue #279: after sending a long message the prompt is pushed
+  ;; below the window end, so the scroll must be forced.
+  (it "forces the prompt visible after rendering a sent user message"
+    (let ((buf (eca-chat-test--make-prompt-buffer "hi")))
+      (unwind-protect
+          (with-current-buffer buf
+            (let ((session (make-eca--session)))
+              (spy-on 'font-lock-ensure)
+              (spy-on 'eca-chat--ensure-prompt-visible)
+              (eca-chat--render-content
+               session buf "user"
+               '(:type "text" :text "a sent message" :contentId "issue-279-live")
+               nil)
+              (expect 'eca-chat--ensure-prompt-visible
+                      :to-have-been-called-with t)))
+        (kill-buffer buf))))
+
+  (it "does not scroll when prepending an older history page"
+    (let ((buf (eca-chat-test--make-prompt-buffer "hi")))
+      (unwind-protect
+          (with-current-buffer buf
+            (let ((session (make-eca--session))
+                  (eca-chat--insertion-point-override (copy-marker (point-min) t)))
+              (spy-on 'font-lock-ensure)
+              (spy-on 'eca-chat--ensure-prompt-visible)
+              (eca-chat--render-content
+               session buf "user"
+               '(:type "text" :text "an old message" :contentId "issue-279-prepend")
+               nil)
+              (expect 'eca-chat--ensure-prompt-visible
+                      :not :to-have-been-called)))
+        (kill-buffer buf)))))
+
 (describe "eca-chat-opened"
   ;; Regression: resuming after a restart must not replay into a stale
   ;; closed buffer left in the registry by `eca-chat-exit'.
@@ -1584,5 +1618,22 @@ does not treat the first line as metadata.  Returns FN's value."
             (with-current-buffer buffer
               (setq-local eca-chat--closed t))
             (kill-buffer buffer)))))))
+
+;; ---------------------------------------------------------------------------
+;; eca-chat-mode-map TAB bindings
+;; ---------------------------------------------------------------------------
+
+(describe "eca-chat-mode-map TAB bindings"
+
+  (it "binds TAB to eca-chat--key-pressed-tab"
+    (expect (lookup-key eca-chat-mode-map (kbd "TAB"))
+            :to-be #'eca-chat--key-pressed-tab))
+
+  ;; Binding raw <tab> would block the <tab> -> TAB key translation in
+  ;; GUI frames and shadow completion UIs' TAB bindings (corfu-map).
+  ;; lookup-key follows the parent map, so this also catches a future
+  ;; <tab> binding inherited from markdown-mode-map.  See #281.
+  (it "does not bind the raw <tab> event (#281)"
+    (expect (lookup-key eca-chat-mode-map (kbd "<tab>")) :to-be nil)))
 
 ;;; eca-chat-test.el ends here
