@@ -63,6 +63,7 @@ Server / process
 - `eca-restart`: Restart eca server/session
 - `eca-workspaces`: show a view with all worskpaces and chats
 - `eca-settings`: Open the centralized settings panel (MCP servers, and more in the future)
+- `eca-mcp-toggle-server`: Filter MCP servers and start, stop, or connect one
 - `eca-open-global-config`: Open ECA global config file
 
 Chat
@@ -216,6 +217,7 @@ You can access the transient menu with common commands via `M-x eca-transient-me
 | Chat: select agent                            | <kbd>C-c</kbd> <kbd>C-S-b</kbd>    |
 | Chat: cycle agent                             | <kbd>C-c</kbd> <kbd>C-b</kbd>      |
 | Chat: select model                            | <kbd>C-c</kbd> <kbd>C-m</kbd>      |
+| Chat: toggle MCP server                       | <kbd>C-c</kbd> <kbd>C-S-m</kbd>    |
 | Chat: new chat                                | <kbd>C-c</kbd> <kbd>C-n</kbd>      |
 | Chat: select chat                             | <kbd>C-c</kbd> <kbd>C-f</kbd>      |
 | Chat: repeat last prompt                      | <kbd>C-c</kbd> <kbd>C-p</kbd>      |
