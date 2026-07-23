@@ -831,7 +831,10 @@ and resume link are not left behind under the replayed messages.")
     (define-key map (kbd "<return>") #'eca-chat--key-pressed-return)
     (define-key map (kbd "RET") #'eca-chat--key-pressed-return)
     (define-key map (kbd "C-c C-<return>") #'eca-chat-send-prompt-at-chat)
-    (define-key map (kbd "<tab>") #'eca-chat--key-pressed-tab)
+    ;; Bind only TAB, never the raw <tab> function-key event: binding
+    ;; <tab> would block Emacs's <tab> -> TAB key translation in GUI
+    ;; frames and shadow completion UIs' TAB bindings (e.g. corfu-map),
+    ;; so TAB could not accept the selected candidate.  See #281.
     (define-key map (kbd "TAB") #'eca-chat--key-pressed-tab)
     (define-key map (kbd "C-c C-k") #'eca-chat-reset)
     (define-key map (kbd "C-c C-S-k") #'eca-chat-delete)

@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Bugfix: TAB now accepts the selected candidate in completion popups (corfu) in GUI Emacs. `eca-chat-mode-map` bound the raw `<tab>` event, which blocked the `<tab>` -> `TAB` key translation and shadowed the completion UI's own `TAB` binding, restarting the completion session instead; only `TAB` is bound now, so keymap precedence decides while a popup is open. #281
 - Bugfix: a forward deletion of the first prompt character now works instead of dinging. `eca-chat--key-pressed-deletion` guarded the prompt boundary by rejecting any deletion at the prompt-field start regardless of direction, so `C-d` and, under evil, the `~` (`evil-invert-char`), `r`, `x` and `s` operators left the first char in place (`~` prepended the inverted char instead of replacing it). At the prompt-field start the guard now blocks only backward-deleting commands (`delete-backward-char`, `backward-kill-word`, `evil-delete-backward-char`, ...); deletions above the prompt (context/progress area) and everywhere else are unchanged.
 - Show the shell/git command breakdown in tool call approvals: raw command plus per-command lines colored by remember state (green saved, yellow not yet), and `Accept and remember` lists the command keys it would newly save (e.g. `git status, rg`), hiding when nothing new would be remembered.
 
