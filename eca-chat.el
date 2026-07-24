@@ -3201,14 +3201,25 @@ Show parent upwards if HIDE-FILENAME? is non nil."
   (when (buffer-live-p chat-buffer)
     (eca-chat--with-current-buffer chat-buffer
       (save-excursion
-        (let ((ov (eca-chat--prompt-progress-field-ov)))
-          (goto-char (overlay-start ov))
-          (delete-region (point) (overlay-end ov)))
-        (eca-chat--insert (propertize (if (string-empty-p eca-chat--progress-text)
-                                          ""
-                                        (concat "\n" eca-chat--progress-text))
-                                      'font-lock-face 'eca-chat-system-messages-face)
-                          eca-chat--spinner-string)))))
+        (let* ((ov (eca-chat--prompt-progress-field-ov))
+               ;; Pad the spinner to a fixed width so the line width
+               ;; doesn't oscillate on every spinner tick (#268).
+               (spinner (if (string-empty-p eca-chat--spinner-string)
+                            ""
+                          (format "%-3s" eca-chat--spinner-string)))
+               (progress (if (string-empty-p eca-chat--progress-text)
+                             ""
+                           (concat "\n" eca-chat--progress-text))))
+          ;; Skip the delete/re-insert when nothing changed, avoiding
+          ;; redisplay churn while streaming.
+          (unless (string= (concat progress spinner)
+                           (buffer-substring-no-properties
+                            (overlay-start ov) (overlay-end ov)))
+            (goto-char (overlay-start ov))
+            (delete-region (point) (overlay-end ov))
+            (eca-chat--insert (propertize progress
+                                          'font-lock-face 'eca-chat-system-messages-face)
+                              spinner)))))))
 
 (defun eca-chat--go-to-overlay (ov-key range-min range-max first?)
   "Navigate to overlay matching OV-KEY in RANGE-MIN..RANGE-MAX.
@@ -3284,6 +3295,14 @@ CHILD, NAME, DOCSTRING and BODY are passed down."
   ;; visual-line-mode wraps all lines including tables, breaking their layout.
   (setq-local word-wrap t)
   (setq-local truncate-lines nil)
+  ;; Scroll just enough to keep point visible instead of recentering,
+  ;; otherwise the window jumps up and down while streamed chunks push
+  ;; the prompt around (#268).  Users customizing `scroll-conservatively'
+  ;; globally never see this, but the Emacs default (0) recenters.
+  (setq-local scroll-conservatively 101)
+  (setq-local scroll-margin 0)
+  ;; The spinner is padded with trailing spaces to keep a fixed width.
+  (setq-local show-trailing-whitespace nil)
   (hl-line-mode -1)
   (setq-local eca-chat--history '())
   (setq-local eca-chat--history-index -1)

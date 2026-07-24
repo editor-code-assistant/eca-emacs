@@ -449,8 +449,6 @@ in parent."
                    (new-icons (eca-chat--make-expandable-icons new-icon-face label-indent)))
               (overlay-put ov-label 'eca-chat--expandable-content-open-icon (car new-icons))
               (overlay-put ov-label 'eca-chat--expandable-content-close-icon (cdr new-icons)))
-            (goto-char (overlay-start ov-label))
-            (delete-region (point) (1- (overlay-start ov-content)))
             (let* ((children (eca-chat--segments-children
                               (overlay-get ov-label 'eca-chat--expandable-content-segments)))
                    (has-content? (or (not (string-empty-p new-content)) children))
@@ -461,12 +459,26 @@ in parent."
                                      (overlay-get ov-label 'eca-chat--expandable-content-open-icon)))
                                   (nested?
                                    (concat eca-chat--expandable-content-base-indent
-                                           (make-string (length eca-chat-expandable-block-open-symbol) ?\s))))))
-              (eca-chat--insert (propertize (eca-chat--propertize-only-first-word label
-                                                                                  'line-prefix label-prefix)
-                                            'help-echo "mouse-1 / RET / tab: expand/collapse")))
-            ;; Repaint nested label's line-prefix after label replacement
-            (eca-chat--paint-nested-label ov-label))
+                                           (make-string (length eca-chat-expandable-block-open-symbol) ?\s)))))
+                   (label-start (overlay-start ov-label))
+                   (label-end (1- (overlay-start ov-content)))
+                   (cur-prefix (get-text-property label-start 'line-prefix)))
+              ;; Skip the delete/re-insert when the rendered label is
+              ;; already up to date; frequent while toolCallPrepare
+              ;; streams argsText updates (#268).
+              (unless (and (string= (substring-no-properties label)
+                                    (buffer-substring-no-properties label-start label-end))
+                           (equal (get-text-property 0 'font-lock-face label)
+                                  (get-text-property label-start 'font-lock-face))
+                           (equal (and (stringp label-prefix) (substring-no-properties label-prefix))
+                                  (and (stringp cur-prefix) (substring-no-properties cur-prefix))))
+                (goto-char label-start)
+                (delete-region (point) label-end)
+                (eca-chat--insert (propertize (eca-chat--propertize-only-first-word label
+                                                                                    'line-prefix label-prefix)
+                                              'help-echo "mouse-1 / RET / tab: expand/collapse"))
+                ;; Repaint nested label's line-prefix after label replacement
+                (eca-chat--paint-nested-label ov-label))))
           (when open?
             (let ((block-face (overlay-get ov-content 'face)))
               (if append-content?
