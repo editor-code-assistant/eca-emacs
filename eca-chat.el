@@ -2392,6 +2392,7 @@ characters as part of the URL."
                          'pointer 'hand
                          'keymap mcp-keymap)
              (propertize (eca-chat--mcps-summary session)
+			 'font-lock-face 'eca-chat-option-value-face
                          'pointer 'hand
                          'keymap mcp-keymap)
              (propertize
