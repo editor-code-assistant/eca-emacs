@@ -814,6 +814,35 @@ does not treat the first line as metadata.  Returns FN's value."
                       :to-have-been-called-with (point-min) (point-max))
               (expect 'eca-chat--align-tables :to-have-been-called)
               (expect 'eca-chat--beautify-tables :to-have-been-called))
+          (kill-buffer buf))))
+
+    (it "does not error when the prompt area overlay is missing"
+      ;; Regression for #283: a `chat/statusChanged' idle notification
+      ;; synthesizes a `progress' / `finished' event; when the buffer
+      ;; lost its prompt-block overlays, `eca-chat--add-text-content',
+      ;; `eca-chat--align-tables', `eca-chat--beautify-tables' and
+      ;; `eca-chat--refresh-progress' all crashed on a nil position or
+      ;; overlay.  They run unspied here on a bare buffer.
+      (let ((buf (generate-new-buffer " *test-chat-progress*"))
+            (session (make-eca--session)))
+        (unwind-protect
+            (with-current-buffer buf
+              (insert "content")
+              (setq-local eca-chat--progress-text "thinking...")
+              (setq-local eca-chat--chat-loading t)
+              (spy-on 'eca-chat--font-lock-ensure)
+              (spy-on 'eca-chat--set-chat-loading)
+              (spy-on 'eca-chat--send-steered-prompt)
+              (spy-on 'eca-chat--send-queued-prompt)
+              (expect
+               (eca-chat--render-content
+                session buf "system"
+                (list :type "progress" :state "finished")
+                nil)
+               :not :to-throw)
+              ;; The trailing turn-end newline was appended at the
+              ;; `point-max' fallback insertion point.
+              (expect (buffer-string) :to-equal "content\n"))
           (kill-buffer buf))))))
 
 (describe "eca-chat-content-received"
@@ -1071,7 +1100,14 @@ does not treat the first line as metadata.  Returns FN's value."
           (with-current-buffer buf
             (expect (eca-chat--content-insertion-point)
                     :to-equal (1- (eca-chat--prompt-area-start-point))))
-        (kill-buffer buf)))))
+        (kill-buffer buf))))
+
+  (it "falls back to point-max when the prompt area overlay is missing"
+    ;; Regression for #283: `(1- nil)' signaled wrong-type-argument when
+    ;; the buffer lost its prompt-area overlay (inconsistent state).
+    (with-temp-buffer
+      (insert "content")
+      (expect (eca-chat--content-insertion-point) :to-equal (point-max)))))
 
 (describe "eca-chat--render-history-contents"
   ;; A plain buffer is enough: the insertion-point override short-circuits the

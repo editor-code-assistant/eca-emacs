@@ -1818,10 +1818,13 @@ prompt area.")
   "Return the point where new chat content should be inserted.
 When `eca-chat--insertion-point-override' is set, returns its position
 \(used to prepend older history above existing content); otherwise the
-position just before the prompt area start."
+position just before the prompt area start.  When the prompt area
+overlay is missing (inconsistent buffer state, see #283), falls back
+to `point-max' so callers never receive nil."
   (or (and eca-chat--insertion-point-override
            (marker-position eca-chat--insertion-point-override))
-      (1- (eca-chat--prompt-area-start-point))))
+      (-some-> (eca-chat--prompt-area-start-point) (1-))
+      (point-max)))
 
 (defun eca-chat--load-older-control-region ()
   "Return (BEG . END) of the load-older control, or nil when absent.
@@ -2926,16 +2929,19 @@ select the resulting window."
 (defun eca-chat--align-tables (&optional from)
   "Align all markdown tables in the chat content area.
 When FROM is non-nil, scan from that position; otherwise scan from
-the last user message."
+the last user message.  Falls back to `point-max' as the end bound
+when the prompt area overlay is missing (see #283)."
   (eca-table-align (or from eca-chat--last-user-message-pos (point-min))
-                   (eca-chat--prompt-area-start-point)))
+                   (or (eca-chat--prompt-area-start-point) (point-max))))
 
 (defun eca-chat--beautify-tables (&optional from)
   "Apply visual enhancements to markdown tables in the chat buffer.
 When FROM is non-nil, scan from that position; otherwise scan from
-the last user message.  Respects `eca-chat-table-beautify'."
+the last user message.  Respects `eca-chat-table-beautify'.  Falls
+back to `point-max' as the end bound when the prompt area overlay
+is missing (see #283)."
   (eca-table-beautify (or from eca-chat--last-user-message-pos (point-min))
-                      (eca-chat--prompt-area-start-point)))
+                      (or (eca-chat--prompt-area-start-point) (point-max))))
 
 (defun eca-chat--on-window-size-change (frame)
   "Debounced handler for window resize; re-evaluates table action bars.
@@ -3198,19 +3204,21 @@ Show parent upwards if HIDE-FILENAME? is non nil."
 
 
 (defun eca-chat--refresh-progress (chat-buffer)
-  "Refresh the progress TEXT for CHAT-BUFFER."
+  "Refresh the progress TEXT for CHAT-BUFFER.
+No-op when the progress overlay is missing (inconsistent buffer
+state, see #283)."
   (when (buffer-live-p chat-buffer)
     (eca-chat--with-current-buffer chat-buffer
       (save-excursion
-        (let* ((ov (eca-chat--prompt-progress-field-ov))
-               ;; Pad the spinner to a fixed width so the line width
-               ;; doesn't oscillate on every spinner tick (#268).
-               (spinner (if (string-empty-p eca-chat--spinner-string)
-                            ""
-                          (format "%-3s" eca-chat--spinner-string)))
-               (progress (if (string-empty-p eca-chat--progress-text)
-                             ""
-                           (concat "\n" eca-chat--progress-text))))
+        (when-let* ((ov (eca-chat--prompt-progress-field-ov))
+                    ;; Pad the spinner to a fixed width so the line width
+                    ;; doesn't oscillate on every spinner tick (#268).
+                    (spinner (if (string-empty-p eca-chat--spinner-string)
+                                 ""
+                               (format "%-3s" eca-chat--spinner-string)))
+                    (progress (if (string-empty-p eca-chat--progress-text)
+                                  ""
+                                (concat "\n" eca-chat--progress-text))))
           ;; Skip the delete/re-insert when nothing changed, avoiding
           ;; redisplay churn while streaming.
           (unless (string= (concat progress spinner)
