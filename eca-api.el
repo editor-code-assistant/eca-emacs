@@ -38,14 +38,18 @@
 
 (defmacro eca-api--json-read-buffer ()
   "Read json from the current buffer."
+  ;; copy-tree: expanding to a constant form would return the same shared
+  ;; literal on every expansion, which the byte-compiler may mutate in place
+  ;; (e.g. Emacs 31's `macroexp--posify-form-1'), breaking later runtime
+  ;; expansions with `invalid-function' (#284).
   (if (fboundp 'json-parse-buffer)
-      `(json-parse-buffer :object-type 'plist
-        :null-object nil
-        :false-object nil)
-    `(let ((json-array-type 'vector)
-           (json-object-type 'plist)
-           (json-false nil))
-       (json-read))))
+      (copy-tree '(json-parse-buffer :object-type 'plist
+                   :null-object nil
+                   :false-object nil))
+    (copy-tree '(let ((json-array-type 'vector)
+                      (json-object-type 'plist)
+                      (json-false nil))
+                  (json-read)))))
 
 (defmacro eca-api--json-serialize (params)
   "Deserialize PARAMS as json."
