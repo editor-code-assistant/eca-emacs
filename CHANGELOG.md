@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.10.0
+
 - Bugfix: restore the status colors of the `mcps:` counts in the chat header-line, lost in #288 which overrode the per-status faces with `eca-chat-option-value-face`; that face is now merged with lower priority so both apply.
 - Bugfix: cursor context no longer shows as `@cursor( :)` when no position was tracked yet. Tracking now picks the most recent file buffer inside a workspace (instead of bailing when the newest file buffer is external), the chip shows `@cursor(no file)` until a position exists, and at prompt send the position is computed as a last resort, dropping the cursor context instead of sending it with empty path/position.
 - Bugfix: stop Emacs stuttering while ECA runs and a buffer of another project is visited. The cursor-tracking idle timer resolved the session via `eca-session` from whatever buffer was current; for buffers outside any session that resolution is never cached, so every idle tick probed project.el and shelled out `git rev-parse --git-common-dir` (once for the buffer root plus once per session workspace folder). The timer now matches the last visited file buffer against the sessions' workspace folders in memory, and `eca--git-common-dir` caches its results (cleared on session create/delete) and runs git via `process-file` without an intermediate shell. #275
