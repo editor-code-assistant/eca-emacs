@@ -2399,10 +2399,14 @@ characters as part of the URL."
                          'font-lock-face 'eca-chat-option-key-face
                          'pointer 'hand
                          'keymap mcp-keymap)
-             (propertize (eca-chat--mcps-summary session)
-			 'font-lock-face 'eca-chat-option-value-face
-                         'pointer 'hand
-                         'keymap mcp-keymap)
+             (let ((summary (copy-sequence (eca-chat--mcps-summary session))))
+               ;; Append with lower priority so status faces keep their colors.
+               (font-lock-append-text-property 0 (length summary)
+                                               'font-lock-face 'eca-chat-option-value-face
+                                               summary)
+               (propertize summary
+                           'pointer 'hand
+                           'keymap mcp-keymap))
              (propertize
               " "
               'display '(space :align-to (- right 2)))
