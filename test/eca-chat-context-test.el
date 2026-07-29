@@ -111,6 +111,17 @@
              (list :type "text" :label "*no-such-buffer-eca-test*"))
             :to-be nil))
 
+  (it "drops cursor contexts with no tracked position"
+    (expect (eca-chat--materialize-context
+             (list :type "cursor" :path nil :position nil))
+            :to-be nil))
+
+  (it "passes cursor contexts with a position through"
+    (let ((context (list :type "cursor" :path "/tmp/foo.el"
+                         :position (list :start (list :line 1 :character 1)
+                                         :end (list :line 1 :character 1)))))
+      (expect (eca-chat--materialize-context context) :to-be context)))
+
   (it "passes other contexts through unchanged"
     (let ((context (list :type "file" :path "/tmp/foo.txt")))
       (expect (eca-chat--materialize-context context) :to-be context))))
@@ -121,6 +132,70 @@
       (expect (substring-no-properties str) :to-equal "@*compilation*")
       (expect (get-text-property 0 'eca-chat-context-item str)
               :to-equal (list :type "text" :label "*compilation*")))))
+
+(describe "eca-chat--context->str for cursor contexts"
+  (it "renders a placeholder when no position was tracked yet"
+    (let ((eca-chat--cursor-context nil))
+      (expect (substring-no-properties
+               (eca-chat--context->str (list :type "cursor")))
+              :to-equal "@cursor(no file)")))
+
+  (it "renders file name and position when tracked"
+    (let ((eca-chat--cursor-context
+           (list :path "/tmp/proj-a/foo.el"
+                 :position (list :start (list :line 12 :character 3)
+                                 :end (list :line 12 :character 3)))))
+      (expect (substring-no-properties
+               (eca-chat--context->str (list :type "cursor")))
+              :to-equal "@cursor(foo.el 12:3)")))
+
+  (it "renders statically without dynamic values"
+    (let ((eca-chat--cursor-context nil))
+      (expect (substring-no-properties
+               (eca-chat--context->str (list :type "cursor") 'static))
+              :to-equal "@cursor"))))
+
+(describe "eca-chat--get-last-visited-buffer"
+  (it "skips more recent file buffers outside any session workspace"
+    (let ((eca--sessions '())
+          (eca--session-ids 0))
+      (eca-create-session (list (expand-file-name "/tmp/proj-a")))
+      (let ((outside (generate-new-buffer "outside-workspace-file"))
+            (inside (generate-new-buffer "inside-workspace-file")))
+        (unwind-protect
+            (progn
+              (with-current-buffer inside
+                (setq buffer-file-name
+                      (expand-file-name "/tmp/proj-a/inside.el")))
+              (with-current-buffer outside
+                (setq buffer-file-name
+                      (expand-file-name "/tmp/other-proj/outside.el")))
+              ;; `outside' is the most recently used buffer.
+              (spy-on 'buffer-list
+                      :and-return-value (list outside inside))
+              (expect (eca-chat--get-last-visited-buffer) :to-be inside))
+          (dolist (buf (list outside inside))
+            (with-current-buffer buf
+              (setq buffer-file-name nil)
+              (set-buffer-modified-p nil))
+            (kill-buffer buf))))))
+
+  (it "returns nil when no workspace file buffer exists"
+    (let ((eca--sessions '())
+          (eca--session-ids 0))
+      (eca-create-session (list (expand-file-name "/tmp/proj-a")))
+      (let ((outside (generate-new-buffer "only-outside-file")))
+        (unwind-protect
+            (progn
+              (with-current-buffer outside
+                (setq buffer-file-name
+                      (expand-file-name "/tmp/other-proj/outside.el")))
+              (spy-on 'buffer-list :and-return-value (list outside))
+              (expect (eca-chat--get-last-visited-buffer) :to-be nil))
+          (with-current-buffer outside
+            (setq buffer-file-name nil)
+            (set-buffer-modified-p nil))
+          (kill-buffer outside))))))
 
 (describe "eca-chat--context-to-completion for text contexts"
   (it "uses the buffer name as label"

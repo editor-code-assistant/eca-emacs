@@ -1988,9 +1988,14 @@ the prompt/context line."
   "Refine CONTEXT before sending in prompt."
   (let* ((type (plist-get context :type))
          (refined (pcase type
-                    ("cursor" (-> context
-                                  (plist-put :path (plist-get eca-chat--cursor-context :path))
-                                  (plist-put :position (plist-get eca-chat--cursor-context :position))))
+                    ("cursor" (progn
+                                ;; Last resort when the idle tracker did
+                                ;; not populate the position yet.
+                                (unless eca-chat--cursor-context
+                                  (eca-chat--track-cursor))
+                                (-> context
+                                    (plist-put :path (plist-get eca-chat--cursor-context :path))
+                                    (plist-put :position (plist-get eca-chat--cursor-context :position)))))
                     (_ context)))
          (path (plist-get refined :path)))
     (if path

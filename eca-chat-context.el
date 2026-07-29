@@ -227,7 +227,8 @@ When over the limit the tail is kept, where recent output lives."
 (defun eca-chat--materialize-context (context)
   "Return CONTEXT filled with content needed right before sending.
 Text contexts get fresh buffer content by label; contexts of
-killed buffers return nil so callers can drop them."
+killed buffers return nil so callers can drop them.  Cursor
+contexts with no tracked position return nil too."
   (pcase (plist-get context :type)
     ("text" (let* ((label (plist-get context :label))
                    (buffer (get-buffer label)))
@@ -236,6 +237,8 @@ killed buffers return nil so callers can drop them."
                              :content (eca-chat--buffer-context-content buffer))
                 (progn (eca-info "Skipping killed buffer context: %s" label)
                        nil))))
+    ("cursor" (when (plist-get context :position)
+                context))
     (_ context)))
 
 (defun eca-chat--context->str (context &optional static?)
