@@ -298,7 +298,8 @@ clean them up on next startup."
   "Remove downloaded server."
   (-let (((download-path . store-path) (eca-process--download-and-store-path)))
     (when (f-exists? download-path) (f-delete download-path))
-    (when (f-exists? store-path) (f-delete store-path))))
+    (when (f-exists? store-path) (f-delete store-path))
+    (when (f-exists? eca-server-version-file-path) (f-delete eca-server-version-file-path))))
 
 (defun eca-process--download-url (version)
   "Return the server download url for VERSION."
@@ -358,7 +359,6 @@ the given VERSION."
           ;; Clean up any old files from previous updates
           (eca-process--cleanup-old-server)
           (when (f-exists? download-path) (f-delete download-path))
-          (when (f-exists? eca-server-version-file-path) (f-delete eca-server-version-file-path))
           (when (f-exists? temp-extract-dir) (f-delete temp-extract-dir t))
           (mkdir (f-parent download-path) t)
           (eca-info "Downloading eca server from %s to %s..." url download-path)
@@ -420,11 +420,18 @@ the given VERSION."
       (list :decision 'error-download
             :message "Could not fetch latest version of eca. Please check your internet connection and try again. You can also download eca manually and set the path via eca-custom-command variable"))
 
-     ((and (f-exists? eca-server-install-path)
-           (not (string-version-lessp (eca-process--get-current-server-version)
-                                      (eca-process--get-latest-server-version))))
-      (list :decision 'already-installed
-            :command (list eca-server-install-path "server")))
+     ((f-exists? eca-server-install-path)
+      (let ((current (eca-process--get-current-server-version))
+            (latest (eca-process--get-latest-server-version)))
+        (if (or (null latest) ;; cannot check for updates, use installed binary.
+                (and current (not (string-version-lessp current latest))))
+            (list :decision 'already-installed
+                  :command (list eca-server-install-path "server"))
+          ;; Outdated, or version file missing (e.g. interrupted
+          ;; update): reinstall to get back to a known version.
+          (list :decision 'download
+                :latest-version latest
+                :command (list eca-server-install-path "server")))))
 
      (t (list :decision 'download
               :latest-version (eca-process--get-latest-server-version)
@@ -671,10 +678,16 @@ whether a newer version is available, or whether the check failed."
     (cond
      ((null latest)
       (eca-warn "Could not check for eca server updates."))
-     ((null current)
+     ((not (f-exists? eca-server-install-path))
       (eca-info
        (concat "No eca server installed; latest available is %s. "
                "Run M-x eca-install-server to install.")
+       latest))
+     ((null current)
+      (eca-info
+       (concat "eca server is installed but its version is unknown; "
+               "it will be reinstalled (%s) on next start. "
+               "Run M-x eca-install-server to reinstall now.")
        latest))
      ((string-version-lessp current latest)
       (eca-info
