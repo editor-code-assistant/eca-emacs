@@ -173,19 +173,38 @@ for client-generated `chatId' values sent to the eca server."
                      (project-roots project))))))
         default-path)))
 
+(defvar eca--git-common-dir-cache (make-hash-table :test 'equal)
+  "Cache of expanded dir -> git common dir (or `:none') lookups.
+Avoids spawning a git process on every `eca-session' resolution;
+cleared whenever a session is created or deleted.")
+
 (defun eca--git-common-dir (dir)
   "Return the absolute git common dir for DIR, or nil if not in a git repo.
 Uses `git rev-parse --git-common-dir` to find the shared git
-directory, which is the same for all worktrees of a repository."
-  (when-let* ((default-directory (expand-file-name dir))
-              (output (ignore-errors
-                        (string-trim
-                         (shell-command-to-string
-                          "git rev-parse --git-common-dir 2>/dev/null")))))
-    (when (and (not (string-empty-p output))
-               ;; Git < 2.5 echoes the flag back literally
-               (not (string= output "--git-common-dir")))
-      (expand-file-name output default-directory))))
+directory, which is the same for all worktrees of a repository.
+Results are cached in `eca--git-common-dir-cache' since this can
+be called repeatedly (e.g. resolving sessions from timers) and
+spawning git each time causes visible lag (#275)."
+  (let* ((dir (expand-file-name dir))
+         (cached (gethash dir eca--git-common-dir-cache)))
+    (if cached
+        (unless (eq cached :none) cached)
+      (let* ((default-directory dir)
+             (output (ignore-errors
+                       (string-trim
+                        (with-output-to-string
+                          (with-current-buffer standard-output
+                            ;; TRAMP-aware, no intermediate shell,
+                            ;; stderr discarded.
+                            (process-file "git" nil '(t nil) nil
+                                          "rev-parse" "--git-common-dir"))))))
+             (result (when (and output
+                                (not (string-empty-p output))
+                                ;; Git < 2.5 echoes the flag back literally
+                                (not (string= output "--git-common-dir")))
+                       (expand-file-name output default-directory))))
+        (puthash dir (or result :none) eca--git-common-dir-cache)
+        result))))
 
 (defun eca--paths-nested-p (a b)
   "Return non-nil when paths A and B are equal or nested.
@@ -285,6 +304,7 @@ time a buffer under it is visited."
 
 (defun eca-create-session (workspace-roots)
   "Create a new ECA session for WORKSPACE-ROOTS."
+  (clrhash eca--git-common-dir-cache)
   (let ((session (make-eca--session))
         (id (cl-incf eca--session-ids)))
     (setf (eca--session-id session) id)
@@ -307,6 +327,7 @@ workspace folder. Falls back to \"unknown\"."
 (defun eca-delete-session (session)
   "Delete SESSION from existing sessions."
   (when session
+    (clrhash eca--git-common-dir-cache)
     (setq eca--sessions
           (eca-dissoc eca--sessions (eca--session-id session)))))
 

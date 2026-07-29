@@ -137,5 +137,50 @@
       (expect (eca-chat--normalize-prompt prompt)
               :to-equal "check @*compilation* please"))))
 
+(describe "eca-chat--session-for-path"
+  (it "returns the session owning the path and nil otherwise"
+    (let ((eca--sessions '())
+          (eca--session-ids 0))
+      (let ((s1 (eca-create-session (list (expand-file-name "/tmp/proj-a"))))
+            (s2 (eca-create-session (list (expand-file-name "/tmp/proj-b")))))
+        (expect (eca-chat--session-for-path
+                 (expand-file-name "/tmp/proj-a/src/foo.el"))
+                :to-be s1)
+        (expect (eca-chat--session-for-path
+                 (expand-file-name "/tmp/proj-b/bar.el"))
+                :to-be s2)
+        (expect (eca-chat--session-for-path
+                 (expand-file-name "/tmp/other/baz.el"))
+                :to-be nil)))))
+
+(describe "eca-chat--track-cursor"
+  (it "never probes git nor eca-session, even outside workspaces (#275)"
+    (let ((eca--sessions '())
+          (eca--session-ids 0))
+      (eca-create-session (list (expand-file-name "/tmp/proj-a")))
+      (spy-on 'eca-session :and-call-through)
+      (spy-on 'eca--git-common-dir :and-call-through)
+      (spy-on 'process-file)
+      (let ((buf (generate-new-buffer "other-project-file")))
+        (unwind-protect
+            (with-current-buffer buf
+              (setq buffer-file-name
+                    (expand-file-name "/tmp/other-proj/file.el"))
+              (spy-on 'eca-chat--get-last-visited-buffer
+                      :and-return-value buf)
+              ;; Buffer outside any workspace: no-op, no probing.
+              (eca-chat--track-cursor)
+              ;; Buffer inside a workspace: still no probing.
+              (setq buffer-file-name
+                    (expand-file-name "/tmp/proj-a/file.el"))
+              (eca-chat--track-cursor)
+              (expect 'eca-session :not :to-have-been-called)
+              (expect 'eca--git-common-dir :not :to-have-been-called)
+              (expect 'process-file :not :to-have-been-called))
+          (with-current-buffer buf
+            (setq buffer-file-name nil)
+            (set-buffer-modified-p nil))
+          (kill-buffer buf))))))
+
 (provide 'eca-chat-context-test)
 ;;; eca-chat-context-test.el ends here

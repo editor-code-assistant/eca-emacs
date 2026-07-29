@@ -221,5 +221,49 @@
         (expect (eca--path-remote-to-local "/workspace/project/src/file.el")
                 :to-equal "/docker:container:/workspace/project/src/file.el")))))
 
+(describe "eca--git-common-dir"
+  (it "expands a relative git output against the directory"
+    (let ((eca--git-common-dir-cache (make-hash-table :test 'equal)))
+      (spy-on 'process-file :and-call-fake
+              (lambda (&rest _) (insert ".git\n") 0))
+      (expect (eca--git-common-dir "/tmp/eca-repo")
+              :to-equal (expand-file-name ".git" "/tmp/eca-repo"))))
+
+  (it "caches positive lookups, spawning git once per directory"
+    (let ((eca--git-common-dir-cache (make-hash-table :test 'equal)))
+      (spy-on 'process-file :and-call-fake
+              (lambda (&rest _) (insert "/repos/main/.git\n") 0))
+      (eca--git-common-dir "/tmp/eca-worktree")
+      (expect (eca--git-common-dir "/tmp/eca-worktree")
+              :to-equal (expand-file-name "/repos/main/.git"))
+      (expect 'process-file :to-have-been-called-times 1)))
+
+  (it "caches negative lookups too"
+    (let ((eca--git-common-dir-cache (make-hash-table :test 'equal)))
+      (spy-on 'process-file :and-call-fake (lambda (&rest _) 128))
+      (expect (eca--git-common-dir "/tmp/eca-no-repo") :to-be nil)
+      (expect (eca--git-common-dir "/tmp/eca-no-repo") :to-be nil)
+      (expect 'process-file :to-have-been-called-times 1)))
+
+  (it "treats the git < 2.5 literal flag echo as no repo"
+    (let ((eca--git-common-dir-cache (make-hash-table :test 'equal)))
+      (spy-on 'process-file :and-call-fake
+              (lambda (&rest _) (insert "--git-common-dir\n") 0))
+      (expect (eca--git-common-dir "/tmp/eca-old-git") :to-be nil)))
+
+  (it "is cleared when sessions are created or deleted"
+    (let ((eca--git-common-dir-cache (make-hash-table :test 'equal))
+          (eca--sessions '())
+          (eca--session-ids 0))
+      (spy-on 'process-file :and-call-fake
+              (lambda (&rest _) (insert ".git\n") 0))
+      (eca--git-common-dir "/tmp/eca-repo")
+      (expect (hash-table-count eca--git-common-dir-cache) :to-equal 1)
+      (let ((session (eca-create-session '("/tmp/eca-repo"))))
+        (expect (hash-table-count eca--git-common-dir-cache) :to-equal 0)
+        (eca--git-common-dir "/tmp/eca-repo")
+        (eca-delete-session session)
+        (expect (hash-table-count eca--git-common-dir-cache) :to-equal 0)))))
+
 (provide 'eca-util-test)
 ;;; eca-util-test.el ends here

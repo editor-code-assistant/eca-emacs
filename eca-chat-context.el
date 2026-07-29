@@ -263,27 +263,29 @@ If STATIC? return strs with no dynamic values."
              ("mcpResource" (propertize (concat eca-chat-context-prefix (plist-get context :server) ":" (plist-get context :name))
                                         'eca-chat-expanded-item-str (concat eca-chat-context-prefix (plist-get context :server) ":" (plist-get context :name))
                                         'font-lock-face 'eca-chat-context-mcp-resource-face))
-             ("cursor" (propertize (if static?
-                                       (concat eca-chat-context-prefix "cursor")
-                                     (concat eca-chat-context-prefix "cursor"
-                                             "("
-                                             (-some-> (plist-get eca-chat--cursor-context :path)
-                                               (f-filename))
-                                             " "
-                                             (-some->>
-                                                 (-> eca-chat--cursor-context
-                                                     (plist-get :position)
-                                                     (plist-get :start)
-                                                     (plist-get :line))
-                                               (funcall #'number-to-string))
-                                             ":"
-                                             (-some->>
-                                                 (-> eca-chat--cursor-context
-                                                     (plist-get :position)
-                                                     (plist-get :start)
-                                                     (plist-get :character))
-                                               (funcall #'number-to-string))
-                                             ")"))
+             ("cursor" (propertize (cond
+                                    (static? (concat eca-chat-context-prefix "cursor"))
+                                    ((not eca-chat--cursor-context)
+                                     (concat eca-chat-context-prefix "cursor" "(no file)"))
+                                    (t (concat eca-chat-context-prefix "cursor"
+                                               "("
+                                               (-some-> (plist-get eca-chat--cursor-context :path)
+                                                 (f-filename))
+                                               " "
+                                               (-some->>
+                                                   (-> eca-chat--cursor-context
+                                                       (plist-get :position)
+                                                       (plist-get :start)
+                                                       (plist-get :line))
+                                                 (funcall #'number-to-string))
+                                               ":"
+                                               (-some->>
+                                                   (-> eca-chat--cursor-context
+                                                       (plist-get :position)
+                                                       (plist-get :start)
+                                                       (plist-get :character))
+                                                 (funcall #'number-to-string))
+                                               ")")))
                                    'eca-chat-expanded-item-str (concat eca-chat-context-prefix "cursor")
                                    'font-lock-face 'eca-chat-context-cursor-face))
              ("text" (propertize (concat eca-chat-context-prefix (plist-get context :label))
@@ -353,34 +355,43 @@ of (LINE . CHARACTER) representing the current selection or cursor position."
             (cons end-line end-char)))))
 
 (defun eca-chat--get-last-visited-buffer ()
-  "Return the last visited buffer which has a filename."
+  "Return the last visited file buffer inside a session workspace.
+More recent file buffers outside any session workspace root are
+skipped so the cursor context keeps pointing to workspace files."
   (-first (lambda (buff)
             (when (buffer-live-p buff)
-              (with-current-buffer buff
-                (buffer-file-name))))
+              (-some-> (buffer-file-name buff)
+                (eca-chat--session-for-path))))
           (buffer-list)))
+
+(defun eca-chat--session-for-path (path)
+  "Return the session whose workspace folders contain PATH, or nil.
+Pure in-memory lookup over existing sessions, unlike `eca-session'
+which may probe project.el and shell out to git, so it is cheap
+enough for timers running in arbitrary buffers."
+  (-first (lambda (session)
+            (--any? (and it (f-ancestor-of? it path))
+                    (eca--session-workspace-folders session)))
+          (eca-vals eca--sessions)))
 
 (defun eca-chat--track-cursor (&rest _args)
   "Change chat context considering current open file and point."
-  (when-let ((session (eca-session)))
-    (when-let ((workspaces (eca--session-workspace-folders session)))
-      (when-let ((buffer (eca-chat--get-last-visited-buffer)))
-        (when-let ((path (buffer-file-name buffer)))
-          (when (--any? (and it (f-ancestor-of? it path))
-                        workspaces)
-            (with-current-buffer buffer
-              (when-let (chat-buffer (eca-chat--get-last-buffer session))
-                (when (buffer-live-p chat-buffer)
-                  (-let* (((start . end) (eca-chat--cur-position))
-                          ((start-line . start-character) start)
-                          ((end-line . end-character) end))
-                    (eca-chat--with-current-buffer chat-buffer
-                      (let ((new-context (list :path path
-                                               :position (list :start (list :line start-line :character start-character)
-                                                               :end (list :line end-line :character end-character)))))
-                        (when (not (eca-plist-equal eca-chat--cursor-context new-context))
-                          (setq eca-chat--cursor-context new-context)
-                          (eca-chat--refresh-context))))))))))))))
+  (when-let* ((buffer (eca-chat--get-last-visited-buffer))
+              (path (buffer-file-name buffer))
+              (session (eca-chat--session-for-path path)))
+    (with-current-buffer buffer
+      (when-let (chat-buffer (eca-chat--get-last-buffer session))
+        (when (buffer-live-p chat-buffer)
+          (-let* (((start . end) (eca-chat--cur-position))
+                  ((start-line . start-character) start)
+                  ((end-line . end-character) end))
+            (eca-chat--with-current-buffer chat-buffer
+              (let ((new-context (list :path path
+                                       :position (list :start (list :line start-line :character start-character)
+                                                       :end (list :line end-line :character end-character)))))
+                (when (not (eca-plist-equal eca-chat--cursor-context new-context))
+                  (setq eca-chat--cursor-context new-context)
+                  (eca-chat--refresh-context))))))))))
 
 (defun eca-chat--track-cursor-position-schedule ()
   "Debounce `eca-chat--track-cursor' via an idle timer."
