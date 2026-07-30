@@ -384,6 +384,70 @@ The same shape works for any wrapper. Replace the `jai` prefix and flags:
 
 </details>
 
+<details>
+<summary><strong>Example: docker</strong></summary>
+
+Run ECA inside a Docker container that has the `eca` binary installed.
+This example injects API keys via environment variables and mounts the
+workspace root so file paths match the container layout.
+
+```elisp
+(defun my/eca-openrouter-key ()
+  "Fetch the OpenRouter API key from 1Password."
+  (string-trim (shell-command-to-string
+                "op read op://Private/OpenRouter\\ API\\ Key/credential")))
+
+(defun my/eca-docker-wrapper (_command roots)
+  "Run ECA inside Docker, mounting the workspace root and injecting secrets."
+  (let* ((mount-src    (directory-file-name (expand-file-name (car roots))))
+         (project-name (file-name-nondirectory mount-src))
+         (mount-dest   (concat "/workspace/" project-name))
+         (or-key       (my/eca-openrouter-key)))
+
+    ;; Derive a path mapping so file URIs sent to the server match
+    ;; paths inside the container.
+    (unless (assoc mount-src eca-local-to-remote-prefix-map)
+      (push (cons mount-src mount-dest) eca-local-to-remote-prefix-map))
+    (setq eca-send-process-id nil)
+
+    (append (list "docker" "run" "--rm" "-i"
+                  "-v" (format "%s:%s" mount-src mount-dest)
+                  "-v" (format "%s:/root/.config/eca:ro"
+                               (expand-file-name "~/.config/eca"))
+                  "-e" (format "ECA_CONFIG={\"providers\":{\"openrouter\":{\"key\":\"%s\"}}}" or-key)
+                  "-w" mount-dest
+                  "eca-sandbox")
+            '("/root/.local/bin/eca" "server"))))
+
+(setq eca-process-wrapper-function #'my/eca-docker-wrapper)
+```
+
+Build the `eca-sandbox` image.  This Dockerfile downloads the pre-built
+`eca` binary from GitHub releases:
+
+```dockerfile
+FROM debian:stable-slim
+
+ARG TARGETARCH
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl ca-certificates git unzip \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN mkdir -p ~/.local/bin && \
+    if [ "$TARGETARCH" = "arm64" ]; then ARCH="aarch64"; else ARCH="amd64"; fi && \
+    curl -fsSL "https://github.com/editor-code-assistant/eca/releases/latest/download/eca-native-linux-${ARCH}.zip" -o eca.zip && \
+    unzip -q eca.zip -d ~/.local/bin && \
+    chmod +x ~/.local/bin/eca && \
+    rm eca.zip
+
+WORKDIR /workspace
+
+CMD ["bash"]
+```
+
+</details>
+
 ### Limitations
 
 - Sandbox tools that seal their directory whitelist at startup (jai,
