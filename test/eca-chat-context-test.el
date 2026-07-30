@@ -43,17 +43,19 @@
   (it "returns text contexts for eligible buffers"
     (let ((buf (generate-new-buffer "*ctx-listing-test*")))
       (unwind-protect
-          (expect (member (list :type "text" :label "*ctx-listing-test*")
-                          (eca-chat--buffer-contexts))
-                  :to-be-truthy)
+          ;; Built outside `expect': on Emacs 29 buttercup's interpreted
+          ;; oclosure thunks shadow the `:type' keyword inside expect args.
+          (let ((ctx (list :type "text" :label "*ctx-listing-test*")))
+            (expect (member ctx (eca-chat--buffer-contexts))
+                    :to-be-truthy))
         (kill-buffer buf))))
 
   (it "skips buffers already added to the context"
     (let ((buf (generate-new-buffer "*ctx-added-test*")))
       (unwind-protect
-          (let ((eca-chat--context (list (list :type "text" :label "*ctx-added-test*"))))
-            (expect (member (list :type "text" :label "*ctx-added-test*")
-                            (eca-chat--buffer-contexts))
+          (let* ((ctx (list :type "text" :label "*ctx-added-test*"))
+                 (eca-chat--context (list ctx)))
+            (expect (member ctx (eca-chat--buffer-contexts))
                     :to-be nil))
         (kill-buffer buf)))))
 
@@ -107,14 +109,13 @@
         (kill-buffer buf))))
 
   (it "drops contexts of killed buffers"
-    (expect (eca-chat--materialize-context
-             (list :type "text" :label "*no-such-buffer-eca-test*"))
-            :to-be nil))
+    ;; Built outside `expect', see eca-chat--buffer-contexts test above.
+    (let ((ctx (list :type "text" :label "*no-such-buffer-eca-test*")))
+      (expect (eca-chat--materialize-context ctx) :to-be nil)))
 
   (it "drops cursor contexts with no tracked position"
-    (expect (eca-chat--materialize-context
-             (list :type "cursor" :path nil :position nil))
-            :to-be nil))
+    (let ((ctx (list :type "cursor" :path nil :position nil)))
+      (expect (eca-chat--materialize-context ctx) :to-be nil)))
 
   (it "passes cursor contexts with a position through"
     (let ((context (list :type "cursor" :path "/tmp/foo.el"
@@ -128,31 +129,35 @@
 
 (describe "eca-chat--context->str for text contexts"
   (it "renders the buffer name with the context prefix"
-    (let ((str (eca-chat--context->str (list :type "text" :label "*compilation*"))))
+    ;; Built outside `expect', see eca-chat--buffer-contexts test above.
+    (let* ((ctx (list :type "text" :label "*compilation*"))
+           (str (eca-chat--context->str ctx)))
       (expect (substring-no-properties str) :to-equal "@*compilation*")
       (expect (get-text-property 0 'eca-chat-context-item str)
-              :to-equal (list :type "text" :label "*compilation*")))))
+              :to-equal ctx))))
 
 (describe "eca-chat--context->str for cursor contexts"
   (it "renders a placeholder when no position was tracked yet"
-    (let ((eca-chat--cursor-context nil))
-      (expect (substring-no-properties
-               (eca-chat--context->str (list :type "cursor")))
+    ;; Contexts built outside `expect', see eca-chat--buffer-contexts
+    ;; test above.
+    (let ((eca-chat--cursor-context nil)
+          (ctx (list :type "cursor")))
+      (expect (substring-no-properties (eca-chat--context->str ctx))
               :to-equal "@cursor(no file)")))
 
   (it "renders file name and position when tracked"
     (let ((eca-chat--cursor-context
            (list :path "/tmp/proj-a/foo.el"
                  :position (list :start (list :line 12 :character 3)
-                                 :end (list :line 12 :character 3)))))
-      (expect (substring-no-properties
-               (eca-chat--context->str (list :type "cursor")))
+                                 :end (list :line 12 :character 3))))
+          (ctx (list :type "cursor")))
+      (expect (substring-no-properties (eca-chat--context->str ctx))
               :to-equal "@cursor(foo.el 12:3)")))
 
   (it "renders statically without dynamic values"
-    (let ((eca-chat--cursor-context nil))
-      (expect (substring-no-properties
-               (eca-chat--context->str (list :type "cursor") 'static))
+    (let ((eca-chat--cursor-context nil)
+          (ctx (list :type "cursor")))
+      (expect (substring-no-properties (eca-chat--context->str ctx 'static))
               :to-equal "@cursor"))))
 
 (describe "eca-chat--get-last-visited-buffer"
@@ -202,8 +207,10 @@
     (let ((item (eca-chat--context-to-completion
                  "" '("/tmp") (list :type "text" :label "*shell*"))))
       (expect (substring-no-properties item) :to-equal "*shell*")
-      (expect (plist-get (get-text-property 0 'eca-chat-completion-item item) :type)
-              :to-equal "text"))))
+      ;; Extracted outside `expect', see eca-chat--buffer-contexts test above.
+      (let ((type (plist-get (get-text-property 0 'eca-chat-completion-item item)
+                             :type)))
+        (expect type :to-equal "text")))))
 
 (describe "eca-chat--normalize-prompt with text context chips"
   (it "keeps non-path context labels as-is"

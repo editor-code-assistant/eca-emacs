@@ -834,12 +834,12 @@ does not treat the first line as metadata.  Returns FN's value."
               (spy-on 'eca-chat--set-chat-loading)
               (spy-on 'eca-chat--send-steered-prompt)
               (spy-on 'eca-chat--send-queued-prompt)
-              (expect
-               (eca-chat--render-content
-                session buf "system"
-                (list :type "progress" :state "finished")
-                nil)
-               :not :to-throw)
+              ;; Built outside `expect', see eca-chat--raw-prompt-contexts
+              ;; test above.
+              (let ((content (list :type "progress" :state "finished")))
+                (expect
+                 (eca-chat--render-content session buf "system" content nil)
+                 :not :to-throw))
               ;; The trailing turn-end newline was appended at the
               ;; `point-max' fallback insertion point.
               (expect (buffer-string) :to-equal "content\n"))
