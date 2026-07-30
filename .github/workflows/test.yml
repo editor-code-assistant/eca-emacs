@@ -49,6 +49,10 @@ jobs:
       run: eask test buttercup
 
     - name: Package
+      # eask-current-time crashes on Emacs snapshot builds where
+      # current-time returns the new (TICKS . HZ) format, so don't
+      # fail the canary job on it.
+      continue-on-error: ${{ matrix.emacs-version == 'snapshot' }}
       run: |
         eask package
         eask install
