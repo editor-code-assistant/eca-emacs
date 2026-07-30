@@ -387,9 +387,12 @@ The same shape works for any wrapper. Replace the `jai` prefix and flags:
 <details>
 <summary><strong>Example: docker</strong></summary>
 
-Run ECA inside a Docker container that has the `eca` binary installed.
-This example injects API keys via environment variables and mounts the
-workspace root so file paths match the container layout.
+This example launches ECA in docker container. It uses
+`eca-local-to-remote-prefix-map` to translate paths between
+the host and container. Additionally, API keys are injected
+into the container. 
+
+> `my/eca-openrouter-key` is used instead of `${cmd:op ...}` because `${cmd:op ...}` would resolve inside the container, .
 
 ```elisp
 (defun my/eca-openrouter-key ()
