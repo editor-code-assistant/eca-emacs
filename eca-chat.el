@@ -694,6 +694,12 @@ are not currently selected."
 ;; Internal
 
 (defvar-local eca-chat--closed nil)
+
+(defvar-local eca-chat--kill-delete-server-side nil
+  "Non-nil when the in-progress kill should also delete this chat.
+Set by `eca-chat--kill-buffer-query' and consumed by
+`eca-chat--delete-chat'.")
+
 (defvar-local eca-chat--history '())
 (defvar-local eca-chat--history-index -1)
 
@@ -940,26 +946,61 @@ sibling buffer switched to, or nil when SESSION has no other chat."
         (set-window-dedicated-p win dedicated)))
     other))
 
+(defun eca-chat--user-initiated-kill-p ()
+  "Return non-nil when the current command is closing this live chat.
+Only explicit kill commands and eca's own commands count, so that
+incidental `kill-buffer' calls from unrelated code do not tear the
+chat down.  Chats already marked `eca-chat--closed', and buffers
+without a chat id, are never considered."
+  (and (or (eq #'kill-current-buffer this-command)
+           (eq #'kill-buffer this-command)
+           (and (symbolp this-command)
+                (string-prefix-p "eca-" (symbol-name this-command))))
+       eca-chat--id
+       (not eca-chat--closed)))
+
+(defun eca-chat--kill-buffer-query ()
+  "Ask whether killing this chat should also delete it server-side.
+Returns nil to cancel the kill, leaving the chat untouched, so
+quitting with \\[keyboard-quit] is a no-op.  This belongs on
+`kill-buffer-query-functions' and not on `kill-buffer-hook', where
+the buffer is already doomed and only a signal could abort the
+kill, leaving the chat alive but orphaned."
+  (setq-local eca-chat--kill-delete-server-side nil)
+  (if (not (eca-chat--user-initiated-kill-p))
+      t
+    (unwind-protect
+        (condition-case nil
+            (progn
+              (when (yes-or-no-p
+                     "Delete chat from server side (otherwise it will just kill the buffer) ?")
+                (setq-local eca-chat--kill-delete-server-side t))
+              t)
+          (quit nil))
+      ;; The prompt is echoed back on both answer and quit, and nothing
+      ;; redisplays over it once the buffer is gone.
+      (message nil))))
+
 (defun eca-chat--delete-chat ()
   "Handle killing of the current chat buffer.
 Switches any window showing this chat to a sibling chat (so a
 dedicated chat window is not replaced by an unrelated buffer such
-as settings), drops the chat from the session registry, and, when
-confirmed, deletes it server-side."
-  (when (and (or (eq #'kill-current-buffer this-command)
-                 (eq #'kill-buffer this-command)
-                 (and (symbolp this-command)
-                      (string-prefix-p "eca-" (symbol-name this-command))))
-             eca-chat--id
-             (not eca-chat--closed))
+as settings), drops the chat from the session registry, and deletes
+it server-side when `eca-chat--kill-buffer-query' recorded that
+choice.
+
+Runs from `kill-buffer-hook', where the kill can no longer be
+aborted, so it must never prompt."
+  (when (eca-chat--user-initiated-kill-p)
     (let ((buffer (current-buffer))
-          (chat-id eca-chat--id))
+          (chat-id eca-chat--id)
+          (delete-server-side eca-chat--kill-delete-server-side))
       (when-let* ((session (ignore-errors (eca-session))))
         (eca-chat--switch-windows-to-sibling session buffer)
         (setf (eca--session-chats session)
               (eca-dissoc (eca--session-chats session) chat-id))
         (eca-chat--force-tab-line-update))
-      (when (yes-or-no-p "Delete chat from server side (otherwise it will just kill the buffer) ?")
+      (when delete-server-side
         (eca-api-request-sync (eca-session)
                               :method "chat/delete"
                               :params (list :chatId chat-id))))))
@@ -3419,6 +3460,7 @@ CHILD, NAME, DOCSTRING and BODY are passed down."
     (add-hook 'eldoc-documentation-functions #'eca-chat-eldoc-function nil t)
     (eldoc-mode 1)
 
+    (add-hook 'kill-buffer-query-functions #'eca-chat--kill-buffer-query nil t)
     (add-hook 'kill-buffer-hook #'eca-chat--delete-chat nil t)
 
     ;; Paste image from clipboard support
@@ -5218,7 +5260,8 @@ Starting from the beginning of the buffer."
 (defun eca-chat-reset ()
   "Kill the current chat (asking whether to delete it server-side).
 Switch to the previous chat when the session has others, or start
-a fresh chat when this was the only one."
+a fresh chat when this was the only one.  Quitting the prompt
+cancels the reset, leaving the current chat as it was."
   (interactive)
   (let* ((session (eca-session))
          (buffer (eca-chat--get-last-buffer session)))
@@ -5226,9 +5269,10 @@ a fresh chat when this was the only one."
     (when (and (buffer-live-p buffer)
                (buffer-local-value 'eca-chat--id buffer))
       (let ((sibling (eca-chat--sibling-chat-buffer session buffer)))
-        (kill-buffer buffer)
-        (unless sibling
-          (eca-chat--new-chat session))))))
+        ;; nil when the user cancelled the kill: the chat is still there.
+        (when (kill-buffer buffer)
+          (unless sibling
+            (eca-chat--new-chat session)))))))
 
 ;;;###autoload
 (defun eca-chat-go-to-prev-user-message ()

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Bugfix: quitting the delete-chat prompt (`C-g`) now really cancels the kill instead of leaving the chat alive but orphaned, without a window, tab or registry entry. Quitting it during `eca-chat-reset` leaves the session untouched as well, instead of adding a replacement chat next to the one that survived. The answered prompt no longer lingers in the echo area.
+
 ## 0.10.0
 
 - Bugfix: restore the status colors of the `mcps:` counts in the chat header-line, lost in #288 which overrode the per-status faces with `eca-chat-option-value-face`; that face is now merged with lower priority so both apply.
