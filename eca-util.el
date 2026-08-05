@@ -89,6 +89,9 @@ for client-generated `chatId' values sent to the eca server."
 (defvar eca--sessions '())
 (defvar eca--session-ids 0)
 
+(defvar eca-sessions-updated-hook nil
+  "Normal hook run after a ECA session is created or deleted.")
+
 (cl-defstruct eca--session
   ;; id to manage multiple eca sessions
   (id nil)
@@ -313,6 +316,7 @@ time a buffer under it is visited."
           (and (boundp 'eca-chat-trust-enable)
                (symbol-value 'eca-chat-trust-enable)))
     (setq eca--sessions (eca-assoc eca--sessions id session))
+    (run-hooks 'eca-sessions-updated-hook)
     session))
 
 (defun eca--session-project-name (session)
@@ -329,7 +333,8 @@ workspace folder. Falls back to \"unknown\"."
   (when session
     (clrhash eca--git-common-dir-cache)
     (setq eca--sessions
-          (eca-dissoc eca--sessions (eca--session-id session)))))
+          (eca-dissoc eca--sessions (eca--session-id session)))
+    (run-hooks 'eca-sessions-updated-hook)))
 
 (defun eca-assert-session-running (session)
   "Assert that a eca SESSION is running."

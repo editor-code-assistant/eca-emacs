@@ -999,7 +999,8 @@ aborted, so it must never prompt."
         (eca-chat--switch-windows-to-sibling session buffer)
         (setf (eca--session-chats session)
               (eca-dissoc (eca--session-chats session) chat-id))
-        (eca-chat--force-tab-line-update))
+        (eca-chat--force-tab-line-update)
+        (eca-chat--notify-status-changed session))
       (when delete-server-side
         (eca-api-request-sync (eca-session)
                               :method "chat/delete"
@@ -2584,6 +2585,30 @@ down and visually looks idle."
       'running)
      (t 'idle))))
 
+(defun eca-chat-status (buffer)
+  "Return the status symbol of chat BUFFER.
+One of `waiting-approval', `waiting-answer', `stopping',
+`running' or `idle'."
+  (with-current-buffer buffer
+    (cond
+     ((eca-chat--has-pending-approvals-p) 'waiting-approval)
+     (eca-chat--pending-question 'waiting-answer)
+     ((eq eca-chat--chat-loading 'stopping) 'stopping)
+     (eca-chat--chat-loading 'running)
+     (t 'idle))))
+
+(defun eca-chat-elapsed-str (buffer)
+  "Return elapsed or last turn duration string of chat BUFFER.
+Nil when BUFFER is not live or never ran a prompt."
+  (when (buffer-live-p buffer)
+    (with-current-buffer buffer
+      (eca-chat--turn-duration-str))))
+
+(defun eca-chat-buffers (session)
+  "Return SESSION's live chat buffers ordered oldest-first."
+  (-filter #'buffer-live-p
+           (eca-chat--session-chats-oldest-first session)))
+
 (defun eca-chat--notify-status-changed (session)
   "Run `eca-chat-session-status-changed-functions' for SESSION.
 No-op when SESSION is nil.  Called on transitions that may change the
@@ -2593,11 +2618,13 @@ aggregated session status so integrations can refresh."
 
 (defun eca-chat--maybe-notify-status-changed (session content)
   "Notify a status change for SESSION when CONTENT can alter attention.
-Only tool-call lifecycle events add or clear a pending approval, so the
-status recompute is limited to those content types to avoid scanning the
-buffer on every streamed chunk."
+Tool-call lifecycle events add or clear a pending approval, and
+metadata/usage events update titles and costs shown by integrations,
+so the status recompute is limited to those content types to avoid
+scanning the buffer on every streamed chunk."
   (when (member (plist-get content :type)
-                '("toolCallRun" "toolCallRunning" "toolCalled" "toolCallRejected"))
+                '("toolCallRun" "toolCallRunning" "toolCalled" "toolCallRejected"
+                  "metadata" "usage"))
     (eca-chat--notify-status-changed session)))
 
 (defun eca-chat--chat-status-prefix ()
@@ -3592,7 +3619,8 @@ the last chat buffer of SESSION."
     (eca-api-notify session
                     :method "chat/selectedAgentChanged"
                     :params (append (list :agent new-agent)
-                                    (when chat-id (list :chatId chat-id))))))
+                                    (when chat-id (list :chatId chat-id))))
+    (eca-chat--notify-status-changed session)))
 
 (defun eca-chat--set-trust (session value &optional buffer)
   "Set trust mode to VALUE for SESSION.
@@ -4711,7 +4739,8 @@ prompt or re-issue a redundant `chat/delete'."
       (setf (eca--session-chats session)
             (eca-dissoc (eca--session-chats session) chat-id))
       (when (buffer-live-p chat-buffer)
-        (kill-buffer chat-buffer)))))
+        (kill-buffer chat-buffer))
+      (eca-chat--notify-status-changed session))))
 
 (defun eca-chat-opened (session params)
   "Handle chat/opened notification for SESSION with PARAMS.
@@ -4737,7 +4766,8 @@ resumed chat gets a fresh writable buffer."
       (when title
         (with-current-buffer existing
           (setq-local eca-chat--title title)))
-      (eca-chat--force-tab-line-update))
+      (eca-chat--force-tab-line-update)
+      (eca-chat--notify-status-changed session))
      (t
       ;; Any live buffer reaching here is a stale closed one; kill it so
       ;; it doesn't linger as an orphan `:closed' buffer.
@@ -4754,7 +4784,8 @@ resumed chat gets a fresh writable buffer."
           (eca-chat--initialize-selection-state session))
         (setf (eca--session-chats session)
               (eca-assoc (eca--session-chats session) chat-id new-buffer))
-        (eca-chat--force-tab-line-update))))))
+        (eca-chat--force-tab-line-update)
+        (eca-chat--notify-status-changed session))))))
 
 (defun eca-chat-status-changed (session params)
   "Handle chat status changed notification for SESSION with PARAMS.
@@ -5018,7 +5049,8 @@ When ACTIVE is non-nil, show the question prefix; otherwise restore normal."
     (unless (member (current-buffer) (eca-vals (eca--session-chats session)))
       (cl-assert eca-chat--id nil "eca-chat--id must be set before registering buffer")
       (setf (eca--session-chats session)
-            (eca-assoc (eca--session-chats session) eca-chat--id (current-buffer))))
+            (eca-assoc (eca--session-chats session) eca-chat--id (current-buffer)))
+      (eca-chat--notify-status-changed session))
     (if (window-live-p (get-buffer-window (buffer-name)))
         (eca-chat--select-window)
       (eca-chat--pop-window))
@@ -5099,7 +5131,8 @@ When ACTIVE is non-nil, show the question prefix; otherwise restore normal."
                                         (when variant
                                           (list :variant variant))
                                         (when chat-id
-                                          (list :chatId chat-id))))))))
+                                          (list :chatId chat-id))))
+        (eca-chat--notify-status-changed session)))))
 
 ;;;###autoload
 (defun eca-chat-select-variant ()
@@ -5130,7 +5163,8 @@ When ACTIVE is non-nil, show the question prefix; otherwise restore normal."
           (eca-chat--with-current-buffer target
             (setq-local eca-chat--selected-variant normalized-variant))
           (setf (eca--session-chat-default-variant session)
-                normalized-variant))))))
+                normalized-variant)
+          (eca-chat--notify-status-changed session))))))
 
 ;;;###autoload
 (defun eca-chat-select-agent ()
@@ -5216,7 +5250,7 @@ Sends chat/update to server so trust applies immediately to the next tool call."
   (interactive)
   (eca-assert-session-running (eca-session))
   (save-excursion
-    (eca-chat--with-current-buffer (eca-chat--get-last-buffer (eca-session))
+    (eca-chat--with-current-buffer (eca-chat--get-active-buffer (eca-session))
       (goto-char (point-min))
       (when (text-property-search-forward 'eca-tool-call-pending-approval-accept t t)
         (call-interactively #'eca-chat--key-pressed-return)))))
@@ -5227,7 +5261,7 @@ Sends chat/update to server so trust applies immediately to the next tool call."
   (interactive)
   (eca-assert-session-running (eca-session))
   (save-excursion
-    (eca-chat--with-current-buffer (eca-chat--get-last-buffer (eca-session))
+    (eca-chat--with-current-buffer (eca-chat--get-active-buffer (eca-session))
       (goto-char (point-min))
       (when (text-property-search-forward 'eca-tool-call-pending-approval-accept-and-remember t t)
         (call-interactively #'eca-chat--key-pressed-return)))))
@@ -5238,7 +5272,7 @@ Sends chat/update to server so trust applies immediately to the next tool call."
 Starting from the beginning of the buffer."
   (interactive)
   (eca-assert-session-running (eca-session))
-  (eca-chat--with-current-buffer (eca-chat--get-last-buffer (eca-session))
+  (eca-chat--with-current-buffer (eca-chat--get-active-buffer (eca-session))
     (save-excursion
       (goto-char (point-min))
       (when (text-property-search-forward 'eca-tool-call-pending-approval-accept t t)
@@ -5250,7 +5284,7 @@ Starting from the beginning of the buffer."
 Starting from the beginning of the buffer."
   (interactive)
   (eca-assert-session-running (eca-session))
-  (eca-chat--with-current-buffer (eca-chat--get-last-buffer (eca-session))
+  (eca-chat--with-current-buffer (eca-chat--get-active-buffer (eca-session))
     (save-excursion
       (goto-char (point-min))
       (when (text-property-search-forward 'eca-tool-call-pending-approval-reject t t)
@@ -5624,7 +5658,8 @@ the empty buffer that was used to trigger the resume."
         (setf (eca--session-chats session)
               (eca-dissoc (eca--session-chats session) cid))))
     (kill-buffer buffer)
-    (eca-chat--force-tab-line-update)))
+    (eca-chat--force-tab-line-update)
+    (eca-chat--notify-status-changed session)))
 
 (defun eca-chat--open-response-found-p (response)
   "Return whether RESPONSE says the requested chat was found."
@@ -5756,7 +5791,7 @@ FROM-BUFFER is the buffer where the resume command started."
   (interactive)
   (let ((new-name (read-string "Inform the new chat title: ")))
     (eca-assert-session-running (eca-session))
-    (with-current-buffer (eca-chat--get-last-buffer (eca-session))
+    (with-current-buffer (eca-chat--get-active-buffer (eca-session))
       ;; Update local title immediately for responsiveness
       (setq-local eca-chat--title new-name)
       ;; Clear any custom title since we now have an official title
@@ -5764,7 +5799,29 @@ FROM-BUFFER is the buffer where the resume command started."
       ;; Request server to persist and broadcast to other clients
       (eca-api-request-sync (eca-session)
                             :method "chat/update"
-                            :params (list :chatId eca-chat--id :title new-name)))))
+                            :params (list :chatId eca-chat--id :title new-name))
+      (eca-chat--notify-status-changed (eca-session)))))
+
+;;;###autoload
+(defun eca-chat-fork ()
+  "Fork the active chat from its latest message into a new chat.
+The forked chat is announced by the server via `chat/opened' and
+gets its own buffer."
+  (interactive)
+  (let ((session (eca-session)))
+    (eca-assert-session-running session)
+    (eca-chat--with-current-buffer (eca-chat--get-active-buffer session)
+      (let ((last-id nil)
+            (last-pos -1))
+        (dolist (ov (overlays-in (point-min) (point-max)))
+          (when-let* ((id (overlay-get ov 'eca-chat--user-message-id))
+                      (pos (overlay-start ov)))
+            (when (> pos last-pos)
+              (setq last-id id
+                    last-pos pos))))
+        (unless last-id
+          (user-error "Nothing to fork in this chat"))
+        (eca-chat--fork-from-flag session last-id)))))
 
 ;;;###autoload
 (defun eca-chat-delete ()

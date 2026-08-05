@@ -25,8 +25,6 @@
 
 (require 'cl-lib)
 (require 'backtrace)
-(require 'hierarchy)
-(require 'tree-widget)
 (require 'smerge-mode)
 
 (require 'eca-util)
@@ -34,6 +32,7 @@
 (require 'eca-api)
 (require 'eca-settings)
 (require 'eca-chat)
+(require 'eca-workspaces)
 (require 'eca-mcp)
 (require 'eca-providers)
 (require 'eca-config)
@@ -106,24 +105,7 @@ with `eca-process-wrapper-function' for a fully sandboxed setup."
   :type 'boolean
   :group 'eca)
 
-(defface eca-workspaces-tree-chat-idle-face
-  '((t :underline t))
-  "Face for idle chat entries in eca-workspaces buffer."
-  :group 'eca)
-
-(defface eca-workspaces-tree-chat-loading-face
-  '((t :inherit warning :underline t))
-  "Face for loading chat entries in eca-workspaces buffer."
-  :group 'eca)
-
-(defface eca-workspaces-tree-chat-details-face
-  '((t :inherit shadow :height 0.8))
-  "Face for chat details in entries in eca-workspaces buffer."
-  :group 'eca)
-
 ;; Internal
-
-(defvar eca-workspaces-buffer-name "*eca-workspaces*")
 
 (defun eca--emacs-errors-buffer-name (session)
   "Return the Emacs errors buffer name for SESSION."
@@ -352,36 +334,6 @@ backtrace.  On older Emacs, runs BODY without capture."
                                                   (complete-with-action action '("no" "yes") string pred)))))))
     workspaces))
 
-(defvar eca-workspaces-widget-icon-keymap
-  (let ((map (make-sparse-keymap)))
-    ;; Keep the tree-widget mouse behaviour (fold on click) but route
-    ;; keyboard RET/TAB to our commands so they work on every line,
-    ;; including leaf (chat) lines where the icon has no useful action.
-    (set-keymap-parent map tree-widget-button-keymap)
-    (define-key map (kbd "RET") #'eca-workspaces-visit-or-toggle)
-    (define-key map (kbd "TAB") #'eca-workspaces-toggle-line)
-    (define-key map (kbd "<tab>") #'eca-workspaces-toggle-line)
-    map)
-  "Keymap used on tree-widget icons in the ECA workspaces buffer.")
-
-(defun eca--tree-widget-open-all (tree-widget)
-  "Recursively add :open t and custom icons to TREE-WIDGET and all its children."
-  (let ((args (plist-get (cdr tree-widget) :args)))
-    (when args
-      (plist-put (cdr tree-widget) :args
-                 (mapcar #'eca--tree-widget-open-all args))))
-  (append tree-widget `(:open t
-                        :open-icon (tree-widget-icon :tag ,"▼ " :keymap ,eca-workspaces-widget-icon-keymap)
-                        :close-icon (tree-widget-icon :tag ,"▶ " :keymap ,eca-workspaces-widget-icon-keymap)
-                        :empty-icon (tree-widget-icon :tag ,(propertize "" 'face 'shadow) :keymap ,eca-workspaces-widget-icon-keymap)
-                        :leaf-icon (tree-widget-icon :tag ,(propertize "" 'face 'shadow) :keymap ,eca-workspaces-widget-icon-keymap)
-                        :guide (tree-widget-icon :tag ,(propertize "│" 'face 'shadow) :keymap ,eca-workspaces-widget-icon-keymap)
-                        :end-guide (tree-widget-icon :tag ,(propertize "└" 'face 'shadow) :keymap ,eca-workspaces-widget-icon-keymap)
-                        :no-guide (tree-widget-icon :tag " " :keymap ,eca-workspaces-widget-icon-keymap)
-                        :handle (tree-widget-icon :tag ,(propertize "─" 'face 'shadow) :keymap ,eca-workspaces-widget-icon-keymap)
-                        :no-handle (tree-widget-icon :tag "  " :keymap ,eca-workspaces-widget-icon-keymap)
-                        :nohandle-guide (tree-widget-icon :tag ,(propertize "│" 'face 'shadow) :keymap ,eca-workspaces-widget-icon-keymap))))
-
 ;; Public
 
 ;;;###autoload
@@ -457,20 +409,23 @@ When ARG is current prefix, ask for workspace roots to use."
       ('started (eca-chat-open session))
       ('starting (eca-info "eca server is already starting")))))
 
+(defun eca-stop-session (session)
+  "Stop SESSION if running."
+  (when (eca-process-running-p session)
+    (eca-info "Shutting down...")
+    (eca-api-request-sync session :method "shutdown")
+    (eca-api-notify session :method "exit")
+    (eca-process-stop session)
+    (eca-chat-exit session)
+    (eca-settings-exit session)
+    (eca--emacs-errors-exit session)
+    (eca-delete-session session)))
+
 ;;;###autoload
 (defun eca-stop ()
   "Stop eca if running."
   (interactive)
-  (let ((session (eca-session)))
-    (when (eca-process-running-p session)
-      (eca-info "Shutting down...")
-      (eca-api-request-sync session :method "shutdown")
-      (eca-api-notify session :method "exit")
-      (eca-process-stop session)
-      (eca-chat-exit session)
-      (eca-settings-exit session)
-      (eca--emacs-errors-exit session)
-      (eca-delete-session session))))
+  (eca-stop-session (eca-session)))
 
 ;;;###autoload
 (defun eca-restart ()
@@ -478,219 +433,6 @@ When ARG is current prefix, ask for workspace roots to use."
   (interactive)
   (eca-stop)
   (eca))
-
-(defvar eca-workspaces-mode-map
-  (let ((map (make-sparse-keymap)))
-    ;; `q', `g' (revert), scrolling, etc. are inherited from
-    ;; `special-mode'.  Only the tree-specific keys are defined here.
-    (define-key map (kbd "RET") #'eca-workspaces-visit-or-toggle)
-    (define-key map (kbd "TAB") #'eca-workspaces-toggle-line)
-    (define-key map (kbd "<tab>") #'eca-workspaces-toggle-line)
-    (define-key map (kbd "n") #'eca-workspaces-next-workspace)
-    (define-key map (kbd "p") #'eca-workspaces-previous-workspace)
-    map)
-  "Keymap for `eca-workspaces-mode'.")
-
-(define-derived-mode eca-workspaces-mode special-mode "ECA-Workspaces"
-  "Major mode for the ECA workspaces tree buffer.
-
-\\{eca-workspaces-mode-map}"
-  (setq-local tree-widget-image-enable nil)
-  (setq-local truncate-lines t)
-  (setq-local revert-buffer-function
-              (lambda (&rest _) (eca-workspaces-refresh))))
-
-(defun eca-workspaces--chat-action-on-line ()
-  "Return the chat-open action stored on the current line, if any."
-  (save-excursion
-    (beginning-of-line)
-    (let ((eol (line-end-position))
-          (action nil))
-      (while (and (not action) (< (point) eol))
-        (setq action (get-text-property (point) 'eca-button-on-action))
-        (unless action
-          (forward-char 1)))
-      action)))
-
-(defun eca-workspaces-toggle-line (&optional event)
-  "Fold or unfold the workspace tree node on the current line.
-Does nothing on a leaf (chat) line, which has nothing to fold.
-EVENT, when non-nil, is the mouse event that triggered the command."
-  (interactive (list last-nonmenu-event))
-  (when (mouse-event-p event)
-    (mouse-set-point event))
-  (save-excursion
-    (beginning-of-line)
-    (let ((eol (line-end-position))
-          (toggled nil))
-      (while (and (not toggled) (< (point) eol))
-        (let ((widget (widget-at (point))))
-          ;; The expand/collapse icon is the tree-widget icon that
-          ;; carries a :node and is not a leaf.  Guides have no :node
-          ;; and leaf icons cannot be folded, so skip both.
-          (if (and widget
-                   (tree-widget-p (widget-get widget :parent))
-                   (widget-get widget :node)
-                   (not (widget-get widget :tree-widget--leaf-flag)))
-              (progn
-                (widget-apply (widget-get widget :parent) :action)
-                (setq toggled t))
-            (forward-char 1))))
-      toggled)))
-
-(defun eca-workspaces-visit-or-toggle (&optional event)
-  "Switch to the chat on the current line, or toggle the workspace node.
-EVENT, when non-nil, is the mouse event that triggered the command."
-  (interactive (list last-nonmenu-event))
-  (when (mouse-event-p event)
-    (mouse-set-point event))
-  (let ((action (eca-workspaces--chat-action-on-line)))
-    (if action
-        (funcall action)
-      (eca-workspaces-toggle-line))))
-
-(defun eca-workspaces--session-line-p ()
-  "Return non-nil if the current line is a workspace (session) entry."
-  (save-excursion
-    (beginning-of-line)
-    (let ((eol (line-end-position))
-          (found nil))
-      (while (and (not found) (< (point) eol))
-        (if (get-text-property (point) 'eca-workspaces-session)
-            (setq found t)
-          (forward-char 1)))
-      found)))
-
-(defun eca-workspaces--goto-session-label ()
-  "Move point to the workspace label on the current line."
-  (beginning-of-line)
-  (let ((eol (line-end-position)))
-    (while (and (< (point) eol)
-                (not (get-text-property (point) 'eca-workspaces-session)))
-      (forward-char 1))))
-
-(defun eca-workspaces-next-workspace (&optional count)
-  "Move point to the next workspace (session) entry.
-With prefix COUNT, repeat that many times."
-  (interactive "p")
-  (dotimes (_ (or count 1))
-    (let ((origin (point))
-          (found nil))
-      (forward-line 1)
-      (while (and (not (eobp)) (not found))
-        (if (eca-workspaces--session-line-p)
-            (setq found t)
-          (forward-line 1)))
-      (if found
-          (eca-workspaces--goto-session-label)
-        (goto-char origin)))))
-
-(defun eca-workspaces-previous-workspace (&optional count)
-  "Move point to the previous workspace (session) entry.
-With prefix COUNT, repeat that many times."
-  (interactive "p")
-  (dotimes (_ (or count 1))
-    (let ((origin (point))
-          (found nil))
-      (beginning-of-line)
-      (while (and (not (bobp)) (not found))
-        (forward-line -1)
-        (when (eca-workspaces--session-line-p)
-          (setq found t)))
-      (if found
-          (eca-workspaces--goto-session-label)
-        (goto-char origin)))))
-
-(defun eca-workspaces--foldable-label (text)
-  "Return TEXT that toggles its tree node on RET/TAB.
-When `eca-buttons-allow-mouse' is non-nil, clicking TEXT also
-toggles it and the label shows a clickable affordance."
-  (let* ((map (make-sparse-keymap))
-         (props (list 'keymap map)))
-    (define-key map (kbd "RET") #'eca-workspaces-toggle-line)
-    (define-key map (kbd "TAB") #'eca-workspaces-toggle-line)
-    (when eca-buttons-allow-mouse
-      (define-key map (kbd "<mouse-1>") #'eca-workspaces-toggle-line)
-      (setq props (append props (list 'pointer 'hand
-                                      'help-echo "mouse-1: fold/unfold"))))
-    (add-text-properties 0 (length text) props text)
-    text))
-
-(defun eca-workspaces--refresh-buffer (buffer)
-  "Rebuild the ECA workspaces tree inside BUFFER."
-  (let ((h (hierarchy-new))
-        (parent-fn (lambda (item)
-                     (cond
-                      ((eca--session-p item) 'root)
-                      ((bufferp item)
-                       (with-current-buffer item
-                         (eca-get eca--sessions eca--session-id-cache)))
-                      (t nil))))
-        (label-fn (lambda (item _)
-                    (insert
-                     (cond
-                      ((eca--session-p item)
-                       (eca-workspaces--foldable-label
-                        (propertize (string-join (eca--session-workspace-folders item) ", ")
-                                    'face 'shadow
-                                    'eca-workspaces-session t)))
-                      ((bufferp item)
-                       (with-current-buffer item
-                         (concat
-                          (eca-buttonize
-                             nil
-                             (propertize (eca-chat-title)
-                                         'face (if (buffer-local-value 'eca-chat--chat-loading item)
-                                                   'eca-workspaces-tree-chat-loading-face
-                                                 'eca-workspaces-tree-chat-idle-face))
-                             (lambda ()
-                               (with-current-buffer item
-                                 (setf (eca--session-last-chat-buffer (eca-session)) item)
-                                 (eca-chat-open (eca-session)))))
-                          (when eca-chat--session-cost
-                            (propertize (format "  %s" (eca-chat--usage-str)) 'face 'eca-workspaces-tree-chat-details-face)))))
-                      (t (propertize "ECA" 'face 'shadow)))))))
-    (seq-doseq (session (eca-vals eca--sessions))
-      (hierarchy-add-tree h session parent-fn)
-      (seq-doseq (chat-by-id (eca--session-chats session))
-        (when (buffer-live-p (cdr chat-by-id))
-          (hierarchy-add-tree h (cdr chat-by-id) parent-fn))))
-    (with-current-buffer buffer
-      (unless (derived-mode-p 'eca-workspaces-mode)
-        (eca-workspaces-mode))
-      (let ((inhibit-read-only t))
-        (erase-buffer)
-        (widget-create (eca--tree-widget-open-all
-                        (hierarchy-convert-to-tree-widget h label-fn)))
-        (widget-setup))
-      (goto-char (point-min)))))
-
-(defun eca-workspaces-refresh ()
-  "Refresh the ECA workspaces buffer if it exists."
-  (interactive)
-  (when-let* ((b (get-buffer eca-workspaces-buffer-name)))
-    (when (buffer-live-p b)
-      (eca-workspaces--refresh-buffer b))))
-
-;;;###autoload
-(defun eca-workspaces ()
-  "Display all running ECA sessions and their chats in a tree view.
-
-In the buffer, press \\<eca-workspaces-mode-map>\\[quit-window] to \
-close the window,
-\\[eca-workspaces-toggle-line] to fold/unfold a workspace, and
-\\[eca-workspaces-visit-or-toggle] to switch to the chat under point."
-  (interactive)
-  (let ((b (get-buffer-create eca-workspaces-buffer-name)))
-    (eca-workspaces--refresh-buffer b)
-    (select-window
-     (display-buffer
-      b
-      '((display-buffer-in-side-window)
-        (side . bottom)
-        (slot . 0)
-        (dedicated . t)
-        (window-parameters . ((no-delete-other-windows . t))))))))
 
 (defun eca--chat-buffer-candidates-for-session (session seen)
   "Return completion candidates for SESSION.

@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Turn `eca-workspaces` into a live dashboard: rows refresh automatically as chats change state, each chat showing status (⏳ running, 🚧 pending approval, ❓ waiting answer), elapsed time, cost and model, with workspaces sorted alphabetically. Actions on the entry at point, all listed in a transient menu (`?`): new chat with optional initial prompt (`+`), delete chat or stop workspace with confirmation (`d`/`DEL`), rename (`r`), fork (`f`), compact (`C`), select model/variant (`m`/`v`), accept/reject pending tool calls (`a`/`A`/`x`), stop prompt (`s`) and resume a closed chat (`R`).
 - Bugfix: quitting the delete-chat prompt (`C-g`) now really cancels the kill instead of leaving the chat alive but orphaned, without a window, tab or registry entry. Quitting it during `eca-chat-reset` leaves the session untouched as well, instead of adding a replacement chat next to the one that survived. The answered prompt no longer lingers in the echo area.
 
 ## 0.10.0
