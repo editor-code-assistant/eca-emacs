@@ -1672,4 +1672,37 @@ does not treat the first line as metadata.  Returns FN's value."
   (it "does not bind the raw <tab> event (#281)"
     (expect (lookup-key eca-chat-mode-map (kbd "<tab>")) :to-be nil)))
 
+;; ---------------------------------------------------------------------------
+;; eca-chat--shell-command-state-face
+;; ---------------------------------------------------------------------------
+
+(describe "eca-chat--shell-command-state-face"
+
+  (it "uses the plain face for commands that always ask"
+    (expect (eca-chat--shell-command-state-face '(:command "rm"))
+            :to-be 'eca-chat-shell-command-face)
+    (expect (eca-chat--shell-command-state-face '(:command "rm") t)
+            :to-be 'eca-chat-shell-command-face))
+
+  (it "uses the approved face for remembered commands"
+    (expect (eca-chat--shell-command-state-face
+             '(:command "ls" :approvalKey "ls" :remembered t))
+            :to-be 'eca-chat-shell-command-remembered-face))
+
+  (it "uses the pending face while waiting for manual approval"
+    (expect (eca-chat--shell-command-state-face
+             '(:command "ls" :approvalKey "ls"))
+            :to-be 'eca-chat-shell-command-not-remembered-face))
+
+  (it "uses the approved face when the tool call is already approved"
+    (expect (eca-chat--shell-command-state-face
+             '(:command "ls" :approvalKey "ls") t)
+            :to-be 'eca-chat-shell-command-remembered-face))
+
+  (it "propagates the approved state to breakdown lines"
+    (let ((line (eca-chat--shell-command-breakdown-line
+                 '(:command "ls" :args ["-la"] :approvalKey "ls") "$ " nil t)))
+      (expect (get-text-property 2 'font-lock-face line)
+              :to-be 'eca-chat-shell-command-remembered-face))))
+
 ;;; eca-chat-test.el ends here

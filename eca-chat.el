@@ -477,7 +477,7 @@ behavior)."
 
 (defface eca-chat-shell-command-remembered-face
   '((t :inherit success :weight bold))
-  "Face for breakdown commands whose approval is already remembered."
+  "Face for breakdown commands already approved or remembered."
   :group 'eca)
 
 (defface eca-chat-shell-command-not-remembered-face
@@ -3660,36 +3660,42 @@ Append STATUS, ROOTS and optional PARENT-ID."
      nil
      parent-id)))
 
-(defun eca-chat--shell-command-state-face (cmd)
-  "Return the face conveying the remember state of CMD, a breakdown entry."
+(defun eca-chat--shell-command-state-face (cmd &optional approved?)
+  "Return the face conveying the approval state of CMD, a breakdown entry.
+When APPROVED? is non-nil the tool call is already approved (trusted,
+auto-allowed or manually approved), so approvable commands render as
+approved instead of pending."
   (-let* (((&plist :approvalKey approval-key :remembered remembered) cmd))
     (cond ((not approval-key) 'eca-chat-shell-command-face)
-          (remembered 'eca-chat-shell-command-remembered-face)
+          ((or remembered approved?) 'eca-chat-shell-command-remembered-face)
           (t 'eca-chat-shell-command-not-remembered-face))))
 
-(defun eca-chat--shell-command-breakdown-line (cmd prefix annotate-always-asks?)
+(defun eca-chat--shell-command-breakdown-line (cmd prefix annotate-always-asks? &optional approved?)
   "Build a single breakdown line for CMD, a shellCommand details entry.
 PREFIX is the line prefix string (`$ ' for the first command,
 `↳ ' for the chained ones).
 When ANNOTATE-ALWAYS-ASKS? is non-nil, commands that can never be
 auto-approved get an annotation; only meaningful while the tool call is
-pending approval (not on trusted/auto-allowed/finished calls)."
+pending approval (not on trusted/auto-allowed/finished calls).
+APPROVED? is non-nil when the tool call is already approved."
   (-let* (((&plist :command command :args args :approvalKey approval-key) cmd))
     (concat (propertize prefix 'font-lock-face 'eca-chat-shell-command-breakdown-prefix-face)
-            (propertize command 'font-lock-face (eca-chat--shell-command-state-face cmd))
+            (propertize command 'font-lock-face (eca-chat--shell-command-state-face cmd approved?))
             (when (and args (> (length args) 0))
               (concat " " (string-join (append args nil) " ")))
             (when (and annotate-always-asks? (not approval-key))
               (propertize "  (always asks)" 'font-lock-face 'eca-chat-shell-command-always-asks-face)))))
 
-(defun eca-chat--tool-call-shell-command-details (content label approval-text time status &optional parent-id output-text)
+(defun eca-chat--tool-call-shell-command-details (content label approval-text time status &optional parent-id output-text approved?)
   "Update tool call UI showing the shell command breakdown details.
 CONTENT is the tool call content, LABEL is the label.
 The raw command is always shown verbatim; the derived per-command
 breakdown lines are added only when they help: chained commands or
 always-asks annotations while pending approval.
 Can include optional APPROVAL-TEXT and TIME.
-Append STATUS and optional PARENT-ID and OUTPUT-TEXT."
+Append STATUS and optional PARENT-ID and OUTPUT-TEXT.
+APPROVED? is non-nil when the tool call is already approved (trusted,
+auto-allowed or manually approved), coloring commands accordingly."
   (-let* (((&plist :arguments args :details details :id id) content)
           (commands (plist-get details :commands))
           (raw-command (or (plist-get args :command) ""))
@@ -3702,8 +3708,8 @@ Append STATUS and optional PARENT-ID and OUTPUT-TEXT."
                                               commands))))
           (raw-face (if (= 1 (length commands))
                         ;; Single command: the raw line is the command itself,
-                        ;; so it carries the remember-state color directly.
-                        (eca-chat--shell-command-state-face (elt commands 0))
+                        ;; so it carries the approval-state color directly.
+                        (eca-chat--shell-command-state-face (elt commands 0) approved?)
                       'eca-chat--tool-call-argument-value-face))
           (body (concat (propertize "$ " 'font-lock-face 'eca-chat-shell-command-breakdown-prefix-face)
                         (propertize raw-command
@@ -3715,7 +3721,7 @@ Append STATUS and optional PARENT-ID and OUTPUT-TEXT."
                                              (seq-map-indexed
                                               (lambda (cmd idx)
                                                 (eca-chat--shell-command-breakdown-line
-                                                 cmd (if (zerop idx) "$ " "↳ ") annotate?))
+                                                 cmd (if (zerop idx) "$ " "↳ ") annotate? approved?))
                                               commands)
                                              "\n")))
                         (when (and work-dir (not (string-empty-p work-dir)))
@@ -4176,7 +4182,7 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
              (puthash (plist-get details :subagentChatId) id eca-chat--subagent-chat-id->tool-call-id))
            (pcase (plist-get details :type)
              ("fileChange" (eca-chat--tool-call-file-change-details content label approval-text nil status tool-call-next-line-spacing roots parent-tool-call-id))
-             ("shellCommand" (eca-chat--tool-call-shell-command-details content label approval-text nil status parent-tool-call-id))
+             ("shellCommand" (eca-chat--tool-call-shell-command-details content label approval-text nil status parent-tool-call-id nil (not manual?)))
              ("subagent" (eca-chat--tool-call-subagent-details id args label approval-text nil status parent-tool-call-id details))
              (_ (eca-chat--update-expandable-content
                  id
@@ -4226,7 +4232,7 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
                  (puthash subagent-chat-id id eca-chat--subagent-chat-id->tool-call-id))))
            (pcase (plist-get details :type)
              ("fileChange" (eca-chat--tool-call-file-change-details content label nil elapsed-time status tool-call-next-line-spacing roots parent-tool-call-id))
-             ("shellCommand" (eca-chat--tool-call-shell-command-details content label nil elapsed-time status parent-tool-call-id))
+             ("shellCommand" (eca-chat--tool-call-shell-command-details content label nil elapsed-time status parent-tool-call-id nil t))
              ("subagent" (eca-chat--tool-call-subagent-details id args label nil elapsed-time status parent-tool-call-id details))
              (_ (eca-chat--update-expandable-content
                  id
@@ -4278,7 +4284,7 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
              (remhash (plist-get details :subagentChatId) eca-chat--subagent-chat-id->tool-call-id))
            (pcase (plist-get details :type)
              ("fileChange" (eca-chat--tool-call-file-change-details content label nil time status tool-call-next-line-spacing roots parent-tool-call-id))
-             ("shellCommand" (eca-chat--tool-call-shell-command-details content label nil time status parent-tool-call-id output-text))
+             ("shellCommand" (eca-chat--tool-call-shell-command-details content label nil time status parent-tool-call-id output-text t))
              ("jsonOutputs" (eca-chat--tool-call-json-outputs-details content time status parent-tool-call-id))
              ("subagent" (eca-chat--tool-call-subagent-details id args label nil time status parent-tool-call-id details output-text))
              (_ (eca-chat--update-expandable-content
