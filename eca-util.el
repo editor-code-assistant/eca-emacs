@@ -243,7 +243,7 @@ nil otherwise."
 
 (defun eca--session-add-workspace-folder (session folder)
   "Add FOLDER to SESSION's workspace-folders and notify the server."
-  (let ((folder (expand-file-name folder)))
+  (let ((folder (directory-file-name (expand-file-name folder))))
     (unless (--first (string= it folder)
                      (eca--session-workspace-folders session))
       (setf (eca--session-workspace-folders session)
@@ -266,7 +266,7 @@ an empty list would make the session unreachable.  In `merged' worktree
 mode, a removed folder whose git-common-dir still matches another
 folder in the session can be auto-re-added by `eca-session' the next
 time a buffer under it is visited."
-  (let* ((folder (expand-file-name folder))
+  (let* ((folder (directory-file-name (expand-file-name folder)))
          (folders (eca--session-workspace-folders session)))
     (cond
      ((not (--first (string= it folder) folders))
@@ -289,7 +289,8 @@ time a buffer under it is visited."
 (defun eca-session ()
   "Return the session related to root of current buffer otherwise nil."
   (or (eca-get eca--sessions eca--session-id-cache)
-      (let* ((root (funcall eca-find-root-for-buffer-function))
+      (let* ((root (directory-file-name
+                    (expand-file-name (funcall eca-find-root-for-buffer-function))))
              (session (or (-first (lambda (session)
                                     (--first (string= it root)
                                              (eca--session-workspace-folders session)))
@@ -311,7 +312,8 @@ time a buffer under it is visited."
   (let ((session (make-eca--session))
         (id (cl-incf eca--session-ids)))
     (setf (eca--session-id session) id)
-    (setf (eca--session-workspace-folders session) workspace-roots)
+    (setf (eca--session-workspace-folders session)
+          (-distinct (--map (directory-file-name (expand-file-name it)) workspace-roots)))
     (setf (eca--session-chat-default-trust session)
           (and (boundp 'eca-chat-trust-enable)
                (symbol-value 'eca-chat-trust-enable)))

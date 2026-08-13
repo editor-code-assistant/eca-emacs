@@ -1705,4 +1705,87 @@ does not treat the first line as metadata.  Returns FN's value."
       (expect (get-text-property 2 'font-lock-face line)
               :to-be 'eca-chat-shell-command-remembered-face))))
 
+(defvar eca-chat-test--ws-session nil
+  "Session the workspace-root command specs operate on.")
+
+(defun eca-chat-test--add-root (picked)
+  "Run `eca-chat-add-workspace-root' as if the user picked PICKED."
+  (cl-letf (((symbol-function 'read-directory-name) (lambda (&rest _) picked)))
+    (call-interactively #'eca-chat-add-workspace-root)))
+
+(defun eca-chat-test--remove-root (choose)
+  "Run `eca-chat-remove-workspace-root' picking via CHOOSE.
+CHOOSE receives the candidate list the command offers."
+  (cl-letf (((symbol-function 'completing-read)
+             (lambda (_prompt collection &rest _) (funcall choose collection))))
+    (call-interactively #'eca-chat-remove-workspace-root)))
+
+(describe "workspace root commands end to end"
+  (before-each
+    (spy-on 'eca-api-notify)
+    (spy-on 'eca-info)
+    (spy-on 'eca-warn)
+    (spy-on 'force-mode-line-update)
+    (setq eca-chat-test--ws-session (make-eca--session))
+    ;; Read the variable at call time: specs that rebuild it via
+    ;; `eca-create-session' must be seen by the commands under test.
+    (spy-on 'eca-session :and-call-fake (lambda () eca-chat-test--ws-session)))
+
+  (after-each
+    (setq eca-chat-test--ws-session nil))
+
+  ;; The bug: the dir was added and shown in the mode line, but removing
+  ;; it reported "Workspace folder not found".
+  (it "removes a dir the user just added"
+    (setf (eca--session-workspace-folders eca-chat-test--ws-session)
+          (list (expand-file-name "/tmp/root")))
+    (eca-chat-test--add-root "/tmp/added/")
+    (expect (eca--session-workspace-folders eca-chat-test--ws-session)
+            :to-equal (list (expand-file-name "/tmp/root")
+                            (expand-file-name "/tmp/added")))
+    (eca-chat-test--remove-root #'cadr)
+    (expect (eca--session-workspace-folders eca-chat-test--ws-session)
+            :to-equal (list (expand-file-name "/tmp/root"))))
+
+  (it "removes a dir added in ~ form"
+    (setf (eca--session-workspace-folders eca-chat-test--ws-session)
+          (list (expand-file-name "/tmp/root")))
+    (eca-chat-test--add-root "~/added/")
+    (eca-chat-test--remove-root #'cadr)
+    (expect (eca--session-workspace-folders eca-chat-test--ws-session)
+            :to-equal (list (expand-file-name "/tmp/root"))))
+
+  (it "removes an original session root stored in ~ form"
+    (let ((eca--sessions '()))
+      (setq eca-chat-test--ws-session (eca-create-session (list "~/root/" "/tmp/other/")))
+      (eca-chat-test--add-root "/tmp/added")
+      (eca-chat-test--remove-root #'car)
+      (expect (eca--session-workspace-folders eca-chat-test--ws-session)
+              :to-equal (list (expand-file-name "/tmp/other")
+                              (expand-file-name "/tmp/added")))))
+
+  (it "offers no candidate that cannot be removed"
+    (dolist (dir '("~/root" "/tmp/other" "/tmp/added"))
+      (let ((eca--sessions '()))
+        (setq eca-chat-test--ws-session (eca-create-session (list "~/root/" "/tmp/other/")))
+        (eca-chat-test--add-root "/tmp/added/")
+        (let ((stored (directory-file-name (expand-file-name dir)))
+              (before (eca--session-workspace-folders eca-chat-test--ws-session)))
+          (eca-chat-test--remove-root
+           (lambda (candidates) (--first (string= it stored) candidates)))
+          (expect (eca--session-workspace-folders eca-chat-test--ws-session)
+                  :to-equal (remove stored before))))))
+
+  (it "keeps the mode line in sync with what can be removed"
+    (setf (eca--session-workspace-folders eca-chat-test--ws-session)
+          (list (expand-file-name "/tmp/root")))
+    (expect (eca-chat--mode-line-module eca-chat-test--ws-session :remove-workspace-button)
+            :to-be nil)
+    (eca-chat-test--add-root "/tmp/added/")
+    (expect (eca-chat--mode-line-module eca-chat-test--ws-session :remove-workspace-button)
+            :not :to-be nil)
+    (eca-chat-test--remove-root #'cadr)
+    (expect (eca-chat--mode-line-module eca-chat-test--ws-session :remove-workspace-button)
+            :to-be nil)))
+
 ;;; eca-chat-test.el ends here
