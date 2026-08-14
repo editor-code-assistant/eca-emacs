@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Bugfix: `eca-chat-remove-workspace-root` failed with `Workspace folder not found` for a dir shown in the mode-line. Workspace dirs are matched with `string=`, but `C-u M-x eca` stored them as `read-directory-name` returned them (`~/proj/`) while add and remove expanded their argument, and `expand-file-name` keeps trailing slashes so `/x` and `/x/` never matched either. Dirs are now expanded and stripped of the trailing slash wherever they are stored or compared, which also stops `M-x eca` opening a second session for a root already held under a different spelling.
+
 - Bugfix: shell command breakdown no longer stays yellow when the tool call was auto-approved (e.g. trust mode) or already ran; commands now show green once approved, keeping yellow only while approval is pending.
 
 - Turn `eca-workspaces` into a live dashboard: rows refresh automatically as chats change state, each chat showing status (⏳ running, 🚧 pending approval, ❓ waiting answer), elapsed time, cost and model, with workspaces sorted alphabetically. Actions on the entry at point, all listed in a transient menu (`?`): new chat with optional initial prompt (`+`), delete chat or stop workspace with confirmation (`d`/`DEL`), rename (`r`), fork (`f`), compact (`C`), select model/variant (`m`/`v`), accept/reject pending tool calls (`a`/`A`/`x`), stop prompt (`s`) and resume a closed chat (`R`).

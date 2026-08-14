@@ -4,6 +4,7 @@
 
 (require 'buttercup)
 (require 'eca-util)
+(require 'eca-api)
 
 (defvar eca-local-to-remote-prefix-map)
 
@@ -264,6 +265,112 @@
         (eca--git-common-dir "/tmp/eca-repo")
         (eca-delete-session session)
         (expect (hash-table-count eca--git-common-dir-cache) :to-equal 0)))))
+
+(defun eca-util-test--add-then-remove (initial added removed)
+  "Add ADDED to a session holding INITIAL, remove REMOVED, return its dirs."
+  (let ((session (make-eca--session)))
+    (setf (eca--session-workspace-folders session) initial)
+    (eca--session-add-workspace-folder session added)
+    (eca--session-remove-workspace-folder session removed)
+    (eca--session-workspace-folders session)))
+
+(describe "workspace dir add/remove round-trip"
+  (before-each
+    (spy-on 'eca-api-notify)
+    (spy-on 'eca-info)
+    (spy-on 'eca-warn))
+
+  (it "removes a dir added with a trailing slash"
+    (expect (eca-util-test--add-then-remove
+             (list (expand-file-name "/tmp/root")) "/tmp/added/" "/tmp/added")
+            :to-equal (list (expand-file-name "/tmp/root"))))
+
+  (it "removes a dir offered back with a trailing slash"
+    (expect (eca-util-test--add-then-remove
+             (list (expand-file-name "/tmp/root")) "/tmp/added" "/tmp/added/")
+            :to-equal (list (expand-file-name "/tmp/root"))))
+
+  (it "removes a dir added in ~ form"
+    (expect (eca-util-test--add-then-remove
+             (list (expand-file-name "/tmp/root")) "~/added/"
+             (expand-file-name "~/added"))
+            :to-equal (list (expand-file-name "/tmp/root"))))
+
+  (it "removes a ~ form dir picked from the UI verbatim"
+    (expect (eca-util-test--add-then-remove
+             (list (expand-file-name "/tmp/root")) "~/added" "~/added")
+            :to-equal (list (expand-file-name "/tmp/root"))))
+
+  (it "does not add the same dir twice in different shapes"
+    (let ((session (make-eca--session)))
+      (setf (eca--session-workspace-folders session)
+            (list (expand-file-name "/tmp/root")))
+      (eca--session-add-workspace-folder session "/tmp/added")
+      (eca--session-add-workspace-folder session "/tmp/added/")
+      (expect (eca--session-workspace-folders session)
+              :to-equal (list (expand-file-name "/tmp/root")
+                              (expand-file-name "/tmp/added")))))
+
+  (it "still warns when the dir really is absent"
+    (let ((session (make-eca--session))
+          (dirs (list (expand-file-name "/tmp/root")
+                      (expand-file-name "/tmp/other"))))
+      (setf (eca--session-workspace-folders session) dirs)
+      (eca--session-remove-workspace-folder session "/tmp/nope")
+      (expect 'eca-warn :to-have-been-called)
+      (expect (eca--session-workspace-folders session) :to-equal dirs)))
+
+  (it "still refuses to remove the last dir"
+    (let ((session (make-eca--session)))
+      (setf (eca--session-workspace-folders session)
+            (list (expand-file-name "/tmp/root")))
+      (expect (eca--session-remove-workspace-folder session "/tmp/root/")
+              :to-throw 'user-error))))
+
+(describe "eca-create-session"
+  (before-each
+    (spy-on 'eca-api-notify))
+
+  (it "normalizes roots so they can be removed later"
+    (let* ((eca--sessions '())
+           (session (eca-create-session (list "~/proj/" "/tmp/other/"))))
+      (expect (eca--session-workspace-folders session)
+              :to-equal (list (expand-file-name "~/proj")
+                              (expand-file-name "/tmp/other")))))
+
+  (it "collapses roots that only differ in shape"
+    (let* ((eca--sessions '())
+           (session (eca-create-session (list "/tmp/proj" "/tmp/proj/"))))
+      (expect (eca--session-workspace-folders session)
+              :to-equal (list (expand-file-name "/tmp/proj")))))
+
+  (it "keeps the filesystem root usable"
+    ;; Stripping the trailing slash must not eat the root itself.
+    (let* ((eca--sessions '())
+           (session (eca-create-session '("/"))))
+      (expect (eca--session-workspace-folders session)
+              :to-equal (list (expand-file-name "/"))))))
+
+(describe "eca-session workspace resolution"
+  (before-each
+    (spy-on 'eca-api-notify))
+
+  (it "resolves a root reported with a trailing slash"
+    ;; `project-root' and `default-directory' both end in a slash, while
+    ;; stored dirs do not; the lookup must still match.
+    (let* ((eca--sessions '())
+           (session (eca-create-session (list (expand-file-name "/tmp/proj"))))
+           (eca-find-root-for-buffer-function
+            (lambda () (file-name-as-directory (expand-file-name "/tmp/proj")))))
+      (with-temp-buffer
+        (expect (eca-session) :to-be session))))
+
+  (it "resolves a root reported in ~ form"
+    (let* ((eca--sessions '())
+           (session (eca-create-session (list (expand-file-name "~/proj"))))
+           (eca-find-root-for-buffer-function (lambda () "~/proj/")))
+      (with-temp-buffer
+        (expect (eca-session) :to-be session)))))
 
 (provide 'eca-util-test)
 ;;; eca-util-test.el ends here
