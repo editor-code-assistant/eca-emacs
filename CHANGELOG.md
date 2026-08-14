@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Support adding a region of a non-file buffer (magit, vterm, compilation, the chat itself) as context with the `eca-chat-add-context-*` commands: the selection becomes a `text` context with a lines range, its content sliced from the live buffer at prompt time. The commands now signal a `user-error` instead of silently doing nothing when no context applies. #294
+
 - Bugfix: `eca-chat-remove-workspace-root` failed with `Workspace folder not found` for a dir shown in the mode-line. Workspace dirs are matched with `string=`, but `C-u M-x eca` stored them as `read-directory-name` returned them (`~/proj/`) while add and remove expanded their argument, and `expand-file-name` keeps trailing slashes so `/x` and `/x/` never matched either. Dirs are now expanded and stripped of the trailing slash wherever they are stored or compared, which also stops `M-x eca` opening a second session for a root already held under a different spelling.
 
 - Bugfix: shell command breakdown no longer stays yellow when the tool call was auto-approved (e.g. trust mode) or already ran; commands now show green once approved, keeping yellow only while approval is pending.

@@ -5451,13 +5451,16 @@ Just open if FORCE-OPEN? is non-nil."
 (defun eca-chat-add-context-to-system-prompt ()
   "Add context to system prompt in chat in a DWIM manner.
 
-- If a region selected, add file with lines range selected.
+- If a region selected, add the file or the buffer content in
+  that lines range.
 - If in Dired, add the marked files/dirs or current file/dir at point.
 - If in Treemacs, add selected file/dir.
-- Else add current file."
+- Else add current file or the whole buffer content."
   (interactive)
   (eca-assert-session-running (eca-session))
   (let* ((contexts (eca-chat--get-contexts-dwim)))
+    (unless contexts
+      (user-error "No context for this buffer; select a region to add its content"))
     (eca-chat--with-current-buffer (eca-chat--get-last-buffer (eca-session))
       (seq-doseq (context contexts)
         (eca-chat--add-context context)))))
@@ -5466,16 +5469,19 @@ Just open if FORCE-OPEN? is non-nil."
 (defun eca-chat-add-context-to-user-prompt (&optional arg)
   "Add context to user prompt in chat in a DWIM manner.
 
-- If a region selected, add file with lines range selected.
+- If a region selected, add the file or the buffer content in
+  that lines range.
 - If in Dired, add the marked files/dirs or current file/dir at point.
 - If in Treemacs, add selected file/dir.
-- Else add current file.
+- Else add current file or the whole buffer content.
 
 With prefix ARG, add the context without selecting the chat
 window, leaving point where it was."
   (interactive "P")
   (eca-assert-session-running (eca-session))
   (let* ((contexts (eca-chat--get-contexts-dwim)))
+    (unless contexts
+      (user-error "No context for this buffer; select a region to add its content"))
     (eca-chat--with-current-buffer (eca-chat--get-last-buffer (eca-session))
       (seq-doseq (context contexts)
         (eca-chat--insert-prompt (concat (eca-chat--context->str context 'static)

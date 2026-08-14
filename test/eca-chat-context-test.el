@@ -87,7 +87,31 @@
       (narrow-to-region 1 3)
       (let ((eca-chat-context-buffer-max-chars nil))
         (expect (eca-chat--buffer-context-content (current-buffer))
-                :to-equal "abcdef")))))
+                :to-equal "abcdef"))))
+
+  (it "restricts content to the given lines range"
+    (with-temp-buffer
+      (insert "l1\nl2\nl3\nl4\n")
+      (let ((eca-chat-context-buffer-max-chars nil))
+        (expect (eca-chat--buffer-context-content
+                 (current-buffer) (list :start 2 :end 3))
+                :to-equal "l2\nl3"))))
+
+  (it "keeps the range tail when over the limit"
+    (with-temp-buffer
+      (insert "l1\nl2\nl3\nl4\n")
+      (let ((eca-chat-context-buffer-max-chars 2))
+        (expect (eca-chat--buffer-context-content
+                 (current-buffer) (list :start 2 :end 3))
+                :to-equal "l3"))))
+
+  (it "returns empty when the range is past the buffer end"
+    (with-temp-buffer
+      (insert "l1\nl2\n")
+      (let ((eca-chat-context-buffer-max-chars nil))
+        (expect (eca-chat--buffer-context-content
+                 (current-buffer) (list :start 5 :end 8))
+                :to-equal "")))))
 
 (describe "eca-chat--materialize-context"
   (it "fills text context with fresh buffer content"
@@ -98,6 +122,20 @@
             (let ((context (eca-chat--materialize-context
                             (list :type "text" :label "*materialize-test*"))))
               (expect (plist-get context :content) :to-equal "output line")))
+        (kill-buffer buf))))
+
+  (it "slices text context content to its lines range"
+    (let ((buf (generate-new-buffer "*materialize-range-test*")))
+      (unwind-protect
+          (progn
+            (with-current-buffer buf (insert "l1\nl2\nl3\n"))
+            ;; Built outside `expect', see eca-chat--buffer-contexts
+            ;; test above.
+            (let* ((ctx (list :type "text" :label "*materialize-range-test*"
+                              :linesRange (list :start 2 :end 2)))
+                   (context (eca-chat--materialize-context ctx)))
+              (expect (plist-get context :content) :to-equal "l2")
+              (expect (plist-get context :linesRange) :to-be nil)))
         (kill-buffer buf))))
 
   (it "does not mutate the original context"
@@ -134,7 +172,16 @@
            (str (eca-chat--context->str ctx)))
       (expect (substring-no-properties str) :to-equal "@*compilation*")
       (expect (get-text-property 0 'eca-chat-context-item str)
-              :to-equal ctx))))
+              :to-equal ctx)))
+
+  (it "renders the lines range when present"
+    ;; Built outside `expect', see eca-chat--buffer-contexts test above.
+    (let* ((ctx (list :type "text" :label "*vterm*"
+                      :linesRange (list :start 5 :end 10)))
+           (str (eca-chat--context->str ctx)))
+      (expect (substring-no-properties str) :to-equal "@*vterm*(5-10)")
+      (expect (get-text-property 0 'eca-chat-expanded-item-str str)
+              :to-equal "@*vterm*:L5-L10"))))
 
 (describe "eca-chat--context->str for cursor contexts"
   (it "renders a placeholder when no position was tracked yet"
@@ -159,6 +206,74 @@
           (ctx (list :type "cursor")))
       (expect (substring-no-properties (eca-chat--context->str ctx 'static))
               :to-equal "@cursor"))))
+
+(describe "eca-chat--get-contexts-dwim"
+  (it "returns a ranged text context for a region in a non-file buffer"
+    (let ((buf (generate-new-buffer "*dwim-region-test*")))
+      (unwind-protect
+          (with-current-buffer buf
+            (insert "l1\nl2\nl3\nl4\n")
+            (let ((transient-mark-mode t))
+              (goto-char (point-min))
+              (forward-line 1)
+              (push-mark (point) t t)
+              (forward-line 1)
+              (end-of-line)
+              ;; Built outside `expect', see eca-chat--buffer-contexts
+              ;; test above.
+              (let ((ctx (list :type "text" :label "*dwim-region-test*"
+                               :linesRange (list :start 2 :end 3))))
+                (expect (eca-chat--get-contexts-dwim) :to-equal (list ctx)))))
+        (kill-buffer buf))))
+
+  (it "bypasses the buffer predicate when a region is selected"
+    (let ((buf (generate-new-buffer "<eca-chat-dwim-test>")))
+      (unwind-protect
+          (with-current-buffer buf
+            (insert "previous response\n")
+            (let ((transient-mark-mode t))
+              (goto-char (point-min))
+              (push-mark (point) t t)
+              (end-of-line)
+              (let ((ctx (list :type "text" :label "<eca-chat-dwim-test>"
+                               :linesRange (list :start 1 :end 1))))
+                (expect (eca-chat--get-contexts-dwim) :to-equal (list ctx)))))
+        (kill-buffer buf))))
+
+  (it "returns a whole-buffer text context when no region is selected"
+    (let ((buf (generate-new-buffer "*dwim-whole-test*")))
+      (unwind-protect
+          (with-current-buffer buf
+            (insert "l1\n")
+            (let ((ctx (list :type "text" :label "*dwim-whole-test*")))
+              (expect (eca-chat--get-contexts-dwim) :to-equal (list ctx))))
+        (kill-buffer buf))))
+
+  (it "returns nil for excluded buffers without a region"
+    (let ((buf (generate-new-buffer "<eca-chat-no-region-test>")))
+      (unwind-protect
+          (with-current-buffer buf
+            (expect (eca-chat--get-contexts-dwim) :to-be nil))
+        (kill-buffer buf))))
+
+  (it "keeps returning a file context for a region in a file buffer"
+    (let ((buf (generate-new-buffer "dwim-file-region-test")))
+      (unwind-protect
+          (with-current-buffer buf
+            (insert "l1\nl2\n")
+            (setq buffer-file-name "/tmp/eca-dwim-file-test.txt")
+            (let ((transient-mark-mode t))
+              (goto-char (point-min))
+              (push-mark (point) t t)
+              (forward-line 1)
+              (end-of-line)
+              (let ((ctx (list :type "file" :path "/tmp/eca-dwim-file-test.txt"
+                               :linesRange (list :start 1 :end 2))))
+                (expect (eca-chat--get-contexts-dwim) :to-equal (list ctx)))))
+        (with-current-buffer buf
+          (setq buffer-file-name nil)
+          (set-buffer-modified-p nil))
+        (kill-buffer buf)))))
 
 (describe "eca-chat--get-last-visited-buffer"
   (it "skips more recent file buffers outside any session workspace"

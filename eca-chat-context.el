@@ -173,9 +173,12 @@ Excludes file-visiting, hidden, minibuffer and ECA own buffers."
          (not (string-prefix-p " " name))
          (not (string-match-p "\\`\\(\\*eca\\|<eca-\\)" name)))))
 
-(defun eca-chat--buffer-context (buffer)
-  "Return the text context plist for BUFFER."
-  (list :type "text" :label (buffer-name buffer)))
+(defun eca-chat--buffer-context (buffer &optional lines-range)
+  "Return the text context plist for BUFFER.
+When LINES-RANGE is non-nil, a (:start N :end M) plist, restrict
+the context to those lines of BUFFER."
+  (append (list :type "text" :label (buffer-name buffer))
+          (when lines-range (list :linesRange lines-range))))
 
 (defvar eca-chat--buffer-list-tick 0
   "Counter bumped whenever the buffer list changes.")
@@ -211,30 +214,48 @@ Recomputed only when the buffer list changes."
   (-remove (lambda (context) (member context eca-chat--context))
            (eca-chat--all-buffer-contexts)))
 
-(defun eca-chat--buffer-context-content (buffer)
+(defun eca-chat--buffer-context-content (buffer &optional lines-range)
   "Return BUFFER text limited to `eca-chat-context-buffer-max-chars'.
+When LINES-RANGE is non-nil, a (:start N :end M) plist, restrict
+to those lines first, resolved against the live buffer state.
 When over the limit the tail is kept, where recent output lives."
   (with-current-buffer buffer
     (save-restriction
       (widen)
-      (let* ((max-chars eca-chat-context-buffer-max-chars)
-             (end (point-max))
-             (start (if (and max-chars (> (- end (point-min)) max-chars))
-                        (- end max-chars)
-                      (point-min))))
-        (buffer-substring-no-properties start end)))))
+      (-let* (((&plist :start start-line :end end-line) lines-range)
+              (region-start (if start-line
+                                (save-excursion
+                                  (goto-char (point-min))
+                                  (forward-line (1- start-line))
+                                  (point))
+                              (point-min)))
+              (region-end (if end-line
+                              (save-excursion
+                                (goto-char (point-min))
+                                (forward-line (1- end-line))
+                                (line-end-position))
+                            (point-max)))
+              (max-chars eca-chat-context-buffer-max-chars)
+              (start (if (and max-chars (> (- region-end region-start) max-chars))
+                         (- region-end max-chars)
+                       region-start)))
+        (buffer-substring-no-properties start region-end)))))
 
 (defun eca-chat--materialize-context (context)
   "Return CONTEXT filled with content needed right before sending.
-Text contexts get fresh buffer content by label; contexts of
-killed buffers return nil so callers can drop them.  Cursor
-contexts with no tracked position return nil too."
+Text contexts get fresh buffer content by label, sliced to their
+lines range when present (the range is resolved client-side and
+not sent); contexts of killed buffers return nil so callers can
+drop them.  Cursor contexts with no tracked position return nil
+too."
   (pcase (plist-get context :type)
     ("text" (let* ((label (plist-get context :label))
                    (buffer (get-buffer label)))
               (if (buffer-live-p buffer)
-                  (plist-put (copy-sequence context)
-                             :content (eca-chat--buffer-context-content buffer))
+                  (list :type "text"
+                        :label label
+                        :content (eca-chat--buffer-context-content
+                                  buffer (plist-get context :linesRange)))
                 (progn (eca-info "Skipping killed buffer context: %s" label)
                        nil))))
     ("cursor" (when (plist-get context :position)
@@ -291,9 +312,16 @@ If STATIC? return strs with no dynamic values."
                                                ")")))
                                    'eca-chat-expanded-item-str (concat eca-chat-context-prefix "cursor")
                                    'font-lock-face 'eca-chat-context-cursor-face))
-             ("text" (propertize (concat eca-chat-context-prefix (plist-get context :label))
-                                 'eca-chat-expanded-item-str (concat eca-chat-context-prefix (plist-get context :label))
-                                 'font-lock-face 'eca-chat-context-buffer-face))
+             ("text" (let ((label (plist-get context :label))
+                           (lines-range (plist-get context :linesRange)))
+                       (propertize (concat eca-chat-context-prefix
+                                           label
+                                           (-when-let ((&plist :start start :end end) lines-range)
+                                             (format "(%d-%d)" start end)))
+                                   'eca-chat-expanded-item-str (concat eca-chat-context-prefix label
+                                                                       (-when-let ((&plist :start start :end end) lines-range)
+                                                                         (format ":L%d-L%d" start end)))
+                                   'font-lock-face 'eca-chat-context-buffer-face)))
              (_ (concat eca-chat-context-prefix "unknown:" type)))))
     (propertize context-str
                 'eca-chat-item-type 'context
@@ -590,6 +618,13 @@ file or directory."
    ((buffer-file-name)
     (list
      (list :type "file" :path (buffer-file-name))))
+
+   ;; Explicit selection in a non-file buffer (magit, vterm, the
+   ;; chat itself, ...): intentional, so no predicate check.
+   ((use-region-p)
+    (-let (((start . end) `(,(line-number-at-pos (region-beginning)) . ,(line-number-at-pos (region-end)))))
+      (list (eca-chat--buffer-context (current-buffer)
+                                      (list :start start :end end)))))
 
    ((funcall eca-chat-context-buffer-predicate (current-buffer))
     (list (eca-chat--buffer-context (current-buffer))))))
