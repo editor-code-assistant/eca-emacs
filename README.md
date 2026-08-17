@@ -126,6 +126,8 @@ Server / process
 - `eca-custom-command`: The `eca` server command; when nil ECA auto-downloads or uses `eca` from `$PATH`.
 - `eca-server-download-method`: Method to download server (`curl` or `url-retrieve`, Emacs built-in way).
 - `eca-server-download-url`: Custom URL to download the ECA server archive.
+- `eca-server-fetch-timeout`: Seconds before a GitHub fetch (release check/download connection) is considered stuck.
+- `eca-server-fetch-retries`: Times curl retries transient GitHub failures before eca falls back to the installed server.
 - `eca-server-install-path`: Path where the downloaded ECA server binary is installed.
 - `eca-server-version-file-path`: Path to the file storing the downloaded ECA server version.
 - `eca-unzip-script`: Script/command template used to unzip the downloaded ECA server archive.

@@ -59,6 +59,23 @@ Test different options if facing issues."
   :group 'eca
   :type 'string)
 
+(defcustom eca-server-fetch-timeout 20
+  "Seconds before a GitHub fetch is considered stuck.
+Used as curl `--max-time' when fetching the releases list and as
+curl `--connect-timeout' when downloading the server binary, so an
+unreachable GitHub (e.g. an outage) cannot block Emacs for long."
+  :group 'eca
+  :type 'integer)
+
+(defcustom eca-server-fetch-retries 2
+  "How many times curl retries transient GitHub failures.
+Applied via curl `--retry' to the releases list fetch and to server
+binary downloads when `eca-server-download-method' is `curl'.  When
+all attempts fail, eca falls back to the already installed server
+binary if available."
+  :group 'eca
+  :type 'integer)
+
 (defcustom eca-server-install-path
   (f-join (expand-file-name
            (locate-user-emacs-file "eca"))
@@ -145,24 +162,44 @@ is the value of `float-time' when RELEASES was last fetched.  Honored
 together with `eca-server-releases-cache-ttl' by
 `eca-process--fetch-releases'.")
 
-(cl-defun eca--curl-download-file (&key url path on-done)
-  "Downloads a file from URL to PATH shelling out to system with curl.
-Calls ON-DONE when done."
-  (let ((curl-cmd (or (executable-find "curl")
-                      (executable-find "curl.exe"))))
-    (unless curl-cmd
-      (error "Curl not found. Please install curl or customize eca-custom-command"))
-    (let ((exit-code (shell-command (format "%s -L -s -S -f -o %s %s"
-                                            (shell-quote-argument curl-cmd)
-                                            (shell-quote-argument path)
-                                            (shell-quote-argument url)))))
-      (unless (= exit-code 0)
-        (error "Curl failed with exit code %d" exit-code)))
-    (funcall on-done)))
+(defconst eca-process--releases-failure-cooldown 60
+  "Seconds to wait before retrying a failed releases fetch.")
 
-(cl-defun eca--url-retrieve-download-file (&key url path on-done)
+(defvar eca-process--releases-fetch-failed-at nil
+  "Value of `float-time' when the last releases fetch failed, or nil.
+While within `eca-process--releases-failure-cooldown' seconds of it,
+`eca-process--fetch-releases' skips the network and returns any stale
+cached value, so repeated eca starts during a GitHub outage stay
+fast.")
+
+(cl-defun eca--curl-download-file (&key url path on-done on-error)
+  "Downloads a file from URL to PATH shelling out to system with curl.
+Retries transient failures `eca-server-fetch-retries' times, bounding
+the connection phase by `eca-server-fetch-timeout' seconds.
+Calls ON-DONE when done.  On failure calls ON-ERROR with the error
+when provided, otherwise signals it."
+  (condition-case err
+      (let ((curl-cmd (or (executable-find "curl")
+                          (executable-find "curl.exe"))))
+        (unless curl-cmd
+          (error "Curl not found. Please install curl or customize eca-custom-command"))
+        (let ((exit-code (shell-command (format "%s -L -s -S -f --connect-timeout %d --retry %d -o %s %s"
+                                                (shell-quote-argument curl-cmd)
+                                                eca-server-fetch-timeout
+                                                eca-server-fetch-retries
+                                                (shell-quote-argument path)
+                                                (shell-quote-argument url)))))
+          (unless (= exit-code 0)
+            (error "Curl failed with exit code %d" exit-code)))
+        (funcall on-done))
+    (error (if on-error
+               (funcall on-error err)
+             (signal (car err) (cdr err))))))
+
+(cl-defun eca--url-retrieve-download-file (&key url path on-done on-error)
   "Downloads async a file from URL to PATH via `url-retrieve'.
-Calls ON-DONE when done
+Calls ON-DONE when done.  On failure calls ON-ERROR with the error
+when provided, otherwise signals it.
 Workaround for `url-copy-file` that has issues with macos async threads.
 https://github.com/emacs-lsp/lsp-mode/issues/4746#issuecomment-2957183423"
   (url-retrieve
@@ -170,33 +207,44 @@ https://github.com/emacs-lsp/lsp-mode/issues/4746#issuecomment-2957183423"
    (lambda (status)
      (let ((resp-buf (current-buffer)))
        (unwind-protect
-           (progn
-             (when-let ((error-data (plist-get status :error)))
-               (error "%s" error-data))
-             (let ((coding-system-for-write 'binary)
-                   (buffer-file-coding-system 'binary))
-               (goto-char (point-min))
-               (unless (re-search-forward "\r?\n\r?\n" nil t)
-                 (error "Failed to parse HTTP response for download"))
-               (write-region (point) (point-max) path nil 'silent)
-               (funcall on-done)))
+           (condition-case err
+               (progn
+                 (when-let ((error-data (plist-get status :error)))
+                   (error "%s" error-data))
+                 (let ((coding-system-for-write 'binary)
+                       (buffer-file-coding-system 'binary))
+                   (goto-char (point-min))
+                   (unless (re-search-forward "\r?\n\r?\n" nil t)
+                     (error "Failed to parse HTTP response for download"))
+                   (write-region (point) (point-max) path nil 'silent)
+                   (funcall on-done)))
+             (error (if on-error
+                        (funcall on-error err)
+                      (signal (car err) (cdr err)))))
          (ignore-errors (kill-buffer resp-buf)))))
    nil
    t))
 
 (defun eca--curl-download-string (url)
-  "Download content from URL as a string, shelling out to curl."
+  "Download content from URL as a string, shelling out to curl.
+Bounded by `eca-server-fetch-timeout' seconds and retried up to
+`eca-server-fetch-retries' times so an unreachable GitHub cannot
+hang Emacs.  Signals an error when the download fails."
   (let ((curl-cmd (or (executable-find "curl")
                       (executable-find "curl.exe"))))
     (unless curl-cmd
       (error "Curl not found. Please install curl or customize eca-custom-command"))
-    (let ((output (shell-command-to-string
-                   (format "%s -L -s -S -f %s"
-                           (shell-quote-argument curl-cmd)
-                           (shell-quote-argument url)))))
-      (when (s-blank? output)
-        (error "Curl failed to download from %s" url))
-      output)))
+    (with-temp-buffer
+      (let ((exit-code (call-process curl-cmd nil (list (current-buffer) nil) nil
+                                     "-L" "-s" "-f"
+                                     "--max-time" (number-to-string eca-server-fetch-timeout)
+                                     "--retry" (number-to-string eca-server-fetch-retries)
+                                     url)))
+        (unless (and (numberp exit-code) (zerop exit-code))
+          (error "Curl failed to download from %s (exit %s)" url exit-code))
+        (when (zerop (buffer-size))
+          (error "Curl returned an empty response from %s" url))
+        (buffer-string)))))
 
 (defconst eca-process--releases-url "https://api.github.com/repos/editor-code-assistant/eca/releases"
   "Github url for retrieving json files with infos about release binaries.")
@@ -219,9 +267,16 @@ considered valid; when 0 the cache is always considered stale."
   "Return cached releases list, fetching from GitHub if needed.
 Refetches when the cache is empty or has expired per
 `eca-server-releases-cache-ttl'.  On fetch failure, any previously
-cached value is preserved and returned."
-  (if (eca-process--releases-cache-valid-p)
-      (cdr eca-process--releases-cache)
+cached value is preserved and returned, and further fetch attempts
+are skipped for `eca-process--releases-failure-cooldown' seconds."
+  (cond
+   ((eca-process--releases-cache-valid-p)
+    (cdr eca-process--releases-cache))
+   ((and eca-process--releases-fetch-failed-at
+         (< (- (float-time) eca-process--releases-fetch-failed-at)
+            eca-process--releases-failure-cooldown))
+    (cdr-safe eca-process--releases-cache))
+   (t
     (condition-case err
         (let* ((coding-system-for-read 'utf-8)
                (json-string
@@ -231,12 +286,20 @@ cached value is preserved and returned."
                            (insert json-string)
                            (goto-char (point-min))
                            (eca-api--json-read-buffer))))
+          ;; Guard against non-release payloads (e.g. a rate-limit
+          ;; JSON object) poisoning the cache.
+          (unless (and (or (vectorp releases) (proper-list-p releases))
+                       (> (length releases) 0)
+                       (plist-get (elt releases 0) :tag_name))
+            (error "Unexpected releases payload"))
+          (setq eca-process--releases-fetch-failed-at nil)
           (setq eca-process--releases-cache
                 (cons (float-time) releases))
           releases)
       (error
+       (setq eca-process--releases-fetch-failed-at (float-time))
        (eca-warn "Failed to fetch releases: %s" err)
-       (cdr-safe eca-process--releases-cache)))))
+       (cdr-safe eca-process--releases-cache))))))
 
 (defun eca-process--get-latest-server-version ()
   "Return the latest server version."
@@ -344,8 +407,11 @@ the given VERSION."
         (error "The downloaded archive for the eca binary is corrupted"))
     (eca-warn "Cannot retrieve sha256 for the eca binary archive, skipping checksum verification")))
 
-(defun eca-process--download-server (on-downloaded version)
-  "Download eca server of VERSION calling ON-DOWNLOADED when success."
+(defun eca-process--download-server (on-downloaded version &optional on-error)
+  "Download eca server of VERSION calling ON-DOWNLOADED when success.
+On failure calls ON-ERROR with the error when provided (at most
+once, even for errors in async download callbacks), otherwise just
+reports the error."
   (-let ((url (eca-process--download-url version))
          ((download-path . store-path) (eca-process--download-and-store-path))
          (old-path (concat eca-server-install-path ".old"))
@@ -353,7 +419,15 @@ the given VERSION."
          (download-fn (pcase eca-server-download-method
                         ('url-retrieve #'eca--url-retrieve-download-file)
                         ('curl #'eca--curl-download-file)
-                        (_ (error (eca-error (format "Unknown download method '%s' for eca-server-download-method" eca-server-download-method)))))))
+                        (_ (error (eca-error (format "Unknown download method '%s' for eca-server-download-method" eca-server-download-method))))))
+         (failed nil)
+         (fail-fn nil))
+    (setq fail-fn (lambda (err)
+                    (unless failed
+                      (setq failed t)
+                      (if on-error
+                          (funcall on-error err)
+                        (eca-error "Failed to download eca server %s" err)))))
     (condition-case err
         (progn
           ;; Clean up any old files from previous updates
@@ -366,39 +440,43 @@ the given VERSION."
            download-fn
            :url url
            :path download-path
+           :on-error fail-fn
            :on-done (lambda ()
-                      (eca-info "Downloaded eca. Checking sha256...")
-                      (eca-process--check-sha256 download-path url version)
-                      (eca-info "Unzipping eca...")
-                      (unless (and eca-unzip-script (funcall eca-unzip-script))
-                        (error "Unable to find `unzip' or `powershell' on the path, please customize `eca-unzip-script'"))
-                      ;; Extract to temp directory first
-                      (mkdir temp-extract-dir t)
-                      (shell-command (format (funcall eca-unzip-script) download-path temp-extract-dir))
-                      (let ((new-binary (eca-process--find-extracted-binary
-                                         temp-extract-dir (f-filename store-path))))
-                        (unless new-binary
-                          (error "Expected binary not found after extraction: %s"
-                                 (f-join temp-extract-dir (f-filename store-path))))
-                        ;; Rename old binary to .old if it exists
-                        ;; On Windows, running executables can be renamed but not deleted
-                        (when (f-exists? store-path)
-                          (when (f-exists? old-path)
-                            (condition-case nil (f-delete old-path) (error nil)))
-                          (rename-file store-path old-path))
-                        ;; Move new binary into place
-                        (rename-file new-binary store-path))
-                      ;; Clean up temp directory
-                      (when (f-exists? temp-extract-dir)
-                        (condition-case nil (f-delete temp-extract-dir t) (error nil)))
-                      ;; Try to delete old binary (may fail if still in use, that's ok)
-                      (when (f-exists? old-path)
-                        (condition-case nil (f-delete old-path) (error nil)))
-                      (f-write-text version 'utf-8 eca-server-version-file-path)
-                      (set-file-modes store-path #o0700)
-                      (eca-info "Installed eca successfully!")
-                      (funcall on-downloaded))))
-      (error (eca-error "Failed to download eca server %s" err)))))
+                      (condition-case err
+                          (progn
+                            (eca-info "Downloaded eca. Checking sha256...")
+                            (eca-process--check-sha256 download-path url version)
+                            (eca-info "Unzipping eca...")
+                            (unless (and eca-unzip-script (funcall eca-unzip-script))
+                              (error "Unable to find `unzip' or `powershell' on the path, please customize `eca-unzip-script'"))
+                            ;; Extract to temp directory first
+                            (mkdir temp-extract-dir t)
+                            (shell-command (format (funcall eca-unzip-script) download-path temp-extract-dir))
+                            (let ((new-binary (eca-process--find-extracted-binary
+                                               temp-extract-dir (f-filename store-path))))
+                              (unless new-binary
+                                (error "Expected binary not found after extraction: %s"
+                                       (f-join temp-extract-dir (f-filename store-path))))
+                              ;; Rename old binary to .old if it exists
+                              ;; On Windows, running executables can be renamed but not deleted
+                              (when (f-exists? store-path)
+                                (when (f-exists? old-path)
+                                  (condition-case nil (f-delete old-path) (error nil)))
+                                (rename-file store-path old-path))
+                              ;; Move new binary into place
+                              (rename-file new-binary store-path))
+                            ;; Clean up temp directory
+                            (when (f-exists? temp-extract-dir)
+                              (condition-case nil (f-delete temp-extract-dir t) (error nil)))
+                            ;; Try to delete old binary (may fail if still in use, that's ok)
+                            (when (f-exists? old-path)
+                              (condition-case nil (f-delete old-path) (error nil)))
+                            (f-write-text version 'utf-8 eca-server-version-file-path)
+                            (set-file-modes store-path #o0700)
+                            (eca-info "Installed eca successfully!")
+                            (funcall on-downloaded))
+                        (error (funcall fail-fn err))))))
+      (error (funcall fail-fn err)))))
 
 (defun eca-process--server-command ()
   "Return the command to start server."
@@ -580,9 +658,16 @@ Call HANDLE-MSG for new msgs processed."
 
         ('already-installed (funcall start-process-fn))
 
-        ('download (eca-process--download-server (lambda ()
-                                                   (funcall start-process-fn))
-                                                 (plist-get result :latest-version)))))))
+        ('download (eca-process--download-server
+                    (lambda () (funcall start-process-fn))
+                    (plist-get result :latest-version)
+                    ;; When updating an already installed server, a
+                    ;; failed download (e.g. GitHub outage) falls back
+                    ;; to starting the installed binary.
+                    (when (f-exists? eca-server-install-path)
+                      (lambda (err)
+                        (eca-warn "Failed to download eca server (%s), starting installed version instead" err)
+                        (funcall start-process-fn)))))))))
 
 (defun eca-process-running-p (session)
   "Return non nil if eca process for SESSION is running."
@@ -657,10 +742,12 @@ version regardless of the buffer this is called from."
 ;;;###autoload
 (defun eca-install-server ()
   "Force download the latest eca server.
-Clears `eca-process--releases-cache' first so the latest version is
-re-checked against GitHub even within a long-running Emacs session."
+Clears `eca-process--releases-cache' and the fetch failure cooldown
+first so the latest version is re-checked against GitHub even within
+a long-running Emacs session."
   (interactive)
-  (setq eca-process--releases-cache nil)
+  (setq eca-process--releases-cache nil
+        eca-process--releases-fetch-failed-at nil)
   (eca-process--download-server (lambda ())
                                 (eca-process--get-latest-server-version)))
 
@@ -672,7 +759,8 @@ Bypasses `eca-process--releases-cache' (and thus
 Reports via the echo area whether the installed server is up to date,
 whether a newer version is available, or whether the check failed."
   (interactive)
-  (setq eca-process--releases-cache nil)
+  (setq eca-process--releases-cache nil
+        eca-process--releases-fetch-failed-at nil)
   (let ((latest (eca-process--get-latest-server-version))
         (current (eca-process--get-current-server-version)))
     (cond

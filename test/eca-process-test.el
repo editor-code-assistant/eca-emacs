@@ -80,6 +80,123 @@
         (expect (plist-get result :decision) :to-be 'download)
         (expect (plist-get result :latest-version) :to-equal "0.2.0")))))
 
+(describe "eca--curl-download-string"
+  (before-each
+    (spy-on 'executable-find :and-return-value "/usr/bin/curl"))
+
+  (it "returns the output when curl succeeds"
+    (spy-on 'call-process :and-call-fake
+            (lambda (&rest _) (insert "[{\"tag_name\": \"0.2.0\"}]") 0))
+    (expect (eca--curl-download-string "https://example.com")
+            :to-equal "[{\"tag_name\": \"0.2.0\"}]"))
+
+  (it "errors when curl exits non-zero"
+    (spy-on 'call-process :and-return-value 7)
+    (expect (eca--curl-download-string "https://example.com") :to-throw 'error))
+
+  (it "errors when curl returns an empty response"
+    (spy-on 'call-process :and-return-value 0)
+    (expect (eca--curl-download-string "https://example.com") :to-throw 'error)))
+
+(describe "eca-process--fetch-releases"
+  (before-each
+    (setq eca-process--releases-cache nil
+          eca-process--releases-fetch-failed-at nil)
+    (spy-on 'eca-warn))
+
+  (after-each
+    (setq eca-process--releases-cache nil
+          eca-process--releases-fetch-failed-at nil))
+
+  (it "fetches, caches and returns the releases list"
+    (spy-on 'eca--curl-download-string
+            :and-return-value "[{\"tag_name\": \"0.2.0\"}]")
+    (expect (eca-process--get-latest-server-version) :to-equal "0.2.0")
+    (expect (consp eca-process--releases-cache) :to-be-truthy))
+
+  (it "returns stale cache and starts cooldown when the fetch fails"
+    (let ((eca-server-releases-cache-ttl 0))
+      (setq eca-process--releases-cache
+            (cons (float-time) (vector '(:tag_name "0.1.0"))))
+      (spy-on 'eca--curl-download-string
+              :and-call-fake (lambda (_) (error "github down")))
+      (expect (eca-process--get-latest-server-version) :to-equal "0.1.0")
+      (expect 'eca-warn :to-have-been-called)
+      (expect eca-process--releases-fetch-failed-at :not :to-be nil)))
+
+  (it "does not refetch while within the failure cooldown"
+    (spy-on 'eca--curl-download-string
+            :and-call-fake (lambda (_) (error "github down")))
+    (expect (eca-process--fetch-releases) :to-be nil)
+    (expect (eca-process--fetch-releases) :to-be nil)
+    (expect (spy-calls-count 'eca--curl-download-string) :to-equal 1))
+
+  (it "refetches after the cooldown has passed"
+    (spy-on 'eca--curl-download-string
+            :and-call-fake (lambda (_) (error "github down")))
+    (eca-process--fetch-releases)
+    (setq eca-process--releases-fetch-failed-at
+          (- (float-time) (1+ eca-process--releases-failure-cooldown)))
+    (eca-process--fetch-releases)
+    (expect (spy-calls-count 'eca--curl-download-string) :to-equal 2))
+
+  (it "does not cache unexpected payloads like rate-limit errors"
+    (spy-on 'eca--curl-download-string
+            :and-return-value "{\"message\": \"rate limited\"}")
+    (expect (eca-process--fetch-releases) :to-be nil)
+    (expect eca-process--releases-cache :to-be nil)
+    (expect 'eca-warn :to-have-been-called)))
+
+(describe "eca-process--download-server"
+  (before-each
+    (spy-on 'eca-info)
+    (spy-on 'eca-error)
+    (spy-on 'eca-process--cleanup-old-server)
+    (spy-on 'f-exists? :and-return-value nil)
+    (spy-on 'mkdir)
+    (spy-on 'eca-process--download-url
+            :and-return-value "https://example.com/eca.zip"))
+
+  (it "calls on-error instead of signaling when the download fails"
+    (let ((eca-server-download-method 'curl)
+          (on-error-err nil)
+          (downloaded nil))
+      (spy-on 'eca--curl-download-file
+              :and-call-fake (lambda (&rest _) (error "boom")))
+      (eca-process--download-server (lambda () (setq downloaded t))
+                                    "0.2.0"
+                                    (lambda (err) (setq on-error-err err)))
+      (expect downloaded :to-be nil)
+      (expect on-error-err :not :to-be nil)))
+
+  (it "reports the error when no on-error is given"
+    (let ((eca-server-download-method 'curl))
+      (spy-on 'eca--curl-download-file
+              :and-call-fake (lambda (&rest _) (error "boom")))
+      (eca-process--download-server (lambda ()) "0.2.0")
+      (expect 'eca-error :to-have-been-called))))
+
+(describe "eca-process-start"
+  (it "falls back to the installed server when the update download fails"
+    (let ((session (make-eca--session))
+          (started nil))
+      (spy-on 'eca-info)
+      (spy-on 'eca-warn)
+      (spy-on 'eca-process--cleanup-old-server)
+      (spy-on 'f-exists? :and-return-value t)
+      (spy-on 'eca-process--server-command
+              :and-return-value (list :decision 'download
+                                      :latest-version "9.9.9"
+                                      :command (list "eca" "server")))
+      (spy-on 'eca-process--download-server
+              :and-call-fake (lambda (_on-done _version on-error)
+                               (funcall on-error "github down")))
+      (spy-on 'make-process :and-return-value 'fake-process)
+      (eca-process-start session (lambda () (setq started t)) #'ignore)
+      (expect 'make-process :to-have-been-called)
+      (expect 'eca-warn :to-have-been-called)
+      (expect started :to-be t))))
+
 (describe "eca-server-check-updates"
   (before-each
     (spy-on 'eca-info)
