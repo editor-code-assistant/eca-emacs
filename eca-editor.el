@@ -19,10 +19,18 @@
 (require 'flycheck nil t)
 (require 'ht nil t)
 
+(require 'eca-api)
 (require 'eca-util)
 
 (declare-function lsp-diagnostics "lsp-mode" (current-workspace?))
 (declare-function lsp-get "lsp-mode" (from key))
+(declare-function lsp "lsp-mode" (&optional arg))
+(declare-function lsp-request-async "lsp-mode" (method params callback &rest plist))
+(declare-function lsp-workspaces "lsp-mode" ())
+(declare-function lsp-session "lsp-mode" ())
+(declare-function lsp-session-folders "lsp-mode" (session))
+(declare-function lsp--workspace-server-capabilities "lsp-mode" (workspace))
+(declare-function lsp--find-clients "lsp-mode" ())
 (declare-function ht-select "ht" (function table))
 (declare-function flymake-diagnostic-code "flymake" (diagnostic))
 (declare-function flycheck-running-p "flycheck" ())
@@ -260,6 +268,193 @@ If URI is non-nil, filter to that uri."
     (list :diagnostics
           (vconcat (eca-editor--collect-all-diagnostics
                     uri workspaces)))))
+
+(defun eca-editor--lsp-nav-available-p ()
+  "Return non-nil when lsp-mode is available for navigation requests."
+  (featurep 'lsp-mode))
+
+(defun eca-editor--lsp-buffer-workspaces ()
+  "Return the lsp-mode workspaces associated with the current buffer."
+  (and (fboundp 'lsp-workspaces) (lsp-workspaces)))
+
+(defun eca-editor--lsp-workspaces-ready-p (workspaces)
+  "Return non-nil when some of WORKSPACES finished initializing.
+A lsp-mode workspace only gets its server capabilities after the
+initialize handshake, so none having them means the server is
+still starting.  Fails open: workspaces that cannot be inspected
+count as ready so the request is still attempted."
+  (seq-some (lambda (workspace)
+              (condition-case nil
+                  (and (lsp--workspace-server-capabilities workspace) t)
+                (error t)))
+            workspaces))
+
+(defun eca-editor--lsp-known-root-p (path)
+  "Return non-nil if PATH is inside a folder known to the lsp-mode session."
+  (and (fboundp 'lsp-session)
+       (fboundp 'lsp-session-folders)
+       (seq-some (lambda (folder)
+                   (f-ancestor-of? folder path))
+                 (lsp-session-folders (lsp-session)))))
+
+(defun eca-editor--lsp-start ()
+  "Start lsp-mode in the current buffer when an installed client matches.
+Return non-nil when a start was attempted, nil when no installed
+lsp-mode client supports this buffer.  Checking the clients first
+avoids lsp-mode's interactive server-install prompt, which must
+never fire from the process filter."
+  (when (or (not (fboundp 'lsp--find-clients))
+            (lsp--find-clients))
+    (lsp)
+    t))
+
+(defun eca-editor--lsp-request-async (method params callback error-callback)
+  "Send async lsp-mode request METHOD with PARAMS.
+Call CALLBACK with the result or ERROR-CALLBACK with the error."
+  (lsp-request-async method params callback
+                     :error-handler error-callback
+                     :mode 'detached))
+
+(defun eca-editor--file-buffer (path)
+  "Return a buffer visiting PATH, opening it in background if needed."
+  (or (find-buffer-visiting path)
+      (let ((enable-local-variables :safe)
+            (large-file-warning-threshold nil))
+        (find-file-noselect path))))
+
+(defun eca-editor--lsp-obj-get (obj key)
+  "Get keyword KEY from lsp result OBJ.
+Supports both lsp-mode result representations: hash-tables with
+string keys and plists with keyword keys."
+  (cond
+   ((hash-table-p obj) (gethash (substring (symbol-name key) 1) obj))
+   ((listp obj) (plist-get obj key))))
+
+(defun eca-editor--lsp-position->eca (position)
+  "Convert 0-based lsp POSITION to a 1-based eca position."
+  (list :line (1+ (or (eca-editor--lsp-obj-get position :line) 0))
+        :character (1+ (or (eca-editor--lsp-obj-get position :character) 0))))
+
+(defun eca-editor--lsp-location->eca (location)
+  "Convert a lsp Location or LocationLink LOCATION to an eca location."
+  (when location
+    (let ((uri (or (eca-editor--lsp-obj-get location :uri)
+                   (eca-editor--lsp-obj-get location :targetUri)))
+          (range (or (eca-editor--lsp-obj-get location :range)
+                     (eca-editor--lsp-obj-get location :targetSelectionRange)
+                     (eca-editor--lsp-obj-get location :targetRange))))
+      (when (and uri range)
+        (list :uri uri
+              :range (list :start (eca-editor--lsp-position->eca
+                                   (eca-editor--lsp-obj-get range :start))
+                           :end (eca-editor--lsp-position->eca
+                                 (eca-editor--lsp-obj-get range :end))))))))
+
+(defun eca-editor--lsp-locations->eca (result)
+  "Normalize a lsp navigation RESULT into a vector of eca locations.
+RESULT may be nil, a single Location, or a sequence of Location
+or LocationLink."
+  (let ((locations (cond
+                    ((null result) nil)
+                    ((vectorp result) (append result nil))
+                    ((hash-table-p result) (list result))
+                    ((keywordp (car-safe result)) (list result))
+                    (t result))))
+    (vconcat (delq nil (mapcar #'eca-editor--lsp-location->eca locations)))))
+
+(defun eca-editor--lsp-error-message (err)
+  "Extract a human readable message from the lsp-mode error ERR."
+  (cond
+   ((null err) "lsp-mode request failed")
+   ((stringp err) err)
+   ((or (hash-table-p err) (keywordp (car-safe err)))
+    (or (eca-editor--lsp-obj-get err :message) (format "%s" err)))
+   (t (format "%s" err))))
+
+(defun eca-editor--nav-request (session request params method extra-params)
+  "Ask lsp-mode for the METHOD locations of the symbol in PARAMS.
+Respond to the server REQUEST of SESSION following the status
+contract of the `editor/getDefinition' and `editor/getReferences'
+requests: success, starting, no-server or error.  EXTRA-PARAMS
+are appended to the lsp request params.  Return the response
+plist for sync answers or `:async' when the lsp request was fired
+and the response will be sent later."
+  (let* ((uri (plist-get params :uri))
+         (position (plist-get params :position))
+         (path (and uri (eca--uri-to-path uri))))
+    (cond
+     ((not (eca-editor--lsp-nav-available-p))
+      (list :status "no-server"
+            :message "lsp-mode is not available in this Emacs"))
+
+     ((or (null path) (not (file-exists-p path)))
+      (list :status "error"
+            :message (format "File not found: %s" (or path uri))))
+
+     (t
+      (with-current-buffer (eca-editor--file-buffer path)
+        (let ((workspaces (eca-editor--lsp-buffer-workspaces)))
+          (cond
+           ;; Workspace attached but the server has not finished the
+           ;; initialize handshake yet: requests would fail with a
+           ;; misleading capability error, so ask the server to retry.
+           ((and workspaces
+                 (not (eca-editor--lsp-workspaces-ready-p workspaces)))
+            (list :status "starting"))
+
+           (workspaces
+            (condition-case err
+                (progn
+                  (eca-editor--lsp-request-async
+                   method
+                   (append (list :textDocument (list :uri (eca--path-to-uri path))
+                                 :position (list :line (max 0 (1- (or (plist-get position :line) 1)))
+                                                 :character (max 0 (1- (or (plist-get position :character) 1)))))
+                           extra-params)
+                   (lambda (result)
+                     (eca-api-send-request-response
+                      session request
+                      (list :status "success"
+                            :locations (eca-editor--lsp-locations->eca result))))
+                   (lambda (err)
+                     (eca-api-send-request-response
+                      session request
+                      (list :status "error"
+                            :message (eca-editor--lsp-error-message err)))))
+                  :async)
+              ;; lsp-mode can signal synchronously, e.g. the capability
+              ;; check; answer error instead of dying in the filter.
+              (error (list :status "error"
+                           :message (error-message-string err)))))
+
+           ((eca-editor--lsp-known-root-p path)
+            (condition-case err
+                (if (eca-editor--lsp-start)
+                    (list :status "starting")
+                  (list :status "no-server"
+                        :message "No installed lsp-mode client for this file's major mode"))
+              (error (list :status "no-server"
+                           :message (error-message-string err)))))
+
+           (t
+            (list :status "no-server"
+                  :message "No lsp-mode workspace for this file; start lsp in its project once")))))))))
+
+(defun eca-editor-get-definition (session request params)
+  "Handle the `editor/getDefinition' server REQUEST for SESSION.
+PARAMS contain the file uri and the 1-based symbol position."
+  (eca-editor--nav-request session request params "textDocument/definition" nil))
+
+(defun eca-editor-get-references (session request params)
+  "Handle the `editor/getReferences' server REQUEST for SESSION.
+PARAMS contain the file uri, the 1-based symbol position and an
+optional includeDeclaration flag that defaults to true."
+  (let ((include-declaration (if (plist-member params :includeDeclaration)
+                                 (and (plist-get params :includeDeclaration) t)
+                               t)))
+    (eca-editor--nav-request
+     session request params "textDocument/references"
+     (list :context (list :includeDeclaration (or include-declaration :json-false))))))
 
 (provide 'eca-editor)
 ;;; eca-editor.el ends here

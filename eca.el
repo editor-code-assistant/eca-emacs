@@ -246,6 +246,8 @@ frames captured via `backtrace-get-frames'."
         (params (plist-get request :params)))
     (pcase method
       ("editor/getDiagnostics" (eca-editor-get-diagnostics session params))
+      ("editor/getDefinition" (eca-editor-get-definition session request params))
+      ("editor/getReferences" (eca-editor-get-references session request params))
       ("chat/askQuestion" (eca-chat-handle-ask-question session request params))
       (_ (eca-warn "Unknown server request %s" method)))))
 
@@ -281,7 +283,18 @@ backtrace.  On older Emacs, runs BODY without capture."
                                  (cl-remf (eca--session-response-handlers session) id)
                                  (funcall error-callback (plist-get json-data :error)))))
             ('notification (eca--handle-server-notification session json-data))
-            ('request (let ((response (eca--handle-server-request session json-data)))
+            ;; Handler errors must not escape into the process filter:
+            ;; answer the server with an error status instead of leaving
+            ;; the request pending until it times out server-side.
+            ('request (let ((response (condition-case req-err
+                                          (eca--handle-server-request session json-data)
+                                        (error
+                                         (eca--log-error session req-err "handle-server-request" backtrace)
+                                         (eca-warn "Error handling server request %s: %s"
+                                                   (plist-get json-data :method)
+                                                   (error-message-string req-err))
+                                         (list :status "error"
+                                               :message (error-message-string req-err))))))
                         (unless (eq response :async)
                           (eca-api-send-request-response session json-data response)))))
         (error
@@ -304,7 +317,9 @@ backtrace.  On older Emacs, runs BODY without capture."
                                           :version (emacs-version))
                          :capabilities (list :codeAssistant (list :chat t
                                                                   :chatCapabilities (list :askQuestion t)
-                                                                  :editor (list :diagnostics t)))
+                                                                  :editor (list :diagnostics t
+                                                                                :definition t
+                                                                                :references t)))
                          :initializationOptions (list :chatAgent eca-chat-custom-agent)
                          :workspaceFolders (vconcat (-map (lambda (folder)
                                                            (list :uri (eca--path-to-uri folder)
