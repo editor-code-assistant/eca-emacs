@@ -9,6 +9,11 @@
 ;; is not installed in the test environment.
 (defvar flycheck-mode)
 
+;; Declared special so let-bindings below stay dynamic even when
+;; etags.el is not loaded in the test environment.
+(defvar tags-file-name)
+(defvar tags-table-list)
+
 (describe "eca-editor--flycheck-active-in-locus-p"
   (it "returns nil for a nil locus"
     (expect (eca-editor--flycheck-active-in-locus-p nil)
@@ -64,11 +69,12 @@
       (kill-buffer buf))
     (delete-file eca-editor-test--file))
 
-  (it "answers no-server when lsp-mode is not available"
+  (it "answers no-server when lsp-mode is not available and no xref backend exists"
     (spy-on 'eca-editor--lsp-nav-available-p :and-return-value nil)
+    (spy-on 'eca-editor--xref-backend :and-return-value nil)
     (expect (eca-editor-get-definition session request (eca-editor-test--nav-params))
             :to-equal '(:status "no-server"
-                        :message "lsp-mode is not available in this Emacs")))
+                        :message "No lsp-mode and no xref backend available for this file")))
 
   (it "answers error when the file does not exist"
     (spy-on 'eca-editor--lsp-nav-available-p :and-return-value t)
@@ -95,17 +101,19 @@
     (spy-on 'eca-editor--lsp-buffer-workspaces :and-return-value nil)
     (spy-on 'eca-editor--lsp-known-root-p :and-return-value t)
     (spy-on 'eca-editor--lsp-start :and-return-value nil)
+    (spy-on 'eca-editor--xref-backend :and-return-value nil)
     (expect (eca-editor-get-definition session request (eca-editor-test--nav-params))
             :to-equal '(:status "no-server"
-                        :message "No installed lsp-mode client for this file's major mode")))
+                        :message "No installed lsp-mode client for this file's major mode and no xref backend")))
 
   (it "answers no-server when the root is not known to lsp-mode"
     (spy-on 'eca-editor--lsp-nav-available-p :and-return-value t)
     (spy-on 'eca-editor--lsp-buffer-workspaces :and-return-value nil)
     (spy-on 'eca-editor--lsp-known-root-p :and-return-value nil)
+    (spy-on 'eca-editor--xref-backend :and-return-value nil)
     (expect (eca-editor-get-definition session request (eca-editor-test--nav-params))
             :to-equal '(:status "no-server"
-                        :message "No lsp-mode workspace for this file; start lsp in its project once")))
+                        :message "No lsp-mode workspace and no xref backend for this file; start lsp or eglot in its project once")))
 
   (it "answers starting when the lsp workspace has not finished initializing"
     (spy-on 'eca-editor--lsp-nav-available-p :and-return-value t)
@@ -250,6 +258,99 @@
     (let ((lsp-params (nth 1 (car (spy-calls-all-args 'eca-editor--lsp-request-async)))))
       (expect (plist-get lsp-params :context)
               :to-equal '(:includeDeclaration :json-false)))))
+
+;; A fake xref backend answering fixed locations inside the temp file:
+;; the declaration at line 1 column 6 and a usage at line 2 column 2.
+(cl-defmethod xref-backend-identifier-at-point ((_backend (eql eca-editor-test--xref)))
+  "my-func")
+
+(cl-defmethod xref-backend-definitions ((_backend (eql eca-editor-test--xref)) _identifier)
+  (list (xref-make "(defn my-func [x]"
+                   (xref-make-file-location eca-editor-test--file 1 6))))
+
+(cl-defmethod xref-backend-references ((_backend (eql eca-editor-test--xref)) _identifier)
+  (list (xref-make "(defn my-func [x]"
+                   (xref-make-file-location eca-editor-test--file 1 6))
+        (xref-make "  x)"
+                   (xref-make-file-location eca-editor-test--file 2 2))))
+
+(describe "eca-editor xref fallback"
+  :var (session request)
+
+  (before-each
+    (setq session (make-eca--session))
+    (setq request (list :id 44 :method "editor/getDefinition"))
+    (setq eca-editor-test--file
+          (make-temp-file "eca-editor-nav-test" nil ".clj" "(defn my-func [x]\n  x)\n"))
+    (spy-on 'eca-api-send-request-response)
+    (spy-on 'eca-editor--lsp-nav-available-p :and-return-value nil)
+    ;; Run the scheduled lookup synchronously: pumping timers with
+    ;; sit-for would also fire leftover timers from other test files.
+    (spy-on 'run-at-time :and-call-fake
+            (lambda (_time _repeat fn &rest args) (apply fn args)))
+    (with-current-buffer (find-file-noselect eca-editor-test--file)
+      (setq-local xref-backend-functions (list (lambda () 'eca-editor-test--xref)))))
+
+  (after-each
+    (when-let ((buf (find-buffer-visiting eca-editor-test--file)))
+      (kill-buffer buf))
+    (delete-file eca-editor-test--file))
+
+  (it "answers definitions via the buffer's xref backend"
+    (expect (eca-editor-get-definition session request (eca-editor-test--nav-params))
+            :to-be :async)
+    (expect 'eca-api-send-request-response
+            :to-have-been-called-with
+            session request
+            (list :status "success"
+                  :locations (vector
+                              (list :uri (eca--path-to-uri eca-editor-test--file)
+                                    :range (list :start (list :line 1 :character 7)
+                                                 :end (list :line 1 :character 7)))))))
+
+  (it "answers references including the declaration by default"
+    (expect (eca-editor-get-references session request (eca-editor-test--nav-params))
+            :to-be :async)
+    (expect 'eca-api-send-request-response
+            :to-have-been-called-with
+            session request
+            (list :status "success"
+                  :locations (vector
+                              (list :uri (eca--path-to-uri eca-editor-test--file)
+                                    :range (list :start (list :line 1 :character 7)
+                                                 :end (list :line 1 :character 7)))
+                              (list :uri (eca--path-to-uri eca-editor-test--file)
+                                    :range (list :start (list :line 2 :character 3)
+                                                 :end (list :line 2 :character 3)))))))
+
+  (it "filters the declaration from references when includeDeclaration is false"
+    (expect (eca-editor-get-references
+             session request
+             (eca-editor-test--nav-params :includeDeclaration nil))
+            :to-be :async)
+    (expect 'eca-api-send-request-response
+            :to-have-been-called-with
+            session request
+            (list :status "success"
+                  :locations (vector
+                              (list :uri (eca--path-to-uri eca-editor-test--file)
+                                    :range (list :start (list :line 2 :character 3)
+                                                 :end (list :line 2 :character 3)))))))
+
+  (it "does not use the default etags backend without a loaded tags table"
+    (with-current-buffer (find-buffer-visiting eca-editor-test--file)
+      (setq-local xref-backend-functions (list (lambda () 'etags))))
+    (let ((tags-file-name nil)
+          (tags-table-list nil))
+      (expect (eca-editor-get-definition session request (eca-editor-test--nav-params))
+              :to-equal '(:status "no-server"
+                          :message "No lsp-mode and no xref backend available for this file"))))
+
+  (it "uses the etags backend when a tags table is loaded"
+    (with-current-buffer (find-buffer-visiting eca-editor-test--file)
+      (setq-local xref-backend-functions (list (lambda () 'etags)))
+      (let ((tags-table-list '("/tmp/TAGS")))
+        (expect (eca-editor--xref-backend) :to-be 'etags)))))
 
 (provide 'eca-editor-test)
 ;;; eca-editor-test.el ends here

@@ -13,6 +13,7 @@
 
 (require 'dash)
 (require 'f)
+(require 'xref)
 
 (require 'lsp-mode nil t)
 (require 'flymake nil t)
@@ -371,25 +372,142 @@ or LocationLink."
     (or (eca-editor--lsp-obj-get err :message) (format "%s" err)))
    (t (format "%s" err))))
 
+(defun eca-editor--include-declaration-p (params)
+  "Whether PARAMS ask to include the symbol declaration in references.
+Defaults to true when absent.  JSON false is parsed as nil by
+`eca-api', distinguished from absence via `plist-member'."
+  (if (plist-member params :includeDeclaration)
+      (and (plist-get params :includeDeclaration) t)
+    t))
+
+(defun eca-editor--xref-backend ()
+  "Return a usable xref backend for the current buffer, if any.
+The default etags backend only counts when a tags table is
+already loaded: consulting it otherwise prompts for a TAGS file,
+which must never happen while answering a server request."
+  (let ((backend (xref-find-backend)))
+    (unless (and (eq backend 'etags)
+                 (not (or (bound-and-true-p tags-file-name)
+                          (bound-and-true-p tags-table-list))))
+      backend)))
+
+(defun eca-editor--goto-position (position)
+  "Move point to the 1-based POSITION in the current buffer."
+  (widen)
+  (goto-char (point-min))
+  (forward-line (max 0 (1- (or (plist-get position :line) 1))))
+  (forward-char (min (max 0 (1- (or (plist-get position :character) 1)))
+                     (- (line-end-position) (point)))))
+
+(defun eca-editor--xref-marker->location (marker)
+  "Convert MARKER into an eca location with a 1-based point range."
+  (when-let ((buffer (marker-buffer marker))
+             (file (buffer-file-name (marker-buffer marker))))
+    (with-current-buffer buffer
+      (save-excursion
+        (save-restriction
+          (widen)
+          (goto-char marker)
+          (let ((position (list :line (line-number-at-pos nil t)
+                                :character (1+ (- (point) (line-beginning-position))))))
+            (list :uri (eca--path-to-uri file)
+                  :range (list :start position :end position))))))))
+
+(defun eca-editor--xref-items->locations (items)
+  "Convert xref ITEMS into a vector of eca locations."
+  (let ((enable-local-variables :safe)
+        (large-file-warning-threshold nil))
+    (vconcat
+     (delq nil
+           (mapcar (lambda (item)
+                     ;; Resolving a location marker may visit the target
+                     ;; file and can fail e.g. for stale results pointing
+                     ;; at deleted files; drop those locations.
+                     (condition-case nil
+                         (eca-editor--xref-marker->location
+                          (xref-location-marker (xref-item-location item)))
+                       (error nil)))
+                   items)))))
+
+(defun eca-editor--xref-locations (backend position references-p include-declaration)
+  "Compute eca locations via xref BACKEND for the symbol at POSITION.
+When REFERENCES-P find references, otherwise definitions.  When
+INCLUDE-DECLARATION is nil, reference locations matching a
+definition of the symbol are filtered out, since LSP-backed xref
+backends always include the declaration."
+  (save-excursion
+    (eca-editor--goto-position position)
+    (let ((identifier (xref-backend-identifier-at-point backend)))
+      (cond
+       ((null identifier) (vector))
+       ((not references-p)
+        (eca-editor--xref-items->locations
+         (xref-backend-definitions backend identifier)))
+       (t
+        (let ((references (append (eca-editor--xref-items->locations
+                                   (xref-backend-references backend identifier))
+                                  nil)))
+          (unless include-declaration
+            (let ((declarations (append (eca-editor--xref-items->locations
+                                         (xref-backend-definitions backend identifier))
+                                        nil)))
+              (setq references
+                    (-remove (lambda (location) (member location declarations))
+                             references))))
+          (vconcat references)))))))
+
+(defun eca-editor--xref-fallback (session request params method no-server-response)
+  "Try answering the nav REQUEST of SESSION with the buffer's xref backend.
+Covers eglot, etags with a loaded tags table and any custom
+backend.  METHOD decides between definitions and references and
+PARAMS carry the position, mirroring the lsp-mode path.  Schedule
+the lookup outside the process filter and return `:async' when a
+usable backend exists, otherwise return NO-SERVER-RESPONSE."
+  (if-let ((backend (eca-editor--xref-backend)))
+      (let ((buffer (current-buffer))
+            (position (plist-get params :position))
+            (references-p (string= method "textDocument/references"))
+            (include-declaration (eca-editor--include-declaration-p params)))
+        (run-at-time
+         0 nil
+         (lambda ()
+           (eca-api-send-request-response
+            session request
+            (condition-case err
+                (if (buffer-live-p buffer)
+                    (with-current-buffer buffer
+                      (list :status "success"
+                            :locations (eca-editor--xref-locations
+                                        backend position references-p include-declaration)))
+                  (list :status "error" :message "Buffer was killed"))
+              (error (list :status "error"
+                           :message (error-message-string err)))))))
+        :async)
+    no-server-response))
+
 (defun eca-editor--nav-request (session request params method extra-params)
-  "Ask lsp-mode for the METHOD locations of the symbol in PARAMS.
+  "Ask the editor for the METHOD locations of the symbol in PARAMS.
 Respond to the server REQUEST of SESSION following the status
 contract of the `editor/getDefinition' and `editor/getReferences'
 requests: success, starting, no-server or error.  EXTRA-PARAMS
-are appended to the lsp request params.  Return the response
-plist for sync answers or `:async' when the lsp request was fired
-and the response will be sent later."
+are appended to the lsp request params.  Prefer lsp-mode, falling
+back to the buffer's xref backend (eglot, etags, ...) when
+lsp-mode cannot serve the file.  Return the response plist for
+sync answers or `:async' when the response will be sent later."
   (let* ((uri (plist-get params :uri))
          (position (plist-get params :position))
          (path (and uri (eca--uri-to-path uri))))
     (cond
-     ((not (eca-editor--lsp-nav-available-p))
-      (list :status "no-server"
-            :message "lsp-mode is not available in this Emacs"))
-
      ((or (null path) (not (file-exists-p path)))
       (list :status "error"
             :message (format "File not found: %s" (or path uri))))
+
+     ((not (eca-editor--lsp-nav-available-p))
+      (with-current-buffer (eca-editor--file-buffer path)
+        (eca-editor--xref-fallback
+         session request params method
+         (list :status "no-server"
+               :message "No lsp-mode and no xref backend available for this file"))))
 
      (t
       (with-current-buffer (eca-editor--file-buffer path)
@@ -431,14 +549,20 @@ and the response will be sent later."
             (condition-case err
                 (if (eca-editor--lsp-start)
                     (list :status "starting")
-                  (list :status "no-server"
-                        :message "No installed lsp-mode client for this file's major mode"))
-              (error (list :status "no-server"
-                           :message (error-message-string err)))))
+                  (eca-editor--xref-fallback
+                   session request params method
+                   (list :status "no-server"
+                         :message "No installed lsp-mode client for this file's major mode and no xref backend")))
+              (error (eca-editor--xref-fallback
+                      session request params method
+                      (list :status "no-server"
+                            :message (error-message-string err))))))
 
            (t
-            (list :status "no-server"
-                  :message "No lsp-mode workspace for this file; start lsp in its project once")))))))))
+            (eca-editor--xref-fallback
+             session request params method
+             (list :status "no-server"
+                   :message "No lsp-mode workspace and no xref backend for this file; start lsp or eglot in its project once"))))))))))
 
 (defun eca-editor-get-definition (session request params)
   "Handle the `editor/getDefinition' server REQUEST for SESSION.
@@ -449,9 +573,7 @@ PARAMS contain the file uri and the 1-based symbol position."
   "Handle the `editor/getReferences' server REQUEST for SESSION.
 PARAMS contain the file uri, the 1-based symbol position and an
 optional includeDeclaration flag that defaults to true."
-  (let ((include-declaration (if (plist-member params :includeDeclaration)
-                                 (and (plist-get params :includeDeclaration) t)
-                               t)))
+  (let ((include-declaration (eca-editor--include-declaration-p params)))
     (eca-editor--nav-request
      session request params "textDocument/references"
      (list :context (list :includeDeclaration (or include-declaration :json-false))))))
