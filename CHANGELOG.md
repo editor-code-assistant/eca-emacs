@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Restore the rolled-back user message into the prompt field. `Rollback chat to before this message` (when messages are included) used to discard the clicked message's text together with the rest of the turn; the text now lands in the prompt unsent, ready to edit and resend, and any draft already typed in the prompt is kept below it, separated by a blank line.
+
 - Bugfix: a GitHub outage no longer prevents eca from starting. The release check now has a timeout and retries (`eca-server-fetch-timeout`, `eca-server-fetch-retries`) instead of hanging Emacs, failed checks back off for 60s instead of re-blocking every start, and error payloads (e.g. rate limit) are no longer cached as a valid releases list. When an update download fails but a server is already installed, eca warns and starts the installed binary instead of not starting at all (also for errors in the async `url-retrieve` download, which were previously uncaught).
 
 - Support adding a region of a non-file buffer (magit, vterm, compilation, the chat itself) as context with the `eca-chat-add-context-*` commands: the selection becomes a `text` context with a lines range, its content sliced from the live buffer at prompt time. The commands now signal a `user-error` instead of silently doing nothing when no context applies. #294
