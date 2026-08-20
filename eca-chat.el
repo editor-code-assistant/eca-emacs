@@ -708,6 +708,12 @@ Set by `eca-chat--kill-buffer-query' and consumed by
 Set when the welcome message and resume link are inserted in
 `eca-chat-mode'; cleared by `eca-chat--clear'.  Used to decide
 whether the first user prompt should erase the banner first.")
+
+(defvar-local eca-chat--prompt-after-clear nil
+  "Prompt text to restore after the next server-initiated clear.
+Set by `eca-chat--rollback' so the rolled-back user message and
+any prompt draft survive the `chat/cleared' redraw; consumed
+once by `eca-chat-cleared'.")
 (defvar-local eca-chat--id nil)
 (defvar-local eca-chat--title nil)
 (defvar-local eca-chat--custom-title nil)
@@ -1646,8 +1652,23 @@ stopping while one is pending: cancel it, then notify the server."
                     :params (list :chatId eca-chat--id))
     (eca-chat--set-chat-loading session 'stopping)))
 
-(defun eca-chat--rollback (session content-id)
-  "Rollback chat messages for SESSION to before CONTENT-ID."
+(defun eca-chat--rollback-prompt-text (text)
+  "Join rolled-back TEXT with the current prompt draft.
+The draft goes after TEXT, separated by a blank line, so edits
+typed before the rollback are kept.  Return nil when both are
+empty."
+  (let ((restored (string-trim (or text "")))
+        (draft (or (eca-chat--prompt-content) "")))
+    (cond
+     ((string-empty-p draft) (unless (string-empty-p restored) restored))
+     ((string-empty-p restored) draft)
+     (t (concat restored "\n\n" draft)))))
+
+(defun eca-chat--rollback (session content-id &optional text)
+  "Rollback chat messages for SESSION to before CONTENT-ID.
+TEXT is the rolled-back user message text; when the rollback
+removes messages, it is restored into the prompt field with any
+current draft appended, after the server clears the chat."
   (unless eca-chat--chat-loading
     (let ((rollback-messages-and-tools-str "1. Rollback messages and changes done by tool calls")
           (rollback-messages-str "2. Rollback only messages")
@@ -1666,11 +1687,18 @@ stopping while one is pending: cancel it, then notify the server."
                         ((string= rollback-type rollback-messages-str) ["messages"])
                         ((string= rollback-type rollback-tools-str) ["tools"])
                         ((string= rollback-type rollback-messages-and-tools-str) ["messages" "tools"]))))
-          (eca-api-request-sync session
-                                :method "chat/rollback"
-                                :params (list :chatId eca-chat--id
-                                              :contentId content-id
-                                              :include include)))))))
+          (when (member "messages" (append include nil))
+            (setq-local eca-chat--prompt-after-clear
+                        (eca-chat--rollback-prompt-text text)))
+          (unwind-protect
+              (eca-api-request-sync session
+                                    :method "chat/rollback"
+                                    :params (list :chatId eca-chat--id
+                                                  :contentId content-id
+                                                  :include include))
+            ;; `eca-chat-cleared' consumes the stash during the sync
+            ;; wait; this reset only drops a leftover on request failure.
+            (setq-local eca-chat--prompt-after-clear nil)))))))
 
 (defun eca-chat--remove-flag (session content-id)
   "Remove a flag identified by CONTENT-ID from the chat via SESSION."
@@ -4003,7 +4031,7 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
                  (eca-buttonize
                   eca-chat-mode-map
                   (propertize "Rollback chat to before this message" 'font-lock-face 'eca-chat-rollback-face)
-                  (lambda () (eca-chat--rollback session content-id))))
+                  (lambda () (eca-chat--rollback session content-id (string-trim text)))))
                 (when-let* ((ov (eca-chat--get-expandable-content content-id)))
                   (overlay-put ov 'eca-chat--user-message-id content-id)
                   (overlay-put ov 'eca-chat--timestamp (float-time)))
@@ -4596,7 +4624,9 @@ Shown at the top of the buffer only when an older page is available
     (when (buffer-live-p chat-buffer)
       (eca-chat--with-current-buffer chat-buffer
         (when messages?
-          (eca-chat--clear))))))
+          (let ((new-prompt eca-chat--prompt-after-clear))
+            (setq-local eca-chat--prompt-after-clear nil)
+            (eca-chat--clear new-prompt)))))))
 
 (defun eca-chat--legacy-open-config-p (chat-config)
   "Return non-nil for a legacy unscoped chat/open restore update."

@@ -1788,4 +1788,120 @@ CHOOSE receives the candidate list the command offers."
     (expect (eca-chat--mode-line-module eca-chat-test--ws-session :remove-workspace-button)
             :to-be nil)))
 
+(describe "eca-chat--rollback-prompt-text"
+
+  (it "returns the rolled-back text when there is no draft"
+    (with-temp-buffer
+      (expect (eca-chat--rollback-prompt-text "redo this") :to-equal "redo this")))
+
+  (it "returns nil when both text and draft are empty"
+    (with-temp-buffer
+      (expect (eca-chat--rollback-prompt-text nil) :to-be nil)
+      (expect (eca-chat--rollback-prompt-text "   ") :to-be nil)))
+
+  (it "appends the draft after the rolled-back text"
+    (let ((buf (eca-chat-test--make-prompt-buffer "draft edit")))
+      (unwind-protect
+          (with-current-buffer buf
+            (expect (eca-chat--rollback-prompt-text "old msg")
+                    :to-equal "old msg\n\ndraft edit"))
+        (kill-buffer buf))))
+
+  (it "keeps a lone draft when there is no rolled-back text"
+    (let ((buf (eca-chat-test--make-prompt-buffer "draft edit")))
+      (unwind-protect
+          (with-current-buffer buf
+            (expect (eca-chat--rollback-prompt-text nil) :to-equal "draft edit"))
+        (kill-buffer buf))))
+
+  (it "ignores a whitespace-only draft"
+    (let ((buf (eca-chat-test--make-prompt-buffer "   ")))
+      (unwind-protect
+          (with-current-buffer buf
+            (expect (eca-chat--rollback-prompt-text "old msg") :to-equal "old msg"))
+        (kill-buffer buf)))))
+
+(describe "eca-chat--rollback"
+
+  (it "stashes restored text plus draft for a messages rollback"
+    (let ((buf (eca-chat-test--make-prompt-buffer "draft edit"))
+          (session (make-eca--session))
+          (captured 'unset))
+      (unwind-protect
+          (with-current-buffer buf
+            (setq-local eca-chat--id "chat-1")
+            (spy-on 'completing-read
+                    :and-return-value "2. Rollback only messages")
+            ;; Capture the stash as the server request sees it: the
+            ;; `chat/cleared' notification consumes it during the sync wait.
+            (spy-on 'eca-api-request-sync :and-call-fake
+                    (lambda (&rest _)
+                      (setq captured eca-chat--prompt-after-clear)))
+            (eca-chat--rollback session "content-1" "old msg")
+            (expect captured :to-equal "old msg\n\ndraft edit")
+            (expect 'eca-api-request-sync :to-have-been-called)
+            ;; The unwind reset drops any unconsumed leftover.
+            (expect eca-chat--prompt-after-clear :to-be nil))
+        (kill-buffer buf))))
+
+  (it "does not stash for a tools-only rollback"
+    (let ((buf (eca-chat-test--make-prompt-buffer "draft edit"))
+          (session (make-eca--session))
+          (captured 'unset))
+      (unwind-protect
+          (with-current-buffer buf
+            (setq-local eca-chat--id "chat-1")
+            (spy-on 'completing-read
+                    :and-return-value "3. Rollback only changes done by tool calls")
+            (spy-on 'eca-api-request-sync :and-call-fake
+                    (lambda (&rest _)
+                      (setq captured eca-chat--prompt-after-clear)))
+            (eca-chat--rollback session "content-1" "old msg")
+            (expect captured :to-be nil)
+            (expect 'eca-api-request-sync :to-have-been-called))
+        (kill-buffer buf)))))
+
+(describe "eca-chat-cleared"
+
+  (it "restores the stashed prompt into the rebuilt prompt field"
+    (let ((buf (eca-chat-test--make-prompt-buffer "draft edit"))
+          (session (make-eca--session)))
+      (unwind-protect
+          (with-current-buffer buf
+            (setq-local eca-chat--id "chat-1")
+            (setq-local eca-chat--prompt-after-clear "old msg\n\ndraft edit")
+            (spy-on 'eca-chat--get-chat-buffer :and-return-value buf)
+            (spy-on 'eca-chat--refresh-context)
+            (eca-chat-cleared session (list :chatId "chat-1" :messages t))
+            (expect (eca-chat-test--prompt-text buf)
+                    :to-equal "old msg\n\ndraft edit")
+            (expect eca-chat--prompt-after-clear :to-be nil))
+        (kill-buffer buf))))
+
+  (it "leaves the prompt empty when nothing is stashed"
+    (let ((buf (eca-chat-test--make-prompt-buffer "leftover")))
+      (unwind-protect
+          (with-current-buffer buf
+            (setq-local eca-chat--id "chat-1")
+            (spy-on 'eca-chat--get-chat-buffer :and-return-value buf)
+            (spy-on 'eca-chat--refresh-context)
+            (eca-chat-cleared (make-eca--session)
+                              (list :chatId "chat-1" :messages t))
+            (expect (eca-chat-test--prompt-text buf) :to-equal ""))
+        (kill-buffer buf))))
+
+  (it "does not clear nor consume the stash when messages is nil"
+    (let ((buf (eca-chat-test--make-prompt-buffer "draft edit")))
+      (unwind-protect
+          (with-current-buffer buf
+            (setq-local eca-chat--id "chat-1")
+            (setq-local eca-chat--prompt-after-clear "old msg")
+            (spy-on 'eca-chat--get-chat-buffer :and-return-value buf)
+            (spy-on 'eca-chat--clear)
+            (eca-chat-cleared (make-eca--session)
+                              (list :chatId "chat-1" :messages nil))
+            (expect 'eca-chat--clear :not :to-have-been-called)
+            (expect eca-chat--prompt-after-clear :to-equal "old msg"))
+        (kill-buffer buf)))))
+
 ;;; eca-chat-test.el ends here
