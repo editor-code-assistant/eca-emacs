@@ -259,6 +259,15 @@
       (expect (plist-get lsp-params :context)
               :to-equal '(:includeDeclaration :json-false)))))
 
+(defun eca-editor-test--buffer-file-uri ()
+  "URI of `eca-editor-test--file' from its visiting buffer.
+Location URIs are built from the variable `buffer-file-name',
+which on Windows holds the resolved long path while
+`make-temp-file' may return a DOS 8.3 short name (e.g. RUNNER~1),
+so expected URIs must come from the same source."
+  (eca--path-to-uri
+   (buffer-file-name (find-buffer-visiting eca-editor-test--file))))
+
 ;; A fake xref backend answering fixed locations inside the temp file:
 ;; the declaration at line 1 column 6 and a usage at line 2 column 2.
 (cl-defmethod xref-backend-identifier-at-point ((_backend (eql eca-editor-test--xref)))
@@ -304,7 +313,7 @@
             session request
             (list :status "success"
                   :locations (vector
-                              (list :uri (eca--path-to-uri eca-editor-test--file)
+                              (list :uri (eca-editor-test--buffer-file-uri)
                                     :range (list :start (list :line 1 :character 7)
                                                  :end (list :line 1 :character 7)))))))
 
@@ -316,10 +325,10 @@
             session request
             (list :status "success"
                   :locations (vector
-                              (list :uri (eca--path-to-uri eca-editor-test--file)
+                              (list :uri (eca-editor-test--buffer-file-uri)
                                     :range (list :start (list :line 1 :character 7)
                                                  :end (list :line 1 :character 7)))
-                              (list :uri (eca--path-to-uri eca-editor-test--file)
+                              (list :uri (eca-editor-test--buffer-file-uri)
                                     :range (list :start (list :line 2 :character 3)
                                                  :end (list :line 2 :character 3)))))))
 
@@ -333,7 +342,7 @@
             session request
             (list :status "success"
                   :locations (vector
-                              (list :uri (eca--path-to-uri eca-editor-test--file)
+                              (list :uri (eca-editor-test--buffer-file-uri)
                                     :range (list :start (list :line 2 :character 3)
                                                  :end (list :line 2 :character 3)))))))
 
