@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Bugfix: Enter now works with transient/overriding keymaps that bind only `"RET"` (e.g. Embark's action maps) inside chat buffers. `eca-chat-mode-map` bound the raw `<return>` event, which blocked the `<return>` -> `RET` key translation in GUI frames, so those keymaps' `RET` binding was never reached and the keypress silently fell through to `eca-chat--key-pressed-return` instead; only `RET` is bound now.
 - Restore the rolled-back user message into the prompt field. `Rollback chat to before this message` (when messages are included) used to discard the clicked message's text together with the rest of the turn; the text now lands in the prompt unsent, ready to edit and resend, and any draft already typed in the prompt is kept below it, separated by a blank line.
 - Fall back to the buffer's `xref` backend (eglot, etags with a loaded tags table, any custom backend) for `editor/getDefinition`/`editor/getReferences` when lsp-mode cannot serve the file, instead of answering no-server. `includeDeclaration: false` is honored by filtering definition locations out of the references, since LSP-backed xref backends always include the declaration. (editor-code-assistant/eca#351)
 
