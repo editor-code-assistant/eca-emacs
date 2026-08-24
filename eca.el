@@ -32,6 +32,7 @@
 (require 'eca-api)
 (require 'eca-settings)
 (require 'eca-chat)
+(require 'eca-chat-compose)
 (require 'eca-workspaces)
 (require 'eca-mcp)
 (require 'eca-providers)
