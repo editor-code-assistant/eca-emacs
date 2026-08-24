@@ -517,6 +517,7 @@ Inheirits BASE-MAP."
       ("k" "Delete" eca-chat-delete)
       ("R" "Rename" eca-chat-rename)
       ("t" "Talk" eca-chat-talk)
+      ("i" "Compose prompt in buffer" eca-chat-compose)
       ("p" "Repeat prompt" eca-chat-repeat-prompt)
       ("C" "Clear prompt" eca-chat-clear-prompt)
       ("m" "Select model" eca-chat-select-model)

@@ -2412,10 +2412,14 @@ characters as part of the URL."
    (t t)))
 
 (defun eca-chat--point-at-new-context-p ()
-  "Return non-nil if point is at the context area."
-  (and (eq (line-number-at-pos (point))
-           (line-number-at-pos (eca-chat--new-context-start-point)))
-       (eolp)))
+  "Return non-nil if point is at the context area.
+Returns nil in buffers without the chat prompt overlays (a nil
+context-area start would make `line-number-at-pos' fall back to
+the current line, making this predicate true at any end of line)."
+  (when-let* ((context-start (eca-chat--new-context-start-point)))
+    (and (eq (line-number-at-pos (point))
+             (line-number-at-pos context-start))
+         (eolp))))
 
 (defun eca-chat--point-at-prompt-field-p ()
   "Return non-nil if point is at the prompt field area."

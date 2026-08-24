@@ -447,45 +447,57 @@ TYPE can be a string or symbol."
               subtype)))
         "png")))
 
+(defun eca-chat-media--save-clipboard-image (type data)
+  "Write clipboard image DATA of mime TYPE to a temp file.
+Returns the path to the written file, or nil (after reporting the
+failure via `eca-error') when writing fails.  Shared by the eca
+chat buffer and the compose buffer clipboard-paste handlers."
+  (let* ((extension (eca-chat-media--extension-for-type type))
+         (output-path (make-temp-file "eca-screenshot-" nil (concat "." extension))))
+    (condition-case err
+        (progn
+          (let ((coding-system-for-write 'no-conversion))
+            (write-region data nil output-path nil 'silent))
+          (and (f-exists? output-path) output-path))
+      (error
+       (eca-error "Failed to save yanked image: %s" (error-message-string err))
+       nil))))
+
 (defun eca-chat--yank-image-handler (type data)
   "Handler for `yank-media' to insert images from clipboard.
 TYPE is the MIME type (e.g., image/png).
 DATA is the binary image data as a string."
   (when-let* ((session (eca-session))
               (chat-buffer (eca-chat--get-last-buffer session))
-              (extension (eca-chat-media--extension-for-type type))
-              (output-path (make-temp-file "eca-screenshot-" nil (concat "." extension))))
-    (condition-case err
-        (progn
-          (let ((coding-system-for-write 'no-conversion))
-            (write-region data nil output-path nil 'silent))
-          (when (f-exists? output-path)
-            (eca-chat--with-current-buffer chat-buffer
-              (let ((context (list :type "file" :path output-path))
-                    (file-size (file-size-human-readable (file-attribute-size (file-attributes output-path)))))
-                (eca-chat--select-window)
-                (if (eq 'system eca-chat-yank-image-context-location)
-                    (eca-chat--add-context context)
-                  (progn
-                    (eca-chat--insert-prompt (concat (eca-chat--context->str context 'static) " "))
-                    (goto-char (+ (point) (+ 2 (length output-path))))))
-                (eca-info "Image added, size: %s" file-size)))))
-      (error
-       (eca-error "Failed to save yanked image: %s" (error-message-string err))))))
+              (output-path (eca-chat-media--save-clipboard-image type data)))
+    (eca-chat--with-current-buffer chat-buffer
+      (let ((context (list :type "file" :path output-path))
+            (file-size (file-size-human-readable (file-attribute-size (file-attributes output-path)))))
+        (eca-chat--select-window)
+        (if (eq 'system eca-chat-yank-image-context-location)
+            (eca-chat--add-context context)
+          (progn
+            (eca-chat--insert-prompt (concat (eca-chat--context->str context 'static) " "))
+            (goto-char (+ (point) (+ 2 (length output-path))))))
+        (eca-info "Image added, size: %s" file-size)))))
+
+(defun eca-chat--clipboard-image-p ()
+  "Return non-nil when an image is available on the clipboard."
+  (when-let* ((targets (and (display-graphic-p)
+                            (gui-get-selection 'CLIPBOARD 'TARGETS))))
+    (seq-some (lambda (type)
+                (and (symbolp type)
+                     (string-match-p "^image/" (symbol-name type))))
+              (if (vectorp targets) (append targets nil) targets))))
 
 (defun eca-chat--yank-considering-image (orig-fun &rest args)
   "Around advice for paste commands to use `yank-media' for images.
 Call ORIG-FUN with ARGS if not media."
-  (if (and (display-graphic-p)
-           (derived-mode-p 'eca-chat-mode)
+  (if (and (derived-mode-p 'eca-chat-mode)
            (fboundp 'yank-media)
            (boundp 'yank-media--registered-handlers)
            yank-media--registered-handlers
-           (when-let* ((targets (gui-get-selection 'CLIPBOARD 'TARGETS)))
-             (seq-some (lambda (type)
-                         (and (symbolp type)
-                              (string-match-p "^image/" (symbol-name type))))
-                       (if (vectorp targets) (append targets nil) targets))))
+           (eca-chat--clipboard-image-p))
       (call-interactively #'yank-media)
     (apply orig-fun args)))
 
