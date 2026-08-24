@@ -843,7 +843,6 @@ and resume link are not left behind under the replayed messages.")
     (define-key map (kbd "C-<return>") #'eca-chat--key-pressed-queue)
     (define-key map (kbd "C-<up>") #'eca-chat--key-pressed-previous-prompt-history)
     (define-key map (kbd "C-<down>") #'eca-chat--key-pressed-next-prompt-history)
-    (define-key map (kbd "<return>") #'eca-chat--key-pressed-return)
     (define-key map (kbd "RET") #'eca-chat--key-pressed-return)
     (define-key map (kbd "C-c C-<return>") #'eca-chat-send-prompt-at-chat)
     ;; Bind only TAB, never the raw <tab> function-key event: binding
@@ -6237,11 +6236,10 @@ ECA chat state, prompt overlays, and rule-based hints."
 derived from `eca-chat-mode'.  `eca-chat-mode' likely failed to activate." mm)
             hints))
     (when (and in-chat-p
-               (not (eq ret-cmd 'eca-chat--key-pressed-return))
-               (not (eq return-cmd 'eca-chat--key-pressed-return)))
-      (push (format "RET is bound to `%s' (and <return> to `%s'), not \
+               (not (eq ret-cmd 'eca-chat--key-pressed-return)))
+      (push (format "RET is bound to `%s', not \
 `eca-chat--key-pressed-return'.  Another keymap is intercepting RET — see \
-\"Likely shadowing\" below." ret-cmd return-cmd)
+\"Likely shadowing\" below." ret-cmd)
             hints))
     (when (and in-chat-p (null session))
       (push "(eca-session) returned nil from inside the chat buffer — \

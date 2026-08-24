@@ -1673,6 +1673,32 @@ does not treat the first line as metadata.  Returns FN's value."
     (expect (lookup-key eca-chat-mode-map (kbd "<tab>")) :to-be nil)))
 
 ;; ---------------------------------------------------------------------------
+;; eca-chat-mode-map RET bindings
+;; ---------------------------------------------------------------------------
+
+(describe "eca-chat-mode-map RET bindings"
+
+  (it "binds RET to eca-chat--key-pressed-return"
+    (expect (lookup-key eca-chat-mode-map (kbd "RET"))
+            :to-be #'eca-chat--key-pressed-return))
+
+  ;; Binding raw <return> would block the <return> -> RET key translation
+  ;; in GUI frames, so transient/overriding keymaps binding only "RET"
+  ;; (e.g. embark-file-map) would never receive Enter.  lookup-key follows
+  ;; the parent map, so this also catches a future <return> binding
+  ;; inherited from markdown-mode-map.
+  (it "does not bind the raw <return> event"
+    (expect (lookup-key eca-chat-mode-map (kbd "<return>")) :to-be nil))
+
+  ;; Modified Enter chords are unaffected: they are distinct events with
+  ;; no ASCII equivalent, so they must stay bound as function keys.
+  (it "still binds the modified <return> chords"
+    (expect (lookup-key eca-chat-mode-map (kbd "S-<return>"))
+            :to-be #'eca-chat--key-pressed-newline)
+    (expect (lookup-key eca-chat-mode-map (kbd "C-<return>"))
+            :to-be #'eca-chat--key-pressed-queue)))
+
+;; ---------------------------------------------------------------------------
 ;; eca-chat--shell-command-state-face
 ;; ---------------------------------------------------------------------------
 
