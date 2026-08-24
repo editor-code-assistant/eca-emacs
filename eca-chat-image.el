@@ -355,16 +355,11 @@ always use the textual fallback."
              (format "Image (%s, %d bytes) — RET or mouse-2 to save"
                      (or (plist-get image-content :mediaType) "?")
                      (length (image-property image :data))))
-            ;; Bind both `RET' (terminal) and `<return>' (graphical
-            ;; frame function-key event) so RET works regardless of
-            ;; whether the chat mode-map has the function-key bound;
-            ;; otherwise `eca-chat--key-pressed-return' shadows ours.
             (let* ((save-fn (lambda ()
                               (interactive)
                               (eca-chat-save-image-at-point ov)))
                    (map (make-sparse-keymap)))
               (define-key map (kbd "RET") save-fn)
-              (define-key map (kbd "<return>") save-fn)
               (define-key map [mouse-2] save-fn)
               (overlay-put ov 'keymap map))))))
      (parent-tool-call-id
