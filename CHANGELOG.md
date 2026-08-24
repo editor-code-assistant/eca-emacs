@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Killing a chat buffer no longer asks about deleting the chat from the server: it just closes the buffer, leaving the chat resumable until the server retention cleanup removes it. Delete explicitly with `eca-chat-delete`, the workspaces dashboard `d`, or the new server `/delete-chat` command.
+
 - Add `eca-chat-compose` (transient menu `i`): compose a prompt in a dedicated markdown buffer instead of the inline chat prompt field, convenient for long or multi-line prompts. `C-c C-c` sends the buffer content to the chat it was opened from (or the session's last used chat), `C-c C-k` discards it. `@context`/`#filepath` mentions complete against the ECA server, and yanking a clipboard image inserts an `@file` mention pointing at a saved screenshot, mirroring the chat buffer.
 - Bugfix: Enter now works with transient/overriding keymaps that bind only `"RET"` (e.g. Embark's action maps) inside chat buffers. `eca-chat-mode-map` bound the raw `<return>` event, which blocked the `<return>` -> `RET` key translation in GUI frames, so those keymaps' `RET` binding was never reached and the keypress silently fell through to `eca-chat--key-pressed-return` instead; only `RET` is bound now.
 - Restore the rolled-back user message into the prompt field. `Rollback chat to before this message` (when messages are included) used to discard the clicked message's text together with the rest of the turn; the text now lands in the prompt unsent, ready to edit and resend, and any draft already typed in the prompt is kept below it, separated by a blank line.
