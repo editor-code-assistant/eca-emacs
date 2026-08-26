@@ -119,6 +119,20 @@ Chat
 - `eca-table-open`: Open the markdown table at point in a dedicated `*eca-table*` buffer where horizontal scrolling keeps the header aligned with the body, so wide tables can be read in full. Press `o` with point on any table to open it (the binding is scoped to the table, so it overrides `o` only there and works under evil/Doom too), or click `[o] open` on a wide table's action bar.
 - `eca-chat-save-to-file`: Save chat to a file.
 
+Inline prompt (chat from any buffer)
+
+- `eca-chat-inline-prompt`: Ask ECA from any buffer, streaming the answer into a markdown-rendered overlay above point. When the buffer has no inline chat yet it asks which chat to use: an existing chat has its history forked server-side into the inline chat (keeping the original clean) or a new inline chat is created; the choice is sticky per buffer, so later calls reuse it directly (`C-u` always asks again). The active region (or current file) is attached as context, and calling it with point on an existing overlay sends a reply.
+- `eca-chat-inline-reply`: Send a reply prompt for the overlay at point (`r` on the overlay)
+- `eca-chat-inline-dismiss`: Dismiss the overlay at point, keeping the chat and the buffer association (`q`)
+- `eca-chat-inline-stop`: Stop the running inline prompt (`s`)
+- `eca-chat-inline-menu`: Transient with inline settings and extra actions (`m` on the overlay): select model/variant/agent for next inline prompts, open the backing chat, toggle overlays visibility, detach
+- `eca-chat-inline-scroll-up` / `eca-chat-inline-scroll-down`: Scroll the answer viewport when it exceeds `eca-chat-inline-max-lines` (`n` / `p` on the overlay, or `C-M-v` / `C-M-S-v` anywhere in the buffer while the overlay is shown; those keep their regular behavior when there is nothing to scroll)
+- `eca-chat-inline-approve-tool-call` / `eca-chat-inline-reject-tool-call`: Answer tool calls pending approval right from the overlay (`a` / `d`); questions are answered by opening the chat
+- `eca-chat-inline-toggle-overlays`: Hide/show all inline overlays without dismissing them; hidden overlays keep streaming and show back on the next toggle or inline prompt
+- `eca-chat-inline-open-chat`: Open the regular chat buffer behind the overlay at point (`m o`)
+- `eca-chat-inline-select-model` / `eca-chat-inline-select-agent` / `eca-chat-inline-select-variant`: Quickly change the inline settings (also via `m`)
+- `eca-chat-inline-detach`: Forget the buffer's inline chat association
+
 ### Variables
 
 Server / process
@@ -185,6 +199,13 @@ Completion
 - `eca-completion-idle-delay`: Idle delay before triggering inline completion (0 = immediate, nil = disabled).
 - `eca-completion-syntax-highlight`: Whether to syntax-highlight the inline ghost-text suggestion using the buffer's `major-mode` (default `t`).
 - `eca-completion-overlay-dim-ratio`: Float in `[0.0, 1.0]` controlling how far each fontified span's foreground is blended toward the default background; lower values yield a more dimmed "ghost" look (default `0.5`, `nil` disables dimming). Effective only when `eca-completion-syntax-highlight` is non-nil.
+
+Inline prompt
+
+- `eca-chat-inline-max-lines`: Viewport height of the inline overlay in lines; longer answers scroll with `C-M-v`/`C-M-S-v` (auto-follows the tail while streaming, jumps to the head when finished). `nil` for no limit.
+- `eca-chat-inline-wrap-column`: Column the inline answer is hard word-wrapped at; `nil` (default) wraps at the width of the window showing the buffer.
+- `eca-chat-inline-dwim-contexts`: Whether to attach the active region (or current file) as context to inline prompts.
+- `eca-chat-inline-model` / `eca-chat-inline-agent` / `eca-chat-inline-variant`: Model, agent and variant for inline chats, independent from regular chats; `nil` (default) lets the server decide (its `chatInline` config, the forked chat's selection, then the defaults).
 
 Rewrite
 
@@ -262,6 +283,10 @@ Check detailed features [here](https://eca.dev/features/).
 ### Rewrite
 
 Select a text and call `eca-rewrite`, after rewrite is finish, call any action on the overlay.
+
+### Inline prompt
+
+Call `eca-chat-inline-prompt` from any buffer to ask about the region or code at point without leaving it: the answer streams into an overlay above point while the conversation lives in a regular ECA chat. The answer is rendered as markdown like the chat (markup hidden per `eca-chat-hide-markdown-markup`, code blocks natively highlighted), word-wrapped to the window width (`eca-chat-inline-wrap-column`) inside a viewport of `eca-chat-inline-max-lines` lines, scrollable with `n`/`p` on the overlay (or `C-M-v`/`C-M-S-v` from anywhere in the buffer). The first use picks the backing chat (an existing chat forked server-side, or a new one) and keeps it associated with the buffer, so replies (`r` on the overlay) continue the same conversation; `C-u` forces picking the chat again. Use `a`/`d` to approve/reject tool calls, `q` to dismiss the overlay and `m` for a menu with more actions: select the model/variant/agent used by inline prompts (also pinnable via `eca-chat-inline-model`, `eca-chat-inline-agent` and `eca-chat-inline-variant`), open the backing chat, or toggle overlays visibility (`eca-chat-inline-toggle-overlays`).
 
 ### Code completion
 

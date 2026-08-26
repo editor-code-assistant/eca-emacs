@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Show the summaries of tool calls pending approval in the inline prompt overlay status instead of the generic "Waiting for tool call approval" progress text (which overwrote the approval status), so it's clear what is about to run. With multiple pending tools, resolving one now keeps showing the remaining summaries, and approving from another client clears the stale approve/reject hints.
+- Bugfix: a region ending at the beginning of a line (whole-lines selection) no longer includes that extra line in the lines range sent by the `eca-chat-add-context-*` commands, and ranges/cursor positions computed in narrowed buffers now use absolute file line numbers.
+
+- Add `eca-chat-inline-prompt` (transient menu `I`): ask ECA from any buffer, streaming the answer into a markdown-rendered scrollable overlay at point, backed by the server `chat/inlinePrompt` method. Picks the backing chat on first use (forking an existing one server-side or starting fresh), sticky per buffer, `C-u` re-asks; region/file attached as context, `r` replies, `a`/`d` answer tool calls, `m` opens a menu to change inline model/variant/agent, open the backing chat or toggle overlays visibility (`eca-chat-inline-toggle-overlays`). Requires eca server with `chat/inlinePrompt` support.
+
 - Killing a chat buffer no longer asks about deleting the chat from the server: it just closes the buffer, leaving the chat resumable until the server retention cleanup removes it. Delete explicitly with `eca-chat-delete`, the workspaces dashboard `d`, or the new server `/delete-chat` command.
 
 - Add `eca-chat-compose` (transient menu `i`): compose a prompt in a dedicated markdown buffer instead of the inline chat prompt field, convenient for long or multi-line prompts. `C-c C-c` sends the buffer content to the chat it was opened from (or the session's last used chat), `C-c C-k` discards it. `@context`/`#filepath` mentions complete against the ECA server, and yanking a clipboard image inserts an `@file` mention pointing at a saved screenshot, mirroring the chat buffer.

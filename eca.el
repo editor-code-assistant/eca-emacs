@@ -33,6 +33,7 @@
 (require 'eca-settings)
 (require 'eca-chat)
 (require 'eca-chat-compose)
+(require 'eca-chat-inline)
 (require 'eca-workspaces)
 (require 'eca-mcp)
 (require 'eca-providers)

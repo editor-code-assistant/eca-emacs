@@ -374,11 +374,11 @@ of (LINE . CHARACTER) representing the current selection or cursor position."
   (save-excursion
     (let* ((start-pos (if (use-region-p) (region-beginning) (point)))
            (end-pos (if (use-region-p) (region-end) (point)))
-           (start-line (line-number-at-pos start-pos))
+           (start-line (line-number-at-pos start-pos t))
            (start-char (1+ (progn
                              (goto-char start-pos)
                              (current-column))))
-           (end-line (line-number-at-pos end-pos))
+           (end-line (line-number-at-pos end-pos t))
            (end-char (1+ (progn
                            (goto-char end-pos)
                            (current-column)))))
@@ -604,16 +604,30 @@ file or directory."
 (declare-function treemacs-node-at-point "treemacs")
 (declare-function treemacs-button-get "treemacs")
 
+(defun eca-chat--region-lines-range ()
+  "Return the active region as a lines range plist (:start N :end M).
+Lines are absolute (1-based, ignoring narrowing) since consumers
+resolve them against the whole file or buffer.  A region ending at
+the beginning of a line (whole-lines selection) does not include
+that line."
+  (let* ((rb (region-beginning))
+         (re (region-end))
+         (re (if (and (> re rb)
+                      (save-excursion (goto-char re) (bolp)))
+                 (1- re)
+               re)))
+    (list :start (line-number-at-pos rb t)
+          :end (line-number-at-pos re t))))
+
 (defun eca-chat--get-contexts-dwim ()
   "Get contexts in a DWIM manner."
   (cond
    ((and (buffer-file-name)
          (use-region-p))
-    (-let (((start . end) `(,(line-number-at-pos (region-beginning)) . ,(line-number-at-pos (region-end)))))
-      (list
-       (list :type "file"
-             :path (buffer-file-name)
-             :linesRange (list :start start :end end)))))
+    (list
+     (list :type "file"
+           :path (buffer-file-name)
+           :linesRange (eca-chat--region-lines-range))))
 
    ((derived-mode-p 'dired-mode)
     (--map (list :type (if (f-dir? it) "directory" "file")
@@ -634,9 +648,8 @@ file or directory."
    ;; Explicit selection in a non-file buffer (magit, vterm, the
    ;; chat itself, ...): intentional, so no predicate check.
    ((use-region-p)
-    (-let (((start . end) `(,(line-number-at-pos (region-beginning)) . ,(line-number-at-pos (region-end)))))
-      (list (eca-chat--buffer-context (current-buffer)
-                                      (list :start start :end end)))))
+    (list (eca-chat--buffer-context (current-buffer)
+                                    (eca-chat--region-lines-range))))
 
    ((funcall eca-chat-context-buffer-predicate (current-buffer))
     (list (eca-chat--buffer-context (current-buffer))))))

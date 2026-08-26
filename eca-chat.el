@@ -55,6 +55,20 @@ question being asked or answered).  Subscribers should be idempotent: the
 hook may run even when the status is unchanged.  Used by integrations
 such as the Doom workspaces tabline to refresh external indicators.")
 
+(defvar eca-chat-content-received-functions nil
+  "Abnormal hook run for every `chat/contentReceived' notification.
+Each function is called with SESSION and PARAMS (the raw notification
+plist carrying :chatId, :role and :content) before the content is
+rendered in the chat buffer.  Errors in subscribers are demoted so
+they never break chat rendering.  Used by integrations such as
+`eca-chat-inline' to mirror streamed content elsewhere.")
+
+(defvar eca-chat-deleted-functions nil
+  "Abnormal hook run after a chat deletion is processed.
+Each function is called with SESSION and CHAT-ID after the chat is
+removed from the session registry and its buffer killed, when it
+was known; the hook runs even for chat ids unknown to the client.")
+
 (defcustom eca-chat-window-side 'right
   "Where the ECA chat window should appear.
 Can be `'left', `'right', `'top', `'bottom', or nil.  When nil, a chat
@@ -4442,6 +4456,8 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
 
 (defun eca-chat-content-received (session params)
   "Handle the content received notification with PARAMS for SESSION."
+  (with-demoted-errors "eca-chat-content-received-functions: %S"
+    (run-hook-with-args 'eca-chat-content-received-functions session params))
   (let* ((chat-id (plist-get params :chatId))
          (parent-chat-id (plist-get params :parentChatId))
          (role (plist-get params :role))
@@ -4744,7 +4760,9 @@ own cleanup."
             (eca-dissoc (eca--session-chats session) chat-id))
       (when (buffer-live-p chat-buffer)
         (kill-buffer chat-buffer))
-      (eca-chat--notify-status-changed session))))
+      (eca-chat--notify-status-changed session))
+    (with-demoted-errors "eca-chat-deleted-functions: %S"
+      (run-hook-with-args 'eca-chat-deleted-functions session chat-id))))
 
 (defun eca-chat-opened (session params)
   "Handle chat/opened notification for SESSION with PARAMS.
@@ -4790,6 +4808,13 @@ resumed chat gets a fresh writable buffer."
               (eca-assoc (eca--session-chats session) chat-id new-buffer))
         (eca-chat--force-tab-line-update)
         (eca-chat--notify-status-changed session))))))
+
+(defun eca-chat-ensure-chat-buffer (session chat-id)
+  "Ensure a registered chat buffer for CHAT-ID exists in SESSION.
+Creates a background buffer without displaying it when missing,
+reusing the idempotent `chat/opened' path.  Returns the buffer."
+  (eca-chat-opened session (list :chatId chat-id))
+  (eca-chat--get-chat-buffer session chat-id))
 
 (defun eca-chat-status-changed (session params)
   "Handle chat status changed notification for SESSION with PARAMS.

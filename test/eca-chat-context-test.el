@@ -226,6 +226,57 @@
                 (expect (eca-chat--get-contexts-dwim) :to-equal (list ctx)))))
         (kill-buffer buf))))
 
+  (it "does not include the next line when the region ends at its beginning"
+    (let ((buf (generate-new-buffer "*dwim-bol-region-test*")))
+      (unwind-protect
+          (with-current-buffer buf
+            (insert "l1\nl2\nl3\nl4\n")
+            (let ((transient-mark-mode t))
+              (goto-char (point-min))
+              (forward-line 1)
+              (push-mark (point) t t)
+              ;; Whole-lines selection: point ends at the beginning of
+              ;; l4, so l4 must not be part of the range.
+              (forward-line 2)
+              (let ((ctx (list :type "text" :label "*dwim-bol-region-test*"
+                               :linesRange (list :start 2 :end 3))))
+                (expect (eca-chat--get-contexts-dwim) :to-equal (list ctx)))))
+        (kill-buffer buf))))
+
+  (it "uses absolute line numbers in narrowed buffers"
+    (let ((buf (generate-new-buffer "*dwim-narrowed-region-test*")))
+      (unwind-protect
+          (with-current-buffer buf
+            (insert "l1\nl2\nl3\nl4\nl5\n")
+            (let ((transient-mark-mode t))
+              (goto-char (point-min))
+              (forward-line 2)
+              (narrow-to-region (point) (point-max))
+              ;; Select (real) line 3 within the narrowed region.
+              (goto-char (point-min))
+              (push-mark (point) t t)
+              (end-of-line)
+              (let ((ctx (list :type "text" :label "*dwim-narrowed-region-test*"
+                               :linesRange (list :start 3 :end 3))))
+                (expect (eca-chat--get-contexts-dwim) :to-equal (list ctx)))))
+        (kill-buffer buf))))
+
+  (it "keeps a region ending mid-line unchanged"
+    (let ((buf (generate-new-buffer "*dwim-midline-region-test*")))
+      (unwind-protect
+          (with-current-buffer buf
+            (insert "l1\nl2\nl3\nl4\n")
+            (let ((transient-mark-mode t))
+              (goto-char (point-min))
+              (forward-line 1)
+              (push-mark (point) t t)
+              (forward-line 2)
+              (forward-char 1)
+              (let ((ctx (list :type "text" :label "*dwim-midline-region-test*"
+                               :linesRange (list :start 2 :end 4))))
+                (expect (eca-chat--get-contexts-dwim) :to-equal (list ctx)))))
+        (kill-buffer buf))))
+
   (it "bypasses the buffer predicate when a region is selected"
     (let ((buf (generate-new-buffer "<eca-chat-dwim-test>")))
       (unwind-protect

@@ -518,6 +518,8 @@ Inheirits BASE-MAP."
       ("R" "Rename" eca-chat-rename)
       ("t" "Talk" eca-chat-talk)
       ("i" "Compose prompt in buffer" eca-chat-compose)
+      ("I" "Inline prompt at point" eca-chat-inline-prompt)
+      ("T" "Toggle inline overlays" eca-chat-inline-toggle-overlays)
       ("p" "Repeat prompt" eca-chat-repeat-prompt)
       ("C" "Clear prompt" eca-chat-clear-prompt)
       ("m" "Select model" eca-chat-select-model)
