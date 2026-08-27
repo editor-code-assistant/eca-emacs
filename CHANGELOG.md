@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Bugfix: TAB on an expandable block label no longer blocks the `<tab>` -> `TAB` key translation, extending the fix in #281 to the label's `keymap` text property, which outranks the mode map. It bound the raw `<tab>` event and shadowed layered keymaps binding only `TAB`; it now binds `TAB`, which also makes the label's own binding reachable in terminal frames, where `<tab>` is never sent.
 - Show the summaries of tool calls pending approval in the inline prompt overlay status instead of the generic "Waiting for tool call approval" progress text (which overwrote the approval status), so it's clear what is about to run. With multiple pending tools, resolving one now keeps showing the remaining summaries, and approving from another client clears the stale approve/reject hints.
 - Bugfix: a region ending at the beginning of a line (whole-lines selection) no longer includes that extra line in the lines range sent by the `eca-chat-add-context-*` commands, and ranges/cursor positions computed in narrowed buffers now use absolute file line numbers.
 

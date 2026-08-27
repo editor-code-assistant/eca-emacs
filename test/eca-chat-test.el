@@ -1699,6 +1699,33 @@ does not treat the first line as metadata.  Returns FN's value."
             :to-be #'eca-chat--key-pressed-queue)))
 
 ;; ---------------------------------------------------------------------------
+;; Expandable block label keymap
+;; ---------------------------------------------------------------------------
+
+(defun eca-chat-test--expandable-label-keymap ()
+  "Render an expandable block and return the label's `keymap' property."
+  (with-temp-buffer
+    (let ((eca-chat-expandable--id->ov (make-hash-table :test 'equal)))
+      (eca-chat--insert-expandable-block "test-id" "Label" "content" "" "" ""))
+    (get-text-property (point-min) 'keymap)))
+
+(describe "expandable block label keymap"
+
+  (it "binds TAB and RET to the toggle"
+    (let ((km (eca-chat-test--expandable-label-keymap)))
+      (expect (functionp (lookup-key km (kbd "TAB"))) :to-be t)
+      (expect (functionp (lookup-key km (kbd "RET"))) :to-be t)))
+
+  ;; The label keymap comes from a `keymap' text property, which outranks
+  ;; the mode map, so binding the raw events here would block the
+  ;; <tab> -> TAB and <return> -> RET translations while point is on a
+  ;; label and shadow any layered keymap binding only TAB/RET.
+  (it "does not bind the raw <tab> or <return> events"
+    (let ((km (eca-chat-test--expandable-label-keymap)))
+      (expect (lookup-key km (kbd "<tab>")) :to-be nil)
+      (expect (lookup-key km (kbd "<return>")) :to-be nil))))
+
+;; ---------------------------------------------------------------------------
 ;; eca-chat--shell-command-state-face
 ;; ---------------------------------------------------------------------------
 
