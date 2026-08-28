@@ -197,6 +197,12 @@ for every open chat in the session.  Each tab shows the chat status
   :type 'boolean
   :group 'eca)
 
+(defcustom eca-chat-tab-line-close-button-show t
+  "Whether to show close buttons on ECA chat tab-line tabs.
+When nil, chat tabs are still shown but the close button is hidden."
+  :type 'boolean
+  :group 'eca)
+
 (defcustom eca-chat-custom-model nil
   "Which model to use during chat, nil means use server's default.
 Must be a valid model supported by server, check `eca-chat-select-model`."
@@ -3540,7 +3546,7 @@ CHILD, NAME, DOCSTRING and BODY are passed down."
              (require 'tab-line)
              (setq-local tab-line-tabs-function #'eca-chat--tab-line-tabs)
              (setq-local tab-line-new-button-show t)
-             (setq-local tab-line-close-button-show t)
+             (setq-local tab-line-close-button-show eca-chat-tab-line-close-button-show)
              (setq-local tab-line-new-tab-function #'eca-chat-new)
              (setq-local tab-line-separator "")
              (setq-local tab-line-tab-face-functions '(eca-chat--tab-line-face))
