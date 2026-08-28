@@ -38,8 +38,10 @@
       (when question
         (setq-local eca-chat--pending-question '(:question "q")))
       (when approval
-        (insert (propertize "approve"
-                            'eca-tool-call-pending-approval-accept t))))
+        (setq-local eca-chat--pending-approval-tool-calls
+                    (make-hash-table :test 'equal))
+        (puthash (cons eca-chat--id "tool-1") t
+                 eca-chat--pending-approval-tool-calls)))
     buffer))
 
 (defun eca-workspaces-test--make-session (id folder chats)

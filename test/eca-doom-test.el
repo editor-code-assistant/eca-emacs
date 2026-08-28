@@ -23,9 +23,11 @@ mode setup."
       (when session-id
         (setq-local eca--session-id-cache session-id))
       (pcase state
-        ('approval (insert (propertize
-                            "[accept]"
-                            'eca-tool-call-pending-approval-accept t)))
+        ('approval
+         (setq-local eca-chat--pending-approval-tool-calls
+                     (make-hash-table :test 'equal))
+         (puthash (cons nil "tool-1") t
+                  eca-chat--pending-approval-tool-calls))
         ('question (setq-local eca-chat--pending-question '(:question "q")))
         ('loading (setq-local eca-chat--chat-loading t))
         ('stopping (setq-local eca-chat--chat-loading 'stopping))))

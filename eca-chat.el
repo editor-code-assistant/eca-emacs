@@ -337,6 +337,21 @@ typing or streaming."
 (defvar-local eca-chat--tool-call-prepare-content-cache (make-hash-table :test 'equal)
   "Hash table mapping toolCall ID to accumulated argument text.")
 
+(defvar-local eca-chat--pending-approval-tool-calls (make-hash-table :test 'equal)
+  "Hash table mapping chat/tool-call IDs to pending approval state.")
+
+(defvar-local eca-chat--resolved-approval-tool-calls (make-hash-table :test 'equal)
+  "Hash table mapping chat/tool-call IDs to resolved approval state.")
+
+(defvar-local eca-chat--opening-history-replay nil
+  "Non-nil while initial history is replaying into this chat buffer.")
+
+(defvar-local eca-chat--opening-history-had-pending nil
+  "Whether this chat had pending approvals before opening history replay.")
+
+(defvar eca-chat--defer-pending-approval-status-refresh nil
+  "Non-nil while pending approval UI refreshes should be coalesced.")
+
 (defcustom eca-chat-tool-call-approval-content-size 0.9
   "The size of font of tool call approval."
   :type 'number
@@ -1591,38 +1606,45 @@ remember action when nothing can be remembered."
     (overlay-put prompt-field-ov 'before-string (propertize eca-chat-prompt-prefix 'font-lock-face 'eca-chat-prompt-prefix-face)))
   (eca-chat--protect-non-prompt))
 
-(defun eca-chat--clear (&optional new-prompt-content)
-  "Clear the chat for SESSION and then insert NEW-PROMPT-CONTENT."
-  (let ((inhibit-read-only t))
-    (erase-buffer)
-    (remove-overlays (point-min) (point-max)))
-  (eca-chat--invalidate-overlay-caches)
-  (eca-chat-expandable--reset-id-table)
-  (setq-local eca-chat--task-state nil)
-  ;; Cancel loading-related timers and reset state
-  (when eca-chat--stopping-safety-timer
-    (cancel-timer eca-chat--stopping-safety-timer)
-    (setq-local eca-chat--stopping-safety-timer nil))
-  (when eca-chat--modeline-timer
-    (cancel-timer eca-chat--modeline-timer)
-    (setq-local eca-chat--modeline-timer nil))
-  (setq-local eca-chat--chat-loading nil)
-  (setq-local eca-chat--steered-prompt nil)
-  (setq-local eca-chat--queued-prompt nil)
-  (setq-local eca-chat--welcome-shown nil)
-  (setq-local eca-chat--last-user-message-pos nil)
-  (setq-local eca-chat--history-before-cursor nil)
-  (setq-local eca-chat--history-after-cursor nil)
-  (setq-local eca-chat--history-compaction-cursor nil)
-  (setq-local eca-chat--history-total nil)
-  (setq-local eca-chat--history-loading nil)
-  (clrhash eca-chat--subagent-chat-id->tool-call-id)
-  (clrhash eca-chat--subagent-usage)
-  (eca-chat--insert "\n")
-  (eca-chat--insert-prompt-string)
-  (eca-chat--refresh-context)
-  (when new-prompt-content
-    (eca-chat--set-prompt new-prompt-content)))
+(defun eca-chat--clear (&optional new-prompt-content session)
+  "Clear chat content and insert NEW-PROMPT-CONTENT.
+When SESSION is non-nil, notify status listeners if pending
+approval state changes."
+  (let ((had-pending (and session (eca-chat--has-pending-approvals-p))))
+    (let ((inhibit-read-only t))
+      (erase-buffer)
+      (remove-overlays (point-min) (point-max)))
+    (eca-chat--invalidate-overlay-caches)
+    (eca-chat-expandable--reset-id-table)
+    (setq-local eca-chat--task-state nil)
+    ;; Cancel loading-related timers and reset state
+    (when eca-chat--stopping-safety-timer
+      (cancel-timer eca-chat--stopping-safety-timer)
+      (setq-local eca-chat--stopping-safety-timer nil))
+    (when eca-chat--modeline-timer
+      (cancel-timer eca-chat--modeline-timer)
+      (setq-local eca-chat--modeline-timer nil))
+    (setq-local eca-chat--chat-loading nil)
+    (setq-local eca-chat--steered-prompt nil)
+    (setq-local eca-chat--queued-prompt nil)
+    (setq-local eca-chat--welcome-shown nil)
+    (setq-local eca-chat--last-user-message-pos nil)
+    (setq-local eca-chat--history-before-cursor nil)
+    (setq-local eca-chat--history-after-cursor nil)
+    (setq-local eca-chat--history-compaction-cursor nil)
+    (setq-local eca-chat--history-total nil)
+    (setq-local eca-chat--history-loading nil)
+    (eca-chat--clear-pending-approvals)
+    (eca-chat--clear-resolved-approvals)
+    (clrhash eca-chat--subagent-chat-id->tool-call-id)
+    (clrhash eca-chat--subagent-usage)
+    (eca-chat--insert "\n")
+    (eca-chat--insert-prompt-string)
+    (eca-chat--refresh-context)
+    (when new-prompt-content
+      (eca-chat--set-prompt new-prompt-content))
+    (eca-chat--maybe-notify-pending-approval-status-changed
+     session had-pending)))
 
 (defun eca-chat--stop-prompt (session)
   "Stop the running chat prompt for SESSION.
@@ -2567,12 +2589,125 @@ or \"Xm\" when seconds are zero."
     (concat (eca-chat--format-duration dur)
             (when eca-chat--prompt-start-time "…"))))
 
+(defun eca-chat--pending-approval-table ()
+  "Return the current buffer's pending approval table."
+  (unless (and (local-variable-p 'eca-chat--pending-approval-tool-calls)
+               (hash-table-p eca-chat--pending-approval-tool-calls))
+    (setq-local eca-chat--pending-approval-tool-calls
+                (make-hash-table :test 'equal)))
+  eca-chat--pending-approval-tool-calls)
+
+(defun eca-chat--pending-approval-key (tool-call-id &optional chat-id)
+  "Return the pending approval key for TOOL-CALL-ID in CHAT-ID."
+  (cons (or chat-id eca-chat--id) tool-call-id))
+
+(defun eca-chat--resolved-approval-table ()
+  "Return the current buffer's resolved approval table."
+  (unless (and (local-variable-p 'eca-chat--resolved-approval-tool-calls)
+               (hash-table-p eca-chat--resolved-approval-tool-calls))
+    (setq-local eca-chat--resolved-approval-tool-calls
+                (make-hash-table :test 'equal)))
+  eca-chat--resolved-approval-tool-calls)
+
+(defun eca-chat--approval-resolved-p (tool-call-id &optional chat-id)
+  "Return non-nil if TOOL-CALL-ID in CHAT-ID already resolved."
+  (and tool-call-id
+       (gethash (eca-chat--pending-approval-key tool-call-id chat-id)
+                (eca-chat--resolved-approval-table))))
+
+(defun eca-chat--mark-approval-resolved (tool-call-id &optional chat-id)
+  "Mark TOOL-CALL-ID in CHAT-ID as no longer pending approval."
+  (when tool-call-id
+    (puthash (eca-chat--pending-approval-key tool-call-id chat-id)
+             t
+             (eca-chat--resolved-approval-table))))
+
+(defun eca-chat--refresh-pending-approval-status (had-pending table)
+  "Refresh status UI if TABLE state changed from HAD-PENDING."
+  (when (and (not eca-chat--defer-pending-approval-status-refresh)
+             (not eca-chat--opening-history-replay)
+             (not (eq had-pending (> (hash-table-count table) 0))))
+    (eca-chat--force-tab-line-update)))
+
+(defun eca-chat--mark-pending-approval (tool-call-id &optional chat-id)
+  "Mark TOOL-CALL-ID in CHAT-ID as waiting for manual approval."
+  (when (and tool-call-id
+             (not (eca-chat--approval-resolved-p tool-call-id chat-id)))
+    (let* ((table (eca-chat--pending-approval-table))
+           (had-pending (> (hash-table-count table) 0)))
+      (puthash (eca-chat--pending-approval-key tool-call-id chat-id) t table)
+      (eca-chat--refresh-pending-approval-status had-pending table))))
+
+(defun eca-chat--clear-pending-approval (tool-call-id &optional chat-id)
+  "Clear TOOL-CALL-ID in CHAT-ID from the pending approval table."
+  (when tool-call-id
+    (let* ((table (eca-chat--pending-approval-table))
+           (had-pending (> (hash-table-count table) 0)))
+      (remhash (eca-chat--pending-approval-key tool-call-id chat-id) table)
+      (eca-chat--refresh-pending-approval-status had-pending table))))
+
+(defun eca-chat--clear-pending-approvals ()
+  "Clear all cached pending approval state in current buffer."
+  (let* ((table (eca-chat--pending-approval-table))
+         (had-pending (> (hash-table-count table) 0)))
+    (clrhash table)
+    (eca-chat--refresh-pending-approval-status had-pending table)))
+
+(defun eca-chat--clear-resolved-approvals ()
+  "Clear all cached resolved approval state in current buffer."
+  (clrhash (eca-chat--resolved-approval-table)))
+
 (defun eca-chat--has-pending-approvals-p ()
   "Return non-nil if current buffer has any pending approval tool call."
-  (save-excursion
-    (goto-char (point-min))
-    (not (null (text-property-search-forward
-                'eca-tool-call-pending-approval-accept t t)))))
+  (> (hash-table-count (eca-chat--pending-approval-table)) 0))
+
+(defun eca-chat--begin-opening-history-replay (buffer)
+  "Begin coalescing initial history status publication in BUFFER."
+  (when (buffer-live-p buffer)
+    (with-current-buffer buffer
+      (setq-local eca-chat--opening-history-had-pending
+                  (eca-chat--has-pending-approvals-p))
+      (setq-local eca-chat--opening-history-replay t))))
+
+(defun eca-chat--finish-opening-history-replay (session buffer)
+  "Publish final opening history status for SESSION and BUFFER."
+  (when (buffer-live-p buffer)
+    (with-current-buffer buffer
+      (when eca-chat--opening-history-replay
+        (let ((had-pending eca-chat--opening-history-had-pending))
+          (setq-local eca-chat--opening-history-replay nil)
+          (setq-local eca-chat--opening-history-had-pending nil)
+          (eca-chat--refresh-pending-approval-status
+           had-pending (eca-chat--pending-approval-table))
+          (eca-chat--notify-status-changed session))))))
+
+(defun eca-chat--finish-opening-history-replay-for-chat (session chat-id)
+  "Publish final opening history status for CHAT-ID in SESSION."
+  (when-let* ((buffer (eca-get (eca--session-chats session) chat-id))
+              ((buffer-live-p buffer)))
+    (eca-chat--finish-opening-history-replay session buffer)))
+
+(defun eca-chat--has-pending-approval-for-chat-p (&optional chat-id)
+  "Return non-nil if CHAT-ID has any pending approval.
+When CHAT-ID is nil, use the current buffer's chat id."
+  (let ((target-chat-id (or chat-id eca-chat--id))
+        (found nil))
+    (maphash
+     (lambda (key _value)
+       (when (equal (car key) target-chat-id)
+         (setq found t)))
+     (eca-chat--pending-approval-table))
+    found))
+
+(defun eca-chat--refresh-parent-subagent-status (parent-tool-call-id chat-id)
+  "Refresh PARENT-TOOL-CALL-ID after a child approval update.
+CHAT-ID is the child chat whose pending approvals set the parent status."
+  (when parent-tool-call-id
+    (eca-chat--update-parent-subagent-status
+     parent-tool-call-id
+     (if (eca-chat--has-pending-approval-for-chat-p chat-id)
+         eca-chat-mcp-tool-call-pending-approval-symbol
+       eca-chat-mcp-tool-call-loading-symbol))))
 
 (defun eca-chat--needs-attention-p (buffer)
   "Return non-nil when chat BUFFER is waiting on the user.
@@ -2633,15 +2768,25 @@ aggregated session status so integrations can refresh."
   (when session
     (run-hook-with-args 'eca-chat-session-status-changed-functions session)))
 
+(defun eca-chat--maybe-notify-pending-approval-status-changed
+    (session had-pending)
+  "Notify SESSION when pending approval state changed from HAD-PENDING.
+This is for non-live callers; streaming content already notifies
+status listeners after rendering lifecycle events."
+  (when (and session
+             (not (eq had-pending (eca-chat--has-pending-approvals-p))))
+    (eca-chat--notify-status-changed session)))
+
 (defun eca-chat--maybe-notify-status-changed (session content)
   "Notify a status change for SESSION when CONTENT can alter attention.
 Tool-call lifecycle events add or clear a pending approval, and
 metadata/usage events update titles and costs shown by integrations,
 so the status recompute is limited to those content types to avoid
 scanning the buffer on every streamed chunk."
-  (when (member (plist-get content :type)
-                '("toolCallRun" "toolCallRunning" "toolCalled" "toolCallRejected"
-                  "metadata" "usage"))
+  (when (and (not eca-chat--opening-history-replay)
+             (member (plist-get content :type)
+                     '("toolCallRun" "toolCallRunning" "toolCalled"
+                       "toolCallRejected" "metadata" "usage")))
     (eca-chat--notify-status-changed session)))
 
 (defun eca-chat--chat-status-prefix ()
@@ -3416,6 +3561,10 @@ CHILD, NAME, DOCSTRING and BODY are passed down."
   (setq-local eca-chat--tool-call-prepare-counters
               (make-hash-table :test 'equal))
   (setq-local eca-chat--tool-call-prepare-content-cache
+              (make-hash-table :test 'equal))
+  (setq-local eca-chat--pending-approval-tool-calls
+              (make-hash-table :test 'equal))
+  (setq-local eca-chat--resolved-approval-tool-calls
               (make-hash-table :test 'equal))
   (setq-local eca-chat--tool-call-elapsed-times
               (make-hash-table :test 'equal))
@@ -4192,40 +4341,43 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
                 (details (plist-get content :details))
                 (approval-text (when manual?
                                  (eca-chat--build-tool-call-approval-str-content session id tool-call-next-line-spacing chat-id details))))
-           ;; Register subagent mapping only for top-level tool calls
-           (when (and (not parent-tool-call-id)
-                      (string= "subagent" (plist-get details :type)))
-             (puthash (plist-get details :subagentChatId) id eca-chat--subagent-chat-id->tool-call-id))
-           (pcase (plist-get details :type)
-             ("fileChange" (eca-chat--tool-call-file-change-details content label approval-text nil status tool-call-next-line-spacing roots parent-tool-call-id))
-             ("shellCommand" (eca-chat--tool-call-shell-command-details content label approval-text nil status parent-tool-call-id nil (not manual?)))
-             ("subagent" (eca-chat--tool-call-subagent-details id args label approval-text nil status parent-tool-call-id details))
-             (_ (eca-chat--update-expandable-content
-                 id
-                 (concat (propertize label 'font-lock-face 'eca-chat-mcp-tool-call-label-face)
-                         " " status
-                         "\n"
-                         approval-text)
-                 (eca-chat--content-table
-                  `(("Tool" . ,name)
-                    ("Server" . ,server)
-                    ("Arguments" . ,args)))
-                 nil
-                 parent-tool-call-id)))
-           ;; Mark this ID as having received toolCallRun so that any late-arriving
-           ;; toolCallPrepare events (still in-flight for long files) don't overwrite
-           ;; the approval prompt we just rendered.  Set this AFTER the pcase dispatch
-           ;; so that if rendering errors, the flag doesn't poison subsequent prepare
-           ;; events (which would prevent the block from ever being created).
-           (when (and eca-chat-expand-pending-approval-tools manual?)
-             (when parent-tool-call-id
-               (eca-chat--expandable-content-toggle parent-tool-call-id t nil))
-             (eca-chat--expandable-content-toggle id t nil)
-             (eca-chat--ensure-prompt-visible))
-           ;; Update parent subagent status to show pending approval
-           (when (and manual? parent-tool-call-id)
-             (eca-chat--update-parent-subagent-status
-              parent-tool-call-id eca-chat-mcp-tool-call-pending-approval-symbol)))))
+           (unless (and manual? (eca-chat--approval-resolved-p id chat-id))
+             ;; Register subagent mapping only for top-level tool calls
+             (when (and (not parent-tool-call-id)
+                        (string= "subagent" (plist-get details :type)))
+               (puthash (plist-get details :subagentChatId) id eca-chat--subagent-chat-id->tool-call-id))
+             (pcase (plist-get details :type)
+               ("fileChange" (eca-chat--tool-call-file-change-details content label approval-text nil status tool-call-next-line-spacing roots parent-tool-call-id))
+               ("shellCommand" (eca-chat--tool-call-shell-command-details content label approval-text nil status parent-tool-call-id nil (not manual?)))
+               ("subagent" (eca-chat--tool-call-subagent-details id args label approval-text nil status parent-tool-call-id details))
+               (_ (eca-chat--update-expandable-content
+                   id
+                   (concat (propertize label 'font-lock-face 'eca-chat-mcp-tool-call-label-face)
+                           " " status
+                           "\n"
+                           approval-text)
+                   (eca-chat--content-table
+                    `(("Tool" . ,name)
+                      ("Server" . ,server)
+                      ("Arguments" . ,args)))
+                   nil
+                   parent-tool-call-id)))
+             (when manual?
+               (eca-chat--mark-pending-approval id chat-id))
+             ;; Mark this ID as having received toolCallRun so that any late-arriving
+             ;; toolCallPrepare events (still in-flight for long files) don't overwrite
+             ;; the approval prompt we just rendered.  Set this AFTER the pcase dispatch
+             ;; so that if rendering errors, the flag doesn't poison subsequent prepare
+             ;; events (which would prevent the block from ever being created).
+             (when (and eca-chat-expand-pending-approval-tools manual?)
+               (when parent-tool-call-id
+                 (eca-chat--expandable-content-toggle parent-tool-call-id t nil))
+               (eca-chat--expandable-content-toggle id t nil)
+               (eca-chat--ensure-prompt-visible))
+             ;; Update parent subagent status to show pending approval
+             (when (and manual? parent-tool-call-id)
+               (eca-chat--update-parent-subagent-status
+                parent-tool-call-id eca-chat-mcp-tool-call-pending-approval-symbol))))))
       ("toolCallRunning"
        (unless (eca-chat--task-tool-call-p content)
          (let* ((id (plist-get content :id))
@@ -4240,6 +4392,8 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
                                 (eca-chat--tool-call-elapsed-start id)
                                 (eca-chat--elapsed-time-string
                                  (gethash id eca-chat--tool-call-elapsed-times)))))
+           (eca-chat--mark-approval-resolved id chat-id)
+           (eca-chat--clear-pending-approval id chat-id)
            ;; Register subagent mapping only for top-level tool calls
            (when (and (not parent-tool-call-id)
                       (string= "subagent" (plist-get details :type)))
@@ -4260,10 +4414,9 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
                     ("Arguments" . ,args)))
                  nil
                  parent-tool-call-id)))
-           ;; Restore parent subagent status back to loading
-           (when parent-tool-call-id
-             (eca-chat--update-parent-subagent-status
-              parent-tool-call-id eca-chat-mcp-tool-call-loading-symbol)))))
+           ;; Keep parent pending while sibling approvals remain pending.
+           (eca-chat--refresh-parent-subagent-status
+            parent-tool-call-id chat-id))))
       ("toolCalled"
        (if (eca-chat--task-tool-call-p content)
            (eca-chat--update-task-state content)
@@ -4294,6 +4447,8 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
            ;; Another client may have answered this ask_user question first,
            ;; resolving the tool call here; drop our now-stale prompt state.
            (eca-chat--dismiss-pending-question-for-tool-call id)
+           (eca-chat--mark-approval-resolved id chat-id)
+           (eca-chat--clear-pending-approval id chat-id)
            ;; Cleanup subagent mapping only for top-level tool calls
            (when (and (not parent-tool-call-id)
                       (string= "subagent" (plist-get details :type)))
@@ -4317,10 +4472,9 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
            (when eca-chat-shrink-called-tools
              (eca-chat--expandable-content-toggle id t t)
              (eca-chat--ensure-prompt-visible))
-           ;; Restore parent subagent status back to loading
-           (when parent-tool-call-id
-             (eca-chat--update-parent-subagent-status
-              parent-tool-call-id eca-chat-mcp-tool-call-loading-symbol)))))
+           ;; Keep parent pending while sibling approvals remain pending.
+           (eca-chat--refresh-parent-subagent-status
+            parent-tool-call-id chat-id))))
       ("toolCallRejected"
        (unless (eca-chat--task-tool-call-p content)
          (let* ((name (plist-get content :name))
@@ -4337,6 +4491,8 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
            ;; Another client may have cancelled this ask_user question first,
            ;; rejecting the tool call here; drop our now-stale prompt state.
            (eca-chat--dismiss-pending-question-for-tool-call id)
+           (eca-chat--mark-approval-resolved id chat-id)
+           (eca-chat--clear-pending-approval id chat-id)
            ;; Cleanup subagent mapping only for top-level tool calls
            (when (and (not parent-tool-call-id)
                       (string= "subagent" (plist-get details :type)))
@@ -4356,10 +4512,9 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
                                             ("Arguments" . ,args)))
                  nil
                  parent-tool-call-id)))
-           ;; Restore parent subagent status back to loading
-           (when parent-tool-call-id
-             (eca-chat--update-parent-subagent-status
-              parent-tool-call-id eca-chat-mcp-tool-call-loading-symbol)))))
+           ;; Keep parent pending while sibling approvals remain pending.
+           (eca-chat--refresh-parent-subagent-status
+            parent-tool-call-id chat-id))))
       ("progress"
        (unless parent-tool-call-id
          (pcase (plist-get content :state)
@@ -4505,11 +4660,13 @@ prepended region explicitly.  Callers are expected to re-apply
 `eca-chat--protect-non-prompt' afterwards."
   (eca-chat--with-current-buffer chat-buffer
     (let* ((roots (eca--session-workspace-folders session))
+           (had-pending (eca-chat--has-pending-approvals-p))
            (start (eca-chat--older-content-start))
            (m (copy-marker start t))
            (saved-last-user-pos eca-chat--last-user-message-pos))
       (unwind-protect
-          (let ((eca-chat--insertion-point-override m))
+          (let ((eca-chat--insertion-point-override m)
+                (eca-chat--defer-pending-approval-status-refresh t))
             (seq-do
              (lambda (item)
                (let ((role (plist-get item :role))
@@ -4521,21 +4678,29 @@ prepended region explicitly.  Callers are expected to re-apply
                        (eca-chat--render-content session chat-buffer role content roots tool-call-id item-chat-id))
                    (eca-chat--render-content session chat-buffer role content roots))))
              contents))
-        (setq-local eca-chat--last-user-message-pos saved-last-user-pos)
-        ;; Separate the prepended block from the content below with a single
-        ;; newline: historical content has no trailing turn-end newline, so the
-        ;; last older line would otherwise glue to the first existing line.
-        (let ((pos (marker-position m)))
-          (when (and (> pos (point-min))
-                     (< pos (point-max))
-                     (not (eq (char-before pos) ?\n))
-                     (not (eq (char-after pos) ?\n)))
-            (save-excursion (goto-char pos) (insert "\n"))))
-        (let ((end (marker-position m)))
-          (font-lock-ensure start end)
-          (eca-chat--align-tables start)
-          (eca-chat--beautify-tables start))
-        (set-marker m nil)))))
+        (unwind-protect
+            (unwind-protect
+                (progn
+                  (setq-local eca-chat--last-user-message-pos
+                              saved-last-user-pos)
+                  ;; Historical content has no trailing turn-end newline.
+                  (let ((pos (marker-position m)))
+                    (when (and (> pos (point-min))
+                               (< pos (point-max))
+                               (not (eq (char-before pos) ?\n))
+                               (not (eq (char-after pos) ?\n)))
+                      (save-excursion
+                        (goto-char pos)
+                        (insert "\n"))))
+                  (let ((end (marker-position m)))
+                    (font-lock-ensure start end)
+                    (eca-chat--align-tables start)
+                    (eca-chat--beautify-tables start)))
+              (set-marker m nil))
+          (eca-chat--refresh-pending-approval-status
+           had-pending (eca-chat--pending-approval-table))
+          (eca-chat--maybe-notify-pending-approval-status-changed
+           session had-pending))))))
 
 (defun eca-chat--apply-history-meta (meta)
   "Update buffer-local history pagination cursors from META plist."
@@ -4616,7 +4781,7 @@ Shown at the top of the buffer only when an older page is available
         (when messages?
           (let ((new-prompt eca-chat--prompt-after-clear))
             (setq-local eca-chat--prompt-after-clear nil)
-            (eca-chat--clear new-prompt)))))))
+            (eca-chat--clear new-prompt session)))))))
 
 (defun eca-chat--legacy-open-config-p (chat-config)
   "Return non-nil for a legacy unscoped chat/open restore update."
@@ -4794,6 +4959,8 @@ resumed chat gets a fresh writable buffer."
       (when title
         (with-current-buffer existing
           (setq-local eca-chat--title title)))
+      (when (equal chat-id (eca--session-opening-chat-id session))
+        (eca-chat--begin-opening-history-replay existing))
       (eca-chat--force-tab-line-update)
       (eca-chat--notify-status-changed session))
      (t
@@ -4812,6 +4979,8 @@ resumed chat gets a fresh writable buffer."
           (eca-chat--initialize-selection-state session))
         (setf (eca--session-chats session)
               (eca-assoc (eca--session-chats session) chat-id new-buffer))
+        (when (equal chat-id (eca--session-opening-chat-id session))
+          (eca-chat--begin-opening-history-replay new-buffer))
         (eca-chat--force-tab-line-update)
         (eca-chat--notify-status-changed session))))))
 
@@ -5132,12 +5301,13 @@ When ACTIVE is non-nil, show the question prefix; otherwise restore normal."
 (defun eca-chat-clear ()
   "Clear the eca chat messages history on server and visually."
   (interactive)
-  (eca-chat--with-current-buffer (eca-chat--get-last-buffer (eca-session))
-    (when eca-chat--id
-      (eca-api-request-sync (eca-session)
-                            :method "chat/clear"
-                            :params (list :chatId eca-chat--id :messages t)))
-    (eca-chat--clear)))
+  (let ((session (eca-session)))
+    (eca-chat--with-current-buffer (eca-chat--get-last-buffer session)
+      (when eca-chat--id
+        (eca-api-request-sync session
+                              :method "chat/clear"
+                              :params (list :chatId eca-chat--id :messages t)))
+      (eca-chat--clear nil session))))
 
 ;;;###autoload
 (defun eca-chat-select-model ()
@@ -5723,34 +5893,37 @@ the empty buffer that was used to trigger the resume."
     (session from-buffer chat-id response)
   "Hydrate CHAT-ID from chat/open RESPONSE for SESSION.
 FROM-BUFFER is the buffer where the resume command started."
-  (eca-chat--finish-opening session chat-id)
-  (cond
-   ((not (eca-chat--open-response-found-p response))
-    (user-error "Server could not open chat %s" chat-id))
-   ((plist-get response :error)
-    (user-error
-     "Server could not open chat %s: %s"
-     chat-id
-     (plist-get (plist-get response :error) :message)))
-   ((not (buffer-live-p (eca-get (eca--session-chats session) chat-id)))
-    (user-error "Resume: no buffer was registered for chat %s" chat-id))
-   (t
-    (let ((chat-buffer (eca-get (eca--session-chats session) chat-id)))
-      (when (plist-member response :selection)
-        (eca-chat--apply-selection-snapshot
-         (plist-get response :selection)
-         chat-buffer))
-      (setf (eca--session-last-chat-buffer session) chat-buffer)
-      (eca-chat--with-current-buffer chat-buffer
-        (when-let* ((title (plist-get response :title)))
-          (setq-local eca-chat--title title))
-        (eca-chat--apply-history-meta (plist-get response :meta))
-        (eca-chat--refresh-load-older-control)
-        (eca-chat--protect-non-prompt))
-      (eca-chat-open session)
-      (eca-chat--kill-empty-welcome-buffer
-       session from-buffer chat-buffer)
-      chat-buffer))))
+  (let ((chat-buffer (eca-get (eca--session-chats session) chat-id)))
+    (unwind-protect
+        (cond
+         ((not (eca-chat--open-response-found-p response))
+          (user-error "Server could not open chat %s" chat-id))
+         ((plist-get response :error)
+          (user-error
+           "Server could not open chat %s: %s"
+           chat-id
+           (plist-get (plist-get response :error) :message)))
+         ((not (buffer-live-p chat-buffer))
+          (user-error "Resume: no buffer was registered for chat %s" chat-id))
+         (t
+          (when (plist-member response :selection)
+            (eca-chat--apply-selection-snapshot
+             (plist-get response :selection)
+             chat-buffer))
+          (setf (eca--session-last-chat-buffer session) chat-buffer)
+          (eca-chat--with-current-buffer chat-buffer
+            (when-let* ((title (plist-get response :title)))
+              (setq-local eca-chat--title title))
+            (eca-chat--apply-history-meta (plist-get response :meta))
+            (eca-chat--refresh-load-older-control)
+            (eca-chat--protect-non-prompt))
+          (eca-chat--finish-opening-history-replay session chat-buffer)
+          (eca-chat-open session)
+          (eca-chat--kill-empty-welcome-buffer
+           session from-buffer chat-buffer)
+          chat-buffer))
+      (eca-chat--finish-opening-history-replay-for-chat session chat-id)
+      (eca-chat--finish-opening session chat-id))))
 
 ;;;###autoload
 (defun eca-chat-resume ()
@@ -5820,9 +5993,11 @@ FROM-BUFFER is the buffer where the resume command started."
                     session from-buf chat-id open-res))
                  :error-callback
                  (lambda (request-err)
+                   (eca-chat--finish-opening-history-replay-for-chat session chat-id)
                    (eca-chat--finish-opening session chat-id)
                    (user-error "Failed to resume: %s" request-err)))
               (error
+               (eca-chat--finish-opening-history-replay-for-chat session chat-id)
                (eca-chat--finish-opening session chat-id)
                (signal (car err) (cdr err))))))))))
 

@@ -19,9 +19,11 @@ buffer only mimics `eca-chat-mode' by setting `major-mode' so
     (with-current-buffer buf
       (setq-local major-mode 'eca-chat-mode)
       (pcase state
-        ('approval (insert (propertize
-                            "[accept]"
-                            'eca-tool-call-pending-approval-accept t)))
+        ('approval
+         (setq-local eca-chat--pending-approval-tool-calls
+                     (make-hash-table :test 'equal))
+         (puthash (cons nil "tool-1") t
+                  eca-chat--pending-approval-tool-calls))
         ('question (setq-local eca-chat--pending-question '(:question "q")))
         ('loading (setq-local eca-chat--chat-loading t))))
     buf))
