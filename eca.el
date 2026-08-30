@@ -93,6 +93,18 @@ Tries git info first, then package.el version, then file modification date."
   :type 'hook
   :group 'eca)
 
+(defcustom eca-scratch-directory
+  (expand-file-name "eca-scratch" temporary-file-directory)
+  "Directory used as the workspace of `eca-scratch-chat'.
+Every scratch chat runs here, whatever this is set to.  The default is
+a dedicated folder inside the variable `temporary-file-directory'
+rather than that directory itself, so scratch chats do not pick up the
+files other programs leave there.  Created on demand; ECA never cleans
+it up, though with the default most systems empty the temp directory
+on reboot."
+  :type 'directory
+  :group 'eca)
+
 (defcustom eca-send-process-id t
   "Whether to send the Emacs process ID to the ECA server.
 When non-nil, the server uses it to detect when Emacs exits and
@@ -425,6 +437,26 @@ When ARG is current prefix, ask for workspace roots to use."
                                    (-partial #'eca--handle-message session)))
       ('started (eca-chat-open session))
       ('starting (eca-info "eca server is already starting")))))
+
+;;;###autoload
+(defun eca-scratch-chat ()
+  "Start or switch to a scratch eca session, unrelated to any project.
+Like `scratch-buffer', this is where a quick question goes when it
+has nothing to do with the code you happen to be visiting: the
+session runs in the directory named by `eca-scratch-directory', so
+no project context reaches the model.  That directory is created
+when missing."
+  (interactive)
+  (let ((root (directory-file-name (expand-file-name eca-scratch-directory))))
+    (unless (file-directory-p root)
+      (make-directory root t))
+    ;; Run from a scratch buffer: `eca' resolves the session from the
+    ;; current buffer, whose cached session belongs to the project being
+    ;; visited -- precisely what this chat must not reuse.  A throwaway
+    ;; buffer starts with no cache, and the one `eca' sets dies with it.
+    (with-temp-buffer
+      (let ((eca-find-root-for-buffer-function (lambda () root)))
+        (eca)))))
 
 (defun eca-stop-session (session)
   "Stop SESSION if running."

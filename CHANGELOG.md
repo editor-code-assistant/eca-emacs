@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add `eca-scratch-chat`: start or switch to a chat that belongs to no project, for questions unrelated to the code being visited. The session runs in the directory named by `eca-scratch-directory`: by default an `eca-scratch` folder inside the system temp directory, created on demand, but when the option is set every scratch chat uses that directory instead. Either way no project context reaches the model, and repeated calls return to the same session like `scratch-buffer` does.
+
 - Bugfix: kill commands not covered by the deletion guards (`backward-kill-sentence`, `backward-kill-sexp`, `kill-line`, `kill-region`, etc.) could cross the prompt/context markup and corrupt the chat prompt area, making RET fail with `args-out-of-range` (#305). Kills are now clamped to the prompt field (and blocked above it), the transient-area refresh skips instead of signaling on a corrupted block, and `eca-chat-clear-prompt` (`C-c C-d`) rebuilds the prompt markup when it is broken.
 
 - Perf: cache the pending tool call approval status instead of rescanning the whole chat buffer on every mode-line/tab-line/header-line redisplay, which made Emacs sluggish on long chats (#307).

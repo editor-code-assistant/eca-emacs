@@ -59,6 +59,8 @@ M-x package-install eca
 Server / process
 
 - `eca`: Starts eca server/session + open chat
+- `eca-scratch-chat`: Starts/opens a scratch session in
+  `eca-scratch-directory`, for questions unrelated to any project
 - `eca-stop`: Stop eca server/session
 - `eca-restart`: Restart eca server/session
 - `eca-workspaces`: live dashboard with all workspaces and chats,
@@ -138,6 +140,7 @@ Inline prompt (chat from any buffer)
 Server / process
 
 - `eca-custom-command`: The `eca` server command; when nil ECA auto-downloads or uses `eca` from `$PATH`.
+- `eca-scratch-directory`: Workspace used by `eca-scratch-chat`, by default an `eca-scratch` folder inside the system temp directory.
 - `eca-server-download-method`: Method to download server (`curl` or `url-retrieve`, Emacs built-in way).
 - `eca-server-download-url`: Custom URL to download the ECA server archive.
 - `eca-server-fetch-timeout`: Seconds before a GitHub fetch (release check/download connection) is considered stuck.
