@@ -325,11 +325,74 @@ typing or streaming."
   :type 'boolean
   :group 'eca)
 
+(defcustom eca-chat-fontify-prompt t
+  "Whether ECA chat applies Markdown fontification to prompt text.
+When non-nil, preserve the historical prompt rendering behavior.
+When nil, prompt edits skip Markdown block scans over chat history.
+Set this to nil if typing in large ECA chat buffers is slow."
+  :type 'boolean
+  :group 'eca)
+
 (defun eca-chat--apply-markdown-markup-visibility ()
   "Apply `eca-chat-hide-markdown-markup' in current buffer."
   (if eca-chat-hide-markdown-markup
       (add-to-invisibility-spec 'markdown-markup)
     (remove-from-invisibility-spec 'markdown-markup)))
+
+(defvar-local eca-chat--syntax-propertize-function nil
+  "Original syntax propertizer wrapped by ECA chat.")
+
+(defun eca-chat--fontification-history-end (end)
+  "Return END clipped at the prompt when prompt fontification is nil."
+  (if eca-chat-fontify-prompt
+      end
+    (if-let* ((prompt-start (eca-chat--prompt-area-start-point)))
+        (min end prompt-start)
+      end)))
+
+(defun eca-chat--syntax-propertize (beg end)
+  "Apply syntax properties from BEG to END, respecting prompt settings."
+  (let ((fontify-end (eca-chat--fontification-history-end end)))
+    (when (and eca-chat--syntax-propertize-function
+               (< beg fontify-end))
+      (funcall eca-chat--syntax-propertize-function beg fontify-end))))
+
+(defun eca-chat--font-lock-extend-region-function (beg end old-len)
+  "Extend Markdown font-lock region from BEG to END with OLD-LEN."
+  (when (fboundp 'markdown-font-lock-extend-region-function)
+    (if eca-chat-fontify-prompt
+        (markdown-font-lock-extend-region-function beg end old-len)
+      (let ((fontify-end (eca-chat--fontification-history-end end)))
+        (when (< beg fontify-end)
+          (markdown-font-lock-extend-region-function
+           beg fontify-end old-len))))))
+
+(defun eca-chat--syntax-propertize-extend-region-function (beg end)
+  "Extend Markdown syntax region from BEG to END, respecting prompt."
+  (when (fboundp 'markdown-syntax-propertize-extend-region)
+    (if eca-chat-fontify-prompt
+        (markdown-syntax-propertize-extend-region beg end)
+      (if-let* ((prompt-start (eca-chat--prompt-area-start-point)))
+          (when (<= end prompt-start)
+            (save-restriction
+              (narrow-to-region (point-min) prompt-start)
+              (markdown-syntax-propertize-extend-region beg end)))
+        (markdown-syntax-propertize-extend-region beg end)))))
+
+(defun eca-chat--install-fontification-overrides ()
+  "Install ECA chat fontification wrappers in current buffer."
+  (unless (eq syntax-propertize-function #'eca-chat--syntax-propertize)
+    (setq-local eca-chat--syntax-propertize-function syntax-propertize-function)
+    (setq-local syntax-propertize-function #'eca-chat--syntax-propertize))
+  (remove-hook 'syntax-propertize-extend-region-functions
+               #'markdown-syntax-propertize-extend-region t)
+  (add-hook 'syntax-propertize-extend-region-functions
+            #'eca-chat--syntax-propertize-extend-region-function nil t)
+  (remove-hook 'jit-lock-after-change-extend-region-functions
+               #'markdown-font-lock-extend-region-function t)
+  (add-hook 'jit-lock-after-change-extend-region-functions
+            #'eca-chat--font-lock-extend-region-function t t)
+  (setq-local font-lock-fontify-region-function #'eca-chat--fontify-region))
 
 (defvar-local eca-chat--tool-call-prepare-counters (make-hash-table :test 'equal)
   "Hash table mapping toolCall ID to message count.")
@@ -3167,11 +3230,13 @@ fontifier runs normally.
 
 Returns `(jit-lock-bounds BEG . END)' so jit-lock's bookkeeping
 matches the region we considered."
-  (let ((pos beg))
-    (while (< pos end)
+  (let ((pos beg)
+        (fontify-end (eca-chat--fontification-history-end end)))
+    (while (< pos fontify-end)
       (let ((skip (get-text-property pos 'eca-no-fontify))
-            (next (or (next-single-property-change pos 'eca-no-fontify nil end)
-                      end)))
+            (next (or (next-single-property-change
+                       pos 'eca-no-fontify nil fontify-end)
+                      fontify-end)))
         (unless skip
           (font-lock-default-fontify-region pos next loudly))
         (setq pos next))))
@@ -3549,10 +3614,12 @@ CHILD, NAME, DOCSTRING and BODY are passed down."
               (seq-difference font-lock-extra-managed-props
                               '(keymap help-echo mouse-face)))
 
-  ;; Skip font-lock on ranges tagged with `eca-no-fontify', currently
-  ;; used to stop gfm/markdown matchers from re-fontifying streaming
-  ;; tool-call argument bodies on every chunk (see #234).
-  (setq-local font-lock-fontify-region-function #'eca-chat--fontify-region)
+  ;; Keep chat fontification overrides together.  Skip font-lock on
+  ;; ranges tagged with `eca-no-fontify', which stops gfm/markdown
+  ;; matchers from re-fontifying streaming tool-call argument bodies on
+  ;; every chunk (see #234).  When configured, also skip prompt-area
+  ;; Markdown block scans during typing.
+  (eca-chat--install-fontification-overrides)
 
   (make-local-variable 'completion-at-point-functions)
   (setq-local completion-at-point-functions (list #'eca-chat-completion-at-point))
