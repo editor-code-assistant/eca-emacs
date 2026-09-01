@@ -1600,6 +1600,43 @@ remember action when nothing can be remembered."
     (overlay-put prompt-field-ov 'before-string (propertize eca-chat-prompt-prefix 'font-lock-face 'eca-chat-prompt-prefix-face)))
   (eca-chat--protect-non-prompt))
 
+(defun eca-chat--prompt-block-broken-p ()
+  "Return non-nil when the prompt block markup is corrupted.
+Checks that the separator, context and prompt overlays exist,
+that the context line ends before the prompt field starts and
+that the prompt field starts a line.  Edits crossing the block
+break these invariants (see #305)."
+  (let ((area-ov (eca-chat--prompt-area-ov))
+        (context-ov (eca-chat--prompt-context-field-ov))
+        (prompt-ov (eca-chat--prompt-field-ov)))
+    (or (not (and area-ov context-ov prompt-ov))
+        (let ((prompt-start (overlay-start prompt-ov)))
+          (or (>= (overlay-end context-ov) prompt-start)
+              (not (eq (char-before prompt-start) ?\n)))))))
+
+(defun eca-chat--rebuild-prompt-area (&optional prompt-text)
+  "Rebuild the prompt block markup with PROMPT-TEXT in the field.
+Deletes everything from the first prompt block overlay to the end
+of the buffer, drops the block overlays and re-inserts a fresh
+separator, task, progress, context and prompt structure.
+Recovery path for a corrupted prompt block (see #305)."
+  (let* ((inhibit-read-only t)
+         (ovs (delq nil (list (eca-chat--prompt-area-ov)
+                              (eca-chat--task-area-ov)
+                              (eca-chat--prompt-progress-field-ov)
+                              (eca-chat--prompt-context-field-ov)
+                              (eca-chat--prompt-field-ov))))
+         (start (when ovs (apply #'min (mapcar #'overlay-start ovs)))))
+    (mapc #'delete-overlay ovs)
+    (eca-chat--invalidate-overlay-caches)
+    (delete-region (or start (point-max)) (point-max))
+    (goto-char (point-max))
+    (unless (bolp) (eca-chat--insert "\n"))
+    (eca-chat--insert-prompt-string)
+    (eca-chat--refresh-context)
+    (eca-chat--refresh-transient-area)
+    (eca-chat--set-prompt (or prompt-text ""))))
+
 (defun eca-chat--clear (&optional new-prompt-content)
   "Clear the chat for SESSION and then insert NEW-PROMPT-CONTENT."
   (let ((inhibit-read-only t))
@@ -2049,6 +2086,39 @@ the prompt/context line."
          (t (apply side-effect-fn args))))
     (apply side-effect-fn args)))
 
+(defconst eca-chat--kill-guarded-commands
+  '(kill-line
+    kill-visual-line
+    kill-whole-line
+    kill-region
+    kill-sentence
+    backward-kill-sentence
+    kill-sexp
+    backward-kill-sexp
+    kill-paragraph
+    backward-kill-paragraph)
+  "Kill commands advised with `eca-chat--key-pressed-kill'.
+Unlike the char/word deletions handled by
+`eca-chat--key-pressed-deletion', these move by line, sentence,
+sexp or paragraph, so from inside the prompt field they could
+cross the prompt/context markup above it (see #305).")
+
+(defun eca-chat--key-pressed-kill (kill-fn &rest args)
+  "Apply KILL-FN with ARGS confined to the prompt field.
+Inside the prompt field the buffer is narrowed to the field, so
+kill motions clamp at the field start instead of crossing the
+prompt/context markup above it and corrupting it (see #305).
+Above the prompt field the kill is blocked like other deletions."
+  (if (derived-mode-p 'eca-chat-mode)
+      (let ((prompt-start (eca-chat--prompt-field-start-point)))
+        (cond
+         ((null prompt-start) (apply kill-fn args))
+         ((< (point) prompt-start) (ding))
+         (t (save-restriction
+              (narrow-to-region prompt-start (point-max))
+              (apply kill-fn args)))))
+    (apply kill-fn args)))
+
 (defun eca-chat--refine-context (context)
   "Refine CONTEXT before sending in prompt."
   (let* ((type (plist-get context :type))
@@ -2253,12 +2323,15 @@ the prompt-field overlay's start advances past inserted content."
     (save-excursion
       (let ((start (1+ (overlay-end context-ov)))
             (end (overlay-start prompt-ov)))
-        (delete-region start end)
-        (goto-char start)
-        (dolist (seg eca-chat-transient-area-segments)
-          (when-let* ((str (funcall seg)))
-            (insert-before-markers str)))
-        (setq-local buffer-undo-list nil)))))
+        ;; An edit that crossed the prompt block markup can invert
+        ;; these bounds; skip instead of signaling (see #305).
+        (when (<= start end)
+          (delete-region start end)
+          (goto-char start)
+          (dolist (seg eca-chat-transient-area-segments)
+            (when-let* ((str (funcall seg)))
+              (insert-before-markers str)))
+          (setq-local buffer-undo-list nil))))))
 
 (defun eca-chat--steer-prompt (session prompt)
   "Steer the running prompt for SESSION by injecting PROMPT at the next LLM turn."
@@ -3528,6 +3601,8 @@ CHILD, NAME, DOCSTRING and BODY are passed down."
     (advice-add 'backward-delete-char :around #'eca-chat--key-pressed-deletion)
     (advice-add 'backward-delete-char-untabify :around #'eca-chat--key-pressed-deletion)
     (advice-add 'backward-kill-word :around #'eca-chat--key-pressed-deletion)
+    (dolist (cmd eca-chat--kill-guarded-commands)
+      (advice-add cmd :around #'eca-chat--key-pressed-kill))
     (when (featurep 'evil)
       (advice-add 'evil-delete-backward-word :around #'eca-chat--key-pressed-deletion)
       (advice-add 'evil-delete-back-to-indentation :around #'eca-chat--key-pressed-deletion)
@@ -6131,11 +6206,14 @@ Resteps selected message plist or nil if no messages or cancelled."
 
 ;;;###autoload
 (defun eca-chat-clear-prompt ()
-  "Clear the prompt input field in chat."
+  "Clear the prompt input field in chat.
+Rebuilds the prompt block markup when it is corrupted (see #305)."
   (interactive)
   (when-let ((chat-buffer (eca-chat--get-last-buffer (eca-session))))
     (with-current-buffer chat-buffer
-      (eca-chat--set-prompt ""))))
+      (if (eca-chat--prompt-block-broken-p)
+          (eca-chat--rebuild-prompt-area)
+        (eca-chat--set-prompt "")))))
 
 ;;;###autoload
 (defun eca-chat-repeat-prompt ()

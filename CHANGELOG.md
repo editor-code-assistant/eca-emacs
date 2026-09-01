@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Bugfix: kill commands not covered by the deletion guards (`backward-kill-sentence`, `backward-kill-sexp`, `kill-line`, `kill-region`, etc.) could cross the prompt/context markup and corrupt the chat prompt area, making RET fail with `args-out-of-range` (#305). Kills are now clamped to the prompt field (and blocked above it), the transient-area refresh skips instead of signaling on a corrupted block, and `eca-chat-clear-prompt` (`C-c C-d`) rebuilds the prompt markup when it is broken.
+
 - Perf: cache the pending tool call approval status instead of rescanning the whole chat buffer on every mode-line/tab-line/header-line redisplay, which made Emacs sluggish on long chats (#307).
 - Bugfix: loading an older history page no longer resurrects the approve/reject buttons of an already-finished tool call (#307).
 - Bugfix: a subagent now keeps its pending-approval status while any of its tool calls still waits for approval, instead of flipping back to loading when a sibling tool call finishes (#307).

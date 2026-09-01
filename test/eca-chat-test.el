@@ -328,6 +328,155 @@ When MANUAL is non-nil the tool call requires manual approval."
                           :to-equal "ello")))
             (kill-buffer buf)))))))
 
+(describe "eca-chat--key-pressed-kill"
+
+  (it "clamps backward-kill-sentence to the prompt field start"
+    ;; Regression #305: the sentence motion crossed the context area
+    ;; and the separator, collapsing the prompt block overlays.
+    (let ((buf (eca-chat-test--make-prompt-buffer "foo"))
+          (kill-ring nil))
+      (unwind-protect
+          (with-current-buffer buf
+            (goto-char (point-max))
+            (eca-chat--key-pressed-kill #'backward-kill-sentence)
+            (expect (eca-chat-test--prompt-text buf) :to-equal "")
+            (expect (eca-chat--prompt-block-broken-p) :to-be nil)
+            (expect (buffer-substring-no-properties
+                     (point-min) (eca-chat--prompt-field-start-point))
+                    :to-equal "header\n--- \n@\n"))
+        (kill-buffer buf))))
+
+  (it "keeps backward-kill-sexp inside the prompt field"
+    ;; An unbalanced sexp would scan above the prompt field; narrowed
+    ;; to the field it signals instead of corrupting the block.
+    (let ((buf (eca-chat-test--make-prompt-buffer "foo)"))
+          (kill-ring nil))
+      (unwind-protect
+          (with-current-buffer buf
+            (goto-char (point-max))
+            (expect (eca-chat--key-pressed-kill #'backward-kill-sexp)
+                    :to-throw 'scan-error)
+            (expect (eca-chat-test--prompt-text buf) :to-equal "foo)")
+            (expect (eca-chat--prompt-block-broken-p) :to-be nil))
+        (kill-buffer buf))))
+
+  (it "still kills normally within the prompt field"
+    (let ((buf (eca-chat-test--make-prompt-buffer "hello world"))
+          (kill-ring nil))
+      (unwind-protect
+          (with-current-buffer buf
+            (goto-char (point-max))
+            (eca-chat--key-pressed-kill #'backward-kill-sexp)
+            (expect (eca-chat-test--prompt-text buf) :to-equal "hello "))
+        (kill-buffer buf))))
+
+  (it "blocks kills above the prompt field"
+    (let ((buf (eca-chat-test--make-prompt-buffer "foo")))
+      (unwind-protect
+          (with-current-buffer buf
+            (goto-char (overlay-start (eca-chat--prompt-context-field-ov)))
+            (let ((killed nil)
+                  (before (buffer-string)))
+              (cl-letf (((symbol-function 'ding) #'ignore))
+                (eca-chat--key-pressed-kill
+                 (lambda (&rest _) (setq killed t))))
+              (expect killed :to-be nil)
+              (expect (buffer-string) :to-equal before)))
+        (kill-buffer buf))))
+
+  (it "passes through in non-chat buffers"
+    (with-temp-buffer
+      (let ((killed nil))
+        (eca-chat--key-pressed-kill (lambda (&rest _) (setq killed t)))
+        (expect killed :to-be t)))))
+
+(describe "eca-chat--refresh-transient-area"
+
+  (it "renders segments between the context area and the prompt"
+    (let ((buf (eca-chat-test--make-prompt-buffer "foo")))
+      (unwind-protect
+          (with-current-buffer buf
+            (setq-local eca-chat--chat-loading t)
+            (eca-chat--refresh-transient-area)
+            (expect (string-match-p
+                     "stop"
+                     (buffer-substring-no-properties
+                      (1+ (overlay-end (eca-chat--prompt-context-field-ov)))
+                      (eca-chat--prompt-field-start-point)))
+                    :to-be-truthy)
+            (expect (eca-chat-test--prompt-text buf) :to-equal "foo"))
+        (kill-buffer buf))))
+
+  (it "does not signal when the prompt block is corrupted"
+    ;; Regression #305: an unguarded kill that ate the newline between
+    ;; the context line and the prompt field inverted the area bounds,
+    ;; making every refresh fail with args-out-of-range.
+    (let ((buf (eca-chat-test--make-prompt-buffer "foo")))
+      (unwind-protect
+          (with-current-buffer buf
+            (let ((prompt-start (eca-chat--prompt-field-start-point)))
+              (delete-region (1- prompt-start) prompt-start))
+            (expect (eca-chat--refresh-transient-area) :not :to-throw))
+        (kill-buffer buf)))))
+
+(describe "eca-chat--rebuild-prompt-area"
+
+  (it "restores the prompt block markup after corruption"
+    (let ((buf (eca-chat-test--make-prompt-buffer "foo")))
+      (unwind-protect
+          (with-current-buffer buf
+            (let ((prompt-start (eca-chat--prompt-field-start-point)))
+              (delete-region (1- prompt-start) prompt-start))
+            (expect (eca-chat--prompt-block-broken-p) :to-be-truthy)
+            (eca-chat--rebuild-prompt-area)
+            (expect (eca-chat--prompt-block-broken-p) :to-be nil)
+            (expect (eca-chat-test--prompt-text buf) :to-equal "")
+            (expect (eca-chat--refresh-transient-area) :not :to-throw))
+        (kill-buffer buf))))
+
+  (it "restores the given prompt text"
+    (let ((buf (eca-chat-test--make-prompt-buffer "foo")))
+      (unwind-protect
+          (with-current-buffer buf
+            (let ((prompt-start (eca-chat--prompt-field-start-point)))
+              (delete-region (1- prompt-start) prompt-start))
+            (eca-chat--rebuild-prompt-area "draft")
+            (expect (eca-chat--prompt-block-broken-p) :to-be nil)
+            (expect (eca-chat-test--prompt-text buf) :to-equal "draft"))
+        (kill-buffer buf)))))
+
+(describe "eca-chat-clear-prompt"
+
+  (it "clears the prompt without rebuilding when healthy"
+    (let ((buf (eca-chat-test--make-prompt-buffer "foo")))
+      (spy-on 'eca-session)
+      (spy-on 'eca-chat--get-last-buffer :and-return-value buf)
+      (unwind-protect
+          (progn
+            (eca-chat-clear-prompt)
+            (with-current-buffer buf
+              (expect (eca-chat-test--prompt-text buf) :to-equal "")
+              ;; Structure untouched: no rebuild happened.
+              (expect (buffer-substring-no-properties
+                       (point-min) (eca-chat--prompt-field-start-point))
+                      :to-equal "header\n--- \n@\n")))
+        (kill-buffer buf))))
+
+  (it "rebuilds the prompt block markup when corrupted"
+    (let ((buf (eca-chat-test--make-prompt-buffer "foo")))
+      (spy-on 'eca-session)
+      (spy-on 'eca-chat--get-last-buffer :and-return-value buf)
+      (unwind-protect
+          (progn
+            (with-current-buffer buf
+              (let ((prompt-start (eca-chat--prompt-field-start-point)))
+                (delete-region (1- prompt-start) prompt-start)))
+            (eca-chat-clear-prompt)
+            (with-current-buffer buf
+              (expect (eca-chat--prompt-block-broken-p) :to-be nil)
+              (expect (eca-chat-test--prompt-text buf) :to-equal "")))
+        (kill-buffer buf)))))
+
 (describe "eca-chat--protect-non-prompt"
 
   (it "blocks editing inside the history area"

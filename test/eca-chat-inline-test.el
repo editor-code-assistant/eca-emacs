@@ -230,13 +230,15 @@
                   (expect (overlay-get ov 'before-string)
                           :to-match "Error: boom"))))
           ;; Activating a real `eca-chat-mode' buffer installs global
-          ;; deletion/yank advices; remove them so later specs (e.g. the
-          ;; read-only history ones) run in a pristine global state.
+          ;; deletion/kill/yank advices; remove them so later specs (e.g.
+          ;; the read-only history ones) run in a pristine global state.
           (dolist (fn '(delete-char delete-backward-char
                         backward-delete-char
                         backward-delete-char-untabify
                         backward-kill-word))
             (advice-remove fn #'eca-chat--key-pressed-deletion))
+          (dolist (fn eca-chat--kill-guarded-commands)
+            (advice-remove fn #'eca-chat--key-pressed-kill))
           (advice-remove 'yank #'eca-chat--yank-considering-image)))
 
       (it "keeps a pre-existing chat when a follow-up prompt fails"
