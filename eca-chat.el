@@ -337,6 +337,15 @@ typing or streaming."
 (defvar-local eca-chat--tool-call-prepare-content-cache (make-hash-table :test 'equal)
   "Hash table mapping toolCall ID to accumulated argument text.")
 
+(defvar-local eca-chat--pending-approvals-cache 'dirty
+  "Cached result of `eca-chat--has-pending-approvals-p'.
+Either a boolean or the symbol `dirty' when the buffer must be
+rescanned.")
+
+(defun eca-chat--invalidate-pending-approvals-cache ()
+  "Mark the pending approvals cache of the current buffer stale."
+  (setq-local eca-chat--pending-approvals-cache 'dirty))
+
 (defcustom eca-chat-tool-call-approval-content-size 0.9
   "The size of font of tool call approval."
   :type 'number
@@ -1597,6 +1606,7 @@ remember action when nothing can be remembered."
     (erase-buffer)
     (remove-overlays (point-min) (point-max)))
   (eca-chat--invalidate-overlay-caches)
+  (eca-chat--invalidate-pending-approvals-cache)
   (eca-chat-expandable--reset-id-table)
   (setq-local eca-chat--task-state nil)
   ;; Cancel loading-related timers and reset state
@@ -2568,11 +2578,18 @@ or \"Xm\" when seconds are zero."
             (when eca-chat--prompt-start-time "…"))))
 
 (defun eca-chat--has-pending-approvals-p ()
-  "Return non-nil if current buffer has any pending approval tool call."
-  (save-excursion
-    (goto-char (point-min))
-    (not (null (text-property-search-forward
-                'eca-tool-call-pending-approval-accept t t)))))
+  "Return non-nil if current buffer has any pending approval tool call.
+The buffer scan result is cached since mode-line, tab-line and
+header-line call this on every redisplay; rescanning a long chat
+each time is too slow (#307).  Tool call lifecycle events and
+`eca-chat--clear' mark the cache stale."
+  (when (eq eca-chat--pending-approvals-cache 'dirty)
+    (setq-local eca-chat--pending-approvals-cache
+                (save-excursion
+                  (goto-char (point-min))
+                  (not (null (text-property-search-forward
+                              'eca-tool-call-pending-approval-accept t t))))))
+  eca-chat--pending-approvals-cache)
 
 (defun eca-chat--needs-attention-p (buffer)
   "Return non-nil when chat BUFFER is waiting on the user.
@@ -3897,6 +3914,36 @@ Rebuilds the steps-info string with current usage and updates the overlay."
                                        (overlay-get ov-label 'eca-chat--expandable-content-open-icon))))
                      'help-echo "mouse-1 / RET / tab: expand/collapse"))))))
 
+(defun eca-chat--mark-tool-call-approval-resolved (id)
+  "Mark tool call ID's block as past the approval stage."
+  (when-let* ((ov (eca-chat--get-expandable-content id)))
+    (overlay-put ov 'eca-chat--tool-call-approval-resolved t)))
+
+(defun eca-chat--tool-call-approval-resolved-p (id)
+  "Return non-nil when tool call ID already settled its approval."
+  (when-let* ((ov (eca-chat--get-expandable-content id)))
+    (overlay-get ov 'eca-chat--tool-call-approval-resolved)))
+
+(defun eca-chat--subagent-child-pending-approval-p (parent-tool-call-id)
+  "Return non-nil when a child of PARENT-TOOL-CALL-ID awaits approval.
+Scans only the parent block's nested content region."
+  (when-let* ((ov-label (eca-chat--get-expandable-content parent-tool-call-id))
+              (ov-content (overlay-get ov-label 'eca-chat--expandable-content-ov-content))
+              ((overlay-buffer ov-content)))
+    (text-property-any (overlay-start ov-content) (overlay-end ov-content)
+                       'eca-tool-call-pending-approval-accept t)))
+
+(defun eca-chat--restore-parent-subagent-status (parent-tool-call-id)
+  "Refresh PARENT-TOOL-CALL-ID status after a child tool call update.
+Keeps the pending approval symbol while a sibling child still waits
+for approval, otherwise restores the loading symbol."
+  (when parent-tool-call-id
+    (eca-chat--update-parent-subagent-status
+     parent-tool-call-id
+     (if (eca-chat--subagent-child-pending-approval-p parent-tool-call-id)
+         eca-chat-mcp-tool-call-pending-approval-symbol
+       eca-chat-mcp-tool-call-loading-symbol))))
+
 (defun eca-chat--update-parent-subagent-status (parent-tool-call-id new-status)
   "Update to NEW-STATUS symbol of a parent subagent tool call PARENT-TOOL-CALL-ID.
 Only updates the label line, preserving all nested child content."
@@ -4010,6 +4057,12 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
   (let* ((content-id (plist-get content :contentId))
          (content-type (plist-get content :type))
          (tool-call-next-line-spacing (make-string (1+ (length eca-chat-expandable-block-open-symbol)) ?\s)))
+    ;; Tool call lifecycle events are the only content that adds or
+    ;; removes approval buttons; drop the cached scan result so the
+    ;; next status check rescans the buffer.
+    (when (member content-type '("toolCallRun" "toolCallRunning"
+                                 "toolCalled" "toolCallRejected"))
+      (eca-chat--invalidate-pending-approvals-cache))
     (pcase content-type
       ("metadata"
        (unless parent-tool-call-id
@@ -4191,7 +4244,12 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
                    (eca-chat--add-expandable-content
                     id label body parent-tool-call-id))))))))
       ("toolCallRun"
-       (unless (eca-chat--task-tool-call-p content)
+       (unless (or (eca-chat--task-tool-call-p content)
+                   ;; A stale run from an older history page must not
+                   ;; resurrect an already-answered approval prompt (#307).
+                   (and (plist-get content :manualApproval)
+                        (eca-chat--tool-call-approval-resolved-p
+                         (plist-get content :id))))
          (let* ((id (plist-get content :id))
                 (args (plist-get content :arguments))
                 (name (plist-get content :name))
@@ -4273,10 +4331,9 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
                     ("Arguments" . ,args)))
                  nil
                  parent-tool-call-id)))
-           ;; Restore parent subagent status back to loading
-           (when parent-tool-call-id
-             (eca-chat--update-parent-subagent-status
-              parent-tool-call-id eca-chat-mcp-tool-call-loading-symbol)))))
+           (eca-chat--mark-tool-call-approval-resolved id)
+           ;; Keep parent pending while sibling approvals remain pending
+           (eca-chat--restore-parent-subagent-status parent-tool-call-id))))
       ("toolCalled"
        (if (eca-chat--task-tool-call-p content)
            (eca-chat--update-task-state content)
@@ -4330,10 +4387,9 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
            (when eca-chat-shrink-called-tools
              (eca-chat--expandable-content-toggle id t t)
              (eca-chat--ensure-prompt-visible))
-           ;; Restore parent subagent status back to loading
-           (when parent-tool-call-id
-             (eca-chat--update-parent-subagent-status
-              parent-tool-call-id eca-chat-mcp-tool-call-loading-symbol)))))
+           (eca-chat--mark-tool-call-approval-resolved id)
+           ;; Keep parent pending while sibling approvals remain pending
+           (eca-chat--restore-parent-subagent-status parent-tool-call-id))))
       ("toolCallRejected"
        (unless (eca-chat--task-tool-call-p content)
          (let* ((name (plist-get content :name))
@@ -4369,10 +4425,9 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
                                             ("Arguments" . ,args)))
                  nil
                  parent-tool-call-id)))
-           ;; Restore parent subagent status back to loading
-           (when parent-tool-call-id
-             (eca-chat--update-parent-subagent-status
-              parent-tool-call-id eca-chat-mcp-tool-call-loading-symbol)))))
+           (eca-chat--mark-tool-call-approval-resolved id)
+           ;; Keep parent pending while sibling approvals remain pending
+           (eca-chat--restore-parent-subagent-status parent-tool-call-id))))
       ("progress"
        (unless parent-tool-call-id
          (pcase (plist-get content :state)

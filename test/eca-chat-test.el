@@ -84,9 +84,156 @@ does not treat the first line as metadata.  Returns FN's value."
          (when (buffer-live-p buffer)
            (kill-buffer buffer))))))
 
+(defun eca-chat-test--make-render-buffer ()
+  "Create a minimal chat buffer suitable for render-content tests."
+  (let ((buf (eca-chat-test--make-prompt-buffer "")))
+    (with-current-buffer buf
+      (setq-local eca-chat--id "chat-1")
+      (setq-local eca-chat-expandable--id->ov
+                  (make-hash-table :test 'equal))
+      (setq-local eca-chat--tool-call-prepare-counters
+                  (make-hash-table :test 'equal))
+      (setq-local eca-chat--tool-call-prepare-content-cache
+                  (make-hash-table :test 'equal))
+      (setq-local eca-chat--tool-call-elapsed-times
+                  (make-hash-table :test 'equal))
+      (setq-local eca-chat--subagent-chat-id->tool-call-id
+                  (make-hash-table :test 'equal))
+      (setq-local eca-chat--subagent-usage
+                  (make-hash-table :test 'equal)))
+    buf))
+
+(defun eca-chat-test--tool-call-content (type id &optional manual)
+  "Build a generic tool-call content plist of TYPE and ID.
+When MANUAL is non-nil the tool call requires manual approval."
+  (list :type type
+        :id id
+        :name "testTool"
+        :server "testServer"
+        :arguments "{}"
+        :manualApproval manual
+        :details (list :type "generic")))
+
 ;; ---------------------------------------------------------------------------
 ;; Tests
 ;; ---------------------------------------------------------------------------
+
+(describe "eca-chat--has-pending-approvals-p"
+
+  (it "caches the buffer scan between calls"
+    (with-temp-buffer
+      (insert (propertize "[accept]"
+                          'eca-tool-call-pending-approval-accept t))
+      (expect (eca-chat--has-pending-approvals-p) :to-be-truthy)
+      (spy-on 'text-property-search-forward)
+      (expect (eca-chat--has-pending-approvals-p) :to-be-truthy)
+      (expect 'text-property-search-forward :not :to-have-been-called)))
+
+  (it "rescans only after the cache is invalidated"
+    (with-temp-buffer
+      (insert (propertize "[accept]"
+                          'eca-tool-call-pending-approval-accept t))
+      (expect (eca-chat--has-pending-approvals-p) :to-be-truthy)
+      (erase-buffer)
+      ;; Stale until invalidated: redisplay code must never rescan.
+      (expect (eca-chat--has-pending-approvals-p) :to-be-truthy)
+      (eca-chat--invalidate-pending-approvals-cache)
+      (expect (eca-chat--has-pending-approvals-p) :to-be nil)))
+
+  (it "tracks approvals through the tool call lifecycle rendering"
+    (let ((buf (eca-chat-test--make-render-buffer))
+          (session (make-eca--session)))
+      (unwind-protect
+          (eca-chat--with-current-buffer buf
+            (expect (eca-chat--has-pending-approvals-p) :to-be nil)
+            (eca-chat--render-content
+             session buf "assistant"
+             (eca-chat-test--tool-call-content "toolCallRun" "tool-1" t)
+             nil)
+            (expect (eca-chat--has-pending-approvals-p) :to-be-truthy)
+            (eca-chat--render-content
+             session buf "assistant"
+             (eca-chat-test--tool-call-content "toolCalled" "tool-1")
+             nil)
+            (expect (eca-chat--has-pending-approvals-p) :to-be nil))
+        (kill-buffer buf))))
+
+  (it "resets the cache when clearing the chat"
+    (let ((buf (eca-chat-test--make-render-buffer))
+          (session (make-eca--session)))
+      (unwind-protect
+          (eca-chat--with-current-buffer buf
+            (eca-chat--render-content
+             session buf "assistant"
+             (eca-chat-test--tool-call-content "toolCallRun" "tool-1" t)
+             nil)
+            (expect (eca-chat--has-pending-approvals-p) :to-be-truthy)
+            (eca-chat--clear)
+            (expect (eca-chat--has-pending-approvals-p) :to-be nil))
+        (kill-buffer buf))))
+
+  (it "does not resurrect completed approvals from older history"
+    (let ((buf (eca-chat-test--make-render-buffer))
+          (session (make-eca--session)))
+      (unwind-protect
+          (eca-chat--with-current-buffer buf
+            (spy-on 'font-lock-ensure)
+            (spy-on 'eca-chat--align-tables)
+            (spy-on 'eca-chat--beautify-tables)
+            (eca-chat--render-content
+             session buf "assistant"
+             (eca-chat-test--tool-call-content "toolCalled" "tool-1")
+             nil)
+            ;; The run event of an already-finished tool call arrives
+            ;; later from an older history page.
+            (eca-chat--render-history-contents
+             session buf
+             (list (list :role "assistant"
+                         :content (eca-chat-test--tool-call-content
+                                   "toolCallRun" "tool-1" t))))
+            (expect (eca-chat--has-pending-approvals-p) :to-be nil)
+            (goto-char (point-min))
+            (expect (text-property-search-forward
+                     'eca-tool-call-pending-approval-accept t t)
+                    :to-be nil))
+        (kill-buffer buf))))
+
+  (it "keeps a subagent parent pending while a sibling child is pending"
+    (let ((buf (eca-chat-test--make-render-buffer))
+          (session (make-eca--session)))
+      (unwind-protect
+          (eca-chat--with-current-buffer buf
+            (eca-chat--tool-call-subagent-details
+             "parent-1" (list :agent "test-agent" :task "task")
+             "Calling subagent" nil nil
+             eca-chat-mcp-tool-call-loading-symbol nil
+             (list :type "subagent" :model "test-model"))
+            (eca-chat--render-content
+             session buf "assistant"
+             (eca-chat-test--tool-call-content "toolCallRun" "tool-1" t)
+             nil "parent-1" "child-chat")
+            (eca-chat--render-content
+             session buf "assistant"
+             (eca-chat-test--tool-call-content "toolCallRun" "tool-2" t)
+             nil "parent-1" "child-chat")
+            (expect (overlay-get (eca-chat--get-expandable-content "parent-1")
+                                 'eca-chat--tool-call-status)
+                    :to-equal eca-chat-mcp-tool-call-pending-approval-symbol)
+            (eca-chat--render-content
+             session buf "assistant"
+             (eca-chat-test--tool-call-content "toolCalled" "tool-1")
+             nil "parent-1" "child-chat")
+            (expect (overlay-get (eca-chat--get-expandable-content "parent-1")
+                                 'eca-chat--tool-call-status)
+                    :to-equal eca-chat-mcp-tool-call-pending-approval-symbol)
+            (eca-chat--render-content
+             session buf "assistant"
+             (eca-chat-test--tool-call-content "toolCalled" "tool-2")
+             nil "parent-1" "child-chat")
+            (expect (overlay-get (eca-chat--get-expandable-content "parent-1")
+                                 'eca-chat--tool-call-status)
+                    :to-equal eca-chat-mcp-tool-call-loading-symbol))
+        (kill-buffer buf)))))
 
 (describe "eca-chat--apply-markdown-markup-visibility"
   (it "keeps the historical hidden-markup default"

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Perf: cache the pending tool call approval status instead of rescanning the whole chat buffer on every mode-line/tab-line/header-line redisplay, which made Emacs sluggish on long chats (#307).
+- Bugfix: loading an older history page no longer resurrects the approve/reject buttons of an already-finished tool call (#307).
+- Bugfix: a subagent now keeps its pending-approval status while any of its tool calls still waits for approval, instead of flipping back to loading when a sibling tool call finishes (#307).
+
 - Bugfix: TAB on an expandable block label no longer blocks the `<tab>` -> `TAB` key translation, extending the fix in #281 to the label's `keymap` text property, which outranks the mode map. It bound the raw `<tab>` event and shadowed layered keymaps binding only `TAB`; it now binds `TAB`, which also makes the label's own binding reachable in terminal frames, where `<tab>` is never sent.
 - Bugfix: chat block and table faces now follow theme switches (#301). The refresh was hooked buffer-locally on `enable-theme-functions`, so it never ran (theme switches run the hook from the user's current buffer, not the chat buffer); it is now a global hook, with `enable-theme`/`disable-theme` advice on Emacs < 29 where that hook doesn't exist. Expandable-block `line-prefix` indentation also baked the resolved background color into the prefix strings; it now stores the face symbol, so already-rendered indentation updates on redisplay too.
 - Show the summaries of tool calls pending approval in the inline prompt overlay status instead of the generic "Waiting for tool call approval" progress text (which overwrote the approval status), so it's clear what is about to run. With multiple pending tools, resolving one now keeps showing the remaining summaries, and approving from another client clears the stale approve/reject hints.
