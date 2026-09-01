@@ -238,20 +238,25 @@ When NESTED? is non-nil, return the level-2 face; otherwise level-1."
     'eca-chat-expandable-block-1-face))
 
 (defun eca-chat--apply-face-to-line-prefixes (start end face)
-  "Add background of FACE to every `line-prefix' string between START and END.
-Only the `:background' attribute is applied so that existing foreground
-colors (e.g. icon faces via `font-lock-face') are preserved."
-  (when-let* ((bg (eca-safe-face-background face nil t)))
-    (let ((bg-plist `(:background ,bg))
-          (pos start))
-      (while (< pos end)
-        (let* ((next-change (or (next-single-property-change pos 'line-prefix nil end) end))
-               (prefix (get-text-property pos 'line-prefix)))
-          (when (and prefix (stringp prefix))
-            (let ((new-prefix (copy-sequence prefix)))
-              (add-face-text-property 0 (length new-prefix) bg-plist nil new-prefix)
-              (put-text-property pos next-change 'line-prefix new-prefix)))
-          (setq pos next-change))))))
+  "Add FACE to every `line-prefix' string between START and END.
+The face symbol itself is stored instead of its resolved background
+color, so prefixes follow theme switches (#301).  FACE only defines a
+background, so existing foreground colors (e.g. icon faces) are
+preserved."
+  (let ((pos start))
+    (while (< pos end)
+      (let* ((next-change (or (next-single-property-change pos 'line-prefix nil end) end))
+             (prefix (get-text-property pos 'line-prefix)))
+        (when (and prefix (stringp prefix))
+          (let ((existing (get-text-property 0 'face prefix)))
+            ;; Skip when already painted to avoid re-consing the same
+            ;; face onto frequently repainted prefixes.
+            (unless (or (eq existing face)
+                        (and (listp existing) (memq face existing)))
+              (let ((new-prefix (copy-sequence prefix)))
+                (add-face-text-property 0 (length new-prefix) face nil new-prefix)
+                (put-text-property pos next-change 'line-prefix new-prefix)))))
+        (setq pos next-change)))))
 
 (defun eca-chat--paint-nested-label (ov-label)
   "Paint OV-LABEL's `line-prefix` with the parent block's background face.

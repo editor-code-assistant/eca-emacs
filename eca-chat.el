@@ -3382,6 +3382,24 @@ restore the chat display after smerge quits."
         (eca-chat--insert " "))
       (eca-chat--insert text))))
 
+(defun eca-chat--refresh-theme-faces (&rest _)
+  "Recompute chat faces derived from the current theme colors."
+  (eca-chat--update-expandable-block-faces)
+  (eca-table-update-faces))
+
+(defun eca-chat--register-theme-refresh ()
+  "Keep theme-derived faces in sync after a theme switch.
+Global and idempotent.  Registered globally because a theme switch
+runs from whatever buffer is current, not the chat buffer (#301).
+Emacs < 29 has no `enable-theme-functions', so advise
+`enable-theme' / `disable-theme' there instead."
+  (if (>= emacs-major-version 29)
+      (progn
+        (add-hook 'enable-theme-functions #'eca-chat--refresh-theme-faces)
+        (add-hook 'disable-theme-functions #'eca-chat--refresh-theme-faces))
+    (advice-add 'enable-theme :after #'eca-chat--refresh-theme-faces)
+    (advice-add 'disable-theme :after #'eca-chat--refresh-theme-faces)))
+
 (defmacro eca-chat-define-derived-mode (child name &optional docstring &rest body)
   "Wrapper for `define-derived-mode' with support for custom parent mode.
 CHILD, NAME, DOCSTRING and BODY are passed down."
@@ -3579,14 +3597,9 @@ CHILD, NAME, DOCSTRING and BODY are passed down."
                            '(:inherit fixed-pitch))
 
   ;; Compute expandable-block background faces from current theme and
-  ;; keep them in sync when the user switches themes.
-  (eca-chat--update-expandable-block-faces)
-  (eca-table-update-faces)
-  (add-hook 'enable-theme-functions
-            (lambda (&rest _)
-              (eca-chat--update-expandable-block-faces)
-              (eca-table-update-faces))
-            nil t)
+  ;; keep them in sync when the user switches themes (#301).
+  (eca-chat--refresh-theme-faces)
+  (eca-chat--register-theme-refresh)
 
   ;; Re-evaluate table action bars when window is resized.
   (add-hook 'window-size-change-functions
