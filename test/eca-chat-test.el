@@ -1055,6 +1055,200 @@ When MANUAL is non-nil the tool call requires manual approval."
                   :to-have-been-called-with 2 (point-max))
           (expect eca-chat--fontify-timer :to-be nil))))))
 
+(describe "eca-chat prompt fontification guard"
+  (it "keeps prompt markdown after-change extension enabled by default"
+    (with-temp-buffer
+      (let ((eca--chat-init-session (make-eca--session))
+            (eca--chat-init-skip-welcome t)
+            markdown-called)
+        (eca-chat-mode)
+        (goto-char (eca-chat--prompt-field-start-point))
+        (expect eca-chat-fontify-prompt :to-be-truthy)
+        (cl-letf (((symbol-function 'markdown-font-lock-extend-region-function)
+                   (lambda (&rest _args)
+                     (setq markdown-called t))))
+          (run-hook-with-args 'jit-lock-after-change-extend-region-functions
+                              (point) (point) 0))
+        (expect markdown-called :to-be-truthy))))
+
+  (it "keeps prompt syntax propertize enabled by default"
+    (with-temp-buffer
+      (let ((eca--chat-init-session (make-eca--session))
+            (eca--chat-init-skip-welcome t)
+            calls)
+        (eca-chat-mode)
+        (let ((prompt-start (eca-chat--prompt-field-start-point)))
+          (goto-char prompt-start)
+          (insert "prompt")
+          (expect eca-chat-fontify-prompt :to-be-truthy)
+          (setq-local eca-chat--syntax-propertize-function
+                      (lambda (beg end)
+                        (push (list beg end) calls)))
+          (funcall syntax-propertize-function prompt-start (point-max))
+          (expect (nreverse calls)
+                  :to-equal (list (list prompt-start (point-max))))))))
+
+  (it "wraps markdown syntax region extension in chat buffers"
+    (with-temp-buffer
+      (let ((eca--chat-init-session (make-eca--session))
+            (eca--chat-init-skip-welcome t))
+        (eca-chat-mode)
+        (expect (memq #'eca-chat--syntax-propertize-extend-region-function
+                      syntax-propertize-extend-region-functions)
+                :to-be-truthy)
+        (expect (memq #'markdown-syntax-propertize-extend-region
+                      syntax-propertize-extend-region-functions)
+                :to-be nil))))
+
+  (it "keeps prompt syntax region extension enabled by default"
+    (with-temp-buffer
+      (let ((eca--chat-init-session (make-eca--session))
+            (eca--chat-init-skip-welcome t)
+            calls)
+        (eca-chat-mode)
+        (goto-char (eca-chat--prompt-field-start-point))
+        (insert "prompt")
+        (expect eca-chat-fontify-prompt :to-be-truthy)
+        (cl-letf (((symbol-function 'markdown-syntax-propertize-extend-region)
+                   (lambda (beg end)
+                     (push (list beg end) calls)
+                     nil)))
+          (run-hook-wrapped 'syntax-propertize-extend-region-functions
+                            (lambda (fn)
+                              (funcall fn (point) (point-max))
+                              nil)))
+        (expect calls :to-be-truthy))))
+
+  (it "can skip markdown syntax extension for prompt syntax queries"
+    (with-temp-buffer
+      (let ((eca-chat-fontify-prompt nil)
+            (eca--chat-init-session (make-eca--session))
+            (eca--chat-init-skip-welcome t)
+            calls)
+        (eca-chat-mode)
+        (save-excursion
+          (goto-char (eca-chat--content-insertion-point))
+          (eca-chat--insert (make-string 1000 ?x))
+          (eca-chat--insert "\n"))
+        (goto-char (eca-chat--prompt-field-start-point))
+        (insert "```\nprompt\n")
+        (cl-letf (((symbol-function 'markdown-syntax-propertize-extend-region)
+                   (lambda (beg end)
+                     (push (list beg end) calls)
+                     nil)))
+          (syntax-ppss-flush-cache (point-min))
+          (syntax-ppss (point)))
+        (expect calls :to-be nil))))
+
+  (it "still uses markdown syntax extension for history queries"
+    (with-temp-buffer
+      (let ((eca-chat-fontify-prompt nil)
+            (eca--chat-init-session (make-eca--session))
+            (eca--chat-init-skip-welcome t)
+            calls)
+        (eca-chat-mode)
+        (save-excursion
+          (goto-char (eca-chat--content-insertion-point))
+          (eca-chat--insert (make-string 1000 ?x))
+          (eca-chat--insert "\n"))
+        (goto-char (point-min))
+        (forward-char 10)
+        (let ((prompt-start (eca-chat--prompt-area-start-point)))
+          (cl-letf (((symbol-function 'markdown-syntax-propertize-extend-region)
+                     (lambda (beg end)
+                       (push (list beg end (point-max)) calls)
+                       nil)))
+            (syntax-ppss-flush-cache (point-min))
+            (syntax-ppss (point)))
+          (expect calls :to-be-truthy)
+          (expect (< (caar calls) prompt-start) :to-be-truthy)
+          (expect (cl-third (car calls)) :to-equal prompt-start)))))
+
+  (it "fontifies through the prompt area by default"
+    (with-temp-buffer
+      (let ((eca--chat-init-session (make-eca--session))
+            (eca--chat-init-skip-welcome t)
+            calls)
+        (eca-chat-mode)
+        (save-excursion
+          (goto-char (eca-chat--content-insertion-point))
+          (eca-chat--insert "history\n"))
+        (expect eca-chat-fontify-prompt :to-be-truthy)
+        (cl-letf (((symbol-function 'font-lock-default-fontify-region)
+                   (lambda (beg end loudly)
+                     (push (list beg end loudly) calls))))
+          (eca-chat--fontify-region (point-min) (point-max))
+          (expect (nreverse calls)
+                  :to-equal (list (list (point-min) (point-max) nil)))))))
+
+  (it "can skip markdown after-change extension for prompt edits"
+    (with-temp-buffer
+      (let ((eca-chat-fontify-prompt nil)
+            (eca--chat-init-session (make-eca--session))
+            (eca--chat-init-skip-welcome t)
+            markdown-called)
+        (eca-chat-mode)
+        (goto-char (eca-chat--prompt-field-start-point))
+        (cl-letf (((symbol-function 'markdown-font-lock-extend-region-function)
+                   (lambda (&rest _args)
+                     (setq markdown-called t))))
+          (run-hook-with-args 'jit-lock-after-change-extend-region-functions
+                              (point) (point) 0))
+        (expect markdown-called :to-be nil))))
+
+  (it "can skip syntax propertize for prompt-only regions"
+    (with-temp-buffer
+      (let ((eca-chat-fontify-prompt nil)
+            (eca--chat-init-session (make-eca--session))
+            (eca--chat-init-skip-welcome t)
+            calls)
+        (eca-chat-mode)
+        (goto-char (eca-chat--prompt-field-start-point))
+        (insert "prompt")
+        (setq-local eca-chat--syntax-propertize-function
+                    (lambda (beg end)
+                      (push (list beg end) calls)))
+        (funcall syntax-propertize-function
+                 (eca-chat--prompt-field-start-point)
+                 (point-max))
+        (expect calls :to-be nil))))
+
+  (it "still runs syntax propertize for history regions"
+    (with-temp-buffer
+      (let ((eca-chat-fontify-prompt nil)
+            (eca--chat-init-session (make-eca--session))
+            (eca--chat-init-skip-welcome t)
+            calls)
+        (eca-chat-mode)
+        (save-excursion
+          (goto-char (eca-chat--content-insertion-point))
+          (eca-chat--insert "history\n"))
+        (let ((prompt-start (eca-chat--prompt-area-start-point)))
+          (setq-local eca-chat--syntax-propertize-function
+                      (lambda (beg end)
+                        (push (list beg end) calls)))
+          (funcall syntax-propertize-function (point-min) prompt-start)
+          (expect (nreverse calls)
+                  :to-equal (list (list (point-min) prompt-start)))))))
+
+  (it "clips chat fontification before the prompt area when disabled"
+    (with-temp-buffer
+      (let ((eca-chat-fontify-prompt nil)
+            (eca--chat-init-session (make-eca--session))
+            (eca--chat-init-skip-welcome t)
+            calls)
+        (eca-chat-mode)
+        (save-excursion
+          (goto-char (eca-chat--content-insertion-point))
+          (eca-chat--insert "history\n"))
+        (let ((prompt-start (eca-chat--prompt-area-start-point)))
+          (cl-letf (((symbol-function 'font-lock-default-fontify-region)
+                     (lambda (beg end loudly)
+                       (push (list beg end loudly) calls))))
+            (eca-chat--fontify-region (point-min) (point-max))
+            (expect (nreverse calls)
+                    :to-equal (list (list (point-min) prompt-start nil)))))))))
+
 (describe "eca-chat--render-content"
   (describe "progress finished"
     (it "clears progress text and spinner when chat-loading is nil"
