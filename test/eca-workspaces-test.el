@@ -429,6 +429,179 @@ CHATS is a list of chat buffers ordered oldest-first."
           (expect (eca--session-id stopped) :to-equal 1))))))
 
 ;; ---------------------------------------------------------------------------
+;; new chat
+;; ---------------------------------------------------------------------------
+
+(defvar eca-workspaces-test--directories '()
+  "Directories created by the tests, deleted on cleanup.")
+
+(defun eca-workspaces-test--directory ()
+  "Create and return an existing directory usable as a workspace root."
+  (let ((directory (make-temp-file "eca-workspaces-test" t)))
+    (push directory eca-workspaces-test--directories)
+    (directory-file-name directory)))
+
+(defun eca-workspaces-test--new-chat-cleanup ()
+  "Reset the state touched by the new chat tests."
+  (when (timerp eca-workspaces--refresh-timer)
+    (cancel-timer eca-workspaces--refresh-timer))
+  (setq eca-workspaces--refresh-timer nil)
+  (dolist (directory eca-workspaces-test--directories)
+    (when (file-directory-p directory)
+      (delete-directory directory t)))
+  (setq eca-workspaces-test--directories '())
+  (eca-workspaces-test--cleanup))
+
+(describe "eca-workspaces--read-workspace"
+
+  (after-each (eca-workspaces-test--new-chat-cleanup))
+
+  (it "offers the running workspaces, the one at point first"
+    (eca-workspaces-test--make-session 1 "/tmp/alpha" '())
+    (eca-workspaces-test--make-session 2 "/tmp/zeta" '())
+    (let ((offered nil))
+      (with-current-buffer (eca-workspaces-test--render)
+        (cl-letf (((symbol-function 'completing-read)
+                   (lambda (_prompt table &rest _)
+                     (setq offered (all-completions "" table))
+                     (car offered))))
+          (eca-workspaces-test--goto "zeta")
+          (eca-workspaces--read-workspace)))
+      (expect (car offered) :to-match "zeta")
+      (expect (nth 1 offered) :to-match "alpha")
+      (expect (car (last offered))
+              :to-equal eca-workspaces--other-directory)))
+
+  (it "defaults to the workspace at point"
+    (eca-workspaces-test--make-session 1 "/tmp/alpha" '())
+    (eca-workspaces-test--make-session 2 "/tmp/zeta" '())
+    (with-current-buffer (eca-workspaces-test--render)
+      (cl-letf (((symbol-function 'completing-read)
+                 (lambda (_prompt _table &rest args) (nth 4 args))))
+        (eca-workspaces-test--goto "zeta")
+        (expect (eca--session-id (eca-workspaces--read-workspace))
+                :to-equal 2))))
+
+  (it "returns the root of a directory typed instead of a workspace"
+    (let ((directory (eca-workspaces-test--directory)))
+      (cl-letf (((symbol-function 'completing-read)
+                 (lambda (&rest _) directory)))
+        (expect (eca-workspaces--read-workspace) :to-equal directory))))
+
+  (it "expands a directory typed with a tilde"
+    (cl-letf (((symbol-function 'completing-read)
+               (lambda (&rest _) "~")))
+      (expect (eca-workspaces--read-workspace)
+              :to-equal (directory-file-name (expand-file-name "~")))))
+
+  (it "signals when the typed directory does not exist"
+    (cl-letf (((symbol-function 'completing-read)
+               (lambda (&rest _) "/eca-no-such-directory")))
+      (expect (eca-workspaces--read-workspace) :to-throw 'user-error)))
+
+  (it "asks for a directory when picking the other directory entry"
+    (let ((directory (eca-workspaces-test--directory)))
+      (cl-letf (((symbol-function 'completing-read)
+                 (lambda (&rest _) eca-workspaces--other-directory))
+                ((symbol-function 'read-directory-name)
+                 (lambda (&rest _) directory)))
+        (expect (eca-workspaces--read-workspace) :to-equal directory)))))
+
+(describe "eca-workspaces-new-chat"
+
+  (after-each (eca-workspaces-test--new-chat-cleanup))
+
+  (it "creates a chat in the picked running workspace"
+    (let ((session (eca-workspaces-test--make-session 1 "/tmp/proj" '()))
+          (created nil)
+          (started nil))
+      (cl-letf (((symbol-function 'completing-read)
+                 (lambda (_prompt _table &rest args) (nth 4 args)))
+                ((symbol-function 'read-string) (lambda (&rest _) ""))
+                ((symbol-function 'eca-chat--new-chat)
+                 (lambda (s) (setq created s)))
+                ((symbol-function 'eca-start-session)
+                 (lambda (&rest _) (setq started t))))
+        (eca-workspaces-new-chat)
+        (expect created :to-be session)
+        (expect started :to-be nil))))
+
+  (it "starts a session for a directory without one"
+    (let ((directory (eca-workspaces-test--directory))
+          (started nil))
+      (cl-letf (((symbol-function 'completing-read)
+                 (lambda (&rest _) directory))
+                ((symbol-function 'read-string) (lambda (&rest _) ""))
+                ((symbol-function 'eca-start-session)
+                 (lambda (session &rest _) (setq started session))))
+        (eca-workspaces-new-chat)
+        (expect (eca--session-workspace-folders started)
+                :to-equal (list directory)))))
+
+  (it "reuses the running session owning the typed directory"
+    (let* ((directory (eca-workspaces-test--directory))
+           (session (eca-workspaces-test--make-session 1 directory '()))
+           (created nil)
+           (started nil))
+      (cl-letf (((symbol-function 'completing-read)
+                 (lambda (&rest _) (expand-file-name "sub" directory)))
+                ((symbol-function 'read-string) (lambda (&rest _) ""))
+                ((symbol-function 'eca-chat--new-chat)
+                 (lambda (s) (setq created s)))
+                ((symbol-function 'eca-start-session)
+                 (lambda (&rest _) (setq started t))))
+        (make-directory (expand-file-name "sub" directory))
+        (eca-workspaces-new-chat)
+        (expect created :to-be session)
+        (expect started :to-be nil))))
+
+  (it "sends the initial prompt in the chat of the picked workspace"
+    (let* ((chat (eca-workspaces-test--make-chat :title "Chat A"))
+           (session (eca-workspaces-test--make-session 1 "/tmp/proj" '()))
+           (sent nil))
+      (setf (eca--session-last-chat-buffer session) chat)
+      (cl-letf (((symbol-function 'completing-read)
+                 (lambda (_prompt _table &rest args) (nth 4 args)))
+                ((symbol-function 'read-string) (lambda (&rest _) "  hi  "))
+                ((symbol-function 'eca-chat--new-chat) #'ignore)
+                ((symbol-function 'eca-chat--send-prompt)
+                 (lambda (_session prompt)
+                   (setq sent (cons prompt (current-buffer))))))
+        (eca-workspaces-new-chat)
+        (expect sent :to-equal (cons "hi" chat)))))
+
+  (it "sends no prompt when the initial prompt is empty"
+    (let* ((chat (eca-workspaces-test--make-chat :title "Chat A"))
+           (session (eca-workspaces-test--make-session 1 "/tmp/proj" '()))
+           (sent nil))
+      (setf (eca--session-last-chat-buffer session) chat)
+      (cl-letf (((symbol-function 'completing-read)
+                 (lambda (_prompt _table &rest args) (nth 4 args)))
+                ((symbol-function 'read-string) (lambda (&rest _) "   "))
+                ((symbol-function 'eca-chat--new-chat) #'ignore)
+                ((symbol-function 'eca-chat--send-prompt)
+                 (lambda (&rest _) (setq sent t))))
+        (eca-workspaces-new-chat)
+        (expect sent :to-be nil))))
+
+  (it "sends the initial prompt once the started session is ready"
+    (let ((directory (eca-workspaces-test--directory))
+          (chat (eca-workspaces-test--make-chat :title "Chat A"))
+          (sent nil))
+      (cl-letf (((symbol-function 'completing-read)
+                 (lambda (&rest _) directory))
+                ((symbol-function 'read-string) (lambda (&rest _) "hi"))
+                ((symbol-function 'eca-start-session)
+                 (lambda (session on-ready)
+                   (setf (eca--session-last-chat-buffer session) chat)
+                   (funcall on-ready session)))
+                ((symbol-function 'eca-chat--send-prompt)
+                 (lambda (_session prompt)
+                   (setq sent (cons prompt (current-buffer))))))
+        (eca-workspaces-new-chat)
+        (expect sent :to-equal (cons "hi" chat))))))
+
+;; ---------------------------------------------------------------------------
 ;; live updates
 ;; ---------------------------------------------------------------------------
 

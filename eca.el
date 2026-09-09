@@ -303,8 +303,11 @@ backtrace.  On older Emacs, runs BODY without capture."
          (eca--log-error session err "handle-message" backtrace)
          (signal (car err) (cdr err)))))))
 
-(defun eca--initialize (session)
-  "Send the initialize request for SESSION."
+(defun eca--initialize (session &optional on-ready)
+  "Send the initialize request for SESSION.
+ON-READY is called with SESSION once the server answered and the
+first chat is open, for callers that must act on a session which
+is only usable asynchronously."
   (run-hooks 'eca-before-initialize-hook)
   (setf (eca--session-status session) 'starting)
   (eca-api-request-async
@@ -333,7 +336,8 @@ backtrace.  On older Emacs, runs BODY without capture."
                        (eca-api-notify session :method "initialized")
                        (eca-info "Started with workspaces: %s" (string-join (eca--session-workspace-folders session) ","))
                        (eca-chat-open session)
-                       (run-hooks 'eca-after-initialize-hook))
+                       (run-hooks 'eca-after-initialize-hook)
+                       (when on-ready (funcall on-ready session)))
    :error-callback (lambda (e) (eca-error e))))
 
 (defun eca--discover-workspaces ()
@@ -408,6 +412,20 @@ chat buffer.  See `eca-chat--doctor-section'."
         (special-mode)))
     (pop-to-buffer out-buf)))
 
+(defun eca-start-session (session &optional on-ready)
+  "Start SESSION, opening its chat when the server is ready.
+Already started sessions just get their chat opened.  ON-READY is
+called with SESSION once it is usable, see `eca--initialize'."
+  (pcase (eca--session-status session)
+    ('stopped (eca-process-start session
+                                 (lambda ()
+                                   (eca--initialize session on-ready))
+                                 (-partial #'eca--handle-message session)))
+    ('started (eca-chat-open session)
+              (when on-ready (funcall on-ready session)))
+    ('starting (eca-info "eca server is already starting")))
+  session)
+
 ;;;###autoload
 (defun eca (&optional arg)
   "Start or switch to a eca session.
@@ -418,13 +436,7 @@ When ARG is current prefix, ask for workspace roots to use."
                        (list (funcall eca-find-root-for-buffer-function))))
          (session (or (eca-session)
                       (eca-create-session workspaces))))
-    (pcase (eca--session-status session)
-      ('stopped (eca-process-start session
-                                   (lambda ()
-                                     (eca--initialize session))
-                                   (-partial #'eca--handle-message session)))
-      ('started (eca-chat-open session))
-      ('starting (eca-info "eca server is already starting")))))
+    (eca-start-session session)))
 
 (defun eca-stop-session (session)
   "Stop SESSION if running."

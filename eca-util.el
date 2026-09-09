@@ -306,6 +306,15 @@ time a buffer under it is visited."
           (setq-local eca--session-id-cache (eca--session-id session)))
         session)))
 
+(defun eca-session-for-root (root)
+  "Return the running session owning ROOT."
+  (let ((root (directory-file-name (expand-file-name root))))
+    (-first (lambda (session)
+              (--first (or (f-same? it root)
+                           (f-ancestor-of? it root))
+                       (eca--session-workspace-folders session)))
+            (eca-vals eca--sessions))))
+
 (defun eca-create-session (workspace-roots)
   "Create a new ECA session for WORKSPACE-ROOTS."
   (clrhash eca--git-common-dir-cache)

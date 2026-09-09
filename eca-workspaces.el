@@ -21,6 +21,7 @@
 (require 'eca-chat)
 
 (declare-function eca-stop-session "eca")
+(declare-function eca-start-session "eca")
 
 (defface eca-workspaces-tree-chat-idle-face
   '((t :underline t))
@@ -513,18 +514,81 @@ With prefix COUNT, repeat that many times."
                                             nil t)))
               (cdr (assoc choice candidates))))))))
 
+(defconst eca-workspaces--other-directory "Other directory..."
+  "Completion candidate that asks for a workspace directory to start.")
+
+(defun eca-workspaces--workspace-label (session)
+  "Return the completion label of SESSION."
+  (format "%s  %s"
+          (eca--session-project-name session)
+          (string-join (-map #'abbreviate-file-name
+                             (eca--session-workspace-folders session))
+                       ", ")))
+
+(defun eca-workspaces--workspace-candidates ()
+  "Return an alist of (LABEL . SESSION), the session at point first."
+  (let ((at-point (eca-workspaces--session-at-point)))
+    (--map (cons (eca-workspaces--workspace-label it) it)
+           (append (when at-point (list at-point))
+                   (remq at-point (eca-workspaces--sorted-sessions))))))
+
+(defun eca-workspaces--workspace-directory (path)
+  "Return PATH as a workspace root, or signal a `user-error'."
+  (let ((directory (directory-file-name (expand-file-name path))))
+    (unless (file-directory-p directory)
+      (user-error "Not a directory: %s" directory))
+    directory))
+
+(defun eca-workspaces--read-workspace ()
+  "Read a workspace, returning its session or its root directory.
+Completion lists the running workspaces, defaulting to the one at
+point, and requires no match: any other input is taken as the
+directory of a workspace to start."
+  (let* ((candidates (eca-workspaces--workspace-candidates))
+         (labels (append (-map #'car candidates)
+                         (list eca-workspaces--other-directory)))
+         (choice (completing-read
+                  "Workspace: "
+                  (lambda (string pred action)
+                    (if (eq action 'metadata)
+                        '(metadata (category . eca-workspace)
+                                   (display-sort-function . identity))
+                      (complete-with-action action labels string pred)))
+                  nil nil nil nil (car labels))))
+    (if (equal choice eca-workspaces--other-directory)
+        (eca-workspaces--workspace-directory
+         (read-directory-name "Workspace directory: " nil nil t))
+      (if-let* ((match (assoc choice candidates)))
+          (cdr match)
+        (eca-workspaces--workspace-directory choice)))))
+
+(defun eca-workspaces--send-initial-prompt (session prompt)
+  "Send PROMPT in the last chat of SESSION, unless PROMPT is empty."
+  (let ((chat-buffer (eca--session-last-chat-buffer session)))
+    (when (and (not (string-empty-p prompt))
+               (buffer-live-p chat-buffer))
+      (with-current-buffer chat-buffer
+        (eca-chat--send-prompt session prompt)))))
+
 (defun eca-workspaces-new-chat ()
-  "Start a new chat in the workspace at point.
-Asks for an optional initial prompt which is sent right away."
+  "Start a new chat in a workspace.
+Completion offers the running workspaces, defaulting to the one at
+point, and accepts any other existing directory, starting a
+session for it.  Asks for an optional initial prompt which is sent
+right away."
   (interactive)
-  (let* ((session (eca-workspaces--read-session))
+  (let* ((workspace (eca-workspaces--read-workspace))
+         (session (if (eca--session-p workspace)
+                      workspace
+                    (eca-session-for-root workspace)))
          (prompt (string-trim (read-string "Initial prompt (optional): "))))
-    (eca-chat--new-chat session)
-    (let ((chat-buffer (eca--session-last-chat-buffer session)))
-      (when (and (buffer-live-p chat-buffer)
-                 (not (string-empty-p prompt)))
-        (with-current-buffer chat-buffer
-          (eca-chat--send-prompt session prompt))))))
+    (if session
+        (progn (eca-chat--new-chat session)
+               (eca-workspaces--send-initial-prompt session prompt))
+      (eca-start-session
+       (eca-create-session (list workspace))
+       (lambda (started)
+         (eca-workspaces--send-initial-prompt started prompt))))))
 
 (defun eca-workspaces-delete ()
   "Delete the chat or stop the workspace at point, with confirmation."
