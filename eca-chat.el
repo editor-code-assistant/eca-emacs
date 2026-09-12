@@ -4875,10 +4875,27 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
     (eca-chat--mark-response-copy-break
      content-type parent-tool-call-id)))
 
+(defun eca-chat--revert-file-buffers (session params)
+  "Revert file buffers when ECA modifies files on disk.
+For each toolCalled notification with fileChange details, find the
+visiting buffer for the file and revert it to reflect the updated
+content on disk."
+  (let* ((content (plist-get params :content))
+         (content-type (plist-get content :type))
+         (details (plist-get content :details)))
+    (when (and (equal content-type "toolCalled")
+               (equal (plist-get details :type) "fileChange"))
+      (let* ((path (eca--path-remote-to-local (plist-get details :path)))
+             (buffer (find-buffer-visiting path)))
+        (when buffer
+          (with-current-buffer buffer
+            (revert-buffer t t t)))))))
+
 (defun eca-chat-content-received (session params)
   "Handle the content received notification with PARAMS for SESSION."
   (with-demoted-errors "eca-chat-content-received-functions: %S"
     (run-hook-with-args 'eca-chat-content-received-functions session params))
+  (eca-chat--revert-file-buffers session params)
   (let* ((chat-id (plist-get params :chatId))
          (parent-chat-id (plist-get params :parentChatId))
          (role (plist-get params :role))
