@@ -704,6 +704,7 @@ one."
                  (eq created-buffer (eca-chat--get-chat-buffer session chat-id)))
         (setf (eca--session-chats session)
               (eca-dissoc (eca--session-chats session) chat-id))
+        (eca-chat--invalidate-tab-line-cache session)
         (with-current-buffer created-buffer
           (setq-local eca-chat--closed t))
         (kill-buffer created-buffer)

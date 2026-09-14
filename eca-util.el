@@ -89,6 +89,10 @@ for client-generated `chatId' values sent to the eca server."
 (defvar eca--sessions '())
 (defvar eca--session-ids 0)
 
+(defvar eca-session-deleting-functions nil
+  "Functions called before an ECA session is deleted.
+Each function receives the session being deleted.")
+
 (defvar eca-sessions-updated-hook nil
   "Normal hook run after a ECA session is created or deleted.")
 
@@ -333,6 +337,8 @@ workspace folder. Falls back to \"unknown\"."
 (defun eca-delete-session (session)
   "Delete SESSION from existing sessions."
   (when session
+    (with-demoted-errors "eca-session-deleting-functions: %S"
+      (run-hook-with-args 'eca-session-deleting-functions session))
     (clrhash eca--git-common-dir-cache)
     (setq eca--sessions
           (eca-dissoc eca--sessions (eca--session-id session)))

@@ -114,9 +114,228 @@ When MANUAL is non-nil the tool call requires manual approval."
         :manualApproval manual
         :details (list :type "generic")))
 
+(defun eca-chat-test--make-tab-chat (session id &optional title)
+  "Create and register a chat buffer with ID for SESSION.
+When TITLE is non-nil, use it as the chat title."
+  (let ((buffer (eca-chat-test--make-render-buffer)))
+    (with-current-buffer buffer
+      (setq-local eca-chat--id id)
+      (setq-local eca-chat--closed nil)
+      (setq-local eca-chat--title title))
+    (setf (eca--session-chats session)
+          (eca-assoc (eca--session-chats session) id buffer))
+    buffer))
+
+(defun eca-chat-test--tab-for-buffer (tabs buffer)
+  "Return the tab descriptor in TABS for BUFFER."
+  (-first (lambda (tab) (eq (cdr (assq 'buffer tab)) buffer)) tabs))
+
+(defun eca-chat-test--tab-selected-p (tabs buffer)
+  "Return non-nil when BUFFER's tab in TABS is selected."
+  (cdr (assq 'selected (eca-chat-test--tab-for-buffer tabs buffer))))
+
+(defun eca-chat-test--tab-name (tabs buffer)
+  "Return BUFFER's tab name in TABS."
+  (cdr (assq 'name (eca-chat-test--tab-for-buffer tabs buffer))))
+
+(defun eca-chat-test--tab-active-p (tabs buffer)
+  "Return BUFFER's tab active value in TABS."
+  (cdr (assq 'active (eca-chat-test--tab-for-buffer tabs buffer))))
+
 ;; ---------------------------------------------------------------------------
 ;; Tests
 ;; ---------------------------------------------------------------------------
+
+(describe "eca-chat tab-line cache"
+
+  (it "reuses stable tab labels between redisplay calls"
+    (let ((session (make-eca--session)) a b)
+      (spy-on 'eca-session :and-return-value session)
+      (unwind-protect
+          (progn
+            (setq a (eca-chat-test--make-tab-chat session "A" "Alpha")
+                  b (eca-chat-test--make-tab-chat session "B" "Beta"))
+            (with-current-buffer a
+              (eca-chat--tab-line-tabs)
+              (spy-on 'eca-chat--tab-line-tab-name)
+              (eca-chat--tab-line-tabs)
+              (expect 'eca-chat--tab-line-tab-name
+                      :not :to-have-been-called)))
+        (dolist (buffer (list a b))
+          (when (buffer-live-p buffer)
+            (kill-buffer buffer))))))
+
+  (it "keeps selected state out of the stable cache"
+    (let ((session (make-eca--session)) a b)
+      (spy-on 'eca-session :and-return-value session)
+      (unwind-protect
+          (progn
+            (setq a (eca-chat-test--make-tab-chat session "A" "Alpha")
+                  b (eca-chat-test--make-tab-chat session "B" "Beta"))
+            (let ((tabs-from-a (with-current-buffer a
+                                 (eca-chat--tab-line-tabs)))
+                  (tabs-from-b (with-current-buffer b
+                                 (eca-chat--tab-line-tabs))))
+              (expect (eca-chat-test--tab-selected-p tabs-from-a a)
+                      :to-be-truthy)
+              (expect (eca-chat-test--tab-selected-p tabs-from-a b)
+                      :to-be nil)
+              (expect (eca-chat-test--tab-selected-p tabs-from-b a)
+                      :to-be nil)
+              (expect (eca-chat-test--tab-selected-p tabs-from-b b)
+                      :to-be-truthy)))
+        (dolist (buffer (list a b))
+          (when (buffer-live-p buffer)
+            (kill-buffer buffer))))))
+
+  (it "updates a cached tab label after metadata changes"
+    (let ((session (make-eca--session)) chat)
+      (spy-on 'eca-session :and-return-value session)
+      (unwind-protect
+          (progn
+            (setq chat (eca-chat-test--make-tab-chat session "A" "Old title"))
+            (with-current-buffer chat
+              (eca-chat--tab-line-tabs)
+              (eca-chat--render-content
+               session chat "assistant"
+               '(:type "metadata" :title "New title")
+               nil)
+              (expect (eca-chat-test--tab-name
+                       (eca-chat--tab-line-tabs) chat)
+                      :to-equal
+                      (concat " "
+                              (propertize "New title"
+                                          'font-lock-face 'eca-chat-title-face)
+                              " "))))
+        (when (buffer-live-p chat)
+          (kill-buffer chat)))))
+
+  (it "updates pending approval prefix and active state"
+    (let ((session (make-eca--session)) chat)
+      (spy-on 'eca-session :and-return-value session)
+      (unwind-protect
+          (progn
+            (setq chat (eca-chat-test--make-tab-chat session "A" "Needs approval"))
+            (with-current-buffer chat
+              (eca-chat--tab-line-tabs)
+              (eca-chat--render-content
+               session chat "assistant"
+               (eca-chat-test--tool-call-content "toolCallRun" "tool-1" t)
+               nil)
+              (let ((tabs (eca-chat--tab-line-tabs)))
+                (expect (eca-chat-test--tab-name tabs chat)
+                        :to-equal
+                        (concat " 🚧 "
+                                (propertize "Needs approval"
+                                            'font-lock-face 'eca-chat-title-face)
+                                " "))
+                (expect (eca-chat-test--tab-active-p tabs chat)
+                        :to-be-truthy))
+              (let ((inhibit-read-only t))
+                (eca-chat--render-content
+                 session chat "assistant"
+                 (eca-chat-test--tool-call-content "toolCalled" "tool-1")
+                 nil))
+              (let ((tabs (eca-chat--tab-line-tabs)))
+                (expect (eca-chat-test--tab-name tabs chat)
+                        :to-equal
+                        (concat " "
+                                (propertize "Needs approval"
+                                            'font-lock-face 'eca-chat-title-face)
+                                " "))
+                (expect (eca-chat-test--tab-active-p tabs chat)
+                        :to-be nil))))
+        (when (buffer-live-p chat)
+          (kill-buffer chat)))))
+
+  (it "updates active state after loading transitions"
+    (let ((session (make-eca--session)) chat)
+      (spy-on 'eca-session :and-return-value session)
+      (unwind-protect
+          (progn
+            (setq chat (eca-chat-test--make-tab-chat session "A" "Loading"))
+            (with-current-buffer chat
+              (eca-chat--tab-line-tabs)
+              (eca-chat--set-chat-loading session t)
+              (expect (eca-chat-test--tab-active-p
+                       (eca-chat--tab-line-tabs) chat)
+                      :to-be-truthy)
+              (eca-chat--set-chat-loading session nil)
+              (expect (eca-chat-test--tab-active-p
+                       (eca-chat--tab-line-tabs) chat)
+                      :to-be nil)))
+        (when (and (buffer-live-p chat)
+                   (buffer-local-value 'eca-chat--modeline-timer chat))
+          (cancel-timer (buffer-local-value 'eca-chat--modeline-timer chat)))
+        (when (buffer-live-p chat)
+          (kill-buffer chat)))))
+
+  (it "updates the cached tab list after registration and removal"
+    (let ((session (make-eca--session)) a b)
+      (spy-on 'eca-session :and-return-value session)
+      (spy-on 'eca-chat--force-tab-line-update)
+      (unwind-protect
+          (progn
+            (setq a (eca-chat-test--make-tab-chat session "A" "Alpha"))
+            (with-current-buffer a
+              (expect (length (eca-chat--tab-line-tabs)) :to-equal 1)
+              (eca-chat-opened session '(:chatId "B" :title "Beta"))
+              (setq b (eca-get (eca--session-chats session) "B"))
+              (expect (length (eca-chat--tab-line-tabs)) :to-equal 2)
+              (eca-chat-deleted session '(:chatId "B"))
+              (expect (length (eca-chat--tab-line-tabs)) :to-equal 1)))
+        (dolist (buffer (list a b))
+          (when (buffer-live-p buffer)
+            (kill-buffer buffer)))
+        ;; `eca-chat-opened' activates a real `eca-chat-mode' buffer,
+        ;; which installs global command advices.  Remove them so later
+        ;; specs see raw editing commands.
+        (dolist (fn '(delete-char delete-backward-char
+                      backward-delete-char
+                      backward-delete-char-untabify
+                      backward-kill-word))
+          (advice-remove fn #'eca-chat--key-pressed-deletion))
+        (dolist (fn eca-chat--kill-guarded-commands)
+          (advice-remove fn #'eca-chat--key-pressed-kill))
+        (advice-remove 'yank #'eca-chat--yank-considering-image))))
+
+  (it "clears the cached tab list on chat exit"
+    (let ((session (make-eca--session)) chat)
+      (spy-on 'eca-session :and-return-value session)
+      (unwind-protect
+          (progn
+            (setq chat (eca-chat-test--make-tab-chat session "A" "Alpha"))
+            (with-current-buffer chat
+              (eca-chat--tab-line-tabs))
+            (expect (gethash session eca-chat--tab-line-cache-by-session)
+                    :to-be-truthy)
+            (eca-chat-exit session)
+            (expect (gethash session eca-chat--tab-line-cache-by-session)
+                    :to-be nil))
+        (when (buffer-live-p chat)
+          (kill-buffer chat)))))
+
+  (it "clears the cached tab list when deleting a session"
+    (let ((eca--sessions '())
+          (eca-chat--tab-line-cache-by-session
+           (make-hash-table :test 'eq :weakness 'key))
+          (session (make-eca--session))
+          chat)
+      (setf (eca--session-id session) 1)
+      (setq eca--sessions (eca-assoc eca--sessions 1 session))
+      (spy-on 'eca-session :and-return-value session)
+      (unwind-protect
+          (progn
+            (setq chat (eca-chat-test--make-tab-chat session "A" "Alpha"))
+            (with-current-buffer chat
+              (eca-chat--tab-line-tabs))
+            (expect (gethash session eca-chat--tab-line-cache-by-session)
+                    :to-be-truthy)
+            (eca-delete-session session)
+            (expect (gethash session eca-chat--tab-line-cache-by-session)
+                    :to-be nil))
+        (when (buffer-live-p chat)
+          (kill-buffer chat))))))
 
 (describe "eca-chat--has-pending-approvals-p"
 

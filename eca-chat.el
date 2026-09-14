@@ -430,9 +430,22 @@ Set this to nil if typing in large ECA chat buffers is slow."
 Either a boolean or the symbol `dirty' when the buffer must be
 rescanned.")
 
+(defvar eca-chat--tab-line-cache-by-session
+  (make-hash-table :test 'eq :weakness 'key)
+  "Stable chat tab-line descriptors keyed by session.")
+
 (defun eca-chat--invalidate-pending-approvals-cache ()
   "Mark the pending approvals cache of the current buffer stale."
   (setq-local eca-chat--pending-approvals-cache 'dirty))
+
+(defun eca-chat--invalidate-tab-line-cache (&optional session)
+  "Invalidate stable tab-line cache for SESSION.
+When SESSION is nil, use the current buffer session if available."
+  (when-let* ((target (or session (ignore-errors (eca-session)))))
+    (remhash target eca-chat--tab-line-cache-by-session)))
+
+(add-hook 'eca-session-deleting-functions
+          #'eca-chat--invalidate-tab-line-cache)
 
 (defcustom eca-chat-tool-call-approval-content-size 0.9
   "The size of font of tool call approval."
@@ -1097,6 +1110,7 @@ explicitly with `eca-chat-delete' or the /delete-chat command."
         (eca-chat--switch-windows-to-sibling session buffer)
         (setf (eca--session-chats session)
               (eca-dissoc (eca--session-chats session) chat-id))
+        (eca-chat--invalidate-tab-line-cache session)
         (eca-chat--force-tab-line-update)
         (eca-chat--notify-status-changed session)))))
 
@@ -1739,6 +1753,7 @@ Recovery path for a corrupted prompt block (see #305)."
     (remove-overlays (point-min) (point-max)))
   (eca-chat--invalidate-overlay-caches)
   (eca-chat--invalidate-pending-approvals-cache)
+  (eca-chat--invalidate-tab-line-cache)
   (eca-chat-expandable--reset-id-table)
   (setq-local eca-chat--task-state nil)
   ;; Cancel loading-related timers and reset state
@@ -1847,6 +1862,7 @@ current draft appended, after the server clears the chat."
 LOADING can be t (loading), \\='stopping (stop in progress), or nil (idle)."
   (unless (eq eca-chat--chat-loading loading)
     (setq-local eca-chat--chat-loading loading)
+    (eca-chat--invalidate-tab-line-cache session)
     (pcase loading
       ('t
        (setq-local eca-chat--prompt-start-time (current-time))
@@ -2975,6 +2991,29 @@ Shows 🚧 prefix for pending approvals."
            (pending (eca-chat--has-pending-approvals-p)))
       (concat " " (when pending "🚧 ") title " "))))
 
+(defun eca-chat--tab-line-active-p (buffer)
+  "Return non-nil if BUFFER needs active tab styling."
+  (and (buffer-live-p buffer)
+       (or (buffer-local-value 'eca-chat--chat-loading buffer)
+           (with-current-buffer buffer
+             (eca-chat--has-pending-approvals-p)))))
+
+(defun eca-chat--tab-line-tab-data (buffer)
+  "Return cached tab data for chat BUFFER."
+  (when (buffer-live-p buffer)
+    `(tab
+      (name . ,(eca-chat--tab-line-tab-name buffer))
+      (buffer . ,buffer)
+      (active . ,(eca-chat--tab-line-active-p buffer)))))
+
+(defun eca-chat--tab-line-stable-tabs (session)
+  "Return stable tab descriptors for SESSION."
+  (or (gethash session eca-chat--tab-line-cache-by-session)
+      (puthash session
+               (-keep #'eca-chat--tab-line-tab-data
+                      (eca-chat--session-chats-oldest-first session))
+               eca-chat--tab-line-cache-by-session)))
+
 (defun eca-chat--tab-line-face (tab _tabs face _selected-p _buffer)
   "Return FACE for TAB styled by selection and activity.
 Uses `eca-tab-inactive-face' for non-selected idle
@@ -2983,11 +3022,11 @@ tabs, and `eca-chat-tab-inactive-active-face' for
 non-selected active (loading/approval) tabs."
   (let* ((buf (cdr (assq 'buffer tab)))
          (selectedp (cdr (assq 'selected tab)))
-         (activep (and buf (buffer-live-p buf)
-                       (or (buffer-local-value
-                            'eca-chat--chat-loading buf)
-                           (with-current-buffer buf
-                             (eca-chat--has-pending-approvals-p))))))
+         (cached-active (assq 'active tab))
+         (activep (if cached-active
+                      (cdr cached-active)
+                    (and buf (buffer-live-p buf)
+                         (eca-chat--tab-line-active-p buf)))))
     (cond
      ((and activep (not selectedp))
       `(:inherit (eca-chat-tab-inactive-active-face ,face)))
@@ -2999,19 +3038,16 @@ non-selected active (loading/approval) tabs."
 
 (defun eca-chat--tab-line-tabs ()
   "Return tab descriptors for all chats in the current session.
-Each tab is an alist with `name', `buffer', and `selected' entries.
-Tabs are ordered oldest-first so new chats appear on the right."
+Each tab is an alist with `name', `buffer', `active' and
+`selected' entries.  Tabs are ordered oldest-first so new chats
+appear on the right."
   (when-let ((session (ignore-errors (eca-session))))
-    (let* ((current-buf (current-buffer))
-           (tabs (-keep
-                  (lambda (buf)
-                    (when (buffer-live-p buf)
-                      `(tab
-                        (name . ,(eca-chat--tab-line-tab-name buf))
-                        (buffer . ,buf)
-                        (selected . ,(eq buf current-buf)))))
-                  (eca-vals (eca--session-chats session)))))
-      (nreverse tabs))))
+    (let ((current-buf (current-buffer)))
+      (-keep (lambda (tab)
+               (let ((buf (cdr (assq 'buffer tab))))
+                 (when (buffer-live-p buf)
+                   (append tab `((selected . ,(eq buf current-buf)))))))
+             (eca-chat--tab-line-stable-tabs session)))))
 
 (defun eca-chat--tab-line-close-tab (&optional e)
   "Close the chat tab clicked on.
@@ -4426,11 +4462,13 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
     ;; next status check rescans the buffer.
     (when (member content-type '("toolCallRun" "toolCallRunning"
                                  "toolCalled" "toolCallRejected"))
-      (eca-chat--invalidate-pending-approvals-cache))
+      (eca-chat--invalidate-pending-approvals-cache)
+      (eca-chat--invalidate-tab-line-cache session))
     (pcase content-type
       ("metadata"
        (unless parent-tool-call-id
-         (setq-local eca-chat--title (plist-get content :title))))
+         (setq-local eca-chat--title (plist-get content :title))
+         (eca-chat--invalidate-tab-line-cache session)))
       ("text"
        (when-let* ((text (plist-get content :text)))
          (pcase role
@@ -5215,6 +5253,7 @@ own cleanup."
           (setq-local eca-chat--closed t)))
       (setf (eca--session-chats session)
             (eca-dissoc (eca--session-chats session) chat-id))
+      (eca-chat--invalidate-tab-line-cache session)
       (when (buffer-live-p chat-buffer)
         (kill-buffer chat-buffer))
       (eca-chat--notify-status-changed session))
@@ -5245,6 +5284,7 @@ resumed chat gets a fresh writable buffer."
       (when title
         (with-current-buffer existing
           (setq-local eca-chat--title title)))
+      (eca-chat--invalidate-tab-line-cache session)
       (eca-chat--force-tab-line-update)
       (eca-chat--notify-status-changed session))
      (t
@@ -5263,6 +5303,7 @@ resumed chat gets a fresh writable buffer."
           (eca-chat--initialize-selection-state session))
         (setf (eca--session-chats session)
               (eca-assoc (eca--session-chats session) chat-id new-buffer))
+        (eca-chat--invalidate-tab-line-cache session)
         (eca-chat--force-tab-line-update)
         (eca-chat--notify-status-changed session))))))
 
@@ -5536,6 +5577,7 @@ When ACTIVE is non-nil, show the question prefix; otherwise restore normal."
       (cl-assert eca-chat--id nil "eca-chat--id must be set before registering buffer")
       (setf (eca--session-chats session)
             (eca-assoc (eca--session-chats session) eca-chat--id (current-buffer)))
+      (eca-chat--invalidate-tab-line-cache session)
       (eca-chat--notify-status-changed session))
     (if (window-live-p (get-buffer-window (buffer-name)))
         (eca-chat--select-window)
@@ -5552,6 +5594,8 @@ When ACTIVE is non-nil, show the question prefix; otherwise restore normal."
     (setq eca-chat--cursor-context-timer nil))
   ;; Remove the global window-size-change handler registered by eca-chat-mode.
   (remove-hook 'window-size-change-functions #'eca-chat--on-window-size-change)
+  ;; Closed chat buffers can keep SESSION reachable through buffer-local state.
+  (eca-chat--invalidate-tab-line-cache session)
   (mapcar (lambda (title+buffer)
             (let ((chat-buffer (cdr title+buffer)))
               (when (buffer-live-p chat-buffer)
@@ -6148,7 +6192,8 @@ the empty buffer that was used to trigger the resume."
       (setq-local eca-chat--closed t)
       (when-let* ((cid eca-chat--id))
         (setf (eca--session-chats session)
-              (eca-dissoc (eca--session-chats session) cid))))
+              (eca-dissoc (eca--session-chats session) cid))
+        (eca-chat--invalidate-tab-line-cache session)))
     (kill-buffer buffer)
     (eca-chat--force-tab-line-update)
     (eca-chat--notify-status-changed session)))
@@ -6194,7 +6239,8 @@ FROM-BUFFER is the buffer where the resume command started."
       (setf (eca--session-last-chat-buffer session) chat-buffer)
       (eca-chat--with-current-buffer chat-buffer
         (when-let* ((title (plist-get response :title)))
-          (setq-local eca-chat--title title))
+          (setq-local eca-chat--title title)
+          (eca-chat--invalidate-tab-line-cache session))
         (eca-chat--apply-history-meta (plist-get response :meta))
         (eca-chat--refresh-load-older-control)
         (eca-chat--protect-non-prompt))
@@ -6288,6 +6334,7 @@ FROM-BUFFER is the buffer where the resume command started."
       (setq-local eca-chat--title new-name)
       ;; Clear any custom title since we now have an official title
       (setq-local eca-chat--custom-title nil)
+      (eca-chat--invalidate-tab-line-cache (eca-session))
       ;; Request server to persist and broadcast to other clients
       (eca-api-request-sync (eca-session)
                             :method "chat/update"
@@ -6340,6 +6387,7 @@ the deleted chat switches to another chat first."
       ;; dead buffer in the session registry.
       (setf (eca--session-chats session)
             (eca-dissoc (eca--session-chats session) chat-id))
+      (eca-chat--invalidate-tab-line-cache session)
       (when (buffer-live-p buffer)
         ;; Keep the kill hook from prompting or sending a second delete.
         (with-current-buffer buffer

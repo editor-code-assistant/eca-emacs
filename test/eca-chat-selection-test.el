@@ -191,6 +191,32 @@
                     :to-be nil))
         (eca-selection-test--kill-buffers a b source))))
 
+  (it "refreshes a cached tab title after chat/open returns"
+    (let ((session (make-eca--session :opening-chat-id "A"))
+          a source)
+      (spy-on 'eca-session :and-return-value session)
+      (spy-on 'eca-chat-open)
+      (spy-on 'eca-chat--kill-empty-welcome-buffer)
+      (spy-on 'eca-chat--refresh-load-older-control)
+      (spy-on 'eca-chat--protect-non-prompt)
+      (unwind-protect
+          (progn
+            (setq a (eca-selection-test--make-chat session "A")
+                  source (generate-new-buffer " *eca-selection-source*"))
+            (with-current-buffer a
+              (setq-local eca-chat--title "Old title")
+              (eca-chat--tab-line-tabs)
+              (eca-chat--handle-open-response
+               session source "A"
+               '(:found t :title "Restored chat"))
+              (expect (cdr (assq 'name (car (eca-chat--tab-line-tabs))))
+                      :to-equal
+                      (concat " "
+                              (propertize "Restored chat"
+                                          'font-lock-face 'eca-chat-title-face)
+                              " "))))
+        (eca-selection-test--kill-buffers a source))))
+
   (it "applies nullable and partial atomic selection fields"
     (let ((session (make-eca--session))
           chat)
