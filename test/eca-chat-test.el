@@ -1627,7 +1627,176 @@ around rendering applies, as when the chat window is selected."
                session (list :chatId "chat-1" :role "assistant" :content content))
               (expect (spy-calls-count 'eca-chat--render-content) :to-equal 1)
               (expect calls :to-equal (list (list session content buf)))))
+        (kill-buffer buf))))
+
+  (it "reverts changed file buffers before running eca-chat-tool-call-functions"
+    ;; Subscribers like a magit refresh must observe already refreshed
+    ;; file buffers, so the revert runs first.
+    (let ((buf (eca-chat-test--make-prompt-buffer "hi"))
+          (session (make-eca--session))
+          (content (list :type "toolCalled" :id "tool-1" :name "edit_file"
+                         :details (list :type "fileChange" :path "/tmp/a.el")))
+          (reverts-seen-by-hook nil))
+      (unwind-protect
+          (with-current-buffer buf
+            (setq-local eca-chat--last-user-message-pos nil)
+            (spy-on 'eca-chat--get-chat-buffer :and-return-value buf)
+            (spy-on 'eca--session-workspace-folders :and-return-value nil)
+            (spy-on 'eca-chat--protect-non-prompt)
+            (spy-on 'eca-chat--render-content)
+            (spy-on 'eca-chat--maybe-revert-changed-file)
+            (let ((eca-chat-tool-call-functions
+                   (list (lambda (_s _c)
+                           (setq reverts-seen-by-hook
+                                 (spy-calls-count 'eca-chat--maybe-revert-changed-file))))))
+              (eca-chat-content-received
+               session (list :chatId "chat-1" :role "assistant" :content content))
+              (expect 'eca-chat--maybe-revert-changed-file
+                      :to-have-been-called-with content)
+              (expect reverts-seen-by-hook :to-equal 1)))
         (kill-buffer buf)))))
+
+(defun eca-chat-test--call-with-visited-file (content fn)
+  "Call FN with a buffer visiting a temp file holding CONTENT and its path.
+Lock files are disabled so edits made to the buffer or to the file
+behind its back never prompt.  The buffer and the file are removed
+afterwards, discarding any unsaved change."
+  (let* ((create-lockfiles nil)
+         (inhibit-message t)
+         (path (make-temp-file "eca-chat-test" nil nil content))
+         (buf (find-file-noselect path)))
+    (unwind-protect
+        (funcall fn buf path)
+      (with-current-buffer buf
+        (set-buffer-modified-p nil))
+      (kill-buffer buf)
+      (delete-file path))))
+
+(defun eca-chat-test--change-file-on-disk (buf path content)
+  "Write CONTENT to PATH behind BUF's back.
+BUF's recorded modtime is then made stale explicitly, so the change is
+detected even on filesystems with a coarse modtime resolution."
+  (with-temp-file path (insert content))
+  (with-current-buffer buf
+    (set-visited-file-modtime '(1 0))))
+
+(defun eca-chat-test--file-change (path &optional type)
+  "Return a TYPE (default toolCalled) tool call content changing PATH."
+  (list :type (or type "toolCalled") :id "tool-1" :name "edit_file"
+        :details (list :type "fileChange" :path path :diff "")))
+
+(describe "eca-chat--maybe-revert-changed-file"
+  (it "reverts an unmodified buffer whose file changed on disk"
+    (eca-chat-test--call-with-visited-file
+     "old"
+     (lambda (buf path)
+       (eca-chat-test--change-file-on-disk buf path "new")
+       (let ((eca-chat-auto-revert-changed-files t))
+         (eca-chat--maybe-revert-changed-file (eca-chat-test--file-change path)))
+       (with-current-buffer buf
+         (expect (buffer-string) :to-equal "new")
+         (expect (buffer-modified-p) :to-be nil)
+         (expect (verify-visited-file-modtime buf) :to-be t)))))
+
+  (it "reverts the way auto-revert-mode does, in the visiting buffer"
+    (eca-chat-test--call-with-visited-file
+     "old"
+     (lambda (buf path)
+       (eca-chat-test--change-file-on-disk buf path "new")
+       (let ((reverted-in nil)
+             (eca-chat-auto-revert-changed-files t))
+         (spy-on 'revert-buffer :and-call-fake
+                 (lambda (&rest _) (setq reverted-in (current-buffer))))
+         (with-temp-buffer
+           (eca-chat--maybe-revert-changed-file (eca-chat-test--file-change path)))
+         (expect 'revert-buffer :to-have-been-called-with
+                 'ignore-auto 'dont-ask 'preserve-modes)
+         (expect reverted-in :to-be buf)))))
+
+  (it "never reverts a buffer with unsaved changes"
+    (eca-chat-test--call-with-visited-file
+     "old"
+     (lambda (buf path)
+       (with-current-buffer buf
+         (goto-char (point-max))
+         (insert " edited"))
+       (eca-chat-test--change-file-on-disk buf path "new")
+       (let ((eca-chat-auto-revert-changed-files t))
+         (eca-chat--maybe-revert-changed-file (eca-chat-test--file-change path)))
+       (with-current-buffer buf
+         (expect (buffer-string) :to-equal "old edited")
+         (expect (buffer-modified-p) :to-be t)))))
+
+  (it "leaves the buffer alone when the file did not change on disk"
+    ;; preview_file_change reports a fileChange without writing anything,
+    ;; and a failed edit_file may not have touched the file either.
+    (eca-chat-test--call-with-visited-file
+     "old"
+     (lambda (_buf path)
+       (spy-on 'revert-buffer)
+       (let ((eca-chat-auto-revert-changed-files t))
+         (eca-chat--maybe-revert-changed-file (eca-chat-test--file-change path)))
+       (expect 'revert-buffer :not :to-have-been-called))))
+
+  (it "does nothing when no buffer visits the changed file"
+    (spy-on 'revert-buffer)
+    (let ((eca-chat-auto-revert-changed-files t))
+      (eca-chat--maybe-revert-changed-file
+       (eca-chat-test--file-change "/nonexistent/eca-chat-test.el")))
+    (expect 'revert-buffer :not :to-have-been-called))
+
+  (it "only acts on finished fileChange tool calls"
+    (eca-chat-test--call-with-visited-file
+     "old"
+     (lambda (buf path)
+       (eca-chat-test--change-file-on-disk buf path "new")
+       (spy-on 'revert-buffer)
+       (let ((eca-chat-auto-revert-changed-files t))
+         (dolist (type '("toolCallPrepare" "toolCallRun" "toolCallRunning" "toolCallRejected"))
+           (eca-chat--maybe-revert-changed-file (eca-chat-test--file-change path type)))
+         (eca-chat--maybe-revert-changed-file
+          (list :type "toolCalled" :id "tool-2" :name "shell_command"
+                :details (list :type "shellCommand" :path path)))
+         (eca-chat--maybe-revert-changed-file
+          (list :type "toolCalled" :id "tool-3" :name "read_file")))
+       (expect 'revert-buffer :not :to-have-been-called))))
+
+  (it "is disabled by eca-chat-auto-revert-changed-files nil"
+    (eca-chat-test--call-with-visited-file
+     "old"
+     (lambda (buf path)
+       (eca-chat-test--change-file-on-disk buf path "new")
+       (spy-on 'revert-buffer)
+       (let ((eca-chat-auto-revert-changed-files nil))
+         (eca-chat--maybe-revert-changed-file (eca-chat-test--file-change path)))
+       (expect 'revert-buffer :not :to-have-been-called)
+       (expect (with-current-buffer buf (buffer-string)) :to-equal "old"))))
+
+  (it "translates the server path to the local one before looking up the buffer"
+    (eca-chat-test--call-with-visited-file
+     "old"
+     (lambda (buf path)
+       (eca-chat-test--change-file-on-disk buf path "new")
+       (spy-on 'eca--path-remote-to-local :and-return-value path)
+       (let ((eca-chat-auto-revert-changed-files t))
+         (eca-chat--maybe-revert-changed-file
+          (eca-chat-test--file-change "/workspace/project/file.el")))
+       (expect 'eca--path-remote-to-local
+               :to-have-been-called-with "/workspace/project/file.el")
+       (expect (with-current-buffer buf (buffer-string)) :to-equal "new"))))
+
+  (it "demotes errors so chat rendering is never broken"
+    (eca-chat-test--call-with-visited-file
+     "old"
+     (lambda (buf path)
+       (eca-chat-test--change-file-on-disk buf path "new")
+       (spy-on 'revert-buffer :and-throw-error 'error)
+       (let ((debug-on-error nil)
+             (inhibit-message t)
+             (eca-chat-auto-revert-changed-files t))
+         (expect (eca-chat--maybe-revert-changed-file (eca-chat-test--file-change path))
+                 :not :to-throw))
+       (expect (with-current-buffer buf (buffer-string)) :to-equal "old")))))
 
 (describe "eca-chat--maybe-run-tool-call-functions"
   (it "runs subscribers with the session and content for lifecycle events"

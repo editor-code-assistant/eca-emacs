@@ -61,6 +61,16 @@ never break chat rendering."
   :type 'hook
   :group 'eca)
 
+(defcustom eca-chat-auto-revert-changed-files t
+  "Whether to revert buffers visiting files edited by ECA tool calls.
+When non-nil, once a tool call that changes a file finishes, the buffer
+visiting that file is reverted from disk so it shows the new content,
+like `auto-revert-mode' would but without waiting for its polling.
+Buffers with unsaved changes are never reverted, so no edit is lost;
+Emacs then asks about the file having changed on disk on the next save."
+  :type 'boolean
+  :group 'eca)
+
 (defvar eca-chat-session-status-changed-functions nil
   "Abnormal hook run when a session aggregated status may have changed.
 Each function is called with a single argument, the session.  It is
@@ -2927,6 +2937,28 @@ subscribers are not called for every chunk streamed to SESSION."
     (with-demoted-errors "eca-chat-tool-call-functions: %S"
       (run-hook-with-args 'eca-chat-tool-call-functions session content))))
 
+(defun eca-chat--maybe-revert-changed-file (content)
+  "Revert the buffer visiting the file changed by tool call CONTENT.
+Only acts when `eca-chat-auto-revert-changed-files' is non-nil and
+CONTENT is a finished tool call (`toolCalled') whose details are a
+fileChange.  The buffer is reverted the way `auto-revert-mode' does it,
+and only when it has no unsaved changes and the file on disk changed
+since it was visited, so a preview or a failed edit leaves it alone.
+Errors are demoted so they never break chat rendering."
+  (when (and eca-chat-auto-revert-changed-files
+             (equal (plist-get content :type) "toolCalled"))
+    (let ((details (plist-get content :details)))
+      (when (equal (plist-get details :type) "fileChange")
+        (with-demoted-errors "eca-chat auto revert: %S"
+          (when-let* ((path (plist-get details :path))
+                      (buffer (find-buffer-visiting
+                               (eca--path-remote-to-local path)))
+                      ((not (buffer-modified-p buffer)))
+                      ((not (verify-visited-file-modtime buffer)))
+                      ((file-exists-p (buffer-file-name buffer))))
+            (with-current-buffer buffer
+              (revert-buffer 'ignore-auto 'dont-ask 'preserve-modes))))))))
+
 (defun eca-chat--chat-status-prefix ()
   "Return a status prefix string for the current chat buffer.
 Returns \"🚧 \" for pending approvals, \"⏳ \" for loading, or \"\" otherwise."
@@ -4895,6 +4927,7 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
                 (eca-chat--render-content session parent-buffer role content roots tool-call-id chat-id)
                 (eca-chat--protect-non-prompt eca-chat--last-user-message-pos)
                 (eca-chat--maybe-notify-status-changed session content)
+                (eca-chat--maybe-revert-changed-file content)
                 (eca-chat--maybe-run-tool-call-functions session content)))))
       ;; Normal content
       (when-let* ((chat-buffer (eca-chat--get-chat-buffer session chat-id))
@@ -4905,6 +4938,7 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
             (eca-chat--render-content session chat-buffer role content roots)
             (eca-chat--protect-non-prompt eca-chat--last-user-message-pos)
             (eca-chat--maybe-notify-status-changed session content)
+            (eca-chat--maybe-revert-changed-file content)
             (eca-chat--maybe-run-tool-call-functions session content)))))))
 
 (defun eca-chat--render-history-contents (session chat-buffer contents)

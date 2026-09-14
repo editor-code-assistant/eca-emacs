@@ -161,6 +161,7 @@ Chat
 - `eca-chat-mode-hook`: Hooks to run after entering `eca-chat-mode`.
 - `eca-chat-finished-hook`: Hooks to run after finishing a chat prompt.
 - `eca-chat-tool-call-functions`: Abnormal hook run with `(session content)` when a tool call changes state (`toolCallRun`, `toolCallRunning`, `toolCalled`, `toolCallRejected`). See [Magit integration](#magit-integration).
+- `eca-chat-auto-revert-changed-files`: Whether buffers visiting files edited by ECA are reverted from disk once the edit finishes (default `t`), so they show the new content without `auto-revert-mode`. Buffers with unsaved changes are never reverted.
 - `eca-chat-use-side-window`: Whether the chat buffer uses a dedicated side window or a regular directional window. Ignored when `eca-chat-window-side` is `nil`.
 - `eca-chat-window-side`: Where the chat appears (`left`, `right`, `top`, or `bottom`). Set to `nil` to open a chat that is not already visible on the selected frame in the selected window without creating a split. An already visible chat on that frame stays in its existing window; dedicated and minibuffer windows cannot be reused.
 - `eca-chat-window-width`: Width of the chat window when on the left or right.
@@ -343,10 +344,12 @@ resumable server-side. Disable with:
 
 ### Magit integration
 
-ECA does not refresh magit or other buffers by itself, but
-`eca-chat-tool-call-functions` runs every time a tool call changes state, so
-you can decide when to refresh. This keeps a magit status buffer next to the
-chat in sync after each file edit, except while you are reading it:
+ECA reverts the buffers visiting the files it edits (see
+`eca-chat-auto-revert-changed-files`), but it does not refresh magit or other
+buffers by itself. `eca-chat-tool-call-functions` runs every time a tool call
+changes state, so you can decide when to refresh. This keeps a magit status
+buffer next to the chat in sync after each file edit, except while you are
+reading it:
 
 ```elisp
 (defun my/eca-refresh-magit (_session content)
