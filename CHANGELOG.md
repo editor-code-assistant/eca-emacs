@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Bugfix: markdown tables in the chat could stay misaligned (#319): tables after the first one in a turn were skipped once aligning the earlier ones grew the buffer, code spans opened by two or more backticks swallowed the rest of the row and appended empty cells on every pass, and with markdown-mode 2.9 rows containing hidden markup or emoji had their pipes off the header column. Alignment also no longer relies on the caller binding `inhibit-read-only`.
 - Bugfix: on Doom, killing a workspace (`+workspace/kill`) replaced the chat shown in the workspace switched to with the fallback `*doom*` buffer when the chat window was the selected one, since Doom considered chat buffers "unreal". Chat buffers are now Doom real buffers, so they also show up in the workspace buffer list and get attached to the workspace they are displayed in.
 - Add `eca-doom-stop-session-on-workspace-kill` (default `t`): on Doom with the `:ui workspaces` module, killing a workspace also stops the ECA session related to it when no other workspace refers to that session.
 - Bugfix: the `@`-context line is now read-only except at its end, so typing or pasting inside a context item like `@cursor(file.el 12:3)` signals `text-read-only` instead of silently becoming part of the item, which made the next backspace drop the whole context with no undo. Backspace on an item still removes it, and text typed after the trailing `@` can be deleted with backspace again instead of dinging.

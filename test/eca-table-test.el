@@ -7,6 +7,15 @@
 ;; Ensure the font-lock buffer is configured for tests.
 (defvar eca-chat-parent-mode 'gfm-mode)
 
+(defun eca-table-test--align (text)
+  "Return TEXT after `eca-table-align' ran over it in a gfm-mode buffer."
+  (with-temp-buffer
+    (gfm-mode)
+    (setq-local markdown-hide-markup t)
+    (insert text)
+    (eca-table-align (point-min) (point-max))
+    (buffer-string)))
+
 (describe "eca-table--display-width"
   (it "returns correct width for plain text"
     (expect (eca-table--display-width "hello")
@@ -93,6 +102,22 @@
   (it "handles pipes inside code spans"
     (expect (eca-table--parse-row "| `a|b` | c |")
             :to-equal '("`a|b`" "c")))
+
+  (it "handles code spans opened by several backticks"
+    (expect (eca-table--parse-row "| a | `` ```md `` b | c |")
+            :to-equal '("a" "`` ```md `` b" "c")))
+
+  (it "handles pipes inside double-backtick code spans"
+    (expect (eca-table--parse-row "| `` a | b `` | c |")
+            :to-equal '("`` a | b ``" "c")))
+
+  (it "handles longer backtick runs inside a code span"
+    (expect (eca-table--parse-row "| `a``b` | c |")
+            :to-equal '("`a``b`" "c")))
+
+  (it "treats an unclosed backtick as literal text"
+    (expect (eca-table--parse-row "| a | `b | c |")
+            :to-equal '("a" "`b" "c")))
 
   (it "handles row without trailing pipe"
     (expect (eca-table--parse-row "| a | b | c")
@@ -182,14 +207,11 @@
 
 (describe "eca-table--align-at-point"
   (it "aligns a basic table"
-    (let ((input "| A | BB | CCC |\n|---|---|---|\n| x | yy | z |\n")
-          (expected (concat "| A | BB | CCC |\n"
-                            "|---|----|----- |\n"  ;; hmm
-                            "| x | yy | z   |\n")))
-      ;; We can't easily test this without markdown-table-begin/end,
-      ;; so we test the sub-components instead
-      (expect (eca-table--parse-row "| A | BB | CCC |")
-              :to-equal '("A" "BB" "CCC"))))
+    (expect (eca-table-test--align
+             "| A | BB | CCC |\n|---|---|---|\n| x | yy | z |\n")
+            :to-equal (concat "| A | BB | CCC |\n"
+                              "|---|----|-----|\n"
+                              "| x | yy | z   |\n")))
 
   (it "preserves alignment markers through parse and rebuild"
     (let ((line "|:---|---:|:---:|---|"))
@@ -206,6 +228,110 @@
               :to-equal ":-----:")
       (expect (eca-table--make-separator-cell 5 nil)
               :to-equal "-------"))))
+
+(describe "eca-table-align"
+  (it "aligns every table in the range after earlier ones grow"
+    ;; Aligning the first table pushes the second one past the
+    ;; original END position.
+    (let ((result (eca-table-test--align
+                   (concat "|a|b|\n|---|---|\n|cc|a much longer cell here|\n"
+                           "\n"
+                           "|e|f|\n|---|---|\n|g|h|\n"))))
+      (expect result
+              :to-match (regexp-quote "| cc | a much longer cell here |\n"))
+      (expect result
+              :to-match (regexp-quote "| e | f |\n|---|---|\n| g | h |\n"))))
+
+  (it "aligns read-only text without signaling"
+    (with-temp-buffer
+      (gfm-mode)
+      (setq-local markdown-hide-markup t)
+      (insert "|a|b|\n|---|---|\n|c|d|\n")
+      (add-text-properties (point-min) (point-max) '(read-only t))
+      (setq buffer-read-only t)
+      (eca-table-align (point-min) (point-max))
+      (expect (buffer-string)
+              :to-equal "| a | b |\n|---|---|\n| c | d |\n")))
+
+  (it "is idempotent for rows with multi-backtick code spans"
+    (let* ((input (concat "| Mode | Type | Function |\n|---|---|---|\n"
+                          "| a | `` ```markdown `` | `a\\|b` |\n"))
+           (once (eca-table-test--align input))
+           (twice (eca-table-test--align once))
+           (lines (split-string once "\n" t)))
+      (expect twice :to-equal once)
+      (expect (length lines) :to-equal 3)
+      (expect (length (eca-table--parse-row (nth 0 lines))) :to-equal 3)
+      (expect (length (eca-table--parse-row (nth 2 lines))) :to-equal 3)
+      (expect (nth 2 lines)
+              :to-match (regexp-quote "`` ```markdown `` | `a\\|b`")))))
+
+(describe "eca-table-align width measure"
+  (it "pads by source width when markdown-mode aligns separators"
+    (spy-on 'eca-table--markdown-aligns-p :and-return-value t)
+    (expect (eca-table-test--align
+             (concat "| Language | Hello World |\n|---|---|\n"
+                     "| Python | `print(1)` |\n| C | printf |\n"))
+            :to-equal (concat "| Language | Hello World |\n"
+                              "|----------|-------------|\n"
+                              "| Python   | `print(1)`  |\n"
+                              "| C        | printf      |\n")))
+
+  (it "pads by display width when markdown-mode does not align"
+    (spy-on 'eca-table--markdown-aligns-p :and-return-value nil)
+    (let* ((result (eca-table-test--align
+                    (concat "| Language | Hello World |\n|---|---|\n"
+                            "| Python | `print(1)` |\n| C | printf |\n")))
+           (lines (split-string result "\n" t)))
+      ;; The two hidden backticks are compensated with two extra
+      ;; spaces, so every line has the same display width.
+      (expect (nth 2 lines) :to-equal "| Python   | `print(1)`    |")
+      (expect (length (seq-uniq (mapcar #'eca-table--display-width lines)))
+              :to-equal 1)))
+
+  (it "counts emoji sequences by their source width"
+    (spy-on 'eca-table--markdown-aligns-p :and-return-value t)
+    ;; Emoji have `char-width' 2 and ZWJ 0, so the family is 6
+    ;; columns wide in the source, wider than the "Emoji" header.
+    (let* ((family "\U0001F468\u200D\U0001F469\u200D\U0001F467")
+           (wave "\U0001F44B")
+           (result (eca-table-test--align
+                    (concat "| Category | Emoji |\n|---|---|\n"
+                            "| Family | " family " |\n"
+                            "| Wave | " wave " |\n")))
+           (lines (split-string result "\n" t)))
+      (expect (nth 2 lines) :to-equal (concat "| Family   | " family " |"))
+      (expect (nth 3 lines) :to-equal (concat "| Wave     | " wave "     |"))
+      (expect (length (seq-uniq (mapcar #'eca-table--source-width lines)))
+              :to-equal 1))))
+
+(describe "eca-table--apply-markdown-markup-visibility"
+  (it "adds markdown-markup to the invisibility spec only once"
+    (with-temp-buffer
+      (let ((eca-chat-hide-markdown-markup t))
+        (dotimes (_ 3)
+          (eca-table--apply-markdown-markup-visibility)))
+      (expect (cl-count 'markdown-markup buffer-invisibility-spec)
+              :to-equal 1)))
+
+  (it "removes markdown-markup when markup should stay visible"
+    (with-temp-buffer
+      (let ((eca-chat-hide-markdown-markup t))
+        (eca-table--apply-markdown-markup-visibility))
+      (let ((eca-chat-hide-markdown-markup nil))
+        (eca-table--apply-markdown-markup-visibility))
+      (expect (memq 'markdown-markup buffer-invisibility-spec)
+              :to-be nil)))
+
+  (it "keeps the measurement buffer invisibility spec from growing"
+    (eca-table--display-width "x")
+    (let ((before (buffer-local-value 'buffer-invisibility-spec
+                                      (eca-table--get-fontlock-buffer))))
+      (dotimes (_ 5)
+        (eca-table--display-width "**x**"))
+      (expect (buffer-local-value 'buffer-invisibility-spec
+                                  (eca-table--get-fontlock-buffer))
+              :to-equal before))))
 
 (describe "eca-table-open"
   (it "opens the table at point in a dedicated truncate-lines buffer"
