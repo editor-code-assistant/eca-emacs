@@ -2220,7 +2220,62 @@ there - `delete-char' with a positive count, as used by
 `evil-invert-char' (~), `evil-replace' (r), `evil-delete-char' (x) and
 `evil-substitute' (s) - remove the first prompt character and fall
 through to the wrapped command.  Above the prompt field the guard is
-unconditional.")
+unconditional, except on the context line, which is editable and
+protected by `eca-chat--apply-within-context-line'.")
+
+(defun eca-chat--apply-within-context-line (context-ov fn &rest args)
+  "Apply FN to ARGS keeping the newlines around the context line.
+CONTEXT-OV is the context area overlay.  The newlines delimiting its
+line belong to the prompt block markup: a forward `delete-char' at
+the line end or a line-wise evil operator like `dd' would merge the
+line with the prompt field or the progress area and corrupt the
+block (see #305).  The direction of a wrapped deletion cannot be told
+from its arguments (evil's insert-state backspace, for one, wraps
+`delete-backward-char'), so instead both newlines are made
+`read-only' while FN runs and the `text-read-only' it then signals
+is turned into a `ding'."
+  (let* ((start (overlay-start context-ov))
+         (end (save-excursion (goto-char start) (line-end-position)))
+         (newlines (->> (list (when (> start (point-min)) (1- start))
+                              (when (< end (point-max)) end))
+                        (-non-nil)
+                        (--remove (get-text-property it 'read-only))
+                        (-map #'copy-marker))))
+    (with-silent-modifications
+      (dolist (marker newlines)
+        (put-text-property marker (1+ marker) 'read-only t)))
+    (unwind-protect
+        (condition-case nil
+            (apply fn args)
+          (text-read-only (ding)))
+      (with-silent-modifications
+        (dolist (marker newlines)
+          (remove-list-of-text-properties marker (1+ marker) '(read-only))
+          (set-marker marker nil))))))
+
+(defun eca-chat--sync-context-line (context-ov)
+  "Drop the contexts whose item on the context line is no longer whole.
+CONTEXT-OV is the context area overlay.  A region deletion (evil
+`d0', `C-u' in insert state, a visual selection...) can take part
+of an item with it; the context then counts as removed, like a
+backspace on the item does, and the line is redrawn from
+`eca-chat--context'."
+  (let* ((start (overlay-start context-ov))
+         (end (save-excursion (goto-char start) (line-end-position)))
+         (pos start)
+         (whole '()))
+    (while (< pos end)
+      (let ((next (next-single-property-change pos 'eca-chat-context-item nil end))
+            (item (get-text-property pos 'eca-chat-context-item)))
+        (when (and item
+                   (eql (- next pos) (get-text-property pos 'eca-chat-item-str-length)))
+          (push item whole))
+        (setq pos next)))
+    (let ((kept (--filter (member it whole) eca-chat--context)))
+      (unless (equal kept eca-chat--context)
+        (setq-local eca-chat--context kept)
+        (eca-chat--refresh-context)
+        (end-of-line)))))
 
 (defun eca-chat--key-pressed-deletion (side-effect-fn &rest args)
   "Apply SIDE-EFFECT-FN with ARGS before point.
@@ -2231,8 +2286,16 @@ the prompt/context line."
   (if (derived-mode-p 'eca-chat-mode)
       (let* ((cur-ov (car (overlays-in (line-beginning-position) (line-end-position))))
              (prompt-ov (eca-chat--prompt-field-ov))
+             (context-ov (eca-chat--prompt-context-field-ov))
              (text (thing-at-point 'symbol))
              (in-prompt? (eca-chat--point-at-prompt-field-p))
+             ;; On the context line, right above the prompt field.  Not
+             ;; derived from `cur-ov', which is whatever overlay happens
+             ;; to come first on the line (hl-line, ...).
+             (in-context? (and context-ov
+                               prompt-ov
+                               (<= (overlay-start context-ov) (point))
+                               (< (point) (overlay-start prompt-ov))))
              (context-item (-some->> text
                              (get-text-property 0 'eca-chat-context-item)))
              (item-str-length (-some->> text
@@ -2261,8 +2324,16 @@ the prompt/context line."
           (setf (nth 2 args) nil) ;; do not delete prompt line passing nil argument
           (apply side-effect-fn args))
 
+         ;; start of the context line - its leading `@' is either the
+         ;; first context or the unlinked prefix, and a backward deletion
+         ;; would join the line with the progress area above.
+         ((and in-context?
+               (= (point) (overlay-start context-ov)))
+          (ding))
+
          ;; start of the prompt - keep the guard everywhere above the
-         ;; prompt-field start, but at the start itself block only *backward*
+         ;; prompt-field start except on the context line (handled below,
+         ;; see #306), but at the start itself block only *backward*
          ;; deletions.  A forward deletion there (`delete-char' from
          ;; evil-invert-char ~, evil-replace r, evil-delete-char x,
          ;; evil-substitute s, or C-d) removes the first prompt char, which
@@ -2270,6 +2341,7 @@ the prompt/context line."
          ;; (e.g. `C-u - C-d') makes `delete-char' delete backward, so still
          ;; guard that.
          ((and prompt-ov
+               (not in-context?)
                (or (< (point) (overlay-start prompt-ov))
                    (and (= (point) (overlay-start prompt-ov))
                         (or (memq this-command eca-chat--prompt-boundary-guard-commands)
@@ -2279,19 +2351,24 @@ the prompt/context line."
                                          (overlay-start prompt-ov) (point))))))
           (ding))
 
-         ;; in context area trying to remove a context space separator
-         ((and cur-ov
-               (overlay-get cur-ov 'eca-chat-context-area)
-               (and (string= " " (string (char-before (point))))
-                    (not (eolp)))))
+         ;; in context area trying to remove a context space separator or
+         ;; the `@' prefix of the typed query
+         ((and in-context?
+               (not (eolp))
+               (or (string= " " (string (char-before (point))))
+                   (string= eca-chat-context-prefix (string (char-before (point)))))))
 
          ;; in context area removing a context
-         ((and cur-ov
-               (overlay-get cur-ov 'eca-chat-context-area)
+         ((and in-context?
                (string= eca-chat-context-prefix (string (char-before (point)))))
           (setq-local eca-chat--context (delete (car (last eca-chat--context)) eca-chat--context))
           (eca-chat--refresh-context)
           (end-of-line))
+
+         ;; in context area editing the typed query (#306)
+         (in-context?
+          (apply #'eca-chat--apply-within-context-line context-ov side-effect-fn args)
+          (eca-chat--sync-context-line context-ov))
 
          (t (apply side-effect-fn args))))
     (apply side-effect-fn args)))

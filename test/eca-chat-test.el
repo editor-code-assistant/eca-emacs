@@ -49,6 +49,18 @@ field.  Returns the buffer.  Caller must kill it."
     (buffer-substring-no-properties
      (eca-chat--prompt-field-start-point) (point-max))))
 
+(defun eca-chat-test--context-text (buf)
+  "Return the context line text from BUF."
+  (with-current-buffer buf
+    (buffer-substring-no-properties
+     (overlay-start (eca-chat--prompt-context-field-ov))
+     (1- (eca-chat--prompt-field-start-point)))))
+
+(defun eca-chat-test--type-context-query (query)
+  "Insert QUERY after the trailing @ of the context line, leaving point there."
+  (goto-char (1- (eca-chat--prompt-field-start-point)))
+  (insert query))
+
 (defun eca-chat-test--call-on (text marker fn)
   "Fontify TEXT in a gfm buffer, move point onto MARKER, then call FN.
 TEXT is inserted on the third line (after a heading) so markdown
@@ -791,7 +803,197 @@ around rendering applies, as when the chat window is selected."
                   (expect side-effect-called :to-be t)
                   (expect (eca-chat-test--prompt-text buf)
                           :to-equal "ello")))
-            (kill-buffer buf)))))))
+            (kill-buffer buf))))))
+
+  (describe "context line"
+
+    (it "deletes characters of the typed query"
+      ;; Regression #306: the prompt boundary guard dinged everywhere above
+      ;; the prompt field, context line included, so a typo in `@foo' could
+      ;; only be discarded by completing something.
+      (let ((buf (eca-chat-test--make-prompt-buffer "hello")))
+        (spy-on 'ding)
+        (unwind-protect
+            (with-current-buffer buf
+              (eca-chat-test--type-context-query "foo")
+              (let ((this-command 'delete-backward-char))
+                (eca-chat--key-pressed-deletion
+                 (lambda (n &optional _) (delete-char (- n)))
+                 1))
+              (expect 'ding :not :to-have-been-called)
+              (expect (eca-chat-test--context-text buf) :to-equal "@fo")
+              (expect (eca-chat-test--prompt-text buf) :to-equal "hello")
+              (expect (eca-chat--prompt-block-broken-p) :to-be nil))
+          (kill-buffer buf))))
+
+    (it "deletes query characters through a wrapper of delete-backward-char"
+      ;; evil's insert-state backspace calls `delete-backward-char' with a
+      ;; positive count under its own `this-command', so the direction of
+      ;; the deletion cannot be told from the advice arguments.
+      (let ((buf (eca-chat-test--make-prompt-buffer "hello")))
+        (spy-on 'ding)
+        (unwind-protect
+            (with-current-buffer buf
+              (eca-chat-test--type-context-query "foo")
+              (let ((this-command 'evil-delete-backward-char-and-join))
+                (eca-chat--key-pressed-deletion
+                 (lambda (n &optional _) (delete-backward-char n))
+                 1))
+              (expect 'ding :not :to-have-been-called)
+              (expect (eca-chat-test--context-text buf) :to-equal "@fo"))
+          (kill-buffer buf))))
+
+    (it "deletes a query character with an evil region deletion"
+      (let ((buf (eca-chat-test--make-prompt-buffer "hello")))
+        (spy-on 'ding)
+        (unwind-protect
+            (with-current-buffer buf
+              (eca-chat-test--type-context-query "foo")
+              (backward-char 1)
+              (let ((this-command 'evil-delete-char))
+                (eca-chat--key-pressed-deletion
+                 (lambda (beg end &rest _) (delete-region beg end))
+                 (point) (1+ (point)) 'inclusive nil))
+              (expect 'ding :not :to-have-been-called)
+              (expect (eca-chat-test--context-text buf) :to-equal "@fo"))
+          (kill-buffer buf))))
+
+    (it "keeps the @ prefix of the typed query"
+      ;; Backspace right after the `@' used to drop the last context and
+      ;; wipe the query; the prefix is protected like the separators.
+      (let ((buf (eca-chat-test--make-prompt-buffer "hello")))
+        (spy-on 'ding)
+        (spy-on 'eca-chat--refresh-context)
+        (unwind-protect
+            (with-current-buffer buf
+              (setq-local eca-chat--context '((:type "file" :path "/x/a.el")))
+              (eca-chat-test--type-context-query "foo")
+              (backward-char 3)
+              (let ((this-command 'delete-backward-char)
+                    (side-effect-called nil))
+                (eca-chat--key-pressed-deletion
+                 (lambda (&rest _) (setq side-effect-called t))
+                 1)
+                (expect side-effect-called :to-be nil))
+              (expect 'ding :not :to-have-been-called)
+              (expect 'eca-chat--refresh-context :not :to-have-been-called)
+              (expect eca-chat--context :to-equal '((:type "file" :path "/x/a.el")))
+              (expect (eca-chat-test--context-text buf) :to-equal "@foo"))
+          (kill-buffer buf))))
+
+    (it "removes the last context when backspacing over the trailing @"
+      (let ((buf (eca-chat-test--make-prompt-buffer "hello")))
+        (spy-on 'eca-chat--refresh-context)
+        (unwind-protect
+            (with-current-buffer buf
+              (setq-local eca-chat--context (list (list :type "file" :path "/x/a.el")
+                                                  (list :type "file" :path "/x/b.el")))
+              (goto-char (1- (eca-chat--prompt-field-start-point)))
+              (let ((this-command 'delete-backward-char)
+                    (side-effect-called nil))
+                (eca-chat--key-pressed-deletion
+                 (lambda (&rest _) (setq side-effect-called t))
+                 1)
+                (expect side-effect-called :to-be nil))
+              (expect eca-chat--context :to-equal '((:type "file" :path "/x/a.el")))
+              (expect 'eca-chat--refresh-context :to-have-been-called))
+          (kill-buffer buf))))
+
+    (it "drops a context whose item a region deletion cut into"
+      ;; A region deletion (evil `d0', `C-u' in insert state...) can take
+      ;; part of an item with the query; the list must follow the line.
+      (let ((buf (eca-chat-test--make-prompt-buffer "hello"))
+            (a (list :type "file" :path "/x/a.el"))
+            (b (list :type "file" :path "/x/b.el")))
+        (spy-on 'ding)
+        (spy-on 'eca-chat--refresh-context)
+        (spy-on 'eca-chat--context-presentable-path
+                :and-call-fake #'file-name-nondirectory)
+        (unwind-protect
+            (with-current-buffer buf
+              (setq-local eca-chat--context (list a b))
+              (let ((start (overlay-start (eca-chat--prompt-context-field-ov))))
+                (goto-char start)
+                (delete-char 1)
+                (insert (eca-chat--context->str a 'static) " "
+                        (eca-chat--context->str b 'static) " @foo")
+                (expect (eca-chat-test--context-text buf)
+                        :to-equal "@a.el @b.el @foo")
+                ;; Cut from inside @b.el into the query, leaving @a.el whole.
+                (let ((beg (+ start 8))
+                      (end (+ start 15)))
+                  (goto-char end)
+                  (let ((this-command 'evil-delete))
+                    (eca-chat--key-pressed-deletion
+                     (lambda (beg end &rest _) (delete-region beg end))
+                     beg end 'exclusive nil))))
+              (expect 'ding :not :to-have-been-called)
+              (expect eca-chat--context :to-equal (list a))
+              (expect 'eca-chat--refresh-context :to-have-been-called))
+          (kill-buffer buf))))
+
+    (it "blocks deletions at the context line start"
+      (dolist (cmd '(delete-backward-char delete-char))
+        (let ((buf (eca-chat-test--make-prompt-buffer "hello")))
+          (spy-on 'ding)
+          (unwind-protect
+              (with-current-buffer buf
+                (eca-chat-test--type-context-query "foo")
+                (goto-char (overlay-start (eca-chat--prompt-context-field-ov)))
+                (let ((this-command cmd)
+                      (side-effect-called nil))
+                  (eca-chat--key-pressed-deletion
+                   (lambda (&rest _) (setq side-effect-called t))
+                   1)
+                  (expect side-effect-called :to-be nil))
+                (expect 'ding :to-have-been-called)
+                (expect (eca-chat-test--context-text buf) :to-equal "@foo")
+                (expect (eca-chat--prompt-block-broken-p) :to-be nil))
+            (kill-buffer buf)))))
+
+    (it "blocks a forward deletion at the context line end"
+      ;; C-d there would take the newline and merge the context line with
+      ;; the prompt field.
+      (let ((buf (eca-chat-test--make-prompt-buffer "hello")))
+        (spy-on 'ding)
+        (unwind-protect
+            (with-current-buffer buf
+              (eca-chat-test--type-context-query "foo")
+              (let ((this-command 'delete-char))
+                (eca-chat--key-pressed-deletion
+                 (lambda (n &optional _) (delete-char n))
+                 1))
+              (expect 'ding :to-have-been-called)
+              (expect (eca-chat-test--context-text buf) :to-equal "@foo")
+              (expect (eca-chat-test--prompt-text buf) :to-equal "hello")
+              (expect (eca-chat--prompt-block-broken-p) :to-be nil)
+              ;; The temporary protection is gone.
+              (expect (get-text-property (1- (eca-chat--prompt-field-start-point))
+                                         'read-only)
+                      :to-be nil))
+          (kill-buffer buf))))
+
+    (it "blocks an evil line-wise deletion of the context line"
+      (let ((buf (eca-chat-test--make-prompt-buffer "hello")))
+        (spy-on 'ding)
+        (unwind-protect
+            (with-current-buffer buf
+              (eca-chat-test--type-context-query "foo")
+              (backward-char 2)
+              (let* ((this-command 'evil-delete)
+                     (start (overlay-start (eca-chat--prompt-context-field-ov)))
+                     (end (eca-chat--prompt-field-start-point)))
+                (eca-chat--key-pressed-deletion
+                 (lambda (beg end &rest _) (delete-region beg end))
+                 start end 'line nil))
+              (expect 'ding :to-have-been-called)
+              (expect (eca-chat-test--context-text buf) :to-equal "@foo")
+              (expect (eca-chat-test--prompt-text buf) :to-equal "hello")
+              (expect (eca-chat--prompt-block-broken-p) :to-be nil)
+              (expect (get-text-property (1- (eca-chat--prompt-field-start-point))
+                                         'read-only)
+                      :to-be nil))
+          (kill-buffer buf))))))
 
 (describe "eca-chat--key-pressed-kill"
 
