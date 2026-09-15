@@ -161,6 +161,7 @@ Chat
 - `eca-chat-mode-hook`: Hooks to run after entering `eca-chat-mode`.
 - `eca-chat-finished-hook`: Hooks to run after finishing a chat prompt.
 - `eca-chat-tool-call-functions`: Abnormal hook run with `(session content)` when a tool call changes state (`toolCallRun`, `toolCallRunning`, `toolCalled`, `toolCallRejected`). See [Magit integration](#magit-integration).
+- `eca-chat-auto-revert-changed-files`: Whether buffers visiting files edited by ECA are reverted from disk once the edit finishes (default `t`), so they show the new content without `auto-revert-mode`. Buffers with unsaved changes are never reverted.
 - `eca-chat-use-side-window`: Whether the chat buffer uses a dedicated side window or a regular directional window. Ignored when `eca-chat-window-side` is `nil`.
 - `eca-chat-window-side`: Where the chat appears (`left`, `right`, `top`, or `bottom`). Set to `nil` to open a chat that is not already visible on the selected frame in the selected window without creating a split. An already visible chat on that frame stays in its existing window; dedicated and minibuffer windows cannot be reused.
 - `eca-chat-window-width`: Width of the chat window when on the left or right.
@@ -226,6 +227,7 @@ Settings
 Doom Emacs
 
 - `eca-doom-workspace-tabs`: Whether to decorate the Doom workspace tabline with the ECA session status of each workspace (default `t`).
+- `eca-doom-stop-session-on-workspace-kill`: Whether killing a Doom workspace also stops the ECA session related to it, when no other workspace refers to that session (default `t`).
 
 MCP
 
@@ -316,24 +318,38 @@ accuracy and transcription speed.
 
 Calling `M-x eca` with prefix `C-u` will ask for what workspaces to start the process.
 
-### Doom Emacs workspace tabs
+### Doom Emacs workspaces
 
-On Doom Emacs with the `:ui workspaces` module, the workspace tabline is
-colored with the ECA session status of each workspace: orange when a chat
-waits on you (pending approval or question), dim yellow while a chat is
-running. Customize the colors via the `eca-doom-workspace-tab-attention-face`
-and `eca-doom-workspace-tab-running-face` faces, or disable with:
+On Doom Emacs, chat buffers are "real" buffers: they show up in the workspace
+buffer list and Doom never swaps them for the fallback buffer (e.g. when a
+workspace is killed and the previous one, showing a chat, is restored).
+
+With the `:ui workspaces` module, the workspace tabline is colored with the
+ECA session status of each workspace: orange when a chat waits on you (pending
+approval or question), dim yellow while a chat is running. Customize the
+colors via the `eca-doom-workspace-tab-attention-face` and
+`eca-doom-workspace-tab-running-face` faces, or disable with:
 
 ```elisp
 (setq eca-doom-workspace-tabs nil)
 ```
 
+Killing a workspace (`SPC TAB d`) also stops the ECA session related to it,
+unless another workspace still refers to that session. Its chats remain
+resumable server-side. Disable with:
+
+```elisp
+(setq eca-doom-stop-session-on-workspace-kill nil)
+```
+
 ### Magit integration
 
-ECA does not refresh magit or other buffers by itself, but
-`eca-chat-tool-call-functions` runs every time a tool call changes state, so
-you can decide when to refresh. This keeps a magit status buffer next to the
-chat in sync after each file edit, except while you are reading it:
+ECA reverts the buffers visiting the files it edits (see
+`eca-chat-auto-revert-changed-files`), but it does not refresh magit or other
+buffers by itself. `eca-chat-tool-call-functions` runs every time a tool call
+changes state, so you can decide when to refresh. This keeps a magit status
+buffer next to the chat in sync after each file edit, except while you are
+reading it:
 
 ```elisp
 (defun my/eca-refresh-magit (_session content)

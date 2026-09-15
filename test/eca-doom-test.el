@@ -1,7 +1,8 @@
 ;;; eca-doom-test.el --- Tests for eca-doom -*- lexical-binding: t; -*-
 ;;; Commentary:
-;; Verify `eca-chat-session-status' and the Doom workspaces tabline
-;; decoration based on the ECA session status of each workspace.
+;; Verify `eca-chat-session-status', the Doom workspaces tabline
+;; decoration based on the ECA session status of each workspace, the
+;; Doom real buffer predicate and the session stop on workspace kill.
 ;;; Code:
 (require 'buttercup)
 (require 'cl-lib)
@@ -60,7 +61,9 @@ WORKSPACES is an alist of (name . buffers) mimicking perspectives."
                 (lambda (name &optional _noerror)
                   (assoc name eca-doom-test--workspaces)))
                ((symbol-function 'persp-buffers)
-                (lambda (persp) (cdr persp))))
+                (lambda (persp) (cdr persp)))
+               ((symbol-function 'persp-name)
+                (lambda (persp) (car persp))))
        ,@body)))
 
 (defun eca-doom-test--face-at (string regexp)
@@ -355,6 +358,111 @@ WORKSPACES is an alist of (name . buffers) mimicking perspectives."
       (cl-letf (((symbol-function '+workspace/display) (lambda () nil)))
         (eca-doom--on-session-status-changed nil)
         (expect eca-doom--refresh-timer :to-be nil)))))
+
+(describe "eca-doom-real-buffer-p"
+
+  (it "is non-nil for a live chat buffer"
+    (let ((buf (eca-doom-test--make-chat-buffer "*drb-live*")))
+      (unwind-protect
+          (expect (eca-doom-real-buffer-p buf) :to-be-truthy)
+        (kill-buffer buf))))
+
+  (it "is nil for a closed chat buffer"
+    (let ((buf (eca-doom-test--make-chat-buffer "*drb-closed*")))
+      (with-current-buffer buf
+        (setq-local eca-chat--closed t))
+      (unwind-protect
+          (expect (eca-doom-real-buffer-p buf) :to-be nil)
+        (kill-buffer buf))))
+
+  (it "is nil for a non chat buffer"
+    (let ((buf (generate-new-buffer "*drb-other*")))
+      (unwind-protect
+          (expect (eca-doom-real-buffer-p buf) :to-be nil)
+        (kill-buffer buf)))))
+
+(describe "eca-doom--on-workspace-kill"
+
+  (it "stops the session when no other workspace refers to it"
+    (let* ((chat (eca-doom-test--make-chat-buffer "*dk-only*" nil 1))
+           (other (generate-new-buffer "*dk-other-file*"))
+           (session (eca-doom-test--make-session 1 (list chat) '("/eca/proj")))
+           (eca--sessions (list (cons 1 session)))
+           (eca-doom-stop-session-on-workspace-kill t)
+           (stopped nil))
+      (unwind-protect
+          (cl-letf (((symbol-function 'eca-stop-session)
+                     (lambda (s) (push s stopped))))
+            (eca-doom-test--with-doom (list (cons "main" (list other))
+                                            (cons "proj" (list chat)))
+              (eca-doom--on-workspace-kill (cons "proj" (list chat)))
+              (expect stopped :to-equal (list session))))
+        (kill-buffer chat)
+        (kill-buffer other))))
+
+  (it "keeps the session when another workspace refers to it"
+    (let* ((chat (eca-doom-test--make-chat-buffer "*dk-shared*" nil 1))
+           (twin (eca-doom-test--make-chat-buffer "*dk-shared-twin*" nil 1))
+           (session (eca-doom-test--make-session 1 (list chat twin)))
+           (eca--sessions (list (cons 1 session)))
+           (eca-doom-stop-session-on-workspace-kill t)
+           (stopped nil))
+      (unwind-protect
+          (cl-letf (((symbol-function 'eca-stop-session)
+                     (lambda (s) (push s stopped))))
+            (eca-doom-test--with-doom (list (cons "a" (list chat))
+                                            (cons "b" (list twin)))
+              (eca-doom--on-workspace-kill (cons "a" (list chat)))
+              (expect stopped :to-be nil)))
+        (kill-buffer chat)
+        (kill-buffer twin))))
+
+  (it "does nothing when the workspace has no related session"
+    (let* ((buf (generate-new-buffer "*dk-none*"))
+           (session (eca-doom-test--make-session 1 nil '("/eca/nowhere")))
+           (eca--sessions (list (cons 1 session)))
+           (eca-doom-stop-session-on-workspace-kill t)
+           (stopped nil))
+      (unwind-protect
+          (cl-letf (((symbol-function 'eca-stop-session)
+                     (lambda (s) (push s stopped))))
+            (eca-doom-test--with-doom (list (cons "proj" (list buf)))
+              (eca-doom--on-workspace-kill (cons "proj" (list buf)))
+              (expect stopped :to-be nil)))
+        (kill-buffer buf))))
+
+  (it "does nothing when disabled"
+    (let* ((chat (eca-doom-test--make-chat-buffer "*dk-off*" nil 1))
+           (session (eca-doom-test--make-session 1 (list chat)))
+           (eca--sessions (list (cons 1 session)))
+           (eca-doom-stop-session-on-workspace-kill nil)
+           (stopped nil))
+      (unwind-protect
+          (cl-letf (((symbol-function 'eca-stop-session)
+                     (lambda (s) (push s stopped))))
+            (eca-doom-test--with-doom (list (cons "proj" (list chat)))
+              (eca-doom--on-workspace-kill (cons "proj" (list chat)))
+              (expect stopped :to-be nil)))
+        (kill-buffer chat))))
+
+  (it "ignores a nil perspective"
+    (let ((eca-doom-stop-session-on-workspace-kill t))
+      (expect (eca-doom--on-workspace-kill nil) :to-be nil)))
+
+  (it "warns instead of signaling when stopping fails"
+    (let* ((chat (eca-doom-test--make-chat-buffer "*dk-fail*" nil 1))
+           (session (eca-doom-test--make-session 1 (list chat)))
+           (eca--sessions (list (cons 1 session)))
+           (eca-doom-stop-session-on-workspace-kill t))
+      (spy-on 'eca-warn)
+      (unwind-protect
+          (cl-letf (((symbol-function 'eca-stop-session)
+                     (lambda (_s) (error "Boom"))))
+            (eca-doom-test--with-doom (list (cons "proj" (list chat)))
+              (expect (eca-doom--on-workspace-kill (cons "proj" (list chat)))
+                      :not :to-throw)
+              (expect 'eca-warn :to-have-been-called)))
+        (kill-buffer chat)))))
 
 (provide 'eca-doom-test)
 ;;; eca-doom-test.el ends here

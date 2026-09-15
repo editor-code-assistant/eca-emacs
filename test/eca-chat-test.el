@@ -114,9 +114,228 @@ When MANUAL is non-nil the tool call requires manual approval."
         :manualApproval manual
         :details (list :type "generic")))
 
+(defun eca-chat-test--make-tab-chat (session id &optional title)
+  "Create and register a chat buffer with ID for SESSION.
+When TITLE is non-nil, use it as the chat title."
+  (let ((buffer (eca-chat-test--make-render-buffer)))
+    (with-current-buffer buffer
+      (setq-local eca-chat--id id)
+      (setq-local eca-chat--closed nil)
+      (setq-local eca-chat--title title))
+    (setf (eca--session-chats session)
+          (eca-assoc (eca--session-chats session) id buffer))
+    buffer))
+
+(defun eca-chat-test--tab-for-buffer (tabs buffer)
+  "Return the tab descriptor in TABS for BUFFER."
+  (-first (lambda (tab) (eq (cdr (assq 'buffer tab)) buffer)) tabs))
+
+(defun eca-chat-test--tab-selected-p (tabs buffer)
+  "Return non-nil when BUFFER's tab in TABS is selected."
+  (cdr (assq 'selected (eca-chat-test--tab-for-buffer tabs buffer))))
+
+(defun eca-chat-test--tab-name (tabs buffer)
+  "Return BUFFER's tab name in TABS."
+  (cdr (assq 'name (eca-chat-test--tab-for-buffer tabs buffer))))
+
+(defun eca-chat-test--tab-active-p (tabs buffer)
+  "Return BUFFER's tab active value in TABS."
+  (cdr (assq 'active (eca-chat-test--tab-for-buffer tabs buffer))))
+
 ;; ---------------------------------------------------------------------------
 ;; Tests
 ;; ---------------------------------------------------------------------------
+
+(describe "eca-chat tab-line cache"
+
+  (it "reuses stable tab labels between redisplay calls"
+    (let ((session (make-eca--session)) a b)
+      (spy-on 'eca-session :and-return-value session)
+      (unwind-protect
+          (progn
+            (setq a (eca-chat-test--make-tab-chat session "A" "Alpha")
+                  b (eca-chat-test--make-tab-chat session "B" "Beta"))
+            (with-current-buffer a
+              (eca-chat--tab-line-tabs)
+              (spy-on 'eca-chat--tab-line-tab-name)
+              (eca-chat--tab-line-tabs)
+              (expect 'eca-chat--tab-line-tab-name
+                      :not :to-have-been-called)))
+        (dolist (buffer (list a b))
+          (when (buffer-live-p buffer)
+            (kill-buffer buffer))))))
+
+  (it "keeps selected state out of the stable cache"
+    (let ((session (make-eca--session)) a b)
+      (spy-on 'eca-session :and-return-value session)
+      (unwind-protect
+          (progn
+            (setq a (eca-chat-test--make-tab-chat session "A" "Alpha")
+                  b (eca-chat-test--make-tab-chat session "B" "Beta"))
+            (let ((tabs-from-a (with-current-buffer a
+                                 (eca-chat--tab-line-tabs)))
+                  (tabs-from-b (with-current-buffer b
+                                 (eca-chat--tab-line-tabs))))
+              (expect (eca-chat-test--tab-selected-p tabs-from-a a)
+                      :to-be-truthy)
+              (expect (eca-chat-test--tab-selected-p tabs-from-a b)
+                      :to-be nil)
+              (expect (eca-chat-test--tab-selected-p tabs-from-b a)
+                      :to-be nil)
+              (expect (eca-chat-test--tab-selected-p tabs-from-b b)
+                      :to-be-truthy)))
+        (dolist (buffer (list a b))
+          (when (buffer-live-p buffer)
+            (kill-buffer buffer))))))
+
+  (it "updates a cached tab label after metadata changes"
+    (let ((session (make-eca--session)) chat)
+      (spy-on 'eca-session :and-return-value session)
+      (unwind-protect
+          (progn
+            (setq chat (eca-chat-test--make-tab-chat session "A" "Old title"))
+            (with-current-buffer chat
+              (eca-chat--tab-line-tabs)
+              (eca-chat--render-content
+               session chat "assistant"
+               '(:type "metadata" :title "New title")
+               nil)
+              (expect (eca-chat-test--tab-name
+                       (eca-chat--tab-line-tabs) chat)
+                      :to-equal
+                      (concat " "
+                              (propertize "New title"
+                                          'font-lock-face 'eca-chat-title-face)
+                              " "))))
+        (when (buffer-live-p chat)
+          (kill-buffer chat)))))
+
+  (it "updates pending approval prefix and active state"
+    (let ((session (make-eca--session)) chat)
+      (spy-on 'eca-session :and-return-value session)
+      (unwind-protect
+          (progn
+            (setq chat (eca-chat-test--make-tab-chat session "A" "Needs approval"))
+            (with-current-buffer chat
+              (eca-chat--tab-line-tabs)
+              (eca-chat--render-content
+               session chat "assistant"
+               (eca-chat-test--tool-call-content "toolCallRun" "tool-1" t)
+               nil)
+              (let ((tabs (eca-chat--tab-line-tabs)))
+                (expect (eca-chat-test--tab-name tabs chat)
+                        :to-equal
+                        (concat " 🚧 "
+                                (propertize "Needs approval"
+                                            'font-lock-face 'eca-chat-title-face)
+                                " "))
+                (expect (eca-chat-test--tab-active-p tabs chat)
+                        :to-be-truthy))
+              (let ((inhibit-read-only t))
+                (eca-chat--render-content
+                 session chat "assistant"
+                 (eca-chat-test--tool-call-content "toolCalled" "tool-1")
+                 nil))
+              (let ((tabs (eca-chat--tab-line-tabs)))
+                (expect (eca-chat-test--tab-name tabs chat)
+                        :to-equal
+                        (concat " "
+                                (propertize "Needs approval"
+                                            'font-lock-face 'eca-chat-title-face)
+                                " "))
+                (expect (eca-chat-test--tab-active-p tabs chat)
+                        :to-be nil))))
+        (when (buffer-live-p chat)
+          (kill-buffer chat)))))
+
+  (it "updates active state after loading transitions"
+    (let ((session (make-eca--session)) chat)
+      (spy-on 'eca-session :and-return-value session)
+      (unwind-protect
+          (progn
+            (setq chat (eca-chat-test--make-tab-chat session "A" "Loading"))
+            (with-current-buffer chat
+              (eca-chat--tab-line-tabs)
+              (eca-chat--set-chat-loading session t)
+              (expect (eca-chat-test--tab-active-p
+                       (eca-chat--tab-line-tabs) chat)
+                      :to-be-truthy)
+              (eca-chat--set-chat-loading session nil)
+              (expect (eca-chat-test--tab-active-p
+                       (eca-chat--tab-line-tabs) chat)
+                      :to-be nil)))
+        (when (and (buffer-live-p chat)
+                   (buffer-local-value 'eca-chat--modeline-timer chat))
+          (cancel-timer (buffer-local-value 'eca-chat--modeline-timer chat)))
+        (when (buffer-live-p chat)
+          (kill-buffer chat)))))
+
+  (it "updates the cached tab list after registration and removal"
+    (let ((session (make-eca--session)) a b)
+      (spy-on 'eca-session :and-return-value session)
+      (spy-on 'eca-chat--force-tab-line-update)
+      (unwind-protect
+          (progn
+            (setq a (eca-chat-test--make-tab-chat session "A" "Alpha"))
+            (with-current-buffer a
+              (expect (length (eca-chat--tab-line-tabs)) :to-equal 1)
+              (eca-chat-opened session '(:chatId "B" :title "Beta"))
+              (setq b (eca-get (eca--session-chats session) "B"))
+              (expect (length (eca-chat--tab-line-tabs)) :to-equal 2)
+              (eca-chat-deleted session '(:chatId "B"))
+              (expect (length (eca-chat--tab-line-tabs)) :to-equal 1)))
+        (dolist (buffer (list a b))
+          (when (buffer-live-p buffer)
+            (kill-buffer buffer)))
+        ;; `eca-chat-opened' activates a real `eca-chat-mode' buffer,
+        ;; which installs global command advices.  Remove them so later
+        ;; specs see raw editing commands.
+        (dolist (fn '(delete-char delete-backward-char
+                      backward-delete-char
+                      backward-delete-char-untabify
+                      backward-kill-word))
+          (advice-remove fn #'eca-chat--key-pressed-deletion))
+        (dolist (fn eca-chat--kill-guarded-commands)
+          (advice-remove fn #'eca-chat--key-pressed-kill))
+        (advice-remove 'yank #'eca-chat--yank-considering-image))))
+
+  (it "clears the cached tab list on chat exit"
+    (let ((session (make-eca--session)) chat)
+      (spy-on 'eca-session :and-return-value session)
+      (unwind-protect
+          (progn
+            (setq chat (eca-chat-test--make-tab-chat session "A" "Alpha"))
+            (with-current-buffer chat
+              (eca-chat--tab-line-tabs))
+            (expect (gethash session eca-chat--tab-line-cache-by-session)
+                    :to-be-truthy)
+            (eca-chat-exit session)
+            (expect (gethash session eca-chat--tab-line-cache-by-session)
+                    :to-be nil))
+        (when (buffer-live-p chat)
+          (kill-buffer chat)))))
+
+  (it "clears the cached tab list when deleting a session"
+    (let ((eca--sessions '())
+          (eca-chat--tab-line-cache-by-session
+           (make-hash-table :test 'eq :weakness 'key))
+          (session (make-eca--session))
+          chat)
+      (setf (eca--session-id session) 1)
+      (setq eca--sessions (eca-assoc eca--sessions 1 session))
+      (spy-on 'eca-session :and-return-value session)
+      (unwind-protect
+          (progn
+            (setq chat (eca-chat-test--make-tab-chat session "A" "Alpha"))
+            (with-current-buffer chat
+              (eca-chat--tab-line-tabs))
+            (expect (gethash session eca-chat--tab-line-cache-by-session)
+                    :to-be-truthy)
+            (eca-delete-session session)
+            (expect (gethash session eca-chat--tab-line-cache-by-session)
+                    :to-be nil))
+        (when (buffer-live-p chat)
+          (kill-buffer chat))))))
 
 (describe "eca-chat--has-pending-approvals-p"
 
@@ -287,6 +506,31 @@ is taller than the batch-mode test window."
   (and (get-text-property (point) 'eca-tool-call-pending-approval-accept)
        (equal id (get-text-property (point) 'eca-tool-call-id))))
 
+(defun eca-chat-test--receive (session buf content)
+  "Deliver CONTENT for SESSION to BUF like the server notification does.
+Goes through `eca-chat-content-received' so the point preservation
+around rendering applies, as when the chat window is selected."
+  (spy-on 'eca-chat--get-chat-buffer :and-return-value buf)
+  (spy-on 'eca--session-workspace-folders :and-return-value nil)
+  (eca-chat-content-received
+   session (list :chatId "chat-1" :role "assistant" :content content)))
+
+(describe "eca-chat--with-point-preserved"
+  (it "restores point moved by the body"
+    (with-temp-buffer
+      (insert "abc")
+      (eca-chat--with-point-preserved
+        (goto-char (point-min)))
+      (expect (point) :to-equal (point-max))))
+
+  (it "keeps point when the body moved it on purpose"
+    (with-temp-buffer
+      (insert "abc")
+      (eca-chat--with-point-preserved
+        (goto-char (point-min))
+        (setq eca-chat--keep-point t))
+      (expect (point) :to-equal (point-min)))))
+
 (describe "eca-chat--ensure-tool-call-approval-visible"
   ;; Issue #308: a tool call awaiting approval whose expanded body is
   ;; taller than the window must keep its label and buttons in view
@@ -298,13 +542,10 @@ is taller than the batch-mode test window."
           (save-window-excursion
             (set-window-buffer (selected-window) buf)
             (eca-chat--with-current-buffer buf
-              (eca-chat--render-content
-               session buf "assistant"
-               (eca-chat-test--tall-approval-content "tool-1")
-               nil)
+              (eca-chat-test--receive
+               session buf (eca-chat-test--tall-approval-content "tool-1"))
               (expect (window-start) :to-equal (eca-chat-test--label-start "tool-1"))
-              (expect (eca-chat-test--on-accept-button-p "tool-1") :to-be-truthy)
-              (expect eca-chat--focused-approval-id :to-equal "tool-1")))
+              (expect (eca-chat-test--on-accept-button-p "tool-1") :to-be-truthy)))
         (kill-buffer buf))))
 
   (it "keeps the prompt at the bottom when the block fits in the window"
@@ -314,14 +555,11 @@ is taller than the batch-mode test window."
           (save-window-excursion
             (set-window-buffer (selected-window) buf)
             (eca-chat--with-current-buffer buf
-              (eca-chat--render-content
-               session buf "assistant"
-               (eca-chat-test--tall-approval-content "tool-1" 3)
-               nil)
+              (eca-chat-test--receive
+               session buf (eca-chat-test--tall-approval-content "tool-1" 3))
               (expect (point) :to-equal (point-max))
               (expect (window-start) :not :to-be-greater-than
-                      (eca-chat-test--label-start "tool-1"))
-              (expect eca-chat--focused-approval-id :to-be nil)))
+                      (eca-chat-test--label-start "tool-1"))))
         (kill-buffer buf))))
 
   (it "does not scroll when the user is reading earlier content"
@@ -338,8 +576,7 @@ is taller than the batch-mode test window."
                (eca-chat-test--tall-approval-content "tool-1")
                nil)
               (expect 'eca-chat--ensure-tool-call-approval-visible
-                      :not :to-have-been-called)
-              (expect eca-chat--focused-approval-id :to-be nil)))
+                      :not :to-have-been-called)))
         (kill-buffer buf))))
 
   (it "decides whether the user is at the bottom before expanding the block"
@@ -363,27 +600,25 @@ is taller than the batch-mode test window."
                (eca-chat-test--tall-approval-content "tool-1")
                nil)
               (expect 'eca-chat--viewing-bottom-p :to-have-been-called)
-              (expect eca-chat--focused-approval-id :to-equal "tool-1")))
+              (expect (eca-chat-test--on-accept-button-p "tool-1") :to-be-truthy)))
         (kill-buffer buf)))))
 
-(describe "eca-chat--release-approval-focus"
-  (it "returns to the prompt when the focused tool call is rejected"
+(describe "eca-chat--move-on-from-approval"
+  ;; Acting on an approval leaves point inside the tool call block
+  ;; (mouse click, RET, or the anchoring above), which turns off
+  ;; following the chat, so resolving it must bring point back.
+  (it "returns to the prompt when the anchored approval is rejected"
     (let ((buf (eca-chat-test--make-render-buffer))
           (session (make-eca--session)))
       (unwind-protect
           (save-window-excursion
             (set-window-buffer (selected-window) buf)
             (eca-chat--with-current-buffer buf
-              (eca-chat--render-content
-               session buf "assistant"
-               (eca-chat-test--tall-approval-content "tool-1")
-               nil)
-              (expect eca-chat--focused-approval-id :to-equal "tool-1")
-              (eca-chat--render-content
-               session buf "assistant"
-               (eca-chat-test--tall-tool-call-content "toolCallRejected" "tool-1")
-               nil)
-              (expect eca-chat--focused-approval-id :to-be nil)
+              (eca-chat-test--receive
+               session buf (eca-chat-test--tall-approval-content "tool-1"))
+              (expect (eca-chat-test--on-accept-button-p "tool-1") :to-be-truthy)
+              (eca-chat-test--receive
+               session buf (eca-chat-test--tall-tool-call-content "toolCallRejected" "tool-1"))
               (expect (point) :to-equal (point-max))
               ;; The block stays expanded, so showing the prompt again
               ;; means scrolling past its label.
@@ -391,7 +626,24 @@ is taller than the batch-mode test window."
                       (eca-chat-test--label-start "tool-1"))))
         (kill-buffer buf))))
 
-  (it "anchors on the next pending approval when the focused one runs"
+  (it "returns to the prompt after accepting with the mouse on a block that fits"
+    (let ((buf (eca-chat-test--make-render-buffer))
+          (session (make-eca--session)))
+      (unwind-protect
+          (save-window-excursion
+            (set-window-buffer (selected-window) buf)
+            (eca-chat--with-current-buffer buf
+              (eca-chat-test--receive
+               session buf (eca-chat-test--tall-approval-content "tool-1" 3))
+              (expect (point) :to-equal (point-max))
+              ;; A mouse click moves point onto the button before running it.
+              (goto-char (eca-chat--tool-call-accept-button-pos "tool-1"))
+              (eca-chat-test--receive
+               session buf (eca-chat-test--tool-call-content "toolCallRunning" "tool-1"))
+              (expect (point) :to-equal (point-max))))
+        (kill-buffer buf))))
+
+  (it "anchors on the next pending approval when the acted-on one runs"
     (let ((buf (eca-chat-test--make-render-buffer))
           (session (make-eca--session)))
       (unwind-protect
@@ -409,54 +661,43 @@ is taller than the batch-mode test window."
                nil)
               (set-window-buffer (selected-window) buf)
               (eca-chat--ensure-tool-call-approval-visible "tool-1")
-              (expect eca-chat--focused-approval-id :to-equal "tool-1")
               (expect (eca-chat-test--on-accept-button-p "tool-1") :to-be-truthy)
-              (eca-chat--render-content
-               session buf "assistant"
-               (eca-chat-test--tool-call-content "toolCallRunning" "tool-1")
-               nil)
-              (expect eca-chat--focused-approval-id :to-equal "tool-2")
+              (eca-chat-test--receive
+               session buf (eca-chat-test--tool-call-content "toolCallRunning" "tool-1"))
               (expect (window-start) :to-equal (eca-chat-test--label-start "tool-2"))
               (expect (eca-chat-test--on-accept-button-p "tool-2") :to-be-truthy)))
         (kill-buffer buf))))
 
-  (it "leaves point alone when the user moved away from the focused block"
+  (it "leaves point alone when the user is reading elsewhere"
     (let ((buf (eca-chat-test--make-render-buffer))
           (session (make-eca--session)))
       (unwind-protect
           (save-window-excursion
             (set-window-buffer (selected-window) buf)
             (eca-chat--with-current-buffer buf
-              (eca-chat--render-content
-               session buf "assistant"
-               (eca-chat-test--tall-approval-content "tool-1")
-               nil)
+              (eca-chat-test--receive
+               session buf (eca-chat-test--tall-approval-content "tool-1"))
               (goto-char (point-min))
-              (eca-chat--render-content
-               session buf "assistant"
-               (eca-chat-test--tool-call-content "toolCallRunning" "tool-1")
-               nil)
-              (expect eca-chat--focused-approval-id :to-be nil)
+              (eca-chat-test--receive
+               session buf (eca-chat-test--tool-call-content "toolCallRunning" "tool-1"))
               (expect (point) :to-equal (point-min))))
         (kill-buffer buf))))
 
-  (it "ignores tool calls other than the focused one"
+  (it "leaves point alone inside a tool call that needed no approval"
     (let ((buf (eca-chat-test--make-render-buffer))
           (session (make-eca--session)))
       (unwind-protect
           (save-window-excursion
             (set-window-buffer (selected-window) buf)
             (eca-chat--with-current-buffer buf
-              (eca-chat--render-content
-               session buf "assistant"
-               (eca-chat-test--tall-approval-content "tool-1")
-               nil)
-              (eca-chat--render-content
-               session buf "assistant"
-               (eca-chat-test--tool-call-content "toolCallRunning" "tool-other")
-               nil)
-              (expect eca-chat--focused-approval-id :to-equal "tool-1")
-              (expect (eca-chat-test--on-accept-button-p "tool-1") :to-be-truthy)))
+              (eca-chat-test--receive
+               session buf (eca-chat-test--tall-tool-call-content "toolCallRunning" "tool-1"))
+              ;; The user expands the running tool call to peek at it.
+              (eca-chat--expandable-content-toggle "tool-1" t nil)
+              (goto-char (eca-chat-test--label-start "tool-1"))
+              (eca-chat-test--receive
+               session buf (eca-chat-test--tall-tool-call-content "toolCalled" "tool-1"))
+              (expect (point) :to-equal (eca-chat-test--label-start "tool-1"))))
         (kill-buffer buf)))))
 
 (describe "eca-chat--apply-markdown-markup-visibility"
@@ -1605,7 +1846,176 @@ is taller than the batch-mode test window."
                session (list :chatId "chat-1" :role "assistant" :content content))
               (expect (spy-calls-count 'eca-chat--render-content) :to-equal 1)
               (expect calls :to-equal (list (list session content buf)))))
+        (kill-buffer buf))))
+
+  (it "reverts changed file buffers before running eca-chat-tool-call-functions"
+    ;; Subscribers like a magit refresh must observe already refreshed
+    ;; file buffers, so the revert runs first.
+    (let ((buf (eca-chat-test--make-prompt-buffer "hi"))
+          (session (make-eca--session))
+          (content (list :type "toolCalled" :id "tool-1" :name "edit_file"
+                         :details (list :type "fileChange" :path "/tmp/a.el")))
+          (reverts-seen-by-hook nil))
+      (unwind-protect
+          (with-current-buffer buf
+            (setq-local eca-chat--last-user-message-pos nil)
+            (spy-on 'eca-chat--get-chat-buffer :and-return-value buf)
+            (spy-on 'eca--session-workspace-folders :and-return-value nil)
+            (spy-on 'eca-chat--protect-non-prompt)
+            (spy-on 'eca-chat--render-content)
+            (spy-on 'eca-chat--maybe-revert-changed-file)
+            (let ((eca-chat-tool-call-functions
+                   (list (lambda (_s _c)
+                           (setq reverts-seen-by-hook
+                                 (spy-calls-count 'eca-chat--maybe-revert-changed-file))))))
+              (eca-chat-content-received
+               session (list :chatId "chat-1" :role "assistant" :content content))
+              (expect 'eca-chat--maybe-revert-changed-file
+                      :to-have-been-called-with content)
+              (expect reverts-seen-by-hook :to-equal 1)))
         (kill-buffer buf)))))
+
+(defun eca-chat-test--call-with-visited-file (content fn)
+  "Call FN with a buffer visiting a temp file holding CONTENT and its path.
+Lock files are disabled so edits made to the buffer or to the file
+behind its back never prompt.  The buffer and the file are removed
+afterwards, discarding any unsaved change."
+  (let* ((create-lockfiles nil)
+         (inhibit-message t)
+         (path (make-temp-file "eca-chat-test" nil nil content))
+         (buf (find-file-noselect path)))
+    (unwind-protect
+        (funcall fn buf path)
+      (with-current-buffer buf
+        (set-buffer-modified-p nil))
+      (kill-buffer buf)
+      (delete-file path))))
+
+(defun eca-chat-test--change-file-on-disk (buf path content)
+  "Write CONTENT to PATH behind BUF's back.
+BUF's recorded modtime is then made stale explicitly, so the change is
+detected even on filesystems with a coarse modtime resolution."
+  (with-temp-file path (insert content))
+  (with-current-buffer buf
+    (set-visited-file-modtime '(1 0))))
+
+(defun eca-chat-test--file-change (path &optional type)
+  "Return a TYPE (default toolCalled) tool call content changing PATH."
+  (list :type (or type "toolCalled") :id "tool-1" :name "edit_file"
+        :details (list :type "fileChange" :path path :diff "")))
+
+(describe "eca-chat--maybe-revert-changed-file"
+  (it "reverts an unmodified buffer whose file changed on disk"
+    (eca-chat-test--call-with-visited-file
+     "old"
+     (lambda (buf path)
+       (eca-chat-test--change-file-on-disk buf path "new")
+       (let ((eca-chat-auto-revert-changed-files t))
+         (eca-chat--maybe-revert-changed-file (eca-chat-test--file-change path)))
+       (with-current-buffer buf
+         (expect (buffer-string) :to-equal "new")
+         (expect (buffer-modified-p) :to-be nil)
+         (expect (verify-visited-file-modtime buf) :to-be t)))))
+
+  (it "reverts the way auto-revert-mode does, in the visiting buffer"
+    (eca-chat-test--call-with-visited-file
+     "old"
+     (lambda (buf path)
+       (eca-chat-test--change-file-on-disk buf path "new")
+       (let ((reverted-in nil)
+             (eca-chat-auto-revert-changed-files t))
+         (spy-on 'revert-buffer :and-call-fake
+                 (lambda (&rest _) (setq reverted-in (current-buffer))))
+         (with-temp-buffer
+           (eca-chat--maybe-revert-changed-file (eca-chat-test--file-change path)))
+         (expect 'revert-buffer :to-have-been-called-with
+                 'ignore-auto 'dont-ask 'preserve-modes)
+         (expect reverted-in :to-be buf)))))
+
+  (it "never reverts a buffer with unsaved changes"
+    (eca-chat-test--call-with-visited-file
+     "old"
+     (lambda (buf path)
+       (with-current-buffer buf
+         (goto-char (point-max))
+         (insert " edited"))
+       (eca-chat-test--change-file-on-disk buf path "new")
+       (let ((eca-chat-auto-revert-changed-files t))
+         (eca-chat--maybe-revert-changed-file (eca-chat-test--file-change path)))
+       (with-current-buffer buf
+         (expect (buffer-string) :to-equal "old edited")
+         (expect (buffer-modified-p) :to-be t)))))
+
+  (it "leaves the buffer alone when the file did not change on disk"
+    ;; preview_file_change reports a fileChange without writing anything,
+    ;; and a failed edit_file may not have touched the file either.
+    (eca-chat-test--call-with-visited-file
+     "old"
+     (lambda (_buf path)
+       (spy-on 'revert-buffer)
+       (let ((eca-chat-auto-revert-changed-files t))
+         (eca-chat--maybe-revert-changed-file (eca-chat-test--file-change path)))
+       (expect 'revert-buffer :not :to-have-been-called))))
+
+  (it "does nothing when no buffer visits the changed file"
+    (spy-on 'revert-buffer)
+    (let ((eca-chat-auto-revert-changed-files t))
+      (eca-chat--maybe-revert-changed-file
+       (eca-chat-test--file-change "/nonexistent/eca-chat-test.el")))
+    (expect 'revert-buffer :not :to-have-been-called))
+
+  (it "only acts on finished fileChange tool calls"
+    (eca-chat-test--call-with-visited-file
+     "old"
+     (lambda (buf path)
+       (eca-chat-test--change-file-on-disk buf path "new")
+       (spy-on 'revert-buffer)
+       (let ((eca-chat-auto-revert-changed-files t))
+         (dolist (type '("toolCallPrepare" "toolCallRun" "toolCallRunning" "toolCallRejected"))
+           (eca-chat--maybe-revert-changed-file (eca-chat-test--file-change path type)))
+         (eca-chat--maybe-revert-changed-file
+          (list :type "toolCalled" :id "tool-2" :name "shell_command"
+                :details (list :type "shellCommand" :path path)))
+         (eca-chat--maybe-revert-changed-file
+          (list :type "toolCalled" :id "tool-3" :name "read_file")))
+       (expect 'revert-buffer :not :to-have-been-called))))
+
+  (it "is disabled by eca-chat-auto-revert-changed-files nil"
+    (eca-chat-test--call-with-visited-file
+     "old"
+     (lambda (buf path)
+       (eca-chat-test--change-file-on-disk buf path "new")
+       (spy-on 'revert-buffer)
+       (let ((eca-chat-auto-revert-changed-files nil))
+         (eca-chat--maybe-revert-changed-file (eca-chat-test--file-change path)))
+       (expect 'revert-buffer :not :to-have-been-called)
+       (expect (with-current-buffer buf (buffer-string)) :to-equal "old"))))
+
+  (it "translates the server path to the local one before looking up the buffer"
+    (eca-chat-test--call-with-visited-file
+     "old"
+     (lambda (buf path)
+       (eca-chat-test--change-file-on-disk buf path "new")
+       (spy-on 'eca--path-remote-to-local :and-return-value path)
+       (let ((eca-chat-auto-revert-changed-files t))
+         (eca-chat--maybe-revert-changed-file
+          (eca-chat-test--file-change "/workspace/project/file.el")))
+       (expect 'eca--path-remote-to-local
+               :to-have-been-called-with "/workspace/project/file.el")
+       (expect (with-current-buffer buf (buffer-string)) :to-equal "new"))))
+
+  (it "demotes errors so chat rendering is never broken"
+    (eca-chat-test--call-with-visited-file
+     "old"
+     (lambda (buf path)
+       (eca-chat-test--change-file-on-disk buf path "new")
+       (spy-on 'revert-buffer :and-throw-error 'error)
+       (let ((debug-on-error nil)
+             (inhibit-message t)
+             (eca-chat-auto-revert-changed-files t))
+         (expect (eca-chat--maybe-revert-changed-file (eca-chat-test--file-change path))
+                 :not :to-throw))
+       (expect (with-current-buffer buf (buffer-string)) :to-equal "old")))))
 
 (describe "eca-chat--maybe-run-tool-call-functions"
   (it "runs subscribers with the session and content for lifecycle events"
@@ -2462,7 +2872,27 @@ is taller than the batch-mode test window."
     (expect (lookup-key eca-chat-mode-map (kbd "S-<return>"))
             :to-be #'eca-chat--key-pressed-newline)
     (expect (lookup-key eca-chat-mode-map (kbd "C-<return>"))
-            :to-be #'eca-chat--key-pressed-queue)))
+            :to-be #'eca-chat--key-pressed-queue))
+
+  ;; Under evil, state bindings beat the mode map and `eca-chat-mode-map'
+  ;; inherits the ones evil-collection sets on `markdown-mode-map', so RET
+  ;; in normal state ran `markdown-do', which inserts a GFM checkbox when
+  ;; point is not on a link (e.g. next to a question option).  Remapping
+  ;; catches it whichever keymap resolved RET; evil is not available in
+  ;; CI, so the state map is simulated with an emulation map.
+  (it "remaps markdown-do to eca-chat--key-pressed-return"
+    (expect (lookup-key eca-chat-mode-map [remap markdown-do])
+            :to-be #'eca-chat--key-pressed-return))
+
+  (it "redirects RET bound to markdown-do by a higher precedence keymap"
+    (with-temp-buffer
+      (use-local-map eca-chat-mode-map)
+      (let* ((state-map (make-sparse-keymap))
+             (emulation-mode-map-alists
+              (cons (list (cons t state-map)) emulation-mode-map-alists)))
+        (define-key state-map (kbd "RET") #'markdown-do)
+        (expect (key-binding (kbd "RET") nil t) :to-be #'markdown-do)
+        (expect (key-binding (kbd "RET")) :to-be #'eca-chat--key-pressed-return)))))
 
 ;; ---------------------------------------------------------------------------
 ;; Expandable block label keymap

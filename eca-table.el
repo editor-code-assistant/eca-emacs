@@ -98,9 +98,13 @@ is on it while leaving `o' untouched everywhere else."
   "Reusable buffer for font-lock based width measurement.")
 
 (defun eca-table--apply-markdown-markup-visibility ()
-  "Apply ECA chat markdown markup visibility in current buffer."
+  "Apply ECA chat markdown markup visibility in current buffer.
+Safe to call repeatedly: `add-to-invisibility-spec' does not check
+for duplicates, and this runs on every width measurement."
   (if eca-chat-hide-markdown-markup
-      (add-to-invisibility-spec 'markdown-markup)
+      (unless (and (listp buffer-invisibility-spec)
+                   (memq 'markdown-markup buffer-invisibility-spec))
+        (add-to-invisibility-spec 'markdown-markup))
     (remove-from-invisibility-spec 'markdown-markup)))
 
 (defun eca-table--get-fontlock-buffer ()
@@ -133,6 +137,23 @@ characters are invisible, then sums the widths of visible ones."
           (unless (invisible-p pos)
             (setq width (+ width (char-width (char-after pos)))))))
       width)))
+
+(defun eca-table--source-width (str)
+  "Return the width of STR in buffer columns, ignoring compositions.
+Sums `char-width' the way `current-column' does.  `string-width'
+is not used because it reflects cached automatic compositions
+\(flags, ZWJ sequences), so its result changes once the text has
+been displayed."
+  (cl-loop for c across str sum (char-width c)))
+
+(defun eca-table--markdown-aligns-p ()
+  "Return non-nil when `markdown-mode' aligns table separators itself.
+Since version 2.9, `markdown-mode' puts a `space :align-to' display
+property on the whitespace before each pipe whenever markup or URL
+hiding is on, so every pipe is displayed at its source column.
+Cells must then be padded by source width, not display width."
+  (and (fboundp 'markdown--fontify-table-alignment)
+       (or markdown-hide-markup markdown-hide-urls)))
 
 ;; Helpers ----------------------------------------------------------------
 
@@ -355,15 +376,30 @@ All changes are overlay-only — buffer text is untouched."
 
 ;; Table parsing and alignment -------------------------------------------
 
+(defun eca-table--skip-code-span ()
+  "Skip the code span opened by the backtick run at point.
+As in CommonMark, a run of N backticks is closed only by a run of
+exactly N backticks.  Point moves past the closing run, or just
+past the opening run when no closing run exists, in which case the
+backticks are literal text."
+  (let* ((n (skip-chars-forward "`"))
+         (delim (make-string n ?`))
+         (close nil))
+    (save-excursion
+      (while (and (not close) (search-forward delim nil t))
+        (unless (or (eq (char-before (match-beginning 0)) ?`)
+                    (eq (char-after (match-end 0)) ?`))
+          (setq close (match-end 0)))))
+    (when close (goto-char close))))
+
 (defun eca-table--parse-row (line)
   "Parse LINE into a list of cell contents.
-Handles escaped pipes and code spans correctly.
+Escaped pipes and pipes inside code spans do not end a cell.
 Supports rows with or without leading/trailing pipes."
   (with-temp-buffer
     (insert line)
     (goto-char (point-min))
     (let ((cells '())
-          (in-code nil)
           (cell-start nil))
       ;; Skip leading whitespace and optional first pipe
       (if (looking-at "[ \t]*|")
@@ -374,15 +410,14 @@ Supports rows with or without leading/trailing pipes."
         (setq cell-start (point)))
       (while (< (point) (point-max))
         (cond
-         ;; Toggle code span state on backtick
+         ;; Code span: pipes inside it are content
          ((eq (char-after) ?\`)
-          (setq in-code (not in-code))
-          (forward-char 1))
+          (eca-table--skip-code-span))
          ;; Escaped character - skip next char (guard end of buffer)
          ((eq (char-after) ?\\)
           (forward-char (min 2 (- (point-max) (point)))))
-         ;; Pipe outside code span - end of cell
-         ((and (eq (char-after) ?|) (not in-code))
+         ;; Pipe - end of cell
+         ((eq (char-after) ?|)
           (push (string-trim (buffer-substring-no-properties
                               cell-start (point)))
                 cells)
@@ -459,10 +494,14 @@ ALIGNMENT is \"l\", \"r\", \"c\", or nil (left-aligned)."
 
 (defun eca-table--align-at-point ()
   "Align markdown table at point.
-Uses display-width-aware calculation, preserves separator
-alignment markers, and pads content cells accordingly."
+Pads cells by source width when `markdown-mode' aligns the
+separators itself, otherwise by display width, and preserves
+separator alignment markers."
   (let* ((tbl-beg (markdown-table-begin))
          (tbl-end (markdown-table-end))
+         (width-fn (if (eca-table--markdown-aligns-p)
+                       #'eca-table--source-width
+                     #'eca-table--display-width))
          (indent (save-excursion
                    (goto-char tbl-beg)
                    (if (looking-at "[ \t]*") (match-string 0) "")))
@@ -491,13 +530,13 @@ alignment markers, and pads content cells accordingly."
     (setq separator-alignments (nreverse separator-alignments))
     ;; Use first separator row for column alignments
     (let ((col-aligns (car separator-alignments)))
-      ;; Calculate max display width for each column
+      ;; Calculate max width for each column
       (dotimes (col max-cols)
         (let ((max-disp 1))
           (dolist (row parsed-rows)
             (when row
               (let* ((cell (or (nth col row) ""))
-                     (disp-w (eca-table--display-width cell)))
+                     (disp-w (funcall width-fn cell)))
                 (setq max-disp (max max-disp disp-w)))))
           (push max-disp col-max-display)))
       (setq col-max-display (nreverse col-max-display))
@@ -520,7 +559,7 @@ alignment markers, and pads content cells accordingly."
             ;; Content row: pad using column alignment
             (dotimes (col max-cols)
               (let* ((cell (or (nth col row) ""))
-                     (disp-w (eca-table--display-width cell))
+                     (disp-w (funcall width-fn cell))
                      (target-disp (nth col col-max-display))
                      (padding (- target-disp disp-w))
                      (align (nth col col-aligns)))
@@ -532,17 +571,22 @@ alignment markers, and pads content cells accordingly."
 
 (defun eca-table-align (from end)
   "Align all markdown tables between FROM and END.
-After aligning each table, compensates for hidden bold/italic
-markup so columns stay visually aligned."
-  (save-excursion
-    (goto-char from)
-    (while (and (< (point) end)
-                (re-search-forward markdown-table-line-regexp end t))
-      (when (markdown-table-at-point-p)
-        (markdown-table-align)
-        (eca-table--align-at-point)
-        ;; Move past this table to avoid re-processing
-        (goto-char (markdown-table-end))))))
+Padding grows the buffer, so END is followed with a marker rather
+than kept as a fixed position.  Tables are rewritten even when the
+text is read-only, as the chat history is."
+  (let ((inhibit-read-only t)
+        (end (copy-marker end)))
+    (unwind-protect
+        (save-excursion
+          (goto-char from)
+          (while (and (< (point) end)
+                      (re-search-forward markdown-table-line-regexp end t))
+            (when (markdown-table-at-point-p)
+              (markdown-table-align)
+              (eca-table--align-at-point)
+              ;; Move past this table to avoid re-processing
+              (goto-char (markdown-table-end)))))
+      (set-marker end nil))))
 
 (defun eca-table-beautify (from end)
   "Apply visual enhancements to all markdown tables between FROM and END.
