@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- `eca-workspaces-new-chat` (`+`) now always asks which workspace to start the chat in, defaulting to the one at point, and no longer requires a match: any other existing directory starts a session there. Typing a path inside a running workspace reuses its session instead of starting a second server.
+- Bugfix: a tool call awaiting approval whose expanded body is taller than the window no longer gets its label and Accept/Reject buttons scrolled above the window (#308). The window is anchored on the tool call with point on its Accept button (RET accepts), and once it resolves the view moves on to the next pending approval or back to the prompt.
 - Bugfix: markdown tables in the chat could stay misaligned (#319): tables after the first one in a turn were skipped once aligning the earlier ones grew the buffer, code spans opened by two or more backticks swallowed the rest of the row and appended empty cells on every pass, and with markdown-mode 2.9 rows containing hidden markup or emoji had their pipes off the header column. Alignment also no longer relies on the caller binding `inhibit-read-only`.
 - Bugfix: on Doom, killing a workspace (`+workspace/kill`) replaced the chat shown in the workspace switched to with the fallback `*doom*` buffer when the chat window was the selected one, since Doom considered chat buffers "unreal". Chat buffers are now Doom real buffers, so they also show up in the workspace buffer list and get attached to the workspace they are displayed in.
 - Add `eca-doom-stop-session-on-workspace-kill` (default `t`): on Doom with the `:ui workspaces` module, killing a workspace also stops the ECA session related to it when no other workspace refers to that session.

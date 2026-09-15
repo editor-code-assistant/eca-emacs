@@ -65,10 +65,10 @@ Server / process
   refreshed automatically as chats change state. Each chat shows its
   status (⏳ running, 🚧 pending approval, ❓ waiting answer), elapsed
   time, cost and model. Press `?` for all actions: open (`RET`), fold
-  (`TAB`), new chat (`+`), delete chat/workspace (`d`/`DEL`), rename
-  (`r`), fork (`f`), compact (`C`), model/variant (`m`/`v`),
-  accept/reject tool calls (`a`/`A`/`x`), stop prompt (`s`), resume a
-  closed chat (`R`), refresh (`g`) and quit (`q`). When
+  (`TAB`), new chat in any workspace (`+`), delete chat/workspace
+  (`d`/`DEL`), rename (`r`), fork (`f`), compact (`C`), model/variant
+  (`m`/`v`), accept/reject tool calls (`a`/`A`/`x`), stop prompt (`s`),
+  resume a closed chat (`R`), refresh (`g`) and quit (`q`). When
   `eca-buttons-allow-mouse` is enabled, clicking the workspace text
   folds/unfolds it and clicking a chat switches to it
 - `eca-settings`: Open the centralized settings panel (MCP servers, and more in the future)
