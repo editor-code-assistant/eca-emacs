@@ -154,6 +154,27 @@ When TITLE is non-nil, use it as the chat title."
   "Return BUFFER's tab active value in TABS."
   (cdr (assq 'active (eca-chat-test--tab-for-buffer tabs buffer))))
 
+(defun eca-chat-test--render-assistant-text (session buf text)
+  "Render assistant TEXT into BUF for SESSION."
+  (eca-chat--render-content
+   session buf "assistant" (list :type "text" :text text) nil))
+
+(defun eca-chat-test--history-text (buf)
+  "Return BUF text before the prompt area."
+  (with-current-buffer buf
+    (buffer-substring-no-properties
+     (point-min) (eca-chat--prompt-area-start-point))))
+
+(defun eca-chat-test--history-index (buf text)
+  "Return the first index of TEXT in BUF history, or nil."
+  (string-match-p (regexp-quote text)
+                  (eca-chat-test--history-text buf)))
+
+(defun eca-chat-test--stream-flush (buf)
+  "Flush pending stream text in BUF."
+  (with-current-buffer buf
+    (eca-chat--stream-flush)))
+
 ;; ---------------------------------------------------------------------------
 ;; Tests
 ;; ---------------------------------------------------------------------------
@@ -2218,6 +2239,162 @@ detected even on filesystems with a coarse modtime resolution."
          (expect (eca-chat--maybe-revert-changed-file (eca-chat-test--file-change path))
                  :not :to-throw))
        (expect (with-current-buffer buf (buffer-string)) :to-equal "old")))))
+
+(describe "eca-chat stream coalescing"
+  (it "immediate mode renders two assistant chunks immediately"
+    (let ((buf (eca-chat-test--make-render-buffer))
+          (session (make-eca--session))
+          (eca-chat-stream-flush-interval nil))
+      (unwind-protect
+          (eca-chat--with-current-buffer buf
+            (eca-chat-test--render-assistant-text session buf "hello ")
+            (eca-chat-test--render-assistant-text session buf "world")
+            (expect (eca-chat-test--history-text buf)
+                    :to-match (regexp-quote "hello world")))
+        (kill-buffer buf))))
+
+  (it "buffered mode hides assistant chunks before flush"
+    (let ((buf (eca-chat-test--make-render-buffer))
+          (session (make-eca--session))
+          (eca-chat-stream-flush-interval 60))
+      (unwind-protect
+          (eca-chat--with-current-buffer buf
+            (eca-chat-test--render-assistant-text session buf "hidden ")
+            (eca-chat-test--render-assistant-text session buf "chunks")
+            (let ((history (eca-chat-test--history-text buf)))
+              (expect history :not :to-match (regexp-quote "hidden"))
+              (expect history :not :to-match (regexp-quote "chunks"))))
+        (when (buffer-live-p buf)
+          (when (fboundp 'eca-chat--stream-flush)
+            (ignore-errors (eca-chat-test--stream-flush buf)))
+          (kill-buffer buf)))))
+
+  (it "buffered mode flushes chunks in order"
+    (let ((buf (eca-chat-test--make-render-buffer))
+          (session (make-eca--session))
+          (eca-chat-stream-flush-interval 60))
+      (unwind-protect
+          (eca-chat--with-current-buffer buf
+            (eca-chat-test--render-assistant-text session buf "first ")
+            (eca-chat-test--render-assistant-text session buf "second")
+            (eca-chat-test--stream-flush buf)
+            (expect (eca-chat-test--history-text buf)
+                    :to-match (regexp-quote "first second"))
+            (expect (eca-chat-test--history-index buf "first ")
+                    :to-be-less-than
+                    (eca-chat-test--history-index buf "second")))
+        (when (buffer-live-p buf)
+          (kill-buffer buf)))))
+
+  (it "flushes pending text before non-text content"
+    (let ((buf (eca-chat-test--make-render-buffer))
+          (session (make-eca--session))
+          (eca-chat-stream-flush-interval 60)
+          (eca-chat-expand-pending-approval-tools t))
+      (unwind-protect
+          (eca-chat--with-current-buffer buf
+            (eca-chat-test--render-assistant-text session buf "before tool")
+            (eca-chat--render-content
+             session buf "assistant"
+             (eca-chat-test--tool-call-content "toolCallRun" "tool-1" t)
+             nil)
+            (let* ((text-index (eca-chat-test--history-index buf "before tool"))
+                   (tool-index (or (eca-chat-test--history-index buf "testTool")
+                                   (eca-chat-test--history-index buf "Accept"))))
+              (expect text-index :not :to-be nil)
+              (expect tool-index :not :to-be nil)
+              (expect text-index :to-be-less-than tool-index)))
+        (when (buffer-live-p buf)
+          (kill-buffer buf)))))
+
+  (it "flushes pending text before progress finished finalization"
+    (let ((buf (eca-chat-test--make-render-buffer))
+          (session (make-eca--session))
+          (eca-chat-stream-flush-interval 60)
+          events)
+      (unwind-protect
+          (eca-chat--with-current-buffer buf
+            (setq-local eca-chat--progress-text "thinking...")
+            (setq-local eca-chat--chat-loading t)
+            (setq-local eca-chat--last-user-message-pos (point-min))
+            (spy-on 'eca-chat--align-tables)
+            (spy-on 'eca-chat--beautify-tables)
+            (spy-on 'eca-chat--refresh-progress)
+            (spy-on 'eca-chat--set-chat-loading)
+            (spy-on 'eca-chat--send-steered-prompt)
+            (spy-on 'eca-chat--send-queued-prompt)
+            (cl-letf (((symbol-function 'eca-chat--stream-flush)
+                       (lambda (&rest _)
+                         (push 'flush events)))
+                      ((symbol-function 'eca-chat--font-lock-ensure)
+                       (lambda (&rest _)
+                         (push 'finalize events))))
+              (eca-chat-test--render-assistant-text session buf "finish text")
+              (eca-chat--render-content
+               session buf "system" (list :type "progress" :state "finished") nil))
+            (setq events (nreverse events))
+            (expect (cl-position 'flush events) :not :to-be nil)
+            (expect (cl-position 'finalize events) :not :to-be nil)
+            (expect (cl-position 'flush events)
+                    :to-be-less-than (cl-position 'finalize events)))
+        (when (buffer-live-p buf)
+          (kill-buffer buf)))))
+
+  (it "clear cancels pending stream state before a later callback"
+    (let ((buf (eca-chat-test--make-render-buffer))
+          (session (make-eca--session))
+          (eca-chat-stream-flush-interval 60)
+          captured-callback
+          captured-args)
+      (unwind-protect
+          (eca-chat--with-current-buffer buf
+            (cl-letf (((symbol-function 'run-with-timer)
+                       (lambda (_secs _repeat function &rest args)
+                         (setq captured-callback function
+                               captured-args args)
+                         (let ((timer (timer-create)))
+                           (timer-set-function timer #'ignore)
+                           timer))))
+              (eca-chat-test--render-assistant-text session buf "stale clear"))
+            (expect captured-callback :not :to-be nil)
+            (eca-chat--clear)
+            (expect (eca-chat-test--history-text buf)
+                    :not :to-match (regexp-quote "stale clear"))
+            (expect (apply captured-callback captured-args) :not :to-throw)
+            (expect (eca-chat-test--history-text buf)
+                    :not :to-match (regexp-quote "stale clear"))
+            (expect (eca-chat-test--prompt-text buf) :to-equal ""))
+        (when (buffer-live-p buf)
+          (kill-buffer buf)))))
+
+  (it "stop prompt flushes before server notification"
+    (let ((buf (eca-chat-test--make-render-buffer))
+          (session (make-eca--session))
+          (eca-chat-stream-flush-interval 60)
+          notify-session
+          notify-args
+          notify-history)
+      (unwind-protect
+          (eca-chat--with-current-buffer buf
+            (setq-local eca-chat--id "chat-1")
+            (setq-local eca-chat--chat-loading t)
+            (spy-on 'eca-chat--set-chat-loading)
+            (spy-on 'eca-api-notify :and-call-fake
+                    (lambda (session &rest args)
+                      (setq notify-session session
+                            notify-args args
+                            notify-history (eca-chat-test--history-text buf))))
+            (eca-chat-test--render-assistant-text session buf "before stop")
+            (eca-chat--stop-prompt session)
+            (expect notify-session :to-be session)
+            (expect notify-args
+                    :to-equal
+                    (list :method "chat/promptStop"
+                          :params (list :chatId "chat-1")))
+            (expect notify-history
+                    :to-match (regexp-quote "before stop")))
+        (when (buffer-live-p buf)
+          (kill-buffer buf))))))
 
 (describe "eca-chat--maybe-run-tool-call-functions"
   (it "runs subscribers with the session and content for lifecycle events"

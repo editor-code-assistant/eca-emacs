@@ -45,6 +45,32 @@ run buffer-local entries."
             (kill-buffer-query-functions nil))
         (kill-buffer buf)))))
 
+(defun eca-kill-test--add-prompt-layout (buffer)
+  "Add a minimal prompt layout to BUFFER."
+  (with-current-buffer buffer
+    (let ((inhibit-read-only t))
+      (erase-buffer)
+      (insert "header")
+      (let ((area-start (point)))
+        (insert "\n---")
+        (let ((task-start (point)))
+          (insert " ")
+          (let ((progress-start (point)))
+            (insert "\n")
+            (let ((context-start (point)))
+              (insert "@\n")
+              (let ((prompt-start (point)))
+                (overlay-put (make-overlay area-start (1+ area-start))
+                             'eca-chat-prompt-area t)
+                (overlay-put (make-overlay task-start task-start)
+                             'eca-chat-task-area t)
+                (overlay-put (make-overlay progress-start progress-start)
+                             'eca-chat-progress-area t)
+                (overlay-put (make-overlay context-start (1+ context-start))
+                             'eca-chat-context-area t)
+                (overlay-put (make-overlay prompt-start (1+ prompt-start))
+                             'eca-chat-prompt-field t)))))))))
+
 ;; ---------------------------------------------------------------------------
 ;; eca-chat--sibling-chat-buffer
 ;; ---------------------------------------------------------------------------
@@ -219,6 +245,44 @@ run buffer-local entries."
             (expect (buffer-live-p b) :to-be nil)
             (expect (eca-get (eca--session-chats session) "B") :to-be nil)
             (expect (window-buffer (selected-window)) :to-be a))
+        (eca-kill-test--kill-all a b)))))
+
+(describe "stream coalescing cleanup"
+
+  (it "server deletion cancels a later stream callback"
+    (let ((session (make-eca--session))
+          (eca-chat-stream-flush-interval 60)
+          a
+          b
+          captured-callback
+          captured-args
+          captured-timer)
+      (unwind-protect
+          (progn
+            (setq a (eca-kill-test--make-chat session "A")
+                  b (eca-kill-test--make-chat session "B"))
+            (eca-kill-test--add-prompt-layout b)
+            (spy-on 'cancel-timer :and-call-through)
+            (with-current-buffer b
+              (cl-letf (((symbol-function 'run-with-timer)
+                         (lambda (_secs _repeat function &rest args)
+                           (setq captured-callback function
+                                 captured-args args
+                                 captured-timer (timer-create))
+                           (timer-set-function captured-timer #'ignore)
+                           captured-timer)))
+                (eca-chat--render-content
+                 session b "assistant"
+                 (list :type "text" :text "deleted pending")
+                 nil)))
+            (expect captured-callback :not :to-be nil)
+            (set-window-buffer (selected-window) b)
+            (eca-chat-deleted session (list :chatId "B"))
+            (expect (buffer-live-p b) :to-be nil)
+            (expect (eca-get (eca--session-chats session) "B") :to-be nil)
+            (expect 'cancel-timer :to-have-been-called-with captured-timer)
+            (expect (apply captured-callback captured-args) :not :to-throw)
+            (expect (buffer-live-p a) :to-be t))
         (eca-kill-test--kill-all a b)))))
 
 ;; ---------------------------------------------------------------------------

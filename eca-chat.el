@@ -327,6 +327,15 @@ Must be a positive integer."
   :type 'integer
   :group 'eca)
 
+(defcustom eca-chat-stream-flush-interval 0.05
+  "Seconds to buffer assistant text chunks before rendering.
+Default is 0.05.  When nil, assistant text renders immediately.
+When set to a non-negative number, top-level assistant text chunks
+are combined and rendered on a timer."
+  :type '(choice (const :tag "Immediate rendering" nil)
+                 (number :tag "Seconds"))
+  :group 'eca)
+
 (defcustom eca-chat-fontify-debounce-interval 0.15
   "Idle delay in seconds before a deferred fontify runs during streaming.
 Instead of calling `font-lock-ensure' on every streamed chunk,
@@ -863,6 +872,10 @@ once by `eca-chat-cleared'.")
   "Repeating timer that updates elapsed-time display for running tool calls.")
 
 (defvar-local eca-chat--table-resize-timer nil)
+(defvar-local eca-chat--stream-pending-chunks nil
+  "Pending top-level assistant text chunks for buffered stream rendering.")
+(defvar-local eca-chat--stream-flush-timer nil
+  "Timer that flushes pending assistant stream text.")
 (defvar-local eca-chat--fontify-timer nil
   "Idle timer that defers `font-lock-ensure' during streaming.")
 (defvar-local eca-chat--progress-text "")
@@ -1104,6 +1117,7 @@ chat is never deleted server-side: it stays resumable and the
 server retention cleanup takes care of old chats.  Delete
 explicitly with `eca-chat-delete' or the /delete-chat command."
   (when (eca-chat--user-initiated-kill-p)
+    (eca-chat--stream-flush)
     (let ((buffer (current-buffer))
           (chat-id eca-chat--id))
       (when-let* ((session (ignore-errors (eca-session))))
@@ -1748,6 +1762,7 @@ Recovery path for a corrupted prompt block (see #305)."
 
 (defun eca-chat--clear (&optional new-prompt-content)
   "Clear the chat for SESSION and then insert NEW-PROMPT-CONTENT."
+  (eca-chat--stream-flush)
   (let ((inhibit-read-only t))
     (erase-buffer)
     (remove-overlays (point-min) (point-max)))
@@ -1787,6 +1802,7 @@ A pending question keeps the turn active server-side, so allow
 stopping while one is pending: cancel it, then notify the server."
   (when (or (eq eca-chat--chat-loading t)
             eca-chat--pending-question)
+    (eca-chat--stream-flush)
     (when eca-chat--pending-question
       (eca-chat--cancel-question))
     (eca-api-notify session
@@ -1812,6 +1828,7 @@ TEXT is the rolled-back user message text; when the rollback
 removes messages, it is restored into the prompt field with any
 current draft appended, after the server clears the chat."
   (unless eca-chat--chat-loading
+    (eca-chat--stream-flush)
     (let ((rollback-messages-and-tools-str "1. Rollback messages and changes done by tool calls")
           (rollback-messages-str "2. Rollback only messages")
           (rollback-tools-str "3. Rollback only changes done by tool calls"))
@@ -3693,6 +3710,50 @@ Add a overlay before with OVERLAY-KEY = OVERLAY-VALUE if passed."
     (eca-chat--insert text)
     (point)))
 
+(defun eca-chat--stream-buffering-enabled-p ()
+  "Return non-nil when assistant stream text must be buffered."
+  (and (numberp eca-chat-stream-flush-interval)
+       (>= eca-chat-stream-flush-interval 0)))
+
+(defun eca-chat--stream-cancel ()
+  "Cancel the pending assistant stream flush timer."
+  (when (timerp eca-chat--stream-flush-timer)
+    (cancel-timer eca-chat--stream-flush-timer))
+  (setq-local eca-chat--stream-flush-timer nil))
+
+(defun eca-chat--stream-flush-callback (buffer)
+  "Flush pending assistant stream text in BUFFER when it is live."
+  (when (buffer-live-p buffer)
+    (with-current-buffer buffer
+      (eca-chat--stream-flush))))
+
+(defun eca-chat--stream-schedule-flush ()
+  "Schedule a timer to flush pending assistant stream text."
+  (eca-chat--stream-cancel)
+  (let ((buffer (current-buffer)))
+    (setq-local eca-chat--stream-flush-timer
+                (run-with-timer eca-chat-stream-flush-interval nil
+                                #'eca-chat--stream-flush-callback
+                                buffer))))
+
+(defun eca-chat--stream-buffered-text (text)
+  "Buffer top-level assistant stream TEXT in the current chat."
+  (push text eca-chat--stream-pending-chunks)
+  (eca-chat--stream-schedule-flush))
+
+(defun eca-chat--stream-flush ()
+  "Render pending assistant stream text in the current chat."
+  (let ((chunks eca-chat--stream-pending-chunks))
+    (eca-chat--stream-cancel)
+    (setq-local eca-chat--stream-pending-chunks nil)
+    (when chunks
+      (let ((text (mapconcat #'identity (nreverse chunks) "")))
+        (unless (string-empty-p text)
+          (save-excursion
+            (eca-chat--add-text-content text)
+            (eca-chat--schedule-fontify)
+            (eca-chat--protect-non-prompt eca-chat--last-user-message-pos)))))))
+
 (defun eca-chat--relativize-filename-for-workspace-root (filename roots &optional hide-filename?)
   "Relativize the FILENAME if a workspace root is found for ROOTS.
 Show parent upwards if HIDE-FILENAME? is non nil."
@@ -4541,6 +4602,10 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
                                  "toolCalled" "toolCallRejected"))
       (eca-chat--invalidate-pending-approvals-cache)
       (eca-chat--invalidate-tab-line-cache session))
+    (when (and (not parent-tool-call-id)
+               (or (not (equal content-type "text"))
+                   (member role '("user" "system"))))
+      (eca-chat--stream-flush))
     (pcase content-type
       ("metadata"
        (unless parent-tool-call-id
@@ -4593,11 +4658,13 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
                 (setq-local eca-chat--last-response-copy-start
                             (eca-chat--content-insertion-point)))
               (setq-local eca-chat--last-response-copy-kind 'text)
-              (eca-chat--add-text-content text)
-              ;; Defer fontification: let jit-lock handle visible-area
-              ;; updates and run a single final ensure in the
-              ;; "finished" progress arm below.
-              (eca-chat--schedule-fontify))))))
+              (if (eca-chat--stream-buffering-enabled-p)
+                  (eca-chat--stream-buffered-text text)
+                (eca-chat--add-text-content text)
+                ;; Defer fontification: let jit-lock handle visible-area
+                ;; updates and run a single final ensure in the
+                ;; "finished" progress arm below.
+                (eca-chat--schedule-fontify)))))))
       ("url"
        (unless parent-tool-call-id
          (eca-chat--add-header
@@ -5075,7 +5142,8 @@ prepended region explicitly.  Callers are expected to re-apply
            (m (copy-marker start t))
            (saved-last-user-pos eca-chat--last-user-message-pos))
       (unwind-protect
-          (let ((eca-chat--insertion-point-override m))
+          (let ((eca-chat--insertion-point-override m)
+                (eca-chat-stream-flush-interval nil))
             (seq-do
              (lambda (item)
                (let ((role (plist-get item :role))
@@ -5327,6 +5395,7 @@ own cleanup."
       (when (buffer-live-p chat-buffer)
         (eca-chat--switch-windows-to-sibling session chat-buffer)
         (with-current-buffer chat-buffer
+          (eca-chat--stream-flush)
           (setq-local eca-chat--closed t)))
       (setf (eca--session-chats session)
             (eca-dissoc (eca--session-chats session) chat-id))
@@ -5677,6 +5746,7 @@ When ACTIVE is non-nil, show the question prefix; otherwise restore normal."
             (let ((chat-buffer (cdr title+buffer)))
               (when (buffer-live-p chat-buffer)
                 (eca-chat--with-current-buffer chat-buffer
+                  (eca-chat--stream-flush)
                   ;; Cancel all timers if chat was still loading/stopping.
                   (eca-chat--spinner-stop)
                   (eca-chat--tool-call-elapsed-stop-all)
@@ -5909,6 +5979,8 @@ resumable; delete it explicitly with `eca-chat-delete'."
     (eca-assert-session-running session)
     (when (and (buffer-live-p buffer)
                (buffer-local-value 'eca-chat--id buffer))
+      (with-current-buffer buffer
+        (eca-chat--stream-flush))
       (let ((sibling (eca-chat--sibling-chat-buffer session buffer)))
         ;; nil when the user cancelled the kill: the chat is still there.
         (when (kill-buffer buffer)
@@ -6455,6 +6527,8 @@ the deleted chat switches to another chat first."
                          (buffer-local-value 'eca-chat--id buffer))))
       (unless (and (buffer-live-p buffer) chat-id)
         (user-error "No active chat to delete"))
+      (with-current-buffer buffer
+        (eca-chat--stream-flush))
       (eca-chat--switch-windows-to-sibling session buffer)
       (eca-api-request-sync session
                             :method "chat/delete"
