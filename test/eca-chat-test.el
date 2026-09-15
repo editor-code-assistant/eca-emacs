@@ -2706,6 +2706,23 @@ detected even on filesystems with a coarse modtime resolution."
          (list '(:role "assistant" :content (:type "text" :text "m0\n"))))
         (expect (buffer-string) :to-equal "m0\nEXISTING"))))
 
+  (it "leaves an empty line before an existing user message (issue #265)"
+    (with-temp-buffer
+      (insert (propertize "EXISTING" 'font-lock-face 'eca-chat-user-messages-face))
+      (let ((session (make-eca--session)))
+        (spy-on 'eca--session-workspace-folders :and-return-value nil)
+        (spy-on 'font-lock-ensure)
+        (spy-on 'eca-chat--align-tables)
+        (spy-on 'eca-chat--beautify-tables)
+        (spy-on 'eca-chat--render-content :and-call-fake
+                (lambda (_session _buf _role content _roots &rest _)
+                  (goto-char (eca-chat--content-insertion-point))
+                  (insert (plist-get content :text))))
+        (eca-chat--render-history-contents
+         session (current-buffer)
+         (list '(:role "assistant" :content (:type "text" :text "m0"))))
+        (expect (buffer-string) :to-equal "m0\n\nEXISTING"))))
+
   (it "restores eca-chat--last-user-message-pos after prepending"
     (with-temp-buffer
       (insert "EXISTING")
@@ -2754,6 +2771,116 @@ detected even on filesystems with a coarse modtime resolution."
                nil)
               (expect 'eca-chat--ensure-prompt-visible
                       :not :to-have-been-called)))
+        (kill-buffer buf)))))
+
+(defun eca-chat-test--make-live-render-buffer (content)
+  "Create a render buffer laid out like a real chat: CONTENT then prompt block.
+Mirrors `eca-chat--clear' followed by `eca-chat--insert-prompt-string',
+so the content insertion point sits right before the newline that
+precedes the prompt separator.  Caller must kill the buffer."
+  (let ((buf (generate-new-buffer " *test-chat-live*")))
+    (with-current-buffer buf
+      (insert content "\n")
+      (eca-chat--insert-prompt-string)
+      (setq major-mode 'eca-chat-mode)
+      (setq-local eca-chat--id "chat-1")
+      (setq-local eca-chat-expandable--id->ov (make-hash-table :test 'equal)))
+    buf))
+
+(defun eca-chat-test--render-user-message (buf text id)
+  "Render TEXT as a user message with content id ID into BUF."
+  (with-current-buffer buf
+    (spy-on 'font-lock-ensure)
+    (spy-on 'eca-chat--ensure-prompt-visible)
+    (eca-chat--render-content (make-eca--session) buf "user"
+                              (list :type "text" :text text :contentId id)
+                              nil)))
+
+(defun eca-chat-test--user-face-overlay (buf)
+  "Return the overlay painting a user message in BUF, if any."
+  (with-current-buffer buf
+    (-first (lambda (ov) (eq 'eca-chat-user-messages-face (overlay-get ov 'face)))
+            (overlays-in (point-min) (point-max)))))
+
+(describe "eca-chat--render-content user message layout (issue #265)"
+  (it "leaves an empty line between the previous answer and the message"
+    (let ((buf (eca-chat-test--make-live-render-buffer "Final answer.")))
+      (unwind-protect
+          (progn
+            (eca-chat-test--render-user-message buf "next question" "u1")
+            (expect (eca-chat-test--history-text buf)
+                    :to-match "\\`Final answer\\.\n\nnext question\n"))
+        (kill-buffer buf))))
+
+  (it "leaves a single empty line when the answer already ends a line"
+    (let ((buf (eca-chat-test--make-live-render-buffer "Final answer.\n")))
+      (unwind-protect
+          (progn
+            (eca-chat-test--render-user-message buf "next question" "u1")
+            (expect (eca-chat-test--history-text buf)
+                    :to-match "\\`Final answer\\.\n\nnext question\n"))
+        (kill-buffer buf))))
+
+  (it "does not add another empty line after a collapsed block"
+    (let ((buf (eca-chat-test--make-live-render-buffer "Reading foo.el\n\n")))
+      (unwind-protect
+          (progn
+            (eca-chat-test--render-user-message buf "next question" "u1")
+            (expect (eca-chat-test--history-text buf)
+                    :to-match "\\`Reading foo\\.el\n\nnext question\n"))
+        (kill-buffer buf))))
+
+  (it "starts a fresh chat with the message on the first line"
+    (let ((buf (eca-chat-test--make-live-render-buffer "")))
+      (unwind-protect
+          (progn
+            (eca-chat-test--render-user-message buf "first question" "u1")
+            (expect (eca-chat-test--history-text buf)
+                    :to-match "\\`first question\n"))
+        (kill-buffer buf))))
+
+  (it "paints the message and its line end with the user face overlay"
+    (let ((buf (eca-chat-test--make-live-render-buffer "Final answer.")))
+      (unwind-protect
+          (with-current-buffer buf
+            (eca-chat-test--render-user-message buf "fix **this** please" "u1")
+            (let ((ov (eca-chat-test--user-face-overlay buf)))
+              (expect ov :not :to-be nil)
+              (goto-char (point-min))
+              (search-forward "fix **this** please")
+              (expect (overlay-start ov) :to-equal (match-beginning 0))
+              ;; Includes the newline so `:extend' covers the last line.
+              (expect (overlay-end ov) :to-equal (1+ (match-end 0)))
+              (expect (char-before (overlay-end ov)) :to-equal ?\n)))
+        (kill-buffer buf))))
+
+  (it "keeps the face over spans fontified by markdown"
+    (let ((buf (eca-chat-test--make-live-render-buffer "Final answer.")))
+      (unwind-protect
+          (with-current-buffer buf
+            (eca-chat-test--render-user-message buf "fix **this** please" "u1")
+            (goto-char (point-min))
+            (search-forward "this")
+            ;; Markdown sets `face' on the span, which would hide a
+            ;; `font-lock-face' there; the overlay face still wins.
+            (let ((inhibit-read-only t))
+              (put-text-property (match-beginning 0) (match-end 0)
+                                 'face 'markdown-bold-face))
+            (expect (get-char-property (match-beginning 0) 'face)
+                    :to-be 'eca-chat-user-messages-face))
+        (kill-buffer buf))))
+
+  (it "excludes text inserted at its start, as when prepending history"
+    (let ((buf (eca-chat-test--make-live-render-buffer "")))
+      (unwind-protect
+          (with-current-buffer buf
+            (eca-chat-test--render-user-message buf "first question" "u1")
+            (let ((ov (eca-chat-test--user-face-overlay buf))
+                  (inhibit-read-only t))
+              (goto-char (overlay-start ov))
+              (insert "older answer\n")
+              (expect (char-after (overlay-start ov)) :to-equal ?f)
+              (expect (get-char-property (point-min) 'face) :to-be nil)))
         (kill-buffer buf)))))
 
 (describe "eca-chat-opened"

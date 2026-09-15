@@ -553,8 +553,12 @@ behavior)."
   :group 'eca)
 
 (defface eca-chat-user-messages-face
-  '((t :inherit font-lock-doc-face))
-  "Face for the user sent messages in chat."
+  '((t :inherit eca-chat-expandable-block-1-face :weight bold :extend t))
+  "Face for the user sent messages in chat.
+Bold on the theme-derived block background, so each turn stands out
+from the assistant text and matches the expanded rollback area below
+the message.  Falls back to plain bold where no background is
+available (TTY)."
   :group 'eca)
 
 (defface eca-chat-rollback-face
@@ -4579,6 +4583,34 @@ SPACING-LINE-PREFIX build the approval prompt for the tool call id."
       (eca-chat--expandable-content-toggle eca-chat--task-block-id t nil)
       (eca-chat--ensure-prompt-visible))))
 
+(defun eca-chat--ensure-empty-line-before (pos)
+  "Insert newlines at POS so that an empty line precedes it.
+Does nothing at the beginning of the buffer or when the previous line
+is already empty.  Used to separate a user message from the previous
+answer: blocks leave an empty line after themselves but not before,
+so the prompt otherwise glues to the end of the last response (#265)."
+  (save-excursion
+    (goto-char pos)
+    (unless (bobp)
+      (cond
+       ((not (bolp)) (eca-chat--insert "\n\n"))
+       ((not (save-excursion (forward-line -1) (eolp)))
+        (eca-chat--insert "\n"))))))
+
+(defun eca-chat--paint-user-message (ov-label)
+  "Apply `eca-chat-user-messages-face' over the user message of OV-LABEL.
+Markdown fontification sets `face' on spans of the message (bold,
+inline code), hiding the label's `font-lock-face' there, while an
+overlay face merges over both, so the background covers the whole
+message.  The trailing newline is included so `:extend' reaches the
+window edge on the last line too.  Text inserted at the overlay start
+\(an older history page) stays outside of it."
+  (when-let* ((ov-content (overlay-get ov-label 'eca-chat--expandable-content-ov-content))
+              (end (overlay-start ov-content)))
+    (let ((ov (make-overlay (overlay-start ov-label) end (current-buffer) t nil)))
+      (overlay-put ov 'face 'eca-chat-user-messages-face)
+      (overlay-put ov 'evaporate t))))
+
 (defun eca-chat--render-content (session chat-buffer role content roots &optional parent-tool-call-id chat-id)
   "Render CONTENT inside CHAT-BUFFER for SESSION.
 ROLE is the message role.  ROOTS is the list of workspace roots.
@@ -4623,6 +4655,7 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
                 (when eca-chat--steered-prompt
                   (setq-local eca-chat--steered-prompt nil)
                   (eca-chat--update-steer-area))
+                (eca-chat--ensure-empty-line-before user-msg-start)
                 (eca-chat--add-expandable-content
                  content-id
                  (propertize (string-trim text) 'font-lock-face 'eca-chat-user-messages-face)
@@ -4632,7 +4665,8 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
                   (lambda () (eca-chat--rollback session content-id (string-trim text)))))
                 (when-let* ((ov (eca-chat--get-expandable-content content-id)))
                   (overlay-put ov 'eca-chat--user-message-id content-id)
-                  (overlay-put ov 'eca-chat--timestamp (float-time)))
+                  (overlay-put ov 'eca-chat--timestamp (float-time))
+                  (eca-chat--paint-user-message ov))
                 (setq-local eca-chat--last-response-copy-start nil)
                 (setq-local eca-chat--last-response-copy-kind nil)
                 (eca-chat--mark-header)
@@ -5158,13 +5192,18 @@ prepended region explicitly.  Callers are expected to re-apply
         (setq-local eca-chat--last-user-message-pos saved-last-user-pos)
         ;; Separate the prepended block from the content below with a single
         ;; newline: historical content has no trailing turn-end newline, so the
-        ;; last older line would otherwise glue to the first existing line.
+        ;; last older line would otherwise glue to the first existing line.  A
+        ;; user message below keeps the empty line it is rendered with instead.
         (let ((pos (marker-position m)))
           (when (and (> pos (point-min))
-                     (< pos (point-max))
-                     (not (eq (char-before pos) ?\n))
-                     (not (eq (char-after pos) ?\n)))
-            (save-excursion (goto-char pos) (insert "\n"))))
+                     (< pos (point-max)))
+            (cond
+             ((eq (get-text-property pos 'font-lock-face)
+                  'eca-chat-user-messages-face)
+              (eca-chat--ensure-empty-line-before pos))
+             ((and (not (eq (char-before pos) ?\n))
+                   (not (eq (char-after pos) ?\n)))
+              (save-excursion (goto-char pos) (insert "\n"))))))
         (let ((end (marker-position m)))
           (font-lock-ensure start end)
           (eca-chat--align-tables start)
