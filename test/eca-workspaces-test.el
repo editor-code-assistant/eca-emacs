@@ -150,6 +150,7 @@ CHATS is a list of chat buffers ordered oldest-first."
 
 (describe "eca-workspaces rendering"
 
+  (before-each (eca-workspaces-test--cleanup))
   (after-each (eca-workspaces-test--cleanup))
 
   (it "shows an empty state when no session is running"
