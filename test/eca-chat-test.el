@@ -107,8 +107,18 @@ does not treat the first line as metadata.  Returns FN's value."
                   (make-hash-table :test 'equal))
       (setq-local eca-chat--tool-call-prepare-content-cache
                   (make-hash-table :test 'equal))
+      (setq-local eca-chat--tool-call-prepare-display-cache
+                  (make-hash-table :test 'equal))
+      (setq-local eca-chat--tool-call-prepare-pending-order nil)
+      (setq-local eca-chat--tool-call-prepare-finalized-ids
+                  (make-hash-table :test 'equal))
       (setq-local eca-chat--tool-call-elapsed-times
                   (make-hash-table :test 'equal))
+      (setq-local eca-chat--stream-pending-parent-chunks
+                  (make-hash-table :test 'equal))
+      (setq-local eca-chat--stream-pending-parent-order nil)
+      (setq-local eca-chat--stream-pending-render-order nil)
+      (setq-local eca-chat--stream-pending-copy-start nil)
       (setq-local eca-chat--subagent-chat-id->tool-call-id
                   (make-hash-table :test 'equal))
       (setq-local eca-chat--subagent-usage
@@ -174,6 +184,95 @@ When TITLE is non-nil, use it as the chat title."
   "Flush pending stream text in BUF."
   (with-current-buffer buf
     (eca-chat--stream-flush)))
+
+(defun eca-chat-test--tool-call-prepare-content
+    (id arguments-text &optional summary)
+  "Build a generic toolCallPrepare content plist for ID."
+  (append (list :type "toolCallPrepare"
+                :id id
+                :name "testTool"
+                :server "testServer"
+                :argumentsText arguments-text
+                :details (list :type "generic"))
+          (when summary (list :summary summary))))
+
+(defun eca-chat-test--render-tool-call-prepare
+    (session buf id arguments-text &optional summary)
+  "Render toolCallPrepare ARGUMENTS-TEXT into BUF."
+  (eca-chat--render-content
+   session buf "assistant"
+   (eca-chat-test--tool-call-prepare-content id arguments-text summary)
+   nil))
+
+(defun eca-chat-test--tool-call-content-with-arguments
+    (type id arguments &optional manual)
+  "Build a generic tool-call TYPE for ID with ARGUMENTS."
+  (plist-put (eca-chat-test--tool-call-content type id manual)
+             :arguments arguments))
+
+(defun eca-chat-test--expanded-tool-history-text (buf id)
+  "Open tool block ID in BUF and return the history text."
+  (with-current-buffer buf
+    (when (eca-chat--get-expandable-content id)
+      (eca-chat--expandable-content-toggle id t nil))
+    (eca-chat-test--history-text buf)))
+
+(defun eca-chat-test--subagent-tool-call-content
+    (id &optional chat-id agent task)
+  "Build a subagent tool-call run content plist for ID."
+  (list :type "toolCallRun"
+        :id id
+        :name "subagentTool"
+        :server "testServer"
+        :arguments (list :agent (or agent (concat id "-agent"))
+                         :task (or task (concat id " task")))
+        :details (list :type "subagent"
+                       :subagentChatId (or chat-id (concat id "-chat"))
+                       :model "test-model"
+                       :step 1
+                       :maxSteps 1)))
+
+(defun eca-chat-test--render-subagent-parent
+    (session buf id &optional chat-id agent task)
+  "Render a subagent parent block with ID into BUF."
+  (let ((resolved-chat-id (or chat-id (concat id "-chat"))))
+    (eca-chat--render-content
+     session buf "assistant"
+     (eca-chat-test--subagent-tool-call-content
+      id resolved-chat-id agent task)
+     nil)
+    resolved-chat-id))
+
+(defun eca-chat-test--render-subagent-text
+    (session buf parent-id text &optional chat-id)
+  "Render child assistant TEXT for PARENT-ID."
+  (eca-chat--render-content
+   session buf "assistant" (list :type "text" :text text)
+   nil parent-id (or chat-id (concat parent-id "-chat"))))
+
+(defun eca-chat-test--expanded-parent-history-text (buf parent-id)
+  "Open PARENT-ID and return its history block text from BUF."
+  (with-current-buffer buf
+    (eca-chat--expandable-content-toggle parent-id t nil)
+    (let* ((start (overlay-start (eca-chat--get-expandable-content parent-id)))
+           (end (eca-chat--prompt-area-start-point)))
+      (maphash (lambda (id ov)
+                 (let ((pos (overlay-start ov)))
+                   (when (and (not (equal id parent-id))
+                              (> pos start)
+                              (< pos end))
+                     (setq end pos))))
+               eca-chat-expandable--id->ov)
+      (buffer-substring-no-properties start end))))
+
+(defun eca-chat-test--string-count (text needle)
+  "Return the number of NEEDLE occurrences in TEXT."
+  (let ((start 0)
+        (count 0))
+    (while (string-match (regexp-quote needle) text start)
+      (setq count (1+ count)
+            start (match-end 0)))
+    count))
 
 ;; ---------------------------------------------------------------------------
 ;; Tests
@@ -1646,6 +1745,28 @@ around rendering applies, as when the chat window is selected."
           (eca-chat-copy-at-point)
           (expect (current-kill 0 t) :to-equal "Final answer")))))
 
+  (it "copies buffered text without earlier subagent text"
+    (let ((buf (eca-chat-test--make-render-buffer))
+          (session (make-eca--session))
+          (eca-chat-stream-flush-interval 60)
+          kill-ring
+          kill-ring-yank-pointer)
+      (unwind-protect
+          (eca-chat--with-current-buffer buf
+            (eca-chat-test--render-subagent-parent
+             session buf "copy-parent" "copy-child")
+            (eca-chat--expandable-content-toggle "copy-parent" t nil)
+            (eca-chat-test--render-assistant-text
+             session buf "final answer")
+            (eca-chat-test--render-subagent-text
+             session buf "copy-parent" "subagent details" "copy-child")
+            (eca-chat-test--stream-flush buf)
+            (eca-chat--refresh-copy-scopes)
+            (eca-chat-copy-at-point t)
+            (expect (current-kill 0 t) :to-equal "final answer"))
+        (when (buffer-live-p buf)
+          (kill-buffer buf)))))
+
   (it "copies response text including fenced code"
     (let (kill-ring
           kill-ring-yank-pointer)
@@ -2338,6 +2459,1190 @@ detected even on filesystems with a coarse modtime resolution."
             (expect (cl-position 'flush events)
                     :to-be-less-than (cl-position 'finalize events)))
         (when (buffer-live-p buf)
+          (kill-buffer buf)))))
+
+  (it "flushes same-scope prepare before later assistant text"
+    (let ((buf (eca-chat-test--make-render-buffer))
+          (session (make-eca--session))
+          (eca-chat-stream-flush-interval 60))
+      (unwind-protect
+          (eca-chat--with-current-buffer buf
+            (eca-chat-test--render-tool-call-prepare
+             session buf "prep-before-text" "prepare before text")
+            (eca-chat-test--render-assistant-text
+             session buf "assistant after prepare")
+            (eca-chat-test--stream-flush buf)
+            (eca-chat--expandable-content-toggle "prep-before-text" t nil)
+            (let ((prepare-index (eca-chat-test--history-index
+                                  buf "prepare before text"))
+                  (text-index (eca-chat-test--history-index
+                               buf "assistant after prepare")))
+              (expect prepare-index :not :to-be nil)
+              (expect text-index :not :to-be nil)
+              (expect prepare-index :to-be-less-than text-index)))
+        (when (buffer-live-p buf)
+          (ignore-errors (eca-chat-test--stream-flush buf))
+          (kill-buffer buf)))))
+
+  (it "keeps prepare hidden before later assistant text flush"
+    (let ((buf (eca-chat-test--make-render-buffer))
+          (session (make-eca--session))
+          (eca-chat-stream-flush-interval 60))
+      (unwind-protect
+          (eca-chat--with-current-buffer buf
+            (eca-chat-test--render-tool-call-prepare
+             session buf "prep-buffered-before-text"
+             "prepare buffered before text")
+            (eca-chat-test--render-assistant-text
+             session buf "assistant after buffered prepare")
+            (expect (eca-chat--get-expandable-content
+                     "prep-buffered-before-text")
+                    :to-be nil)
+            (expect (eca-chat-test--history-text buf)
+                    :not :to-match
+                    (regexp-quote "assistant after buffered prepare"))
+            (eca-chat-test--stream-flush buf)
+            (eca-chat--expandable-content-toggle
+             "prep-buffered-before-text" t nil)
+            (let ((prepare-index (eca-chat-test--history-index
+                                  buf "prepare buffered before text"))
+                  (text-index (eca-chat-test--history-index
+                               buf "assistant after buffered prepare")))
+              (expect prepare-index :not :to-be nil)
+              (expect text-index :not :to-be nil)
+              (expect prepare-index :to-be-less-than text-index)))
+        (when (buffer-live-p buf)
+          (ignore-errors (eca-chat-test--stream-flush buf))
+          (kill-buffer buf)))))
+
+  (it "preserves alternating prepare and top-level text order"
+    (let ((buf (eca-chat-test--make-render-buffer))
+          (session (make-eca--session))
+          (eca-chat-stream-flush-interval 60))
+      (unwind-protect
+          (eca-chat--with-current-buffer buf
+            (eca-chat-test--render-tool-call-prepare
+             session buf "prep-alternating-a" "prepare A args"
+             "Prepare A marker")
+            (eca-chat-test--render-assistant-text
+             session buf "top text one marker")
+            (eca-chat-test--render-tool-call-prepare
+             session buf "prep-alternating-b" "prepare B args"
+             "Prepare B marker")
+            (eca-chat-test--render-assistant-text
+             session buf "top text two marker")
+            (eca-chat-test--stream-flush buf)
+            (let ((prepare-a-index (eca-chat-test--history-index
+                                    buf "Prepare A marker"))
+                  (text-one-index (eca-chat-test--history-index
+                                   buf "top text one marker"))
+                  (prepare-b-index (eca-chat-test--history-index
+                                    buf "Prepare B marker"))
+                  (text-two-index (eca-chat-test--history-index
+                                   buf "top text two marker")))
+              (expect prepare-a-index :not :to-be nil)
+              (expect text-one-index :not :to-be nil)
+              (expect prepare-b-index :not :to-be nil)
+              (expect text-two-index :not :to-be nil)
+              (expect prepare-a-index :to-be-less-than text-one-index)
+              (expect text-one-index :to-be-less-than prepare-b-index)
+              (expect prepare-b-index :to-be-less-than text-two-index)
+              (expect (eca-chat-test--string-count
+                       (eca-chat-test--history-text buf)
+                       "top text one marker")
+                      :to-equal 1)
+              (expect (eca-chat-test--string-count
+                       (eca-chat-test--history-text buf)
+                       "top text two marker")
+                      :to-equal 1)))
+        (when (buffer-live-p buf)
+          (ignore-errors (eca-chat-test--stream-flush buf))
+          (kill-buffer buf)))))
+
+  (it "keeps prepare hidden across running progress"
+    (let ((buf (eca-chat-test--make-render-buffer))
+          (session (make-eca--session))
+          (eca-chat-stream-flush-interval 60))
+      (unwind-protect
+          (eca-chat--with-current-buffer buf
+            (eca-chat-test--render-tool-call-prepare
+             session buf "prep-running-progress" "prepare-before-progress")
+            (expect (eca-chat-test--expanded-tool-history-text
+                     buf "prep-running-progress")
+                    :not :to-match
+                    (regexp-quote "prepare-before-progress"))
+            (eca-chat--render-content
+             session buf "system"
+             (list :type "progress" :state "running" :text "Running...")
+             nil)
+            (expect (eca-chat-test--expanded-tool-history-text
+                     buf "prep-running-progress")
+                    :not :to-match
+                    (regexp-quote "prepare-before-progress"))
+            (eca-chat-test--stream-flush buf)
+            (expect (eca-chat-test--string-count
+                     (eca-chat-test--expanded-tool-history-text
+                      buf "prep-running-progress")
+                     "prepare-before-progress")
+                    :to-equal 1))
+        (when (buffer-live-p buf)
+          (ignore-errors (eca-chat-test--stream-flush buf))
+          (kill-buffer buf)))))
+
+  (it "keeps smart prepare throttle under stream buffering"
+    (let ((buf (eca-chat-test--make-render-buffer))
+          (session (make-eca--session))
+          (eca-chat-stream-flush-interval 60)
+          (eca-chat-tool-call-prepare-throttle 'smart)
+          (eca-chat-tool-call-prepare-update-interval 5))
+      (unwind-protect
+          (eca-chat--with-current-buffer buf
+            (dotimes (i 5)
+              (eca-chat-test--render-tool-call-prepare
+               session buf "prep-smart-buffered" (format "chunk-%d " i))
+              (eca-chat-test--stream-flush buf))
+            (let ((history (eca-chat-test--expanded-tool-history-text
+                            buf "prep-smart-buffered")))
+              (expect history :to-match (regexp-quote "chunk-0"))
+              (expect history :not :to-match (regexp-quote "chunk-4")))
+            (eca-chat-test--render-tool-call-prepare
+             session buf "prep-smart-buffered" "chunk-5 ")
+            (eca-chat-test--stream-flush buf)
+            (let ((history (eca-chat-test--expanded-tool-history-text
+                            buf "prep-smart-buffered")))
+              (expect history :to-match (regexp-quote "chunk-4"))
+              (expect history :to-match (regexp-quote "chunk-5"))))
+        (when (buffer-live-p buf)
+          (ignore-errors (eca-chat-test--stream-flush buf))
+          (kill-buffer buf)))))
+
+  (it "keeps top-level text hidden across running progress"
+    (let ((buf (eca-chat-test--make-render-buffer))
+          (session (make-eca--session))
+          (eca-chat-stream-flush-interval 60)
+          captured-callback)
+      (unwind-protect
+          (eca-chat--with-current-buffer buf
+            (cl-letf (((symbol-function 'run-with-timer)
+                       (lambda (_secs _repeat function &rest _args)
+                         (setq captured-callback function)
+                         (let ((timer (timer-create)))
+                           (timer-set-function timer #'ignore)
+                           timer))))
+              (eca-chat-test--render-assistant-text
+               session buf "assistant before running progress")
+              (expect captured-callback :not :to-be nil)
+              (expect (timerp eca-chat--stream-flush-timer)
+                      :to-be-truthy)
+              (expect (eca-chat-test--history-text buf)
+                      :not :to-match
+                      (regexp-quote "assistant before running progress"))
+              (eca-chat--render-content
+               session buf "system"
+               (list :type "progress" :state "running" :text "Running...")
+               nil)
+              (expect (eca-chat-test--history-text buf)
+                      :not :to-match
+                      (regexp-quote "assistant before running progress"))
+              (expect (eca-chat--stream-pending-p) :to-be-truthy)
+              (expect (timerp eca-chat--stream-flush-timer)
+                      :to-be-truthy)
+              (eca-chat-test--stream-flush buf)
+              (expect (eca-chat-test--string-count
+                       (eca-chat-test--history-text buf)
+                       "assistant before running progress")
+                      :to-equal 1)))
+        (when (buffer-live-p buf)
+          (ignore-errors (eca-chat-test--stream-flush buf))
+          (kill-buffer buf)))))
+
+  (it "keeps later top-level text hidden across metadata"
+    (let ((buf (eca-chat-test--make-render-buffer))
+          (session (make-eca--session))
+          (eca-chat-stream-flush-interval 60))
+      (unwind-protect
+          (eca-chat--with-current-buffer buf
+            (eca-chat-test--render-tool-call-prepare
+             session buf "prep-before-metadata"
+             "metadata prepare arguments" "Metadata prepare label")
+            (eca-chat-test--render-assistant-text
+             session buf "assistant after metadata prepare")
+            (eca-chat--render-content
+             session buf "assistant"
+             (list :type "metadata" :title "metadata boundary")
+             nil)
+            (expect (eca-chat--get-expandable-content
+                     "prep-before-metadata")
+                    :to-be nil)
+            (expect (eca-chat-test--history-text buf)
+                    :not :to-match
+                    (regexp-quote "assistant after metadata prepare"))
+            (eca-chat-test--stream-flush buf)
+            (eca-chat--expandable-content-toggle
+             "prep-before-metadata" t nil)
+            (let ((prepare-index (eca-chat-test--history-index
+                                  buf "Metadata prepare label"))
+                  (text-index (eca-chat-test--history-index
+                               buf "assistant after metadata prepare")))
+              (expect prepare-index :not :to-be nil)
+              (expect text-index :not :to-be nil)
+              (expect prepare-index :to-be-less-than text-index)
+              (expect (eca-chat-test--string-count
+                       (eca-chat-test--history-text buf)
+                       "Metadata prepare label")
+                      :to-equal 1)
+              (expect (eca-chat-test--string-count
+                       (eca-chat-test--history-text buf)
+                       "assistant after metadata prepare")
+                      :to-equal 1)))
+        (when (buffer-live-p buf)
+          (ignore-errors (eca-chat-test--stream-flush buf))
+          (kill-buffer buf)))))
+
+  (it "keeps later top-level text hidden across running progress"
+    (let ((buf (eca-chat-test--make-render-buffer))
+          (session (make-eca--session))
+          (eca-chat-stream-flush-interval 60))
+      (unwind-protect
+          (eca-chat--with-current-buffer buf
+            (eca-chat-test--render-tool-call-prepare
+             session buf "prep-before-running-progress"
+             "running prepare arguments" "Running prepare label")
+            (eca-chat-test--render-assistant-text
+             session buf "assistant after running prepare")
+            (eca-chat--render-content
+             session buf "system"
+             (list :type "progress" :state "running" :text "Running...")
+             nil)
+            (expect (eca-chat--get-expandable-content
+                     "prep-before-running-progress")
+                    :to-be nil)
+            (expect (eca-chat-test--history-text buf)
+                    :not :to-match
+                    (regexp-quote "assistant after running prepare"))
+            (eca-chat-test--stream-flush buf)
+            (eca-chat--expandable-content-toggle
+             "prep-before-running-progress" t nil)
+            (let ((prepare-index (eca-chat-test--history-index
+                                  buf "Running prepare label"))
+                  (text-index (eca-chat-test--history-index
+                               buf "assistant after running prepare")))
+              (expect prepare-index :not :to-be nil)
+              (expect text-index :not :to-be nil)
+              (expect prepare-index :to-be-less-than text-index)))
+        (when (buffer-live-p buf)
+          (ignore-errors (eca-chat-test--stream-flush buf))
+          (kill-buffer buf)))))
+
+  (it "keeps later top-level text hidden behind parent text"
+    (let ((buf (eca-chat-test--make-render-buffer))
+          (session (make-eca--session))
+          (eca-chat-stream-flush-interval 60))
+      (unwind-protect
+          (eca-chat--with-current-buffer buf
+            (eca-chat-test--render-subagent-parent
+             session buf "parent-before-metadata" "child-before-metadata")
+            (eca-chat-test--render-subagent-text
+             session buf "parent-before-metadata"
+             "parent text before metadata" "child-before-metadata")
+            (eca-chat-test--render-assistant-text
+             session buf "top-level after parent metadata")
+            (eca-chat--render-content
+             session buf "assistant"
+             (list :type "metadata" :title "parent metadata boundary")
+             nil)
+            (expect (eca-chat-test--expanded-parent-history-text
+                     buf "parent-before-metadata")
+                    :not :to-match
+                    (regexp-quote "parent text before metadata"))
+            (expect (eca-chat-test--history-text buf)
+                    :not :to-match
+                    (regexp-quote "top-level after parent metadata"))
+            (eca-chat-test--stream-flush buf)
+            (eca-chat--expandable-content-toggle
+             "parent-before-metadata" t nil)
+            (let ((parent-index (eca-chat-test--history-index
+                                 buf "parent text before metadata"))
+                  (text-index (eca-chat-test--history-index
+                               buf "top-level after parent metadata")))
+              (expect parent-index :not :to-be nil)
+              (expect text-index :not :to-be nil)
+              (expect parent-index :to-be-less-than text-index)
+              (expect (eca-chat-test--string-count
+                       (eca-chat-test--history-text buf)
+                       "parent text before metadata")
+                      :to-equal 1)
+              (expect (eca-chat-test--string-count
+                       (eca-chat-test--history-text buf)
+                       "top-level after parent metadata")
+                      :to-equal 1)))
+        (when (buffer-live-p buf)
+          (ignore-errors (eca-chat-test--stream-flush buf))
+          (kill-buffer buf)))))
+
+  (it "flushes prepare before system text boundary"
+    (let ((buf (eca-chat-test--make-render-buffer))
+          (session (make-eca--session))
+          (eca-chat-stream-flush-interval 60))
+      (unwind-protect
+          (eca-chat--with-current-buffer buf
+            (eca-chat-test--render-tool-call-prepare
+             session buf "prep-system-text" "prepare-before-system-text")
+            (eca-chat--render-content
+             session buf "system"
+             (list :type "text" :text "system-text-boundary")
+             nil)
+            (eca-chat--expandable-content-toggle "prep-system-text" t nil)
+            (let ((prepare-index (eca-chat-test--history-index
+                                  buf "prepare-before-system-text"))
+                  (text-index (eca-chat-test--history-index
+                               buf "system-text-boundary")))
+              (expect prepare-index :not :to-be nil)
+              (expect text-index :not :to-be nil)
+              (expect prepare-index :to-be-less-than text-index)))
+        (when (buffer-live-p buf)
+          (ignore-errors (eca-chat-test--stream-flush buf))
+          (kill-buffer buf)))))
+
+  (it "toolCallRun flushes same-ID prepare before lifecycle state"
+    (let ((buf (eca-chat-test--make-render-buffer))
+          (session (make-eca--session))
+          (eca-chat-stream-flush-interval 60)
+          (eca-chat-expand-pending-approval-tools t)
+          approval-history)
+      (unwind-protect
+          (save-window-excursion
+            (set-window-buffer (selected-window) buf)
+            (eca-chat--with-current-buffer buf
+              (cl-letf (((symbol-function
+                          'eca-chat--ensure-tool-call-approval-visible)
+                         (lambda (&rest _)
+                           (setq approval-history
+                                 (eca-chat-test--expanded-tool-history-text
+                                  buf "prep-run-1")))))
+                (eca-chat-test--render-tool-call-prepare
+                 session buf "prep-run-1" "run-order-arguments")
+                (expect (eca-chat-test--expanded-tool-history-text
+                         buf "prep-run-1")
+                        :not :to-match (regexp-quote "run-order-arguments"))
+                (eca-chat--render-content
+                 session buf "assistant"
+                 (eca-chat-test--tool-call-content-with-arguments
+                  "toolCallRun" "prep-run-1" "run-order-arguments" t)
+                 nil))
+              (expect approval-history :not :to-be nil)
+              (expect approval-history
+                      :to-match (regexp-quote "run-order-arguments"))
+              (let ((after (eca-chat-test--expanded-tool-history-text
+                            buf "prep-run-1")))
+                (expect after :to-match (regexp-quote "run-order-arguments"))
+                (expect after :to-match (regexp-quote "Accept")))
+              (eca-chat-test--stream-flush buf)
+              (expect (eca-chat-test--string-count
+                       (eca-chat-test--expanded-tool-history-text
+                        buf "prep-run-1")
+                       "run-order-arguments")
+                      :to-equal 1)))
+        (when (buffer-live-p buf)
+          (ignore-errors (eca-chat-test--stream-flush buf))
+          (kill-buffer buf)))))
+
+  (it "flushes earlier prepare before different-ID lifecycle state"
+    (let ((buf (eca-chat-test--make-render-buffer))
+          (session (make-eca--session))
+          (eca-chat-stream-flush-interval 60)
+          (eca-chat-expand-pending-approval-tools t))
+      (unwind-protect
+          (eca-chat--with-current-buffer buf
+            (eca-chat-test--render-tool-call-prepare
+             session buf "prep-cross-a" "cross-a-pending-arguments")
+            (expect (eca-chat-test--expanded-tool-history-text
+                     buf "prep-cross-a")
+                    :not :to-match
+                    (regexp-quote "cross-a-pending-arguments"))
+            (eca-chat--render-content
+             session buf "assistant"
+             (eca-chat-test--tool-call-content-with-arguments
+              "toolCallRun" "prep-cross-b" "cross-b-lifecycle-arguments" t)
+             nil)
+            (let ((a-text (eca-chat-test--expanded-tool-history-text
+                           buf "prep-cross-a"))
+                  (b-text (eca-chat-test--expanded-tool-history-text
+                           buf "prep-cross-b")))
+              (expect a-text
+                      :to-match
+                      (regexp-quote "cross-a-pending-arguments"))
+              (expect b-text
+                      :to-match
+                      (regexp-quote "cross-b-lifecycle-arguments"))
+              (expect b-text :to-match (regexp-quote "Accept")))
+            (let ((a-index (eca-chat-test--history-index
+                            buf "cross-a-pending-arguments"))
+                  (b-index (eca-chat-test--history-index
+                            buf "cross-b-lifecycle-arguments")))
+              (expect a-index :not :to-be nil)
+              (expect b-index :not :to-be nil)
+              (expect a-index :to-be-less-than b-index))
+            (eca-chat-test--stream-flush buf)
+            (expect (eca-chat-test--string-count
+                     (eca-chat-test--expanded-tool-history-text
+                      buf "prep-cross-a")
+                     "cross-a-pending-arguments")
+                    :to-equal 1))
+        (when (buffer-live-p buf)
+          (ignore-errors (eca-chat-test--stream-flush buf))
+          (kill-buffer buf)))))
+
+  (it "flushes parent-scoped prepare before sibling lifecycle state"
+    (let ((buf (eca-chat-test--make-render-buffer))
+          (session (make-eca--session))
+          (eca-chat-stream-flush-interval 60))
+      (unwind-protect
+          (eca-chat--with-current-buffer buf
+            (eca-chat-test--render-subagent-parent
+             session buf "parent-prepare-order" "child-prepare-order")
+            (eca-chat--render-content
+             session buf "assistant"
+             (eca-chat-test--tool-call-prepare-content
+              "parent-prepare-a" "parent prepare A arguments"
+              "Parent prepare A")
+             nil "parent-prepare-order" "child-prepare-order")
+            (expect (eca-chat--get-expandable-content "parent-prepare-a")
+                    :to-be nil)
+            (eca-chat--render-content
+             session buf "assistant"
+             (append (eca-chat-test--tool-call-content-with-arguments
+                      "toolCallRun" "parent-run-b" "parent run B arguments")
+                     (list :summary "Parent run B"))
+             nil "parent-prepare-order" "child-prepare-order")
+            (eca-chat--expandable-content-toggle
+             "parent-prepare-order" t nil)
+            (let ((prepare-index (eca-chat-test--history-index
+                                  buf "Parent prepare A"))
+                  (run-index (eca-chat-test--history-index
+                              buf "Parent run B")))
+              (expect prepare-index :not :to-be nil)
+              (expect run-index :not :to-be nil)
+              (expect prepare-index :to-be-less-than run-index))
+            (eca-chat-test--stream-flush buf)
+            (expect (eca-chat-test--string-count
+                     (eca-chat-test--history-text buf)
+                     "Parent prepare A")
+                    :to-equal 1))
+        (when (buffer-live-p buf)
+          (ignore-errors (eca-chat-test--stream-flush buf))
+          (kill-buffer buf)))))
+
+  (it "toolCalled cancels stale same-ID prepare after lifecycle render"
+    (let ((buf (eca-chat-test--make-render-buffer))
+          (session (make-eca--session))
+          (eca-chat-stream-flush-interval 60))
+      (unwind-protect
+          (eca-chat--with-current-buffer buf
+            (eca-chat-test--render-tool-call-prepare
+             session buf "prep-called-1" "called-stale-prepare")
+            (expect (eca-chat-test--expanded-tool-history-text
+                     buf "prep-called-1")
+                    :not :to-match (regexp-quote "called-stale-prepare"))
+            (eca-chat--render-content
+             session buf "assistant"
+             (eca-chat-test--tool-call-content-with-arguments
+              "toolCalled" "prep-called-1" "called-final-arguments")
+             nil)
+            (let ((after (eca-chat-test--expanded-tool-history-text
+                          buf "prep-called-1")))
+              (expect after
+                      :to-match (regexp-quote "called-final-arguments"))
+              (expect after
+                      :not :to-match (regexp-quote "called-stale-prepare")))
+            (eca-chat-test--stream-flush buf)
+            (let ((after-flush (eca-chat-test--expanded-tool-history-text
+                                buf "prep-called-1")))
+              (expect after-flush
+                      :to-match (regexp-quote "called-final-arguments"))
+              (expect after-flush
+                      :not :to-match (regexp-quote "called-stale-prepare"))))
+        (when (buffer-live-p buf)
+          (ignore-errors (eca-chat-test--stream-flush buf))
+          (kill-buffer buf)))))
+
+  (it "toolCallRejected cancels stale same-ID prepare after lifecycle render"
+    (let ((buf (eca-chat-test--make-render-buffer))
+          (session (make-eca--session))
+          (eca-chat-stream-flush-interval 60))
+      (unwind-protect
+          (eca-chat--with-current-buffer buf
+            (eca-chat-test--render-tool-call-prepare
+             session buf "prep-rejected-1" "rejected-stale-prepare")
+            (expect (eca-chat-test--expanded-tool-history-text
+                     buf "prep-rejected-1")
+                    :not :to-match (regexp-quote "rejected-stale-prepare"))
+            (eca-chat--render-content
+             session buf "assistant"
+             (eca-chat-test--tool-call-content-with-arguments
+              "toolCallRejected" "prep-rejected-1" "rejected-final-arguments")
+             nil)
+            (let ((after (eca-chat-test--expanded-tool-history-text
+                          buf "prep-rejected-1")))
+              (expect after
+                      :to-match (regexp-quote "rejected-final-arguments"))
+              (expect after
+                      :not :to-match (regexp-quote "rejected-stale-prepare")))
+            (eca-chat-test--stream-flush buf)
+            (let ((after-flush (eca-chat-test--expanded-tool-history-text
+                                buf "prep-rejected-1")))
+              (expect after-flush
+                      :to-match (regexp-quote "rejected-final-arguments"))
+              (expect after-flush
+                      :not :to-match (regexp-quote "rejected-stale-prepare"))))
+        (when (buffer-live-p buf)
+          (ignore-errors (eca-chat-test--stream-flush buf))
+          (kill-buffer buf)))))
+
+  (it "hides subagent assistant text before explicit flush"
+    (let ((buf (eca-chat-test--make-render-buffer))
+          (session (make-eca--session))
+          (eca-chat-stream-flush-interval 60))
+      (unwind-protect
+          (eca-chat--with-current-buffer buf
+            (eca-chat-test--render-subagent-parent
+             session buf "parent-tool" "child-chat")
+            (eca-chat-test--render-subagent-text
+             session buf "parent-tool" "subagent-hidden-token" "child-chat")
+            (expect (eca-chat-test--history-text buf)
+                    :not :to-match (regexp-quote "subagent-hidden-token"))
+            (eca-chat-test--stream-flush buf)
+            (expect (eca-chat-test--expanded-parent-history-text
+                     buf "parent-tool")
+                    :to-match (regexp-quote "subagent-hidden-token")))
+        (when (buffer-live-p buf)
+          (kill-buffer buf)))))
+
+  (it "keeps subagent text hidden across running progress"
+    (let ((buf (eca-chat-test--make-render-buffer))
+          (session (make-eca--session))
+          (eca-chat-stream-flush-interval 60))
+      (unwind-protect
+          (eca-chat--with-current-buffer buf
+            (eca-chat-test--render-subagent-parent
+             session buf "parent-running-progress" "child-running-progress")
+            (eca-chat-test--render-subagent-text
+             session buf "parent-running-progress"
+             "subagent-before-progress" "child-running-progress")
+            (expect (eca-chat-test--expanded-parent-history-text
+                     buf "parent-running-progress")
+                    :not :to-match
+                    (regexp-quote "subagent-before-progress"))
+            (eca-chat--render-content
+             session buf "system"
+             (list :type "progress" :state "running" :text "Running...")
+             nil)
+            (expect (eca-chat-test--expanded-parent-history-text
+                     buf "parent-running-progress")
+                    :not :to-match
+                    (regexp-quote "subagent-before-progress"))
+            (eca-chat-test--stream-flush buf)
+            (expect (eca-chat-test--string-count
+                     (eca-chat-test--expanded-parent-history-text
+                      buf "parent-running-progress")
+                     "subagent-before-progress")
+                    :to-equal 1))
+        (when (buffer-live-p buf)
+          (kill-buffer buf)))))
+
+  (it "keeps timer after top-level partial flush with parent text pending"
+    (let ((buf (eca-chat-test--make-render-buffer))
+          (session (make-eca--session))
+          (eca-chat-stream-flush-interval 60)
+          captured-callback
+          captured-args)
+      (unwind-protect
+          (eca-chat--with-current-buffer buf
+            (cl-letf (((symbol-function 'run-with-timer)
+                       (lambda (_secs _repeat function &rest args)
+                         (setq captured-callback function
+                               captured-args args)
+                         (let ((timer (timer-create)))
+                           (timer-set-function timer #'ignore)
+                           timer))))
+              (eca-chat-test--render-subagent-parent
+               session buf "timer-parent" "timer-child")
+              (eca-chat-test--render-subagent-text
+               session buf "timer-parent" "timer parent text" "timer-child")
+              (expect captured-callback :not :to-be nil)
+              (expect (timerp eca-chat--stream-flush-timer)
+                      :to-be-truthy)
+              (eca-chat--render-content
+               session buf "assistant"
+               (list :type "metadata" :title "timer metadata") nil)
+              (expect (eca-chat--stream-pending-p) :to-be-truthy)
+              (expect (timerp eca-chat--stream-flush-timer)
+                      :to-be-truthy)
+              (expect (eca-chat-test--expanded-parent-history-text
+                       buf "timer-parent")
+                      :not :to-match (regexp-quote "timer parent text"))
+              (apply captured-callback captured-args)
+              (expect (eca-chat-test--expanded-parent-history-text
+                       buf "timer-parent")
+                      :to-match (regexp-quote "timer parent text"))))
+        (when (buffer-live-p buf)
+          (ignore-errors (eca-chat-test--stream-flush buf))
+          (kill-buffer buf)))))
+
+  (it "keeps subagent text hidden across parent-scoped running progress"
+    (let ((buf (eca-chat-test--make-render-buffer))
+          (session (make-eca--session))
+          (eca-chat-stream-flush-interval 60))
+      (unwind-protect
+          (eca-chat--with-current-buffer buf
+            (eca-chat-test--render-subagent-parent
+             session buf "parent-scoped-running-progress"
+             "child-scoped-running-progress")
+            (eca-chat-test--render-subagent-text
+             session buf "parent-scoped-running-progress"
+             "subagent-before-parent-progress"
+             "child-scoped-running-progress")
+            (expect (eca-chat-test--expanded-parent-history-text
+                     buf "parent-scoped-running-progress")
+                    :not :to-match
+                    (regexp-quote "subagent-before-parent-progress"))
+            (eca-chat--render-content
+             session buf "system"
+             (list :type "progress" :state "running" :text "Running...")
+             nil "parent-scoped-running-progress"
+             "child-scoped-running-progress")
+            (expect (eca-chat-test--expanded-parent-history-text
+                     buf "parent-scoped-running-progress")
+                    :not :to-match
+                    (regexp-quote "subagent-before-parent-progress"))
+            (eca-chat-test--stream-flush buf)
+            (expect (eca-chat-test--string-count
+                     (eca-chat-test--expanded-parent-history-text
+                      buf "parent-scoped-running-progress")
+                     "subagent-before-parent-progress")
+                    :to-equal 1))
+        (when (buffer-live-p buf)
+          (kill-buffer buf)))))
+
+  (it "flushes subagent text before nested child content"
+    (let ((buf (eca-chat-test--make-render-buffer))
+          (session (make-eca--session))
+          (eca-chat-stream-flush-interval 60))
+      (unwind-protect
+          (eca-chat--with-current-buffer buf
+            (eca-chat-test--render-subagent-parent
+             session buf "parent-tool" "child-chat")
+            (eca-chat-test--render-subagent-text
+             session buf "parent-tool" "text-before-nested" "child-chat")
+            (expect (eca-chat-test--history-text buf)
+                    :not :to-match (regexp-quote "text-before-nested"))
+            (eca-chat--render-content
+             session buf "assistant"
+             (list :type "toolCallRun"
+                   :id "nested-tool"
+                   :name "nestedTool"
+                   :server "nestedServer"
+                   :arguments "{}"
+                   :details (list :type "generic"))
+             nil "parent-tool" "child-chat")
+            (eca-chat--expandable-content-toggle "parent-tool" t nil)
+            (let ((text-index (eca-chat-test--history-index
+                               buf "text-before-nested"))
+                  (nested-index (eca-chat-test--history-index
+                                 buf "nestedServer__nestedTool")))
+              (expect text-index :not :to-be nil)
+              (expect nested-index :not :to-be nil)
+              (expect text-index :to-be-less-than nested-index)))
+        (when (buffer-live-p buf)
+          (kill-buffer buf)))))
+
+  (it "keeps sibling subagent text hidden across another parent boundary"
+    (let ((buf (eca-chat-test--make-render-buffer))
+          (session (make-eca--session))
+          (eca-chat-stream-flush-interval 60))
+      (unwind-protect
+          (eca-chat--with-current-buffer buf
+            (eca-chat-test--render-subagent-parent
+             session buf "parent-a" "child-a" "agent-a" "task-a")
+            (eca-chat-test--render-subagent-parent
+             session buf "parent-b" "child-b" "agent-b" "task-b")
+            (eca-chat-test--render-subagent-text
+             session buf "parent-a" "a-before-boundary" "child-a")
+            (eca-chat-test--render-subagent-text
+             session buf "parent-b" "b-still-buffered" "child-b")
+            (let ((before-boundary (eca-chat-test--history-text buf)))
+              (expect before-boundary
+                      :not :to-match (regexp-quote "a-before-boundary"))
+              (expect before-boundary
+                      :not :to-match (regexp-quote "b-still-buffered")))
+            (eca-chat--render-content
+             session buf "assistant"
+             (list :type "toolCallRun"
+                   :id "nested-a"
+                   :name "nestedToolA"
+                   :server "nestedServer"
+                   :arguments "{}"
+                   :details (list :type "generic"))
+             nil "parent-a" "child-a")
+            (expect (eca-chat-test--expanded-parent-history-text buf "parent-a")
+                    :to-match (regexp-quote "a-before-boundary"))
+            (expect (eca-chat-test--history-text buf)
+                    :not :to-match (regexp-quote "b-still-buffered"))
+            (eca-chat-test--stream-flush buf)
+            (expect (eca-chat-test--expanded-parent-history-text buf "parent-b")
+                    :to-match (regexp-quote "b-still-buffered")))
+        (when (buffer-live-p buf)
+          (kill-buffer buf)))))
+
+  (it "flushes subagent text before top-level lifecycle boundary"
+    (let ((buf (eca-chat-test--make-render-buffer))
+          (session (make-eca--session))
+          (eca-chat-stream-flush-interval 60))
+      (unwind-protect
+          (eca-chat--with-current-buffer buf
+            (eca-chat-test--render-subagent-parent
+             session buf "parent-tool" "child-chat")
+            (eca-chat-test--render-subagent-text
+             session buf "parent-tool" "text-before-top-level"
+             "child-chat")
+            (expect (eca-chat-test--expanded-parent-history-text
+                     buf "parent-tool")
+                    :not :to-match (regexp-quote "text-before-top-level"))
+            (eca-chat--render-content
+             session buf "assistant"
+             (list :type "toolCallRun"
+                   :id "top-level-tool"
+                   :name "topLevelTool"
+                   :server "topServer"
+                   :arguments "{}"
+                   :details (list :type "generic"))
+             nil)
+            (eca-chat--expandable-content-toggle "parent-tool" t nil)
+            (eca-chat--expandable-content-toggle "top-level-tool" t nil)
+            (let ((text-index (eca-chat-test--history-index
+                               buf "text-before-top-level"))
+                  (tool-index (eca-chat-test--history-index
+                               buf "topServer__topLevelTool")))
+              (expect text-index :not :to-be nil)
+              (expect tool-index :not :to-be nil)
+              (expect text-index :to-be-less-than tool-index))
+            (eca-chat-test--stream-flush buf)
+            (expect (eca-chat-test--string-count
+                     (eca-chat-test--expanded-parent-history-text
+                      buf "parent-tool")
+                     "text-before-top-level")
+                    :to-equal 1))
+        (when (buffer-live-p buf)
+          (kill-buffer buf)))))
+
+  (it "flushes subagent text before parent completion"
+    (let ((buf (eca-chat-test--make-render-buffer))
+          (session (make-eca--session))
+          (eca-chat-stream-flush-interval 60)
+          (summary "unique-subagent-complete-marker"))
+      (unwind-protect
+          (eca-chat--with-current-buffer buf
+            (eca-chat-test--render-subagent-parent
+             session buf "parent-tool" "child-chat")
+            (eca-chat-test--render-subagent-text
+             session buf "parent-tool" "text-before-completion" "child-chat")
+            (expect (eca-chat-test--history-text buf)
+                    :not :to-match (regexp-quote "text-before-completion"))
+            (eca-chat--render-content
+             session buf "assistant"
+             (list :type "toolCalled"
+                   :id "parent-tool"
+                   :name "subagentTool"
+                   :server "testServer"
+                   :arguments (list :agent "parent-tool-agent"
+                                    :task "parent-tool task")
+                   :summary summary
+                   :details (list :type "subagent"
+                                  :subagentChatId "child-chat"
+                                  :model "test-model"
+                                  :step 1
+                                  :maxSteps 1))
+             nil)
+            (eca-chat--expandable-content-toggle "parent-tool" t nil)
+            (let ((parent-text (eca-chat-test--expanded-parent-history-text
+                                buf "parent-tool")))
+              (expect parent-text
+                      :to-match (regexp-quote "text-before-completion"))
+              (expect (eca-chat-test--history-index buf summary)
+                      :not :to-be nil)))
+        (when (buffer-live-p buf)
+          (kill-buffer buf)))))
+
+  (it "keeps final subagent output with streamed parent content"
+    (let ((buf (eca-chat-test--make-render-buffer))
+          (session (make-eca--session))
+          (eca-chat-stream-flush-interval 60)
+          (streamed-text "streamed child output marker")
+          (final-output "final subagent output marker"))
+      (unwind-protect
+          (eca-chat--with-current-buffer buf
+            (eca-chat-test--render-subagent-parent
+             session buf "parent-tool" "child-chat")
+            (eca-chat-test--render-subagent-text
+             session buf "parent-tool" streamed-text "child-chat")
+            (eca-chat-test--stream-flush buf)
+            (eca-chat--render-content
+             session buf "assistant"
+             (list :type "toolCalled"
+                   :id "parent-tool"
+                   :name "subagentTool"
+                   :server "testServer"
+                   :arguments (list :agent "parent-tool-agent"
+                                    :task "parent-tool task")
+                   :details (list :type "subagent"
+                                  :subagentChatId "child-chat"
+                                  :model "test-model"
+                                  :step 1
+                                  :maxSteps 1)
+                   :outputs (list (list :text final-output)))
+             nil)
+            (let ((parent-text (eca-chat-test--expanded-parent-history-text
+                                buf "parent-tool")))
+              (expect (eca-chat-test--string-count parent-text streamed-text)
+                      :to-equal 1)
+              (expect (eca-chat-test--string-count parent-text final-output)
+                      :to-equal 1))
+            (eca-chat--expandable-content-toggle "parent-tool" t t)
+            (eca-chat--expandable-content-toggle "parent-tool" t nil)
+            (let ((parent-text (eca-chat-test--expanded-parent-history-text
+                                buf "parent-tool")))
+              (expect (eca-chat-test--string-count parent-text streamed-text)
+                      :to-equal 1)
+              (expect (eca-chat-test--string-count parent-text final-output)
+                      :to-equal 1)))
+        (when (buffer-live-p buf)
+          (kill-buffer buf)))))
+
+  (it "keeps final subagent output when streamed text repeats output"
+    (let ((buf (eca-chat-test--make-render-buffer))
+          (session (make-eca--session))
+          (eca-chat-stream-flush-interval 60)
+          (streamed-text "child says OK before completion")
+          (final-output "OK"))
+      (unwind-protect
+          (eca-chat--with-current-buffer buf
+            (eca-chat-test--render-subagent-parent
+             session buf "parent-tool" "child-chat")
+            (eca-chat-test--render-subagent-text
+             session buf "parent-tool" streamed-text "child-chat")
+            (eca-chat-test--stream-flush buf)
+            (eca-chat--render-content
+             session buf "assistant"
+             (list :type "toolCalled"
+                   :id "parent-tool"
+                   :name "subagentTool"
+                   :server "testServer"
+                   :arguments (list :agent "parent-tool-agent"
+                                    :task "parent-tool task")
+                   :details (list :type "subagent"
+                                  :subagentChatId "child-chat"
+                                  :model "test-model"
+                                  :step 1
+                                  :maxSteps 1)
+                   :outputs (list (list :text final-output)))
+             nil)
+            (let ((parent-text (eca-chat-test--expanded-parent-history-text
+                                buf "parent-tool")))
+              (expect (eca-chat-test--string-count parent-text streamed-text)
+                      :to-equal 1)
+              (expect (eca-chat-test--string-count parent-text "Output:")
+                      :to-equal 1)
+              (expect (eca-chat-test--string-count parent-text final-output)
+                      :to-equal 2))
+            (eca-chat--expandable-content-toggle "parent-tool" t t)
+            (eca-chat--expandable-content-toggle "parent-tool" t nil)
+            (let ((parent-text (eca-chat-test--expanded-parent-history-text
+                                buf "parent-tool")))
+              (expect (eca-chat-test--string-count parent-text streamed-text)
+                      :to-equal 1)
+              (expect (eca-chat-test--string-count parent-text "Output:")
+                      :to-equal 1)
+              (expect (eca-chat-test--string-count parent-text final-output)
+                      :to-equal 2)))
+        (when (buffer-live-p buf)
+          (kill-buffer buf)))))
+
+  (it "keeps parent final output when nested child output matches"
+    (let ((buf (eca-chat-test--make-render-buffer))
+          (session (make-eca--session))
+          (eca-chat-stream-flush-interval 60)
+          (final-output "same nested output marker"))
+      (unwind-protect
+          (eca-chat--with-current-buffer buf
+            (eca-chat-test--render-subagent-parent
+             session buf "parent-output-match" "parent-chat")
+            (eca-chat--render-content
+             session buf "assistant"
+             (list :type "toolCallRun"
+                   :id "child-output-match"
+                   :name "subagentTool"
+                   :server "testServer"
+                   :arguments (list :agent "child-agent"
+                                    :task "child task")
+                   :details (list :type "subagent"
+                                  :subagentChatId "child-chat"
+                                  :model "test-model"
+                                  :step 1
+                                  :maxSteps 1))
+             nil "parent-output-match" "parent-chat")
+            (eca-chat--render-content
+             session buf "assistant"
+             (list :type "toolCalled"
+                   :id "child-output-match"
+                   :name "subagentTool"
+                   :server "testServer"
+                   :arguments (list :agent "child-agent"
+                                    :task "child task")
+                   :details (list :type "subagent"
+                                  :subagentChatId "child-chat"
+                                  :model "test-model"
+                                  :step 1
+                                  :maxSteps 1)
+                   :outputs (list (list :text final-output)))
+             nil "parent-output-match" "parent-chat")
+            (eca-chat--render-content
+             session buf "assistant"
+             (list :type "toolCalled"
+                   :id "parent-output-match"
+                   :name "subagentTool"
+                   :server "testServer"
+                   :arguments (list :agent "parent-agent"
+                                    :task "parent task")
+                   :details (list :type "subagent"
+                                  :subagentChatId "parent-chat"
+                                  :model "test-model"
+                                  :step 1
+                                  :maxSteps 1)
+                   :outputs (list (list :text final-output)))
+             nil)
+            (eca-chat--expandable-content-toggle
+             "parent-output-match" t nil)
+            (eca-chat--expandable-content-toggle
+             "child-output-match" t nil)
+            (let ((history (eca-chat-test--history-text buf)))
+              (expect (eca-chat-test--string-count history "Output:")
+                      :to-equal 2)
+              (expect (eca-chat-test--string-count history final-output)
+                      :to-equal 2)))
+        (when (buffer-live-p buf)
+          (kill-buffer buf)))))
+
+  (it "does not duplicate collapsed nested subagent output on replay"
+    (let ((buf (eca-chat-test--make-render-buffer))
+          (session (make-eca--session))
+          (eca-chat-stream-flush-interval 60)
+          (final-output "collapsed child final output marker")
+          completion)
+      (unwind-protect
+          (eca-chat--with-current-buffer buf
+            (eca-chat-test--render-subagent-parent
+             session buf "collapsed-parent-output" "parent-chat")
+            (eca-chat--render-content
+             session buf "assistant"
+             (list :type "toolCallRun"
+                   :id "collapsed-child-output"
+                   :name "subagentTool"
+                   :server "testServer"
+                   :arguments (list :agent "child-agent"
+                                    :task "child task")
+                   :details (list :type "subagent"
+                                  :subagentChatId "child-chat"
+                                  :model "test-model"
+                                  :step 1
+                                  :maxSteps 1))
+             nil "collapsed-parent-output" "parent-chat")
+            (setq completion
+                  (list :type "toolCalled"
+                        :id "collapsed-child-output"
+                        :name "subagentTool"
+                        :server "testServer"
+                        :arguments (list :agent "child-agent"
+                                         :task "child task")
+                        :details (list :type "subagent"
+                                       :subagentChatId "child-chat"
+                                       :model "test-model"
+                                       :step 1
+                                       :maxSteps 1)
+                        :outputs (list (list :text final-output))))
+            (eca-chat--render-content
+             session buf "assistant" completion nil
+             "collapsed-parent-output" "parent-chat")
+            (eca-chat--expandable-content-toggle
+             "collapsed-parent-output" t nil)
+            (eca-chat--expandable-content-toggle
+             "collapsed-child-output" t nil)
+            (eca-chat--render-content
+             session buf "assistant" completion nil
+             "collapsed-parent-output" "parent-chat")
+            (let* ((child-ov (eca-chat--get-expandable-content
+                              "collapsed-child-output"))
+                   (content-ov (overlay-get
+                                child-ov
+                                'eca-chat--expandable-content-ov-content))
+                   (child-content (substring-no-properties
+                                   (overlay-get
+                                    content-ov
+                                    'eca-chat--expandable-content-content))))
+              (expect (eca-chat-test--string-count child-content "Output:")
+                      :to-equal 1)
+              (expect (eca-chat-test--string-count child-content final-output)
+                      :to-equal 1)))
+        (when (buffer-live-p buf)
+          (kill-buffer buf)))))
+
+  (it "does not duplicate final subagent output on repeated completion"
+    (let ((buf (eca-chat-test--make-render-buffer))
+          (session (make-eca--session))
+          (eca-chat-stream-flush-interval 60)
+          (streamed-text "streamed child output marker")
+          (final-output "repeat final output marker")
+          completion)
+      (unwind-protect
+          (eca-chat--with-current-buffer buf
+            (eca-chat-test--render-subagent-parent
+             session buf "parent-tool" "child-chat")
+            (eca-chat-test--render-subagent-text
+             session buf "parent-tool" streamed-text "child-chat")
+            (eca-chat-test--stream-flush buf)
+            (setq completion
+                  (list :type "toolCalled"
+                        :id "parent-tool"
+                        :name "subagentTool"
+                        :server "testServer"
+                        :arguments (list :agent "parent-tool-agent"
+                                         :task "parent-tool task")
+                        :details (list :type "subagent"
+                                       :subagentChatId "child-chat"
+                                       :model "test-model"
+                                       :step 1
+                                       :maxSteps 1)
+                        :outputs (list (list :text final-output))))
+            (eca-chat--render-content session buf "assistant" completion nil)
+            (eca-chat--render-content session buf "assistant" completion nil)
+            (let ((parent-text (eca-chat-test--expanded-parent-history-text
+                                buf "parent-tool")))
+              (expect (eca-chat-test--string-count parent-text streamed-text)
+                      :to-equal 1)
+              (expect (eca-chat-test--string-count parent-text "Output:")
+                      :to-equal 1)
+              (expect (eca-chat-test--string-count parent-text final-output)
+                      :to-equal 1)))
+        (when (buffer-live-p buf)
+          (kill-buffer buf)))))
+
+  (it "flushes subagent chunks in order for one parent"
+    (let ((buf (eca-chat-test--make-render-buffer))
+          (session (make-eca--session))
+          (eca-chat-stream-flush-interval 60))
+      (unwind-protect
+          (eca-chat--with-current-buffer buf
+            (eca-chat-test--render-subagent-parent
+             session buf "parent-tool" "child-chat")
+            (eca-chat-test--render-subagent-text
+             session buf "parent-tool" "sub-one " "child-chat")
+            (eca-chat-test--render-subagent-text
+             session buf "parent-tool" "sub-two " "child-chat")
+            (eca-chat-test--render-subagent-text
+             session buf "parent-tool" "sub-three" "child-chat")
+            (eca-chat-test--stream-flush buf)
+            (let ((parent-text (eca-chat-test--expanded-parent-history-text
+                                buf "parent-tool")))
+              (expect parent-text
+                      :to-match (regexp-quote "sub-one sub-two sub-three"))
+              (expect (string-match-p (regexp-quote "sub-one ") parent-text)
+                      :to-be-less-than
+                      (string-match-p (regexp-quote "sub-two ") parent-text))
+              (expect (string-match-p (regexp-quote "sub-two ") parent-text)
+                      :to-be-less-than
+                      (string-match-p (regexp-quote "sub-three") parent-text))
+              (eca-chat-test--stream-flush buf)
+              (setq parent-text (eca-chat-test--expanded-parent-history-text
+                                 buf "parent-tool"))
+              (expect (eca-chat-test--string-count parent-text "sub-one ")
+                      :to-equal 1)
+              (expect (eca-chat-test--string-count parent-text "sub-two ")
+                      :to-equal 1)
+              (expect (eca-chat-test--string-count parent-text "sub-three")
+                      :to-equal 1)))
+        (when (buffer-live-p buf)
+          (kill-buffer buf)))))
+
+  (it "immediate mode renders subagent text immediately"
+    (let ((buf (eca-chat-test--make-render-buffer))
+          (session (make-eca--session))
+          (eca-chat-stream-flush-interval nil))
+      (unwind-protect
+          (eca-chat--with-current-buffer buf
+            (eca-chat-test--render-subagent-parent
+             session buf "parent-tool" "child-chat")
+            (eca-chat-test--render-subagent-text
+             session buf "parent-tool" "immediate-subagent-token" "child-chat")
+            (let ((parent-text (eca-chat-test--expanded-parent-history-text
+                                buf "parent-tool")))
+              (expect parent-text
+                      :to-match (regexp-quote "immediate-subagent-token"))
+              (eca-chat-test--stream-flush buf)
+              (expect (eca-chat-test--string-count
+                       (eca-chat-test--expanded-parent-history-text
+                        buf "parent-tool")
+                       "immediate-subagent-token")
+                      :to-equal 1)))
+        (when (buffer-live-p buf)
+          (kill-buffer buf)))))
+
+  (it "flushes all queues before progress finished finalization"
+    (let ((buf (eca-chat-test--make-render-buffer))
+          (session (make-eca--session))
+          (eca-chat-stream-flush-interval 60)
+          history-at-finalize
+          pending-at-finalize)
+      (unwind-protect
+          (eca-chat--with-current-buffer buf
+            (setq-local eca-chat--progress-text "thinking...")
+            (setq-local eca-chat--chat-loading t)
+            (setq-local eca-chat--last-user-message-pos (point-min))
+            (spy-on 'eca-chat--align-tables)
+            (spy-on 'eca-chat--beautify-tables)
+            (spy-on 'eca-chat--refresh-progress)
+            (spy-on 'eca-chat--set-chat-loading)
+            (spy-on 'eca-chat--send-steered-prompt)
+            (spy-on 'eca-chat--send-queued-prompt)
+            (cl-letf (((symbol-function 'eca-chat--font-lock-ensure)
+                       (lambda (&rest _)
+                         (setq pending-at-finalize
+                               (eca-chat--stream-pending-p))
+                         (when (eca-chat--get-expandable-content
+                                "finish-parent")
+                           (eca-chat--expandable-content-toggle
+                            "finish-parent" t nil))
+                         (when (eca-chat--get-expandable-content
+                                "finish-prepare")
+                           (eca-chat--expandable-content-toggle
+                            "finish-prepare" t nil))
+                         (setq history-at-finalize
+                               (eca-chat-test--history-text buf)))))
+              (eca-chat-test--render-subagent-parent
+               session buf "finish-parent" "finish-child")
+              (eca-chat-test--render-subagent-text
+               session buf "finish-parent" "finish child text"
+               "finish-child")
+              (eca-chat-test--render-tool-call-prepare
+               session buf "finish-prepare" "finish prepare text")
+              (eca-chat--render-content
+               session buf "system"
+               (list :type "progress" :state "finished") nil))
+            (expect pending-at-finalize :to-be nil)
+            (expect history-at-finalize
+                    :to-match (regexp-quote "finish child text"))
+            (expect history-at-finalize
+                    :to-match (regexp-quote "finish prepare text")))
+        (when (buffer-live-p buf)
+          (ignore-errors (eca-chat-test--stream-flush buf))
           (kill-buffer buf)))))
 
   (it "clear cancels pending stream state before a later callback"

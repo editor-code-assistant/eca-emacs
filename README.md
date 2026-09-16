@@ -174,7 +174,7 @@ Chat
 - `eca-chat-prompt-prefix`: Prompt prefix string shown before user input.
 - `eca-chat-prompt-prefix-loading`: Prompt prefix string while a request is in progress.
 - `eca-chat-read-only-history`: Whether the chat history/output, the `---` separator and the task area are read-only so only the progress, `@`-context and prompt input lines stay editable (default `t`). Set to `nil` to keep the whole buffer writable.
-- `eca-chat-stream-flush-interval`: Seconds to buffer top-level assistant stream chunks before rendering (default `0.05`). Set to `nil` for immediate rendering.
+- `eca-chat-stream-flush-interval`: Seconds to buffer chat stream UI before rendering (default `0.05`). This delays top-level assistant text, subagent assistant text, and `toolCallPrepare` UI updates. Set to `nil` for immediate rendering.
 - `eca-chat-hide-markdown-markup`: Whether to hide markdown markup in chat buffers (default `t`). Set to `nil` to keep fences/backticks visible, which may avoid fenced code blocks jumping while typing or streaming.
 - `eca-chat-fontify-prompt`: Whether to apply Markdown fontification to prompt text (default `t`). Set to `nil` to skip prompt-area Markdown block scans in large chat buffers.
 - `eca-chat-history-page-size`: Number of newest messages to load when opening a persisted chat (default `50`). When non-nil, `eca-chat-resume` opens chats with a bounded window and shows a "Load older messages" control to page through earlier history on demand; set to `nil` to replay the entire history on open.
