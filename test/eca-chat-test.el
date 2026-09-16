@@ -2883,7 +2883,49 @@ precedes the prompt separator.  Caller must kill the buffer."
               (expect (get-char-property (point-min) 'face) :to-be nil)))
         (kill-buffer buf)))))
 
+(describe "eca-chat--create-buffer"
+  ;; Regression (#323): the buffer used to inherit `default-directory'
+  ;; from whatever buffer was current, which for a new session is
+  ;; the async `initialize' callback, not the caller of `eca'.
+  (it "roots the buffer at the session's first workspace folder"
+    (let ((session (make-eca--session :workspace-folders '("/ws" "/other")))
+          buf)
+      (unwind-protect
+          (with-temp-buffer
+            (setq default-directory "/elsewhere/")
+            (setq buf (eca-chat--create-buffer session))
+            (expect (buffer-local-value 'default-directory buf)
+                    :to-equal "/ws/"))
+        (when (buffer-live-p buf)
+          (kill-buffer buf)))))
+
+  (it "inherits default-directory when the session has no workspace folder"
+    (let ((session (make-eca--session))
+          buf)
+      (unwind-protect
+          (with-temp-buffer
+            (setq default-directory "/elsewhere/")
+            (setq buf (eca-chat--create-buffer session))
+            (expect (buffer-local-value 'default-directory buf)
+                    :to-equal "/elsewhere/"))
+        (when (buffer-live-p buf)
+          (kill-buffer buf))))))
+
 (describe "eca-chat-opened"
+  (it "keeps the workspace default-directory after enabling eca-chat-mode"
+    (spy-on 'eca-chat--force-tab-line-update)
+    (let ((session (make-eca--session :workspace-folders '("/ws")))
+          registered)
+      (unwind-protect
+          (with-temp-buffer
+            (setq default-directory "/elsewhere/")
+            (eca-chat-opened session (list :chatId "chat-DIR" :title "Dir"))
+            (setq registered (eca-get (eca--session-chats session) "chat-DIR"))
+            (expect (buffer-local-value 'default-directory registered)
+                    :to-equal "/ws/"))
+        (when (buffer-live-p registered)
+          (kill-buffer registered)))))
+
   ;; Regression: resuming after a restart must not replay into a stale
   ;; closed buffer left in the registry by `eca-chat-exit'.
   (it "creates a fresh buffer when the registered chat buffer is closed"

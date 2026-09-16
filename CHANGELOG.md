@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Bugfix: new chat buffers now get the session's first workspace folder as `default-directory` (#323). It was inherited from whichever buffer was current when the buffer got created, which for a new session is the async `initialize` response, so `(let ((default-directory dir)) (eca))` wrappers ended up with the chat rooted in the previous buffer's directory.
 - User messages in the chat now stand out as a turn marker (#265): `eca-chat-user-messages-face` is bold on the theme-derived block background instead of `font-lock-doc-face`, painted over the whole message so markdown spans in it keep the background, and an empty line separates the message from the previous answer.
 - `eca-workspaces-new-chat` (`+`) now always asks which workspace to start the chat in, defaulting to the one at point, and no longer requires a match: any other existing directory starts a session there. Typing a path inside a running workspace reuses its session instead of starting a second server.
 - Bugfix: a tool call awaiting approval whose expanded body is taller than the window no longer gets its label and Accept/Reject buttons scrolled above the window (#308). The window is anchored on the tool call with point on its Accept button (RET accepts), and once it resolves the view moves on to the next pending approval or back to the prompt.

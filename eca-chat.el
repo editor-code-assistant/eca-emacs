@@ -1059,8 +1059,17 @@ SESSION; otherwise return the session's last chat buffer."
     (eca-chat--get-last-buffer session)))
 
 (defun eca-chat--create-buffer (session)
-  "Create the eca chat buffer for SESSION."
-  (get-buffer-create (generate-new-buffer-name (eca-chat-new-buffer-name session))))
+  "Create the eca chat buffer for SESSION.
+The buffer's `default-directory' is the session's first workspace
+folder, not the one inherited from the current buffer: for a new
+session this runs from the async `initialize' callback, when the
+caller's `default-directory' is no longer in effect (#323)."
+  (let ((buffer (get-buffer-create
+                 (generate-new-buffer-name (eca-chat-new-buffer-name session)))))
+    (when-let* ((dir (car (eca--session-workspace-folders session))))
+      (with-current-buffer buffer
+        (setq-local default-directory (file-name-as-directory dir))))
+    buffer))
 
 (defun eca-chat--get-chat-buffer (session chat-id)
   "Get chat buffer for SESSION and CHAT-ID, or nil when none registered.
