@@ -517,7 +517,10 @@ in parent."
                       (spec (-first (lambda (s) (and (eq 'child (plist-get s :type))
                                                      (string= id (plist-get s :id))))
                                     segments)))
-            (when label (plist-put spec :label label))
+            (when label
+              (plist-put spec :label label)
+              (plist-put spec :icon-face
+                         (get-text-property 0 'font-lock-face label)))
             (plist-put spec :content new-content))))
     ;; Block not rendered yet
     (if parent-id

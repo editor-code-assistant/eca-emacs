@@ -114,9 +114,6 @@ does not treat the first line as metadata.  Returns FN's value."
                   (make-hash-table :test 'equal))
       (setq-local eca-chat--tool-call-elapsed-times
                   (make-hash-table :test 'equal))
-      (setq-local eca-chat--stream-pending-parent-chunks
-                  (make-hash-table :test 'equal))
-      (setq-local eca-chat--stream-pending-parent-order nil)
       (setq-local eca-chat--stream-pending-render-order nil)
       (setq-local eca-chat--subagent-chat-id->tool-call-id
                   (make-hash-table :test 'equal))
@@ -3498,6 +3495,59 @@ detected even on filesystems with a coarse modtime resolution."
                       :to-equal 2)
               (expect (eca-chat-test--string-count history final-output)
                       :to-equal 2)))
+        (when (buffer-live-p buf)
+          (kill-buffer buf)))))
+
+  (it "keeps nested subagent final label on parent replay"
+    (let ((buf (eca-chat-test--make-render-buffer))
+          (session (make-eca--session))
+          (eca-chat-stream-flush-interval 60)
+          (running-label "nested child running label marker")
+          (final-label "nested child final label marker"))
+      (unwind-protect
+          (eca-chat--with-current-buffer buf
+            (eca-chat-test--render-subagent-parent
+             session buf "label-parent" "parent-chat")
+            (eca-chat--render-content
+             session buf "assistant"
+             (list :type "toolCallRun"
+                   :id "label-child"
+                   :name "subagentTool"
+                   :server "testServer"
+                   :summary running-label
+                   :arguments (list :agent "child-agent"
+                                    :task "child task")
+                   :details (list :type "subagent"
+                                  :subagentChatId "child-chat"
+                                  :model "test-model"
+                                  :step 1
+                                  :maxSteps 1))
+             nil "label-parent" "parent-chat")
+            (eca-chat--expandable-content-toggle "label-parent" t nil)
+            (eca-chat-test--render-subagent-text
+             session buf "label-child" "nested child streamed marker"
+             "child-chat")
+            (eca-chat-test--stream-flush buf)
+            (eca-chat--render-content
+             session buf "assistant"
+             (list :type "toolCalled"
+                   :id "label-child"
+                   :name "subagentTool"
+                   :server "testServer"
+                   :summary final-label
+                   :arguments (list :agent "child-agent"
+                                    :task "child task")
+                   :details (list :type "subagent"
+                                  :subagentChatId "child-chat"
+                                  :model "test-model"
+                                  :step 1
+                                  :maxSteps 1))
+             nil "label-parent" "parent-chat")
+            (eca-chat--expandable-content-toggle "label-parent" t t)
+            (eca-chat--expandable-content-toggle "label-parent" t nil)
+            (let ((history (eca-chat-test--history-text buf)))
+              (expect history :to-match (regexp-quote final-label))
+              (expect history :not :to-match (regexp-quote running-label))))
         (when (buffer-live-p buf)
           (kill-buffer buf)))))
 

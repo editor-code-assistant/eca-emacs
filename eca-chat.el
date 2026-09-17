@@ -886,12 +886,6 @@ once by `eca-chat-cleared'.")
   "Repeating timer that updates elapsed-time display for running tool calls.")
 
 (defvar-local eca-chat--table-resize-timer nil)
-(defvar-local eca-chat--stream-pending-chunks nil
-  "Pending top-level assistant text chunks for buffered stream rendering.")
-(defvar-local eca-chat--stream-pending-parent-chunks nil
-  "Hash table from parent tool-call IDs to pending assistant text chunks.")
-(defvar-local eca-chat--stream-pending-parent-order nil
-  "Parent tool-call IDs with pending stream chunks, in first-seen order.")
 (defvar-local eca-chat--stream-pending-render-order nil
   "Pending stream render entries, in first-seen order.")
 (defvar-local eca-chat--stream-flush-timer nil
@@ -4252,9 +4246,6 @@ CHILD, NAME, DOCSTRING and BODY are passed down."
               (make-hash-table :test 'equal))
   (setq-local eca-chat--tool-call-elapsed-times
               (make-hash-table :test 'equal))
-  (setq-local eca-chat--stream-pending-parent-chunks
-              (make-hash-table :test 'equal))
-  (setq-local eca-chat--stream-pending-parent-order nil)
   (setq-local eca-chat--stream-pending-render-order nil)
   (setq-local eca-chat--subagent-chat-id->tool-call-id
               (make-hash-table :test 'equal))
@@ -4614,10 +4605,8 @@ auto-allowed or manually approved), coloring commands accordingly."
      nil
      parent-id)))
 
-(defun eca-chat--store-subagent-final-output-fragment (id fragment parent-id)
-  "Store final output FRAGMENT marker for subagent ID."
-  (when-let* ((ov (eca-chat--get-expandable-content id)))
-    (overlay-put ov 'eca-chat--subagent-final-output-fragment fragment))
+(defun eca-chat--update-nested-child-spec (parent-id id &rest props)
+  "Update durable child spec for nested block ID under PARENT-ID."
   (when-let* ((parent-ov (and parent-id
                               (eca-chat--get-expandable-content parent-id)))
               (segments (overlay-get parent-ov
@@ -4626,7 +4615,15 @@ auto-allowed or manually approved), coloring commands accordingly."
                               (and (eq 'child (plist-get s :type))
                                    (string= id (plist-get s :id))))
                             segments)))
-    (plist-put spec :subagent-final-output-fragment fragment)))
+    (while props
+      (plist-put spec (pop props) (pop props)))))
+
+(defun eca-chat--store-subagent-final-output-fragment (id fragment parent-id)
+  "Store final output FRAGMENT marker for subagent ID."
+  (when-let* ((ov (eca-chat--get-expandable-content id)))
+    (overlay-put ov 'eca-chat--subagent-final-output-fragment fragment))
+  (eca-chat--update-nested-child-spec
+   parent-id id :subagent-final-output-fragment fragment))
 
 (defun eca-chat--tool-call-subagent-details (id args label approval-text time status parent-id details &optional output-text)
   "Update tool call UI for a subagent tool call.
@@ -4711,6 +4708,12 @@ Append STATUS symbol.  Optional PARENT-ID for nested rendering."
                (new-icons (eca-chat--make-expandable-icons new-icon-face label-indent)))
           (overlay-put existing-ov 'eca-chat--expandable-content-open-icon (car new-icons))
           (overlay-put existing-ov 'eca-chat--expandable-content-close-icon (cdr new-icons))
+          (when (overlay-get existing-ov 'eca-chat--expandable-content-nested)
+            (eca-chat--update-nested-child-spec
+             parent-id id
+             :label new-label
+             :content content
+             :icon-face new-icon-face))
           (save-excursion
             (goto-char (overlay-start existing-ov))
             (delete-region (point) (1- (overlay-start ov-content)))
