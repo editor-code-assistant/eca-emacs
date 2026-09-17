@@ -118,7 +118,6 @@ does not treat the first line as metadata.  Returns FN's value."
                   (make-hash-table :test 'equal))
       (setq-local eca-chat--stream-pending-parent-order nil)
       (setq-local eca-chat--stream-pending-render-order nil)
-      (setq-local eca-chat--stream-pending-copy-start nil)
       (setq-local eca-chat--subagent-chat-id->tool-call-id
                   (make-hash-table :test 'equal))
       (setq-local eca-chat--subagent-usage
@@ -1765,6 +1764,31 @@ around rendering applies, as when the chat window is selected."
             (eca-chat-copy-at-point t)
             (expect (current-kill 0 t) :to-equal "final answer"))
         (when (buffer-live-p buf)
+          (kill-buffer buf)))))
+
+  (it "copies only buffered text after the last tool interruption"
+    (let ((buf (eca-chat-test--make-render-buffer))
+          (session (make-eca--session))
+          (eca-chat-stream-flush-interval 60)
+          kill-ring
+          kill-ring-yank-pointer)
+      (unwind-protect
+          (eca-chat--with-current-buffer buf
+            (eca-chat-test--render-tool-call-prepare
+             session buf "copy-prep-a" "prepare A args" "Prepare A marker")
+            (eca-chat-test--render-assistant-text
+             session buf "top text one marker")
+            (eca-chat-test--render-tool-call-prepare
+             session buf "copy-prep-b" "prepare B args" "Prepare B marker")
+            (eca-chat-test--render-assistant-text
+             session buf "top text two marker")
+            (eca-chat-test--stream-flush buf)
+            (eca-chat--refresh-copy-scopes)
+            (eca-chat-copy-at-point t)
+            (expect (current-kill 0 t)
+                    :to-equal "top text two marker"))
+        (when (buffer-live-p buf)
+          (ignore-errors (eca-chat-test--stream-flush buf))
           (kill-buffer buf)))))
 
   (it "copies response text including fenced code"

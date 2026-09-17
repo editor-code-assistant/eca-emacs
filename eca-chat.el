@@ -894,8 +894,6 @@ once by `eca-chat-cleared'.")
   "Parent tool-call IDs with pending stream chunks, in first-seen order.")
 (defvar-local eca-chat--stream-pending-render-order nil
   "Pending stream render entries, in first-seen order.")
-(defvar-local eca-chat--stream-pending-copy-start nil
-  "Non-nil when buffered top-level text must set copy start.")
 (defvar-local eca-chat--stream-flush-timer nil
   "Timer that flushes pending assistant stream text.")
 (defvar-local eca-chat--fontify-timer nil
@@ -1824,7 +1822,6 @@ Recovery path for a corrupted prompt block (see #305)."
   (clrhash (eca-chat--tool-call-prepare-display-table))
   (setq-local eca-chat--tool-call-prepare-pending-order nil)
   (setq-local eca-chat--stream-pending-render-order nil)
-  (setq-local eca-chat--stream-pending-copy-start nil)
   (clrhash (eca-chat--tool-call-prepare-finalized-table))
   (clrhash eca-chat--subagent-chat-id->tool-call-id)
   (clrhash eca-chat--subagent-usage)
@@ -3808,9 +3805,11 @@ Add a overlay before with OVERLAY-KEY = OVERLAY-VALUE if passed."
   (remhash id table)
   (delete id order))
 
-(defun eca-chat--stream-render-entry (kind &optional id chunks)
-  "Return render-order entry for KIND, optional ID, and CHUNKS."
-  (list :kind kind :id id :chunks chunks))
+(defun eca-chat--stream-render-entry (kind &optional id chunks copy-start)
+  "Return render-order entry for KIND, optional ID, and CHUNKS.
+COPY-START means the entry starts a response copy scope."
+  (append (list :kind kind :id id :chunks chunks)
+          (when copy-start (list :copy-start t))))
 
 (defun eca-chat--stream-render-entry-kind (entry)
   "Return the stream render kind from ENTRY."
@@ -3823,6 +3822,10 @@ Add a overlay before with OVERLAY-KEY = OVERLAY-VALUE if passed."
 (defun eca-chat--stream-render-entry-chunks (entry)
   "Return the stream render chunks from ENTRY."
   (plist-get entry :chunks))
+
+(defun eca-chat--stream-render-entry-copy-start-p (entry)
+  "Return non-nil when ENTRY starts a response copy scope."
+  (plist-get entry :copy-start))
 
 (defun eca-chat--stream-render-entry-matches-p (entry kind &optional id)
   "Return non-nil when ENTRY matches KIND and optional ID."
@@ -3839,22 +3842,28 @@ Add a overlay before with OVERLAY-KEY = OVERLAY-VALUE if passed."
                 (append eca-chat--stream-pending-render-order
                         (list (eca-chat--stream-render-entry kind id))))))
 
-(defun eca-chat--stream-render-order-add-chunk (kind text &optional id)
-  "Queue TEXT in render order for KIND and optional ID."
+(defun eca-chat--stream-render-order-add-chunk
+    (kind text &optional id copy-start)
+  "Queue TEXT in render order for KIND and optional ID.
+COPY-START marks top-level text as the start of a copy scope."
   (let* ((last-cell (last eca-chat--stream-pending-render-order))
          (last-entry (car last-cell))
          (chunks (and last-entry
                       (eca-chat--stream-render-entry-chunks last-entry))))
     (if (and last-entry
              (eca-chat--stream-render-entry-matches-p last-entry kind id))
-        (setcar last-cell
-                (plist-put last-entry :chunks
-                           (eca-chat--pending-chunks-push text chunks)))
+        (let ((entry (plist-put last-entry :chunks
+                                (eca-chat--pending-chunks-push
+                                 text chunks))))
+          (when copy-start
+            (setq entry (plist-put entry :copy-start t)))
+          (setcar last-cell entry))
       (setq-local eca-chat--stream-pending-render-order
                   (append eca-chat--stream-pending-render-order
                           (list (eca-chat--stream-render-entry
                                  kind id
-                                 (eca-chat--pending-chunks-push text nil))))))))
+                                 (eca-chat--pending-chunks-push text nil)
+                                 copy-start)))))))
 
 (defun eca-chat--stream-render-order-remove-entry (entry)
   "Remove ENTRY from pending render order."
@@ -3960,13 +3969,16 @@ Add a overlay before with OVERLAY-KEY = OVERLAY-VALUE if passed."
   (or eca-chat--stream-pending-render-order
       (eca-chat--tool-call-prepare-pending-p)))
 
-(defun eca-chat--stream-buffered-text (text &optional parent-tool-call-id)
+(defun eca-chat--stream-buffered-text
+    (text &optional parent-tool-call-id copy-start)
   "Buffer assistant stream TEXT in the current chat.
-PARENT-TOOL-CALL-ID stores TEXT under a subagent parent block."
+PARENT-TOOL-CALL-ID stores TEXT under a subagent parent block.
+COPY-START marks top-level TEXT as a response copy-scope start."
   (eca-chat--stream-render-order-add-chunk
    (if parent-tool-call-id 'parent 'top-level)
    text
-   parent-tool-call-id)
+   parent-tool-call-id
+   (and (not parent-tool-call-id) copy-start))
   (eca-chat--stream-schedule-flush))
 
 (defun eca-chat--stream-flush-parent-entry (entry)
@@ -3997,19 +4009,17 @@ PARENT-TOOL-CALL-ID stores TEXT under a subagent parent block."
   (eca-chat--stream-render-order-remove-entry entry)
   (let ((text (eca-chat--pending-chunks-text
                (eca-chat--stream-render-entry-chunks entry))))
-    (unwind-protect
-        (unless (string-empty-p text)
-          (save-excursion
-            (when eca-chat--stream-pending-copy-start
-              (setq-local eca-chat--last-response-copy-start
-                          (copy-marker
-                           (eca-chat--content-insertion-point)
-                           nil)))
-            (eca-chat--add-text-content text)
-            (eca-chat--schedule-fontify)
-            (eca-chat--protect-non-prompt
-             eca-chat--last-user-message-pos)))
-      (setq-local eca-chat--stream-pending-copy-start nil))))
+    (unless (string-empty-p text)
+      (save-excursion
+        (when (eca-chat--stream-render-entry-copy-start-p entry)
+          (setq-local eca-chat--last-response-copy-start
+                      (copy-marker
+                       (eca-chat--content-insertion-point)
+                       nil)))
+        (eca-chat--add-text-content text)
+        (eca-chat--schedule-fontify)
+        (eca-chat--protect-non-prompt
+         eca-chat--last-user-message-pos)))))
 
 (defun eca-chat--stream-flush-top-level ()
   "Render pending top-level assistant stream text in the current chat."
@@ -4246,7 +4256,6 @@ CHILD, NAME, DOCSTRING and BODY are passed down."
               (make-hash-table :test 'equal))
   (setq-local eca-chat--stream-pending-parent-order nil)
   (setq-local eca-chat--stream-pending-render-order nil)
-  (setq-local eca-chat--stream-pending-copy-start nil)
   (setq-local eca-chat--subagent-chat-id->tool-call-id
               (make-hash-table :test 'equal))
   (setq-local eca-chat--subagent-usage
@@ -5099,16 +5108,16 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
                     (eca-chat--stream-buffered-text text parent-tool-call-id)
                   (eca-chat--update-expandable-content
                    parent-tool-call-id nil text t))
-              (let ((buffered (eca-chat--stream-buffering-enabled-p)))
-                (unless (eq eca-chat--last-response-copy-kind 'text)
-                  (if buffered
-                      (setq-local eca-chat--stream-pending-copy-start t)
-                    (setq-local eca-chat--last-response-copy-start
-                                (copy-marker
-                                 (eca-chat--content-insertion-point) nil))))
+              (let ((buffered (eca-chat--stream-buffering-enabled-p))
+                    (copy-start (not (eq eca-chat--last-response-copy-kind
+                                         'text))))
+                (when (and copy-start (not buffered))
+                  (setq-local eca-chat--last-response-copy-start
+                              (copy-marker
+                               (eca-chat--content-insertion-point) nil)))
                 (setq-local eca-chat--last-response-copy-kind 'text)
                 (if buffered
-                    (eca-chat--stream-buffered-text text)
+                    (eca-chat--stream-buffered-text text nil copy-start)
                   (eca-chat--add-text-content text)
                   ;; Defer fontification for live text.  History replay
                   ;; does one explicit batch finalization after replay.
