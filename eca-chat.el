@@ -4605,6 +4605,20 @@ auto-allowed or manually approved), coloring commands accordingly."
      nil
      parent-id)))
 
+(defun eca-chat--store-subagent-final-output-fragment (id fragment parent-id)
+  "Store final output FRAGMENT marker for subagent ID."
+  (when-let* ((ov (eca-chat--get-expandable-content id)))
+    (overlay-put ov 'eca-chat--subagent-final-output-fragment fragment))
+  (when-let* ((parent-ov (and parent-id
+                              (eca-chat--get-expandable-content parent-id)))
+              (segments (overlay-get parent-ov
+                                     'eca-chat--expandable-content-segments))
+              (spec (-first (lambda (s)
+                              (and (eq 'child (plist-get s :type))
+                                   (string= id (plist-get s :id))))
+                            segments)))
+    (plist-put spec :subagent-final-output-fragment fragment)))
+
 (defun eca-chat--tool-call-subagent-details (id args label approval-text time status parent-id details &optional output-text)
   "Update tool call UI for a subagent tool call.
 ID and ARGS are from the tool call content.
@@ -4664,18 +4678,12 @@ Append STATUS symbol.  Optional PARENT-ID for nested rendering."
                               `(("Output" . ,(concat "\n" output-text))))))
           (output-fragment-text (and output-fragment
                                      (substring-no-properties output-fragment)))
-          ;; Collapsed nested blocks can recreate an overlay from stored
-          ;; content before the marker exists.  Check only this block's content.
           (output-present? (and output-fragment-text
                                 existing-ov
-                                (or (equal output-fragment-text
-                                           (overlay-get
-                                            existing-ov
-                                            'eca-chat--subagent-final-output-fragment))
-                                    (and existing-content-text
-                                         (string-match-p
-                                          (regexp-quote output-fragment-text)
-                                          existing-content-text)))))
+                                (equal output-fragment-text
+                                       (overlay-get
+                                        existing-ov
+                                        'eca-chat--subagent-final-output-fragment))))
           (output-to-append (and output-fragment
                                  (not output-present?)
                                  output-fragment))
@@ -4723,10 +4731,10 @@ Append STATUS symbol.  Optional PARENT-ID for nested rendering."
       (overlay-put ov 'eca-chat--tool-call-steps-info steps-info)
       (overlay-put ov 'eca-chat--tool-call-step step)
       (overlay-put ov 'eca-chat--tool-call-max-steps max-steps)
-      (overlay-put ov 'eca-chat--tool-call-time time)
-      (when output-fragment-text
-        (overlay-put ov 'eca-chat--subagent-final-output-fragment
-                     output-fragment-text)))))
+      (overlay-put ov 'eca-chat--tool-call-time time))
+    (when output-fragment-text
+      (eca-chat--store-subagent-final-output-fragment
+       id output-fragment-text parent-id))))
 
 (defun eca-chat--refresh-subagent-usage-label (tool-call-id)
   "Refresh the label of subagent TOOL-CALL-ID to reflect latest usage data.

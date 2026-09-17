@@ -3367,6 +3367,51 @@ detected even on filesystems with a coarse modtime resolution."
         (when (buffer-live-p buf)
           (kill-buffer buf)))))
 
+  (it "keeps final subagent output when streamed text resembles output"
+    (let ((buf (eca-chat-test--make-render-buffer))
+          (session (make-eca--session))
+          (eca-chat-stream-flush-interval 60)
+          (streamed-text "\nOutput: \nOK")
+          (final-output "OK"))
+      (unwind-protect
+          (eca-chat--with-current-buffer buf
+            (eca-chat-test--render-subagent-parent
+             session buf "output-fragment-parent" "output-fragment-child")
+            (eca-chat-test--render-subagent-text
+             session buf "output-fragment-parent" streamed-text
+             "output-fragment-child")
+            (eca-chat-test--stream-flush buf)
+            (eca-chat--render-content
+             session buf "assistant"
+             (list :type "toolCalled"
+                   :id "output-fragment-parent"
+                   :name "subagentTool"
+                   :server "testServer"
+                   :arguments (list :agent "output-fragment-agent"
+                                    :task "output fragment task")
+                   :details (list :type "subagent"
+                                  :subagentChatId "output-fragment-child"
+                                  :model "test-model"
+                                  :step 1
+                                  :maxSteps 1)
+                   :outputs (list (list :text final-output)))
+             nil)
+            (let* ((parent-ov (eca-chat--get-expandable-content
+                               "output-fragment-parent"))
+                   (content-ov (overlay-get
+                                parent-ov
+                                'eca-chat--expandable-content-ov-content))
+                   (parent-content (substring-no-properties
+                                    (overlay-get
+                                     content-ov
+                                     'eca-chat--expandable-content-content))))
+              (expect (eca-chat-test--string-count parent-content "Output:")
+                      :to-equal 2)
+              (expect (eca-chat-test--string-count parent-content final-output)
+                      :to-equal 2)))
+        (when (buffer-live-p buf)
+          (kill-buffer buf)))))
+
   (it "keeps parent final output when nested child output matches"
     (let ((buf (eca-chat-test--make-render-buffer))
           (session (make-eca--session))

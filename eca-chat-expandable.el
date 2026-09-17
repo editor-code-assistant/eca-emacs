@@ -310,7 +310,9 @@ NESTED-PROPS is a plist with :parent-id and :label-indent for nested blocks."
 
 (defun eca-chat--render-nested-block (parent-ov child-spec)
   "Render a nested block CHILD-SPEC within PARENT-OV's content area."
-  (-let* (((&plist :id id :label label :content content :icon-face icon-face) child-spec)
+  (-let* (((&plist :id id :label label :content content :icon-face icon-face
+                   :subagent-final-output-fragment final-output-fragment)
+            child-spec)
           (parent-content-ov (overlay-get parent-ov 'eca-chat--expandable-content-ov-content))
           (label-indent eca-chat--expandable-content-base-indent)
           (icons (eca-chat--make-expandable-icons icon-face label-indent)))
@@ -324,6 +326,9 @@ NESTED-PROPS is a plist with :parent-id and :label-indent for nested blocks."
                                                :label-indent label-indent))
       ;; Paint label's line-prefix with parent's background when parent is open
       (when-let* ((child-ov (eca-chat--get-expandable-content id)))
+        (when final-output-fragment
+          (overlay-put child-ov 'eca-chat--subagent-final-output-fragment
+                       final-output-fragment))
         (eca-chat--paint-nested-label child-ov)))))
 
 (defun eca-chat--destroy-nested-blocks (parent-id)
