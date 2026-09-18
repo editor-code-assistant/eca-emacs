@@ -354,6 +354,26 @@ NESTED-PROPS is a plist with :parent-id and :label-indent for nested blocks."
   "Return all child specs from SEGMENTS."
   (-filter (lambda (seg) (eq 'child (plist-get seg :type))) segments))
 
+(defun eca-chat--nested-segments-append-child (parent-ov segments child-spec)
+  "Return SEGMENTS plus uncaptured parent text and CHILD-SPEC."
+  (let* ((ov-content (overlay-get parent-ov
+                                  'eca-chat--expandable-content-ov-content))
+         (full-content (overlay-get ov-content
+                                    'eca-chat--expandable-content-content))
+         (segmented-text (eca-chat--segments-total-text segments))
+         (unsegmented-text (if segments
+                               (when (> (length full-content)
+                                        (length segmented-text))
+                                 (substring full-content
+                                            (length segmented-text)))
+                             full-content))
+         (text-segment (when (and unsegmented-text
+                                  (not (string-empty-p unsegmented-text)))
+                         (list :type 'text :content unsegmented-text))))
+    (append segments
+            (when text-segment (list text-segment))
+            (list child-spec))))
+
 (defun eca-chat--add-expandable-content (id label content &optional parent-id at-point)
   "Add LABEL to the chat current position for ID as a interactive text.
 When expanded, shows CONTENT.
@@ -373,22 +393,13 @@ the default content insertion point."
               ;; duplicating the entry.
               (eca-chat--update-expandable-content id label content nil parent-id)
             (let* ((icon-face (get-text-property 0 'font-lock-face label))
-                   (child-spec (list :type 'child :id id :label label :content content :icon-face icon-face))
-                   ;; Capture text that arrived before this child block so
-                   ;; collapsed parents reopen in receive order.
-                   (ov-content (overlay-get parent-ov 'eca-chat--expandable-content-ov-content))
-                   (full-content (overlay-get ov-content 'eca-chat--expandable-content-content))
-                   (segmented-text (eca-chat--segments-total-text segments))
-                   (unsegmented-text (if segments
-                                         (when (> (length full-content) (length segmented-text))
-                                           (substring full-content (length segmented-text)))
-                                       full-content))
-                   (text-segment (when (and unsegmented-text
-                                            (not (string-empty-p unsegmented-text)))
-                                   (list :type 'text :content unsegmented-text)))
-                   (new-segments (append segments
-                                         (when text-segment (list text-segment))
-                                         (list child-spec))))
+                   (child-spec (list :type 'child
+                                     :id id
+                                     :label label
+                                     :content content
+                                     :icon-face icon-face))
+                   (new-segments (eca-chat--nested-segments-append-child
+                                  parent-ov segments child-spec)))
               (overlay-put parent-ov 'eca-chat--expandable-content-segments new-segments)
               (when (overlay-get parent-ov 'eca-chat--expandable-content-toggle)
                 (eca-chat--render-nested-block parent-ov child-spec))))))
@@ -539,24 +550,16 @@ in parent."
                     (plist-put existing-spec :label label)
                     (plist-put existing-spec :icon-face (get-text-property 0 'font-lock-face label)))
                   (plist-put existing-spec :content new-content))
-              (let* ((child-spec (list :type 'child :id id :label label :content content
-                                       :icon-face (get-text-property 0 'font-lock-face label)))
-                     ;; Capture text that arrived before this child block so
-                     ;; collapsed parents reopen in receive order.
-                     (ov-content (overlay-get parent-ov 'eca-chat--expandable-content-ov-content))
-                     (full-content (overlay-get ov-content 'eca-chat--expandable-content-content))
-                     (segmented-text (eca-chat--segments-total-text segments))
-                     (unsegmented-text (if segments
-                                           (when (> (length full-content) (length segmented-text))
-                                             (substring full-content (length segmented-text)))
-                                         full-content))
-                     (text-segment (when (and unsegmented-text
-                                              (not (string-empty-p unsegmented-text)))
-                                     (list :type 'text :content unsegmented-text))))
+              (let* ((child-spec (list :type 'child
+                                       :id id
+                                       :label label
+                                       :content content
+                                       :icon-face (get-text-property
+                                                   0 'font-lock-face label)))
+                     (new-segments (eca-chat--nested-segments-append-child
+                                    parent-ov segments child-spec)))
                 (overlay-put parent-ov 'eca-chat--expandable-content-segments
-                             (append segments
-                                     (when text-segment (list text-segment))
-                                     (list child-spec)))
+                             new-segments)
                 (when (overlay-get parent-ov 'eca-chat--expandable-content-toggle)
                   (eca-chat--render-nested-block parent-ov child-spec))))))
       ;; Top-level: create the block so toolCallRun et al. don't

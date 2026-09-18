@@ -3901,6 +3901,10 @@ COPY-START marks top-level text as the start of a copy scope."
     (puthash id t (eca-chat--tool-call-prepare-finalized-table))
     (eca-chat--tool-call-prepare-clear id)))
 
+(defun eca-chat--tool-call-prepare-finish-lifecycle (id)
+  "Clear prepare state when lifecycle rendering owns ID."
+  (eca-chat--tool-call-prepare-finalize id))
+
 (defun eca-chat--tool-call-prepare-render (id metadata)
   "Render the pending prepare UI for ID from METADATA."
   (let* ((name (plist-get metadata :name))
@@ -3999,14 +4003,10 @@ COPY-START marks top-level TEXT as a response copy-scope start."
 
 (defun eca-chat--stream-flush-parent (parent-tool-call-id)
   "Render pending assistant stream text for PARENT-TOOL-CALL-ID."
-  (let ((order (copy-sequence eca-chat--stream-pending-render-order))
-        inserted)
-    (dolist (entry order)
-      (when (and (memq entry eca-chat--stream-pending-render-order)
-                 (eca-chat--stream-render-entry-matches-p
-                  entry 'parent parent-tool-call-id))
-        (setq inserted (or (eca-chat--stream-flush-parent-entry entry)
-                           inserted))))
+  (let ((inserted (eca-chat--stream-flush-matching-entries
+                   (lambda (entry)
+                     (eca-chat--stream-render-entry-matches-p
+                      entry 'parent parent-tool-call-id)))))
     (eca-chat--stream-protect-inserted inserted)
     inserted))
 
@@ -4026,16 +4026,31 @@ COPY-START marks top-level TEXT as a response copy-scope start."
         (eca-chat--schedule-fontify))
       t)))
 
-(defun eca-chat--stream-flush-top-level ()
-  "Render pending top-level assistant stream text in the current chat."
+(defun eca-chat--stream-flush-entry (entry)
+  "Render pending stream ENTRY and return non-nil when it rendered."
+  (pcase (eca-chat--stream-render-entry-kind entry)
+    ('top-level (eca-chat--stream-flush-top-level-entry entry))
+    ('parent (eca-chat--stream-flush-parent-entry entry))
+    ('prepare (eca-chat--tool-call-prepare-flush
+               (eca-chat--stream-render-entry-id entry)))))
+
+(defun eca-chat--stream-flush-matching-entries (predicate)
+  "Render pending stream entries that satisfy PREDICATE."
   (let ((order (copy-sequence eca-chat--stream-pending-render-order))
         inserted)
     (dolist (entry order)
       (when (and (memq entry eca-chat--stream-pending-render-order)
-                 (eca-chat--stream-render-entry-matches-p
-                  entry 'top-level))
-        (setq inserted (or (eca-chat--stream-flush-top-level-entry entry)
+                 (funcall predicate entry))
+        (setq inserted (or (eca-chat--stream-flush-entry entry)
                            inserted))))
+    inserted))
+
+(defun eca-chat--stream-flush-top-level ()
+  "Render pending top-level assistant stream text in the current chat."
+  (let ((inserted (eca-chat--stream-flush-matching-entries
+                   (lambda (entry)
+                     (eca-chat--stream-render-entry-matches-p
+                      entry 'top-level)))))
     (eca-chat--stream-protect-inserted inserted)
     inserted))
 
@@ -4049,26 +4064,19 @@ COPY-START marks top-level TEXT as a response copy-scope start."
 
 (defun eca-chat--stream-flush-scoped (scope-id)
   "Render pending parent and prepare entries related to SCOPE-ID."
-  (let ((order (copy-sequence eca-chat--stream-pending-render-order))
-        (prepare-table (eca-chat--tool-call-prepare-display-table))
-        inserted)
-    (dolist (entry order)
-      (when (memq entry eca-chat--stream-pending-render-order)
-        (pcase (eca-chat--stream-render-entry-kind entry)
-          ('parent
-           (when (equal (eca-chat--stream-render-entry-id entry) scope-id)
-             (setq inserted
-                   (or (eca-chat--stream-flush-parent-entry entry)
-                       inserted))))
-          ('prepare
-           (let* ((prepare-id (eca-chat--stream-render-entry-id entry))
-                  (metadata (gethash prepare-id prepare-table))
-                  (parent-id (plist-get metadata :parent-tool-call-id)))
-             (when (or (equal prepare-id scope-id)
-                       (equal parent-id scope-id))
-               (setq inserted
-                     (or (eca-chat--tool-call-prepare-flush prepare-id)
-                         inserted))))))))
+  (let* ((prepare-table (eca-chat--tool-call-prepare-display-table))
+         (inserted
+          (eca-chat--stream-flush-matching-entries
+           (lambda (entry)
+             (pcase (eca-chat--stream-render-entry-kind entry)
+               ('parent
+                (equal (eca-chat--stream-render-entry-id entry) scope-id))
+               ('prepare
+                (let* ((prepare-id (eca-chat--stream-render-entry-id entry))
+                       (metadata (gethash prepare-id prepare-table))
+                       (parent-id (plist-get metadata :parent-tool-call-id)))
+                  (or (equal prepare-id scope-id)
+                      (equal parent-id scope-id)))))))))
     (eca-chat--stream-protect-inserted inserted)
     inserted))
 
@@ -4080,25 +4088,10 @@ PARENT-TOOL-CALL-ID flushes matching parent and prepare queues."
         (eca-chat--stream-flush-scoped parent-tool-call-id)
         (unless (eca-chat--stream-pending-p)
           (eca-chat--stream-cancel)))
-    (let ((order (copy-sequence eca-chat--stream-pending-render-order))
-          inserted)
+    (let (inserted)
       (eca-chat--stream-cancel)
-      (dolist (entry order)
-        (when (memq entry eca-chat--stream-pending-render-order)
-          (pcase (eca-chat--stream-render-entry-kind entry)
-            ('top-level
-             (setq inserted
-                   (or (eca-chat--stream-flush-top-level-entry entry)
-                       inserted)))
-            ('parent
-             (setq inserted
-                   (or (eca-chat--stream-flush-parent-entry entry)
-                       inserted)))
-            ('prepare
-             (setq inserted
-                   (or (eca-chat--tool-call-prepare-flush
-                        (eca-chat--stream-render-entry-id entry))
-                       inserted))))))
+      (setq inserted (eca-chat--stream-flush-matching-entries
+                      (lambda (_entry) t)))
       (setq inserted (or (eca-chat--tool-call-prepare-flush-all)
                          inserted))
       (eca-chat--stream-protect-inserted inserted)
@@ -4662,6 +4655,77 @@ auto-allowed or manually approved), coloring commands accordingly."
   (eca-chat--update-nested-child-spec
    parent-id id :subagent-final-output-fragment fragment))
 
+(defun eca-chat--subagent-details-body (agent-name model variant task &optional output-text)
+  "Return the details body for a subagent tool call."
+  (eca-chat--content-table
+   `(("Agent" . ,agent-name)
+     ("Model" . ,model)
+     ,@(when variant `(("Variant" . ,variant)))
+     ,@(when task `(("Task" . ,(concat task "\n\n"))))
+     ,@(when output-text `(("Output" . ,(concat "\n" output-text)))))))
+
+(defun eca-chat--subagent-output-fragment (output-text)
+  "Return the final output fragment for subagent OUTPUT-TEXT."
+  (when (and output-text
+             (not (string-empty-p output-text)))
+    (eca-chat--content-table
+     `(("Output" . ,(concat "\n" output-text))))))
+
+(defun eca-chat--subagent-has-children-p (ov)
+  "Return non-nil when subagent overlay OV has durable child segments."
+  (and ov
+       (eca-chat--segments-children
+        (overlay-get ov 'eca-chat--expandable-content-segments))))
+
+(defun eca-chat--subagent-preserve-content-p (existing-ov body-without-output)
+  "Return non-nil when EXISTING-OV content must be preserved."
+  (let* ((existing-content (when-let* ((ov existing-ov)
+                                       (ov-content (overlay-get
+                                                    ov 'eca-chat--expandable-content-ov-content)))
+                             (overlay-get ov-content 'eca-chat--expandable-content-content)))
+         (existing-content-text (and existing-content
+                                     (substring-no-properties
+                                      existing-content)))
+         (has-extra-content? (and existing-content-text
+                                  (not (string-empty-p existing-content-text))
+                                  (not (string=
+                                        existing-content-text
+                                        (substring-no-properties body-without-output))))))
+    (or (eca-chat--subagent-has-children-p existing-ov)
+        has-extra-content?)))
+
+(defun eca-chat--subagent-replace-label (existing-ov parent-id id new-label has-children?)
+  "Replace the label of subagent overlay EXISTING-OV."
+  (let* ((ov-content (overlay-get existing-ov 'eca-chat--expandable-content-ov-content))
+         (open? (overlay-get existing-ov 'eca-chat--expandable-content-toggle))
+         (content (overlay-get ov-content 'eca-chat--expandable-content-content))
+         (has-content? (or (and content (not (string-empty-p content)))
+                           has-children?))
+         (new-icon-face (get-text-property 0 'font-lock-face new-label))
+         (label-indent (when (overlay-get existing-ov 'eca-chat--expandable-content-nested)
+                         eca-chat--expandable-content-base-indent))
+         (new-icons (eca-chat--make-expandable-icons new-icon-face label-indent)))
+    (overlay-put existing-ov 'eca-chat--expandable-content-open-icon (car new-icons))
+    (overlay-put existing-ov 'eca-chat--expandable-content-close-icon (cdr new-icons))
+    (when (overlay-get existing-ov 'eca-chat--expandable-content-nested)
+      (eca-chat--update-nested-child-spec
+       parent-id id
+       :label new-label
+       :content content
+       :icon-face new-icon-face))
+    (save-excursion
+      (goto-char (overlay-start existing-ov))
+      (delete-region (point) (1- (overlay-start ov-content)))
+      (eca-chat--insert
+       (propertize (eca-chat--propertize-only-first-word
+                    new-label
+                    'line-prefix (when has-content?
+                                   (if open?
+                                       (cdr new-icons)
+                                     (car new-icons))))
+                   'help-echo "mouse-1 / RET / tab: expand/collapse"))
+      (eca-chat--paint-nested-label existing-ov))))
+
 (defun eca-chat--tool-call-subagent-details (id args label approval-text time status parent-id details &optional output-text)
   "Update tool call UI for a subagent tool call.
 ID and ARGS are from the tool call content.
@@ -4679,7 +4743,7 @@ Append STATUS symbol.  Optional PARENT-ID for nested rendering."
           (steps-info (eca-chat--subagent-steps-info step max-steps usage-str))
           (existing-ov (eca-chat--get-expandable-content id))
           ;; Preserve pending-approval status when a step update arrives with
-          ;; loading status — an inner tool call may be waiting for approval.
+          ;; loading status because an inner tool call may be waiting for approval.
           (status (if (and existing-ov
                            (string= status eca-chat-mcp-tool-call-loading-symbol)
                            (string= (overlay-get existing-ov 'eca-chat--tool-call-status)
@@ -4689,36 +4753,10 @@ Append STATUS symbol.  Optional PARENT-ID for nested rendering."
           (new-label (concat (propertize label 'font-lock-face 'eca-chat-subagent-tool-call-label-face)
                              steps-info " " status time
                              (when approval-text (concat "\n" approval-text))))
-          (body (eca-chat--content-table
-                 `(("Agent" . ,agent-name)
-                   ("Model" . ,model)
-                   ,@(when variant `(("Variant" . ,variant)))
-                   ,@(when task `(("Task" . ,(concat task "\n\n"))))
-                   ,@(when output-text `(("Output" . ,(concat "\n" output-text)))))))
-          (body-without-output (eca-chat--content-table
-                                `(("Agent" . ,agent-name)
-                                  ("Model" . ,model)
-                                  ,@(when variant `(("Variant" . ,variant)))
-                                  ,@(when task `(("Task" . ,(concat task "\n\n")))))))
-          (existing-content (when-let* ((ov existing-ov)
-                                        (ov-content (overlay-get
-                                                     ov 'eca-chat--expandable-content-ov-content)))
-                              (overlay-get ov-content 'eca-chat--expandable-content-content)))
-          (existing-content-text (and existing-content
-                                      (substring-no-properties
-                                       existing-content)))
-          (segments (and existing-ov
-                         (overlay-get existing-ov 'eca-chat--expandable-content-segments)))
-          (has-extra-content? (and existing-content-text
-                                   (not (string-empty-p existing-content-text))
-                                   (not (string= existing-content-text
-                                                 (substring-no-properties body-without-output)))))
-          (has-children? (and existing-ov
-                              (eca-chat--segments-children segments)))
-          (output-fragment (when (and output-text
-                                      (not (string-empty-p output-text)))
-                             (eca-chat--content-table
-                              `(("Output" . ,(concat "\n" output-text))))))
+          (body (eca-chat--subagent-details-body agent-name model variant task output-text))
+          (body-without-output (eca-chat--subagent-details-body agent-name model variant task))
+          (has-children? (eca-chat--subagent-has-children-p existing-ov))
+          (output-fragment (eca-chat--subagent-output-fragment output-text))
           (output-fragment-text (and output-fragment
                                      (substring-no-properties output-fragment)))
           (output-present? (and output-fragment-text
@@ -4730,39 +4768,14 @@ Append STATUS symbol.  Optional PARENT-ID for nested rendering."
           (output-to-append (and output-fragment
                                  (not output-present?)
                                  output-fragment))
-          (preserve-content? (or has-children? has-extra-content?)))
+          (preserve-content? (eca-chat--subagent-preserve-content-p
+                              existing-ov body-without-output)))
     (if preserve-content?
-        ;; Block already has nested or streamed child content.  Only update the
-        ;; label line, preserving child output that arrived before this event.
-        (let* ((ov-content (overlay-get existing-ov 'eca-chat--expandable-content-ov-content))
-               (open? (overlay-get existing-ov 'eca-chat--expandable-content-toggle))
-               (content (overlay-get ov-content 'eca-chat--expandable-content-content))
-               (has-content? (or (and content (not (string-empty-p content)))
-                                 has-children?))
-               (new-icon-face (get-text-property 0 'font-lock-face new-label))
-               (label-indent (when (overlay-get existing-ov 'eca-chat--expandable-content-nested)
-                               eca-chat--expandable-content-base-indent))
-               (new-icons (eca-chat--make-expandable-icons new-icon-face label-indent)))
-          (overlay-put existing-ov 'eca-chat--expandable-content-open-icon (car new-icons))
-          (overlay-put existing-ov 'eca-chat--expandable-content-close-icon (cdr new-icons))
-          (when (overlay-get existing-ov 'eca-chat--expandable-content-nested)
-            (eca-chat--update-nested-child-spec
-             parent-id id
-             :label new-label
-             :content content
-             :icon-face new-icon-face))
-          (save-excursion
-            (goto-char (overlay-start existing-ov))
-            (delete-region (point) (1- (overlay-start ov-content)))
-            (eca-chat--insert
-             (propertize (eca-chat--propertize-only-first-word
-                          new-label
-                          'line-prefix (when has-content?
-                                         (if open?
-                                             (cdr new-icons)
-                                           (car new-icons))))
-                         'help-echo "mouse-1 / RET / tab: expand/collapse"))
-            (eca-chat--paint-nested-label existing-ov))
+        (progn
+          ;; Block already has nested or streamed child content.  Only update the
+          ;; label line, preserving child output that arrived before this event.
+          (eca-chat--subagent-replace-label
+           existing-ov parent-id id new-label has-children?)
           (when output-to-append
             (eca-chat--update-expandable-content
              id nil output-to-append t parent-id)))
@@ -4924,6 +4937,41 @@ Only updates the label line, preserving all nested child content."
                           "toolCallRun" "toolCallRunning"
                           "toolCalled" "toolCallRejected")))))
 
+(defun eca-chat--flush-before-rendering-content
+    (role content parent-tool-call-id)
+  "Flush pending stream entries before rendering CONTENT."
+  (let ((content-type (plist-get content :type))
+        (tool-call-id (plist-get content :id)))
+    (when (and (not parent-tool-call-id)
+               (or (not (equal content-type "text"))
+                   (member role '("user" "system"))))
+      (cond
+       ((and (equal content-type "progress")
+             (equal (plist-get content :state) "finished"))
+        (eca-chat--stream-flush))
+       ((eca-chat--running-progress-content-p content)
+        nil)
+       ((eca-chat--immediate-history-content-p
+         role content-type parent-tool-call-id)
+        (eca-chat--stream-flush))
+       (t
+        (eca-chat--stream-flush-top-level-when-next)
+        (when (and tool-call-id
+                   (member content-type '("toolCallRun" "toolCallRunning"
+                                          "toolCalled" "toolCallRejected")))
+          (eca-chat--stream-flush tool-call-id))
+        (unless (eca-chat--stream-pending-p)
+          (eca-chat--stream-cancel)))))
+    (when (and parent-tool-call-id
+               (not (eca-chat--running-progress-content-p content))
+               (or (not (equal content-type "text"))
+                   (member role '("user" "system"))))
+      (eca-chat--stream-flush parent-tool-call-id)
+      (when (and tool-call-id
+                 (member content-type '("toolCallRun" "toolCallRunning"
+                                        "toolCalled" "toolCallRejected")))
+        (eca-chat--stream-flush tool-call-id)))))
+
 (defun eca-chat--mark-response-copy-break (type parent-tool-call-id)
   "Mark TYPE as a top-level break for response copy scope.
 PARENT-TOOL-CALL-ID means content belongs to a tool block."
@@ -5054,7 +5102,6 @@ approval requests.  Falls back to the buffer-local `eca-chat--id'.
 Must be called with `eca-chat--with-current-buffer' or equivalent."
   (let* ((content-id (plist-get content :contentId))
          (content-type (plist-get content :type))
-         (tool-call-id (plist-get content :id))
          (tool-call-next-line-spacing (make-string (1+ (length eca-chat-expandable-block-open-symbol)) ?\s))
          ;; Whether the user acted on this approval from within its
          ;; block; checked now, before rendering drops the buttons.
@@ -5068,34 +5115,7 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
                                  "toolCalled" "toolCallRejected"))
       (eca-chat--invalidate-pending-approvals-cache)
       (eca-chat--invalidate-tab-line-cache session))
-    (when (and (not parent-tool-call-id)
-               (or (not (equal content-type "text"))
-                   (member role '("user" "system"))))
-      (cond
-       ((and (equal content-type "progress")
-             (equal (plist-get content :state) "finished"))
-        (eca-chat--stream-flush))
-       ((eca-chat--running-progress-content-p content)
-        nil)
-       ((eca-chat--immediate-history-content-p role content-type parent-tool-call-id)
-        (eca-chat--stream-flush))
-       (t
-        (eca-chat--stream-flush-top-level-when-next)
-        (when (and tool-call-id
-                   (member content-type '("toolCallRun" "toolCallRunning"
-                                          "toolCalled" "toolCallRejected")))
-          (eca-chat--stream-flush tool-call-id))
-        (unless (eca-chat--stream-pending-p)
-          (eca-chat--stream-cancel)))))
-    (when (and parent-tool-call-id
-               (not (eca-chat--running-progress-content-p content))
-               (or (not (equal content-type "text"))
-                   (member role '("user" "system"))))
-      (eca-chat--stream-flush parent-tool-call-id)
-      (when (and tool-call-id
-                 (member content-type '("toolCallRun" "toolCallRunning"
-                                        "toolCalled" "toolCallRejected")))
-        (eca-chat--stream-flush tool-call-id)))
+    (eca-chat--flush-before-rendering-content role content parent-tool-call-id)
     (pcase content-type
       ("metadata"
        (unless parent-tool-call-id
@@ -5312,7 +5332,7 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
                  parent-tool-call-id)))
            ;; Mark this ID after rendering so a rendering error does not poison
            ;; later prepare events for a block that was never created.
-           (eca-chat--tool-call-prepare-finalize id)
+           (eca-chat--tool-call-prepare-finish-lifecycle id)
            (when (and eca-chat-expand-pending-approval-tools manual?)
              (when parent-tool-call-id
                (eca-chat--expandable-content-toggle parent-tool-call-id t nil))
@@ -5362,7 +5382,7 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
                     ("Arguments" . ,args)))
                  nil
                  parent-tool-call-id)))
-           (eca-chat--tool-call-prepare-finalize id)
+           (eca-chat--tool-call-prepare-finish-lifecycle id)
            (eca-chat--mark-tool-call-approval-resolved id)
            ;; Keep parent pending while sibling approvals remain pending
            (eca-chat--restore-parent-subagent-status parent-tool-call-id))))
@@ -5389,7 +5409,7 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
                          (bg? "🟡")
                          (t eca-chat-mcp-tool-call-success-symbol))))
            ;; Cleanup prepare state for this tool-call id.
-           (eca-chat--tool-call-prepare-finalize id)
+           (eca-chat--tool-call-prepare-finish-lifecycle id)
            ;; Stop elapsed-time tracking for this tool call
            (eca-chat--tool-call-elapsed-stop id)
            ;; Another client may have answered this ask_user question first,
@@ -5434,7 +5454,7 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
                 (status eca-chat-mcp-tool-call-error-symbol)
                 (id (plist-get content :id)))
            ;; Cleanup prepare state for this tool-call id.
-           (eca-chat--tool-call-prepare-finalize id)
+           (eca-chat--tool-call-prepare-finish-lifecycle id)
            ;; Another client may have cancelled this ask_user question first,
            ;; rejecting the tool call here; drop our now-stale prompt state.
            (eca-chat--dismiss-pending-question-for-tool-call id)
