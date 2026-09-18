@@ -3726,6 +3726,12 @@ With prefix argument LATEST, copy the latest assistant response."
       (eca-chat--refresh-code-copy-scopes
        start (eca-chat--content-insertion-point)))))
 
+(defun eca-chat--finalize-response-copy-scope ()
+  "Finalize active response copy scope before rendering a break."
+  (eca-chat--refresh-copy-scopes)
+  (setq-local eca-chat--last-response-copy-start nil)
+  (setq-local eca-chat--last-response-copy-kind 'break))
+
 (defun eca-chat--add-text-content (text &optional overlay-key overlay-value)
   "Add TEXT to the chat current position.
 Add a overlay before with OVERLAY-KEY = OVERLAY-VALUE if passed."
@@ -4031,8 +4037,13 @@ COPY-START marks top-level TEXT as a response copy-scope start."
   (pcase (eca-chat--stream-render-entry-kind entry)
     ('top-level (eca-chat--stream-flush-top-level-entry entry))
     ('parent (eca-chat--stream-flush-parent-entry entry))
-    ('prepare (eca-chat--tool-call-prepare-flush
-               (eca-chat--stream-render-entry-id entry)))))
+    ('prepare
+     (let* ((id (eca-chat--stream-render-entry-id entry))
+            (metadata (gethash id
+                               (eca-chat--tool-call-prepare-display-table))))
+       (unless (plist-get metadata :parent-tool-call-id)
+         (eca-chat--finalize-response-copy-scope))
+       (eca-chat--tool-call-prepare-flush id)))))
 
 (defun eca-chat--stream-flush-matching-entries (predicate)
   "Render pending stream entries that satisfy PREDICATE."
