@@ -2428,6 +2428,39 @@ detected even on filesystems with a coarse modtime resolution."
         (when (buffer-live-p buf)
           (kill-buffer buf)))))
 
+  (it "protects split-parent stream flushes once per batch"
+    (let ((buf (eca-chat-test--make-render-buffer))
+          (session (make-eca--session))
+          (eca-chat-read-only-history t)
+          (eca-chat-stream-flush-interval 60))
+      (unwind-protect
+          (eca-chat--with-current-buffer buf
+            (let ((child-a (eca-chat-test--render-subagent-parent
+                            session buf "protect-parent-a"))
+                  (child-b (eca-chat-test--render-subagent-parent
+                            session buf "protect-parent-b")))
+              (eca-chat--expandable-content-toggle "protect-parent-a" t nil)
+              (eca-chat--expandable-content-toggle "protect-parent-b" t nil)
+              (eca-chat-test--render-subagent-text
+               session buf "protect-parent-a" "protected A" child-a)
+              (eca-chat-test--render-subagent-text
+               session buf "protect-parent-b" "protected B" child-b)
+              (spy-on 'eca-chat--protect-non-prompt :and-call-through)
+              (eca-chat-test--stream-flush buf)
+              (expect (spy-calls-count 'eca-chat--protect-non-prompt)
+                      :to-equal 1)
+              (let ((pos-a (eca-chat-test--history-index buf "protected A"))
+                    (pos-b (eca-chat-test--history-index buf "protected B")))
+                (expect pos-a :not :to-be nil)
+                (expect pos-b :not :to-be nil)
+                (expect (get-text-property (1+ pos-a) 'read-only)
+                        :to-be t)
+                (expect (get-text-property (1+ pos-b) 'read-only)
+                        :to-be t))))
+        (when (buffer-live-p buf)
+          (ignore-errors (eca-chat-test--stream-flush buf))
+          (kill-buffer buf)))))
+
   (it "flushes pending text before non-text content"
     (let ((buf (eca-chat-test--make-render-buffer))
           (session (make-eca--session))

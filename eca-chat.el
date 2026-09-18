@@ -3950,13 +3950,17 @@ COPY-START marks top-level text as the start of a copy scope."
   (when-let* ((metadata (gethash id
                                  (eca-chat--tool-call-prepare-display-table))))
     (eca-chat--tool-call-prepare-cancel id)
-    (eca-chat--tool-call-prepare-render id metadata)))
+    (eca-chat--tool-call-prepare-render id metadata)
+    t))
 
 (defun eca-chat--tool-call-prepare-flush-all ()
   "Render all pending prepare UIs in first-seen order."
-  (let ((ids (copy-sequence eca-chat--tool-call-prepare-pending-order)))
+  (let ((ids (copy-sequence eca-chat--tool-call-prepare-pending-order))
+        inserted)
     (dolist (id ids)
-      (eca-chat--tool-call-prepare-flush id))))
+      (setq inserted (or (eca-chat--tool-call-prepare-flush id)
+                         inserted)))
+    inserted))
 
 (defun eca-chat--stream-pending-p ()
   "Return non-nil when the current chat has buffered stream text."
@@ -3975,6 +3979,11 @@ COPY-START marks top-level TEXT as a response copy-scope start."
    (and (not parent-tool-call-id) copy-start))
   (eca-chat--stream-schedule-flush))
 
+(defun eca-chat--stream-protect-inserted (inserted)
+  "Protect streamed text when INSERTED is non-nil."
+  (when inserted
+    (eca-chat--protect-non-prompt eca-chat--last-user-message-pos)))
+
 (defun eca-chat--stream-flush-parent-entry (entry)
   "Render pending parent assistant stream text for ENTRY."
   (eca-chat--stream-render-order-remove-entry entry)
@@ -3985,18 +3994,21 @@ COPY-START marks top-level TEXT as a response copy-scope start."
       (save-excursion
         (eca-chat--update-expandable-content
          parent-tool-call-id nil text t)
-        (eca-chat--schedule-fontify)
-        (eca-chat--protect-non-prompt
-         eca-chat--last-user-message-pos)))))
+        (eca-chat--schedule-fontify))
+      t)))
 
 (defun eca-chat--stream-flush-parent (parent-tool-call-id)
   "Render pending assistant stream text for PARENT-TOOL-CALL-ID."
-  (let ((order (copy-sequence eca-chat--stream-pending-render-order)))
+  (let ((order (copy-sequence eca-chat--stream-pending-render-order))
+        inserted)
     (dolist (entry order)
       (when (and (memq entry eca-chat--stream-pending-render-order)
                  (eca-chat--stream-render-entry-matches-p
                   entry 'parent parent-tool-call-id))
-        (eca-chat--stream-flush-parent-entry entry)))))
+        (setq inserted (or (eca-chat--stream-flush-parent-entry entry)
+                           inserted))))
+    (eca-chat--stream-protect-inserted inserted)
+    inserted))
 
 (defun eca-chat--stream-flush-top-level-entry (entry)
   "Render pending top-level assistant stream text for ENTRY."
@@ -4011,42 +4023,54 @@ COPY-START marks top-level TEXT as a response copy-scope start."
                        (eca-chat--content-insertion-point)
                        nil)))
         (eca-chat--add-text-content text)
-        (eca-chat--schedule-fontify)
-        (eca-chat--protect-non-prompt
-         eca-chat--last-user-message-pos)))))
+        (eca-chat--schedule-fontify))
+      t)))
 
 (defun eca-chat--stream-flush-top-level ()
   "Render pending top-level assistant stream text in the current chat."
-  (let ((order (copy-sequence eca-chat--stream-pending-render-order)))
+  (let ((order (copy-sequence eca-chat--stream-pending-render-order))
+        inserted)
     (dolist (entry order)
       (when (and (memq entry eca-chat--stream-pending-render-order)
                  (eca-chat--stream-render-entry-matches-p
                   entry 'top-level))
-        (eca-chat--stream-flush-top-level-entry entry)))))
+        (setq inserted (or (eca-chat--stream-flush-top-level-entry entry)
+                           inserted))))
+    (eca-chat--stream-protect-inserted inserted)
+    inserted))
 
 (defun eca-chat--stream-flush-top-level-when-next ()
   "Render pending top-level text only when it is next in order."
   (when-let* ((entry (car eca-chat--stream-pending-render-order)))
     (when (eq (eca-chat--stream-render-entry-kind entry) 'top-level)
-      (eca-chat--stream-flush-top-level-entry entry))))
+      (let ((inserted (eca-chat--stream-flush-top-level-entry entry)))
+        (eca-chat--stream-protect-inserted inserted)
+        inserted))))
 
 (defun eca-chat--stream-flush-scoped (scope-id)
   "Render pending parent and prepare entries related to SCOPE-ID."
   (let ((order (copy-sequence eca-chat--stream-pending-render-order))
-        (prepare-table (eca-chat--tool-call-prepare-display-table)))
+        (prepare-table (eca-chat--tool-call-prepare-display-table))
+        inserted)
     (dolist (entry order)
       (when (memq entry eca-chat--stream-pending-render-order)
         (pcase (eca-chat--stream-render-entry-kind entry)
           ('parent
            (when (equal (eca-chat--stream-render-entry-id entry) scope-id)
-             (eca-chat--stream-flush-parent-entry entry)))
+             (setq inserted
+                   (or (eca-chat--stream-flush-parent-entry entry)
+                       inserted))))
           ('prepare
            (let* ((prepare-id (eca-chat--stream-render-entry-id entry))
                   (metadata (gethash prepare-id prepare-table))
                   (parent-id (plist-get metadata :parent-tool-call-id)))
              (when (or (equal prepare-id scope-id)
                        (equal parent-id scope-id))
-               (eca-chat--tool-call-prepare-flush prepare-id)))))))))
+               (setq inserted
+                     (or (eca-chat--tool-call-prepare-flush prepare-id)
+                         inserted))))))))
+    (eca-chat--stream-protect-inserted inserted)
+    inserted))
 
 (defun eca-chat--stream-flush (&optional parent-tool-call-id)
   "Render pending assistant stream text in the current chat.
@@ -4056,16 +4080,29 @@ PARENT-TOOL-CALL-ID flushes matching parent and prepare queues."
         (eca-chat--stream-flush-scoped parent-tool-call-id)
         (unless (eca-chat--stream-pending-p)
           (eca-chat--stream-cancel)))
-    (let ((order (copy-sequence eca-chat--stream-pending-render-order)))
+    (let ((order (copy-sequence eca-chat--stream-pending-render-order))
+          inserted)
       (eca-chat--stream-cancel)
       (dolist (entry order)
         (when (memq entry eca-chat--stream-pending-render-order)
           (pcase (eca-chat--stream-render-entry-kind entry)
-            ('top-level (eca-chat--stream-flush-top-level-entry entry))
-            ('parent (eca-chat--stream-flush-parent-entry entry))
-            ('prepare (eca-chat--tool-call-prepare-flush
-                       (eca-chat--stream-render-entry-id entry))))))
-      (eca-chat--tool-call-prepare-flush-all))))
+            ('top-level
+             (setq inserted
+                   (or (eca-chat--stream-flush-top-level-entry entry)
+                       inserted)))
+            ('parent
+             (setq inserted
+                   (or (eca-chat--stream-flush-parent-entry entry)
+                       inserted)))
+            ('prepare
+             (setq inserted
+                   (or (eca-chat--tool-call-prepare-flush
+                        (eca-chat--stream-render-entry-id entry))
+                       inserted))))))
+      (setq inserted (or (eca-chat--tool-call-prepare-flush-all)
+                         inserted))
+      (eca-chat--stream-protect-inserted inserted)
+      inserted)))
 
 (defun eca-chat--relativize-filename-for-workspace-root (filename roots &optional hide-filename?)
   "Relativize the FILENAME if a workspace root is found for ROOTS.
