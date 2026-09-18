@@ -4981,7 +4981,10 @@ Only updates the label line, preserving all nested child content."
       (when (and tool-call-id
                  (member content-type '("toolCallRun" "toolCallRunning"
                                         "toolCalled" "toolCallRejected")))
-        (eca-chat--stream-flush tool-call-id)))))
+        (eca-chat--stream-flush tool-call-id)))
+    (when (and (not parent-tool-call-id)
+               (eca-chat--response-copy-break-content-p content-type))
+      (eca-chat--finalize-response-copy-scope))))
 
 (defun eca-chat--mark-response-copy-break (type parent-tool-call-id)
   "Mark TYPE as a top-level break for response copy scope.

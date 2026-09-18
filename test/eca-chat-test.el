@@ -1788,6 +1788,27 @@ around rendering applies, as when the chat window is selected."
           (ignore-errors (eca-chat-test--stream-flush buf))
           (kill-buffer buf)))))
 
+  (it "keeps direct prepare UI out of buffered text copy scope"
+    (let ((buf (eca-chat-test--make-render-buffer))
+          (session (make-eca--session))
+          (eca-chat-stream-flush-interval 60)
+          kill-ring
+          kill-ring-yank-pointer)
+      (unwind-protect
+          (eca-chat--with-current-buffer buf
+            (eca-chat-test--render-assistant-text
+             session buf "top text before prepare")
+            (eca-chat-test--render-tool-call-prepare
+             session buf "copy-prep-direct" "prepare args" "Prepare marker")
+            (eca-chat-test--stream-flush buf)
+            (eca-chat--refresh-copy-scopes)
+            (eca-chat-copy-at-point t)
+            (expect (current-kill 0 t)
+                    :to-equal "top text before prepare"))
+        (when (buffer-live-p buf)
+          (ignore-errors (eca-chat-test--stream-flush buf))
+          (kill-buffer buf)))))
+
   (it "keeps later prepare UI out of buffered text copy scope"
     (let ((buf (eca-chat-test--make-render-buffer))
           (session (make-eca--session))
