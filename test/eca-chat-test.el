@@ -179,6 +179,53 @@ When TITLE is non-nil, use it as the chat title."
 ;; Tests
 ;; ---------------------------------------------------------------------------
 
+(describe "eca-chat-rename"
+
+  (it "uses the current title as editable initial input"
+    (let ((session (make-eca--session))
+          (read-args nil)
+          chat)
+      (spy-on 'eca-session :and-return-value session)
+      (spy-on 'eca-api-request-sync)
+      (unwind-protect
+          (progn
+            (setq chat (eca-chat-test--make-tab-chat session "chat-1" "Old title"))
+            (setf (eca--session-last-chat-buffer session) chat)
+            (with-current-buffer chat
+              (cl-letf (((symbol-function 'read-string)
+                         (lambda (&rest args)
+                           (setq read-args args)
+                           "New title")))
+                (eca-chat-rename))
+              (expect read-args
+                      :to-equal '("Inform the new chat title: " "Old title"))
+              (expect eca-chat--title :to-equal "New title")
+              (expect eca-chat--custom-title :to-be nil)
+              (expect 'eca-api-request-sync :to-have-been-called-with
+                      session
+                      :method "chat/update"
+                      :params '(:chatId "chat-1" :title "New title"))))
+        (when (buffer-live-p chat)
+          (kill-buffer chat)))))
+
+  (it "does not update the title when the input is empty"
+    (let ((session (make-eca--session))
+          chat)
+      (spy-on 'eca-session :and-return-value session)
+      (spy-on 'eca-api-request-sync)
+      (unwind-protect
+          (progn
+            (setq chat (eca-chat-test--make-tab-chat session "chat-1" "Old title"))
+            (setf (eca--session-last-chat-buffer session) chat)
+            (with-current-buffer chat
+              (cl-letf (((symbol-function 'read-string)
+                         (lambda (&rest _) "")))
+                (eca-chat-rename))
+              (expect eca-chat--title :to-equal "Old title")
+              (expect 'eca-api-request-sync :not :to-have-been-called)))
+        (when (buffer-live-p chat)
+          (kill-buffer chat))))))
+
 (describe "eca-chat tab-line cache"
 
   (it "reuses stable tab labels between redisplay calls"
