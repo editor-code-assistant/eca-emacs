@@ -146,6 +146,9 @@ Each function receives the session being deleted.")
   ;; The welcome message for new chats.
   (chat-welcome-message "")
 
+  ;; The global config file path the server reads, from `initialize'.
+  (global-config-path nil)
+
   ;; Init progress tasks alist: (taskId . plist) where plist has :title :type
   (init-tasks nil)
 

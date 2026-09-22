@@ -333,6 +333,7 @@ is only usable asynchronously."
    :success-callback (-lambda (res)
                        (setf (eca--session-status session) 'started)
                        (setf (eca--session-chat-welcome-message session) (plist-get res :chatWelcomeMessage))
+                       (setf (eca--session-global-config-path session) (plist-get res :globalConfigPath))
                        (eca-api-notify session :method "initialized")
                        (eca-info "Started with workspaces: %s" (string-join (eca--session-workspace-folders session) ","))
                        (eca-chat-open session)

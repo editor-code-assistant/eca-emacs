@@ -12,6 +12,7 @@
 ;;
 ;;; Code:
 
+(require 'dash)
 (require 'f)
 
 (require 'eca-util)
@@ -21,11 +22,42 @@
 
 ;; Paths
 
-(defun eca-config--global-path ()
-  "Return the path to the global ECA config file."
-  (if-let (xdg (getenv "XDG_CONFIG_HOME"))
+(defun eca-config--home-directory ()
+  "Return the home directory the ECA server resolves.
+The server uses the JVM `user.home', which on Windows is the user
+profile directory even when HOME is unset, while Emacs defaults
+HOME to %APPDATA% in that case."
+  (or (and (eq system-type 'windows-nt)
+           (getenv "USERPROFILE"))
+      (f-expand "~")))
+
+(defun eca-config--local-global-path ()
+  "Resolve the global ECA config path the same way the server does."
+  (if-let* ((xdg (getenv "XDG_CONFIG_HOME")))
       (f-join xdg "eca" "config.json")
-    (f-join (f-expand "~") ".config" "eca" "config.json")))
+    (f-join (eca-config--home-directory) ".config" "eca" "config.json")))
+
+(defun eca-config--server-path-to-local (path session)
+  "Translate PATH reported by the server of SESSION to a local path.
+Applies the session path mappings; when the workspace folders are
+remote and no mapping applied, reuse their TRAMP prefix so the file
+is opened on the host running the server."
+  (let* ((eca--path-session session)
+         (local (eca--path-remote-to-local path)))
+    (if-let* ((remote (and (string= local path)
+                           (-some #'file-remote-p
+                                  (eca--session-workspace-folders session)))))
+        (concat remote path)
+      local)))
+
+(defun eca-config--global-path (&optional session)
+  "Return the path to the global ECA config file.
+Prefer the path the server of SESSION reported in the `initialize'
+response, so the buffer edits the file the server actually reads.
+Fall back to resolving it locally for servers without support."
+  (if-let* ((path (and session (eca--session-global-config-path session))))
+      (eca-config--server-path-to-local path session)
+    (eca-config--local-global-path)))
 
 ;; Helpers
 
@@ -81,7 +113,7 @@ SESSION is the current ECA session.  PATH is the config file."
 (defun eca-config--create-global-buffer (session)
   "Create the Global Config settings tab buffer for SESSION."
   (eca-config--create-buffer "global-config" session
-                             (eca-config--global-path)))
+                             (eca-config--global-path session)))
 
 ;; Refresh
 
