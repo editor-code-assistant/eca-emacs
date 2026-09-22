@@ -87,7 +87,16 @@
           (with-current-buffer buffer
             (when (fboundp 'eca-chat--stream-cancel)
               (eca-chat--stream-cancel)))
-          (kill-buffer buffer))))))
+          (kill-buffer buffer)))))
+
+  (it "benchmarks live notifications through the content wrapper"
+    (let* ((eca-chat-render-coalescing-bench-text-chunks 3)
+           (result (eca-chat-render-coalescing-bench--bench-live-content-received)))
+      (expect (plist-get result :label) :to-equal 'live-content-received)
+      (expect (plist-get result :events) :to-equal 3)
+      (expect (plist-get result :render-calls) :to-equal 3)
+      (expect (plist-get result :add-text-calls) :to-equal 1)
+      (expect (plist-get result :protect-calls) :to-equal 1))))
 
 (provide 'eca-chat-render-coalescing-bench-test)
 ;;; eca-chat-render-coalescing-bench-test.el ends here

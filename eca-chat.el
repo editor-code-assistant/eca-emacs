@@ -4646,16 +4646,20 @@ auto-allowed or manually approved), coloring commands accordingly."
      nil
      parent-id)))
 
-(defun eca-chat--update-nested-child-spec (parent-id id &rest props)
-  "Update durable child spec for nested block ID under PARENT-ID."
+(defun eca-chat--nested-child-spec (parent-id id)
+  "Return durable child spec for nested block ID under PARENT-ID."
   (when-let* ((parent-ov (and parent-id
                               (eca-chat--get-expandable-content parent-id)))
               (segments (overlay-get parent-ov
-                                     'eca-chat--expandable-content-segments))
-              (spec (-first (lambda (s)
-                              (and (eq 'child (plist-get s :type))
-                                   (string= id (plist-get s :id))))
-                            segments)))
+                                     'eca-chat--expandable-content-segments)))
+    (-first (lambda (spec)
+              (and (eq 'child (plist-get spec :type))
+                   (string= id (plist-get spec :id))))
+            segments)))
+
+(defun eca-chat--update-nested-child-spec (parent-id id &rest props)
+  "Update durable child spec for nested block ID under PARENT-ID."
+  (when-let* ((spec (eca-chat--nested-child-spec parent-id id)))
     (while props
       (plist-put spec (pop props) (pop props)))))
 
@@ -4688,12 +4692,14 @@ auto-allowed or manually approved), coloring commands accordingly."
        (eca-chat--segments-children
         (overlay-get ov 'eca-chat--expandable-content-segments))))
 
-(defun eca-chat--subagent-preserve-content-p (existing-ov body-without-output)
-  "Return non-nil when EXISTING-OV content must be preserved."
-  (let* ((existing-content (when-let* ((ov existing-ov)
-                                       (ov-content (overlay-get
-                                                    ov 'eca-chat--expandable-content-ov-content)))
-                             (overlay-get ov-content 'eca-chat--expandable-content-content)))
+(defun eca-chat--subagent-preserve-content-p
+    (existing-ov body-without-output &optional child-spec)
+  "Return non-nil when existing subagent content must be preserved."
+  (let* ((existing-content (or (when-let* ((ov existing-ov)
+                                           (ov-content (overlay-get
+                                                        ov 'eca-chat--expandable-content-ov-content)))
+                                 (overlay-get ov-content 'eca-chat--expandable-content-content))
+                               (plist-get child-spec :content)))
          (existing-content-text (and existing-content
                                      (substring-no-properties
                                       existing-content)))
@@ -4753,6 +4759,7 @@ Append STATUS symbol.  Optional PARENT-ID for nested rendering."
           (usage-str (eca-chat--subagent-usage-str id))
           (steps-info (eca-chat--subagent-steps-info step max-steps usage-str))
           (existing-ov (eca-chat--get-expandable-content id))
+          (child-spec (eca-chat--nested-child-spec parent-id id))
           ;; Preserve pending-approval status when a step update arrives with
           ;; loading status because an inner tool call may be waiting for approval.
           (status (if (and existing-ov
@@ -4771,22 +4778,32 @@ Append STATUS symbol.  Optional PARENT-ID for nested rendering."
           (output-fragment-text (and output-fragment
                                      (substring-no-properties output-fragment)))
           (output-present? (and output-fragment-text
-                                existing-ov
-                                (equal output-fragment-text
-                                       (overlay-get
-                                        existing-ov
-                                        'eca-chat--subagent-final-output-fragment))))
+                                (or (and existing-ov
+                                         (equal output-fragment-text
+                                                (overlay-get
+                                                 existing-ov
+                                                 'eca-chat--subagent-final-output-fragment)))
+                                    (and child-spec
+                                         (equal output-fragment-text
+                                                (plist-get
+                                                 child-spec
+                                                 :subagent-final-output-fragment))))))
           (output-to-append (and output-fragment
                                  (not output-present?)
                                  output-fragment))
           (preserve-content? (eca-chat--subagent-preserve-content-p
-                              existing-ov body-without-output)))
+                              existing-ov body-without-output child-spec)))
     (if preserve-content?
         (progn
           ;; Block already has nested or streamed child content.  Only update the
           ;; label line, preserving child output that arrived before this event.
-          (eca-chat--subagent-replace-label
-           existing-ov parent-id id new-label has-children?)
+          (if existing-ov
+              (eca-chat--subagent-replace-label
+               existing-ov parent-id id new-label has-children?)
+            (eca-chat--update-nested-child-spec
+             parent-id id
+             :label new-label
+             :icon-face (get-text-property 0 'font-lock-face new-label)))
           (when output-to-append
             (eca-chat--update-expandable-content
              id nil output-to-append t parent-id)))
@@ -5113,10 +5130,13 @@ When PARENT-TOOL-CALL-ID is non-nil, renders as nested content inside
 that expandable block (subagent mode).
 CHAT-ID is the chat session the content belongs to, used for tool call
 approval requests.  Falls back to the buffer-local `eca-chat--id'.
-Must be called with `eca-chat--with-current-buffer' or equivalent."
+Must be called with `eca-chat--with-current-buffer' or equivalent.
+Return non-nil when the caller must protect read-only history.
+Queued stream events return nil because the flush path protects the batch."
   (let* ((content-id (plist-get content :contentId))
          (content-type (plist-get content :type))
          (tool-call-next-line-spacing (make-string (1+ (length eca-chat-expandable-block-open-symbol)) ?\s))
+         (protect-after-render? t)
          ;; Whether the user acted on this approval from within its
          ;; block; checked now, before rendering drops the buttons.
          (approval-acted-on? (and (member content-type '("toolCallRunning" "toolCalled"
@@ -5179,7 +5199,9 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
             (if parent-tool-call-id
                 ;; Subagent: keep child text ordered under the parent block.
                 (if (eca-chat--stream-buffering-enabled-p)
-                    (eca-chat--stream-buffered-text text parent-tool-call-id)
+                    (progn
+                      (setq protect-after-render? nil)
+                      (eca-chat--stream-buffered-text text parent-tool-call-id))
                   (eca-chat--update-expandable-content
                    parent-tool-call-id nil text t))
               (let ((buffered (eca-chat--stream-buffering-enabled-p))
@@ -5191,7 +5213,9 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
                                (eca-chat--content-insertion-point) nil)))
                 (setq-local eca-chat--last-response-copy-kind 'text)
                 (if buffered
-                    (eca-chat--stream-buffered-text text nil copy-start)
+                    (progn
+                      (setq protect-after-render? nil)
+                      (eca-chat--stream-buffered-text text nil copy-start))
                   (eca-chat--add-text-content text)
                   ;; Defer fontification for live text.  History replay
                   ;; does one explicit batch finalization after replay.
@@ -5290,10 +5314,13 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
              (puthash id (1+ current-count) eca-chat--tool-call-prepare-counters)
              (puthash id new-content eca-chat--tool-call-prepare-content-cache)
              ;; Only update UI when throttling permits.
-             (when should-update-ui-p
-               (if (eca-chat--stream-buffering-enabled-p)
-                   (eca-chat--tool-call-prepare-queue id metadata)
-                 (eca-chat--tool-call-prepare-render id metadata)))))))
+             (if should-update-ui-p
+                 (if (eca-chat--stream-buffering-enabled-p)
+                     (progn
+                       (setq protect-after-render? nil)
+                       (eca-chat--tool-call-prepare-queue id metadata))
+                   (eca-chat--tool-call-prepare-render id metadata))
+               (setq protect-after-render? nil))))))
       ("toolCallRun"
        (when (and (eca-chat--task-tool-call-p content)
                   (plist-get content :manualApproval))
@@ -5594,7 +5621,8 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
     (when approval-acted-on?
       (eca-chat--move-on-from-approval))
     (eca-chat--mark-response-copy-break
-     content-type parent-tool-call-id)))
+     content-type parent-tool-call-id)
+    protect-after-render?))
 
 (defun eca-chat-content-received (session params)
   "Handle the content received notification with PARAMS for SESSION."
@@ -5613,8 +5641,8 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
             (when-let* ((tool-call-id (gethash chat-id eca-chat--subagent-chat-id->tool-call-id)))
               ;; Preserve the user's point: streaming must not move the cursor.
               (eca-chat--with-point-preserved
-                (eca-chat--render-content session parent-buffer role content roots tool-call-id chat-id)
-                (eca-chat--protect-non-prompt eca-chat--last-user-message-pos)
+                (when (eca-chat--render-content session parent-buffer role content roots tool-call-id chat-id)
+                  (eca-chat--protect-non-prompt eca-chat--last-user-message-pos))
                 (eca-chat--maybe-notify-status-changed session content)
                 (eca-chat--maybe-revert-changed-file content)
                 (eca-chat--maybe-run-tool-call-functions session content)))))
@@ -5624,8 +5652,8 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
         (eca-chat--with-current-buffer chat-buffer
           ;; Preserve the user's point: streaming must not move the cursor.
           (eca-chat--with-point-preserved
-            (eca-chat--render-content session chat-buffer role content roots)
-            (eca-chat--protect-non-prompt eca-chat--last-user-message-pos)
+            (when (eca-chat--render-content session chat-buffer role content roots)
+              (eca-chat--protect-non-prompt eca-chat--last-user-message-pos))
             (eca-chat--maybe-notify-status-changed session content)
             (eca-chat--maybe-revert-changed-file content)
             (eca-chat--maybe-run-tool-call-functions session content)))))))

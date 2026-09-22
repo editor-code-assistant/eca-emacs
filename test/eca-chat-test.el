@@ -2236,6 +2236,36 @@ around rendering applies, as when the chat window is selected."
               (expect (point) :to-equal before)))
         (kill-buffer buf))))
 
+  (it "runs read-only protection once after queued live content flush"
+    (let* ((session (make-eca--session))
+           (buf (eca-chat-test--make-tab-chat session "live-protect-chat"))
+           (eca-chat-read-only-history t)
+           (eca-chat-stream-flush-interval 60))
+      (unwind-protect
+          (eca-chat--with-current-buffer buf
+            (setq-local eca-chat--last-user-message-pos (point-min))
+            (spy-on 'eca-chat--protect-non-prompt :and-call-through)
+            (eca-chat-content-received
+             session
+             (list :chatId "live-protect-chat"
+                   :role "assistant"
+                   :content (list :type "text" :text "queued live ")))
+            (eca-chat-content-received
+             session
+             (list :chatId "live-protect-chat"
+                   :role "assistant"
+                   :content (list :type "text" :text "text")))
+            (expect (spy-calls-count 'eca-chat--protect-non-prompt)
+                    :to-equal 0)
+            (eca-chat-test--stream-flush buf)
+            (expect (spy-calls-count 'eca-chat--protect-non-prompt)
+                    :to-equal 1)
+            (expect (eca-chat-test--history-text buf)
+                    :to-match (regexp-quote "queued live text")))
+        (when (buffer-live-p buf)
+          (ignore-errors (eca-chat-test--stream-flush buf))
+          (kill-buffer buf)))))
+
   (it "runs eca-chat-tool-call-functions after rendering live content"
     (let ((buf (eca-chat-test--make-prompt-buffer "hi"))
           (session (make-eca--session))
@@ -3625,6 +3655,65 @@ detected even on filesystems with a coarse modtime resolution."
             (let ((history (eca-chat-test--history-text buf)))
               (expect history :to-match (regexp-quote final-label))
               (expect history :not :to-match (regexp-quote running-label))))
+        (when (buffer-live-p buf)
+          (kill-buffer buf)))))
+
+  (it "keeps collapsed nested subagent text on child completion"
+    (let ((buf (eca-chat-test--make-render-buffer))
+          (session (make-eca--session))
+          (eca-chat-stream-flush-interval 60)
+          (streamed-text "collapsed nested streamed text marker")
+          (final-output "collapsed nested final output marker"))
+      (unwind-protect
+          (eca-chat--with-current-buffer buf
+            (eca-chat-test--render-subagent-parent
+             session buf "collapsed-preserve-parent" "parent-chat")
+            (eca-chat--render-content
+             session buf "assistant"
+             (list :type "toolCallRun"
+                   :id "collapsed-preserve-child"
+                   :name "subagentTool"
+                   :server "testServer"
+                   :arguments (list :agent "child-agent"
+                                    :task "child task")
+                   :details (list :type "subagent"
+                                  :subagentChatId "child-chat"
+                                  :model "test-model"
+                                  :step 1
+                                  :maxSteps 1))
+             nil "collapsed-preserve-parent" "parent-chat")
+            (eca-chat--expandable-content-toggle
+             "collapsed-preserve-parent" t nil)
+            (eca-chat-test--render-subagent-text
+             session buf "collapsed-preserve-child" streamed-text
+             "child-chat")
+            (eca-chat-test--stream-flush buf)
+            (eca-chat--expandable-content-toggle
+             "collapsed-preserve-parent" t t)
+            (eca-chat--render-content
+             session buf "assistant"
+             (list :type "toolCalled"
+                   :id "collapsed-preserve-child"
+                   :name "subagentTool"
+                   :server "testServer"
+                   :arguments (list :agent "child-agent"
+                                    :task "child task")
+                   :details (list :type "subagent"
+                                  :subagentChatId "child-chat"
+                                  :model "test-model"
+                                  :step 1
+                                  :maxSteps 1)
+                   :outputs (list (list :text final-output)))
+             nil "collapsed-preserve-parent" "parent-chat")
+            (eca-chat--expandable-content-toggle
+             "collapsed-preserve-parent" t nil)
+            (eca-chat--expandable-content-toggle
+             "collapsed-preserve-child" t nil)
+            (let ((history (eca-chat-test--history-text buf)))
+              (expect (eca-chat-test--string-count history streamed-text)
+                      :to-equal 1)
+              (expect (eca-chat-test--string-count history final-output)
+                      :to-equal 1)))
         (when (buffer-live-p buf)
           (kill-buffer buf)))))
 

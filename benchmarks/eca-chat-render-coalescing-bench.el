@@ -185,6 +185,24 @@ ROLE, PARENT-ID, and CHAT-ID match `eca-chat--render-content'."
    (eca--session-workspace-folders session)
    parent-id chat-id))
 
+(defun eca-chat-render-coalescing-bench--register-buffer (session buffer)
+  "Register BUFFER in SESSION so live notifications can find it."
+  (with-current-buffer buffer
+    (setf (eca--session-chats session)
+          (eca-assoc (eca--session-chats session) eca-chat--id buffer))))
+
+(defun eca-chat-render-coalescing-bench--content-received
+    (session chat-id content &optional parent-chat-id)
+  "Deliver CONTENT to CHAT-ID through `eca-chat-content-received'.
+When PARENT-CHAT-ID is non-nil, send CONTENT as nested chat content."
+  (eca-chat-content-received
+   session
+   (append (list :chatId chat-id
+                 :role "assistant"
+                 :content content)
+           (when parent-chat-id
+             (list :parentChatId parent-chat-id)))))
+
 (defun eca-chat-render-coalescing-bench--make-buffer ()
   "Return (BUFFER . SESSION) for a benchmark chat buffer."
   (let ((eca-chat-bench--session nil))
@@ -271,7 +289,8 @@ CHAT-ID is the subagent child chat ID."
   (let ((render-content-fn (symbol-function 'eca-chat--render-content))
         (update-expandable-fn
          (symbol-function 'eca-chat--update-expandable-content))
-        (add-text-fn (symbol-function 'eca-chat--add-text-content)))
+        (add-text-fn (symbol-function 'eca-chat--add-text-content))
+        (protect-fn (symbol-function 'eca-chat--protect-non-prompt)))
     (cl-letf (((symbol-function 'eca-chat--render-content)
                (lambda (&rest args)
                  (eca-chat-render-coalescing-bench--inc 'render-content)
@@ -283,7 +302,11 @@ CHAT-ID is the subagent child chat ID."
               ((symbol-function 'eca-chat--add-text-content)
                (lambda (&rest args)
                  (eca-chat-render-coalescing-bench--inc 'add-text)
-                 (apply add-text-fn args))))
+                 (apply add-text-fn args)))
+              ((symbol-function 'eca-chat--protect-non-prompt)
+               (lambda (&rest args)
+                 (eca-chat-render-coalescing-bench--inc 'protect)
+                 (apply protect-fn args))))
       (funcall fn))))
 
 (defun eca-chat-render-coalescing-bench--count (counts key)
@@ -335,6 +358,8 @@ RUN-FN executes the measured workload."
           (eca-chat-render-coalescing-bench--count counts 'update-expandable)
           :add-text-calls
           (eca-chat-render-coalescing-bench--count counts 'add-text)
+          :protect-calls
+          (eca-chat-render-coalescing-bench--count counts 'protect)
           :buffer-size buffer-size)))
 
 ;;;; Benchmark cases
@@ -351,6 +376,26 @@ RUN-FN executes the measured workload."
          (dotimes (i chunks)
            (eca-chat-render-coalescing-bench--render
             session buffer "assistant"
+            (eca-chat-render-coalescing-bench--assistant-content
+             (eca-chat-render-coalescing-bench--chunk i))))
+         (eca-chat--stream-flush))))))
+
+(defun eca-chat-render-coalescing-bench--bench-live-content-received ()
+  "Benchmark queued assistant text through the live notification wrapper."
+  (let ((chunks eca-chat-render-coalescing-bench-text-chunks))
+    (eca-chat-render-coalescing-bench--time-buffer
+     'live-content-received chunks
+     (lambda (session buffer)
+       (eca-chat-render-coalescing-bench--register-buffer session buffer)
+       (setq-local eca-chat--last-user-message-pos (point-min)))
+     (lambda (session buffer)
+       (let ((eca-chat-stream-flush-interval 60)
+             (eca-chat-fontify-debounce-interval nil)
+             (eca-chat-read-only-history t)
+             (chat-id (buffer-local-value 'eca-chat--id buffer)))
+         (dotimes (i chunks)
+           (eca-chat-render-coalescing-bench--content-received
+            session chat-id
             (eca-chat-render-coalescing-bench--assistant-content
              (eca-chat-render-coalescing-bench--chunk i))))
          (eca-chat--stream-flush))))))
@@ -487,8 +532,8 @@ LABEL names the result row."
 (defun eca-chat-render-coalescing-bench--format-results ()
   "Return benchmark results as a markdown table."
   (concat
-   "| op | events | renders | updates | add-text | chars | gc | gc-ms | wall-ms | per-event-us |\n"
-   "|----|-------:|--------:|--------:|---------:|------:|---:|------:|--------:|-------------:|\n"
+   "| op | events | renders | updates | add-text | protects | chars | gc | gc-ms | wall-ms | per-event-us |\n"
+   "|----|-------:|--------:|--------:|---------:|---------:|------:|---:|------:|--------:|-------------:|\n"
    (mapconcat
     (lambda (result)
       (let* ((events (plist-get result :events))
@@ -497,12 +542,13 @@ LABEL names the result row."
              (per-event-us (if (> events 0)
                                (/ (* elapsed 1000000.0) events)
                              0.0)))
-        (format "| %s | %d | %d | %d | %d | %d | %d | %.2f | %.2f | %.2f |"
+        (format "| %s | %d | %d | %d | %d | %d | %d | %d | %.2f | %.2f | %.2f |"
                 (plist-get result :label)
                 events
                 (plist-get result :render-calls)
                 (plist-get result :update-calls)
                 (plist-get result :add-text-calls)
+                (plist-get result :protect-calls)
                 (plist-get result :buffer-size)
                 (plist-get result :gc-count)
                 (* gc-elapsed 1000.0)
@@ -520,6 +566,9 @@ LABEL names the result row."
   (message "[render-coalescing-bench] top-level assistant ...")
   (eca-chat-render-coalescing-bench--add-result
    (eca-chat-render-coalescing-bench--bench-top-level))
+  (message "[render-coalescing-bench] live content received ...")
+  (eca-chat-render-coalescing-bench--add-result
+   (eca-chat-render-coalescing-bench--bench-live-content-received))
   (message "[render-coalescing-bench] subagent one parent ...")
   (eca-chat-render-coalescing-bench--add-result
    (eca-chat-render-coalescing-bench--bench-subagent-one-parent))
