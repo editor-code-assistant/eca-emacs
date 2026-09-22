@@ -3061,6 +3061,86 @@ detected even on filesystems with a coarse modtime resolution."
           (ignore-errors (eca-chat-test--stream-flush buf))
           (kill-buffer buf)))))
 
+  (it "flushes earlier top-level text before parent-scoped lifecycle state"
+    (let ((buf (eca-chat-test--make-render-buffer))
+          (session (make-eca--session))
+          (eca-chat-stream-flush-interval 60)
+          (top-level-text "root text before parent lifecycle marker")
+          (nested-summary "Nested lifecycle after root text"))
+      (unwind-protect
+          (eca-chat--with-current-buffer buf
+            (eca-chat-test--render-subagent-parent
+             session buf "root-text-parent" "root-text-child")
+            (eca-chat--render-content
+             session buf "assistant"
+             (list :type "text" :text top-level-text)
+             nil)
+            (expect (eca-chat-test--history-text buf)
+                    :not :to-match (regexp-quote top-level-text))
+            (eca-chat--render-content
+             session buf "assistant"
+             (append (eca-chat-test--tool-call-content-with-arguments
+                      "toolCallRun" "nested-after-root-text"
+                      "nested after root text arguments")
+                     (list :summary nested-summary))
+             nil "root-text-parent" "root-text-child")
+            (eca-chat--expandable-content-toggle "root-text-parent" t nil)
+            (let ((history (eca-chat-test--history-text buf)))
+              (expect history :to-match (regexp-quote top-level-text))
+              (expect history :to-match (regexp-quote nested-summary)))
+            (eca-chat-test--stream-flush buf)
+            (expect (eca-chat-test--string-count
+                     (eca-chat-test--history-text buf)
+                     top-level-text)
+                    :to-equal 1))
+        (when (buffer-live-p buf)
+          (ignore-errors (eca-chat-test--stream-flush buf))
+          (kill-buffer buf)))))
+
+  (it "flushes earlier root prepare before parent-scoped lifecycle state"
+    (let ((buf (eca-chat-test--make-render-buffer))
+          (session (make-eca--session))
+          (eca-chat-stream-flush-interval 60)
+          (root-summary "Root prepare before parent lifecycle")
+          (sibling-text "sibling parent text remains buffered")
+          (nested-summary "Nested lifecycle after root prepare"))
+      (unwind-protect
+          (eca-chat--with-current-buffer buf
+            (eca-chat-test--render-subagent-parent
+             session buf "root-prepare-parent-a" "root-prepare-child-a")
+            (eca-chat-test--render-subagent-parent
+             session buf "root-prepare-parent-b" "root-prepare-child-b")
+            (eca-chat-test--render-tool-call-prepare
+             session buf "root-prepare-before-parent"
+             "root prepare before parent arguments" root-summary)
+            (eca-chat-test--render-subagent-text
+             session buf "root-prepare-parent-b" sibling-text
+             "root-prepare-child-b")
+            (expect (eca-chat-test--history-text buf)
+                    :not :to-match (regexp-quote root-summary))
+            (expect (eca-chat-test--history-text buf)
+                    :not :to-match (regexp-quote sibling-text))
+            (eca-chat--render-content
+             session buf "assistant"
+             (append (eca-chat-test--tool-call-content-with-arguments
+                      "toolCallRun" "nested-after-root-prepare"
+                      "nested after root prepare arguments")
+                     (list :summary nested-summary))
+             nil "root-prepare-parent-a" "root-prepare-child-a")
+            (eca-chat--expandable-content-toggle
+             "root-prepare-parent-a" t nil)
+            (let ((history (eca-chat-test--history-text buf)))
+              (expect history :to-match (regexp-quote root-summary))
+              (expect history :to-match (regexp-quote nested-summary))
+              (expect history :not :to-match (regexp-quote sibling-text)))
+            (eca-chat-test--stream-flush buf)
+            (expect (eca-chat-test--expanded-parent-history-text
+                     buf "root-prepare-parent-b")
+                    :to-match (regexp-quote sibling-text)))
+        (when (buffer-live-p buf)
+          (ignore-errors (eca-chat-test--stream-flush buf))
+          (kill-buffer buf)))))
+
   (it "toolCalled cancels stale same-ID prepare after lifecycle render"
     (let ((buf (eca-chat-test--make-render-buffer))
           (session (make-eca--session))

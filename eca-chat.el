@@ -4056,6 +4056,24 @@ COPY-START marks top-level TEXT as a response copy-scope start."
                            inserted))))
     inserted))
 
+(defun eca-chat--stream-root-entry-p (entry)
+  "Return non-nil when ENTRY belongs to the root chat timeline."
+  (pcase (eca-chat--stream-render-entry-kind entry)
+    ('top-level t)
+    ('prepare
+     (when-let* ((metadata (gethash
+                            (eca-chat--stream-render-entry-id entry)
+                            (eca-chat--tool-call-prepare-display-table))))
+       (not (plist-get metadata :parent-tool-call-id))))
+    (_ nil)))
+
+(defun eca-chat--stream-flush-root-entries ()
+  "Render pending root chat entries without flushing parent-scoped entries."
+  (let ((inserted (eca-chat--stream-flush-matching-entries
+                   #'eca-chat--stream-root-entry-p)))
+    (eca-chat--stream-protect-inserted inserted)
+    inserted))
+
 (defun eca-chat--stream-flush-top-level ()
   "Render pending top-level assistant stream text in the current chat."
   (let ((inserted (eca-chat--stream-flush-matching-entries
@@ -4994,6 +5012,7 @@ Only updates the label line, preserving all nested child content."
                (not (eca-chat--running-progress-content-p content))
                (or (not (equal content-type "text"))
                    (member role '("user" "system"))))
+      (eca-chat--stream-flush-root-entries)
       (eca-chat--stream-flush parent-tool-call-id)
       (when (and tool-call-id
                  (member content-type '("toolCallRun" "toolCallRunning"
