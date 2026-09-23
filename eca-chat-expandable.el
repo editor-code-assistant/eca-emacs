@@ -310,7 +310,9 @@ NESTED-PROPS is a plist with :parent-id and :label-indent for nested blocks."
 
 (defun eca-chat--render-nested-block (parent-ov child-spec)
   "Render a nested block CHILD-SPEC within PARENT-OV's content area."
-  (-let* (((&plist :id id :label label :content content :icon-face icon-face) child-spec)
+  (-let* (((&plist :id id :label label :content content :icon-face icon-face
+                   :subagent-final-output-fragment final-output-fragment)
+            child-spec)
           (parent-content-ov (overlay-get parent-ov 'eca-chat--expandable-content-ov-content))
           (label-indent eca-chat--expandable-content-base-indent)
           (icons (eca-chat--make-expandable-icons icon-face label-indent)))
@@ -324,6 +326,9 @@ NESTED-PROPS is a plist with :parent-id and :label-indent for nested blocks."
                                                :label-indent label-indent))
       ;; Paint label's line-prefix with parent's background when parent is open
       (when-let* ((child-ov (eca-chat--get-expandable-content id)))
+        (when final-output-fragment
+          (overlay-put child-ov 'eca-chat--subagent-final-output-fragment
+                       final-output-fragment))
         (eca-chat--paint-nested-label child-ov)))))
 
 (defun eca-chat--destroy-nested-blocks (parent-id)
@@ -349,6 +354,26 @@ NESTED-PROPS is a plist with :parent-id and :label-indent for nested blocks."
   "Return all child specs from SEGMENTS."
   (-filter (lambda (seg) (eq 'child (plist-get seg :type))) segments))
 
+(defun eca-chat--nested-segments-append-child (parent-ov segments child-spec)
+  "Return SEGMENTS plus uncaptured parent text and CHILD-SPEC."
+  (let* ((ov-content (overlay-get parent-ov
+                                  'eca-chat--expandable-content-ov-content))
+         (full-content (overlay-get ov-content
+                                    'eca-chat--expandable-content-content))
+         (segmented-text (eca-chat--segments-total-text segments))
+         (unsegmented-text (if segments
+                               (when (> (length full-content)
+                                        (length segmented-text))
+                                 (substring full-content
+                                            (length segmented-text)))
+                             full-content))
+         (text-segment (when (and unsegmented-text
+                                  (not (string-empty-p unsegmented-text)))
+                         (list :type 'text :content unsegmented-text))))
+    (append segments
+            (when text-segment (list text-segment))
+            (list child-spec))))
+
 (defun eca-chat--add-expandable-content (id label content &optional parent-id at-point)
   "Add LABEL to the chat current position for ID as a interactive text.
 When expanded, shows CONTENT.
@@ -368,18 +393,13 @@ the default content insertion point."
               ;; duplicating the entry.
               (eca-chat--update-expandable-content id label content nil parent-id)
             (let* ((icon-face (get-text-property 0 'font-lock-face label))
-                   (child-spec (list :type 'child :id id :label label :content content :icon-face icon-face))
-                   ;; Capture any unsegmented text that was appended to content
-                   ;; since the last segment, and add it as a text segment first
-                   (ov-content (overlay-get parent-ov 'eca-chat--expandable-content-ov-content))
-                   (full-content (overlay-get ov-content 'eca-chat--expandable-content-content))
-                   (segmented-text (eca-chat--segments-total-text segments))
-                   (unsegmented-text (when (> (length full-content) (length segmented-text))
-                                       (substring full-content (length segmented-text))))
-                   (new-segments (append segments
-                                         (when unsegmented-text
-                                           (list (list :type 'text :content unsegmented-text)))
-                                         (list child-spec))))
+                   (child-spec (list :type 'child
+                                     :id id
+                                     :label label
+                                     :content content
+                                     :icon-face icon-face))
+                   (new-segments (eca-chat--nested-segments-append-child
+                                  parent-ov segments child-spec)))
               (overlay-put parent-ov 'eca-chat--expandable-content-segments new-segments)
               (when (overlay-get parent-ov 'eca-chat--expandable-content-toggle)
                 (eca-chat--render-nested-block parent-ov child-spec))))))
@@ -508,7 +528,10 @@ in parent."
                       (spec (-first (lambda (s) (and (eq 'child (plist-get s :type))
                                                      (string= id (plist-get s :id))))
                                     segments)))
-            (when label (plist-put spec :label label))
+            (when label
+              (plist-put spec :label label)
+              (plist-put spec :icon-face
+                         (get-text-property 0 'font-lock-face label)))
             (plist-put spec :content new-content))))
     ;; Block not rendered yet
     (if parent-id
@@ -527,10 +550,16 @@ in parent."
                     (plist-put existing-spec :label label)
                     (plist-put existing-spec :icon-face (get-text-property 0 'font-lock-face label)))
                   (plist-put existing-spec :content new-content))
-              (let ((child-spec (list :type 'child :id id :label label :content content
-                                     :icon-face (get-text-property 0 'font-lock-face label))))
+              (let* ((child-spec (list :type 'child
+                                       :id id
+                                       :label label
+                                       :content content
+                                       :icon-face (get-text-property
+                                                   0 'font-lock-face label)))
+                     (new-segments (eca-chat--nested-segments-append-child
+                                    parent-ov segments child-spec)))
                 (overlay-put parent-ov 'eca-chat--expandable-content-segments
-                             (append segments (list child-spec)))
+                             new-segments)
                 (when (overlay-get parent-ov 'eca-chat--expandable-content-toggle)
                   (eca-chat--render-nested-block parent-ov child-spec))))))
       ;; Top-level: create the block so toolCallRun et al. don't
