@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Bugfix: questions asked in parallel (several `ask_user` tool calls) stopped reacting to RET once one was answered, and an option could answer another question. Each question is now answered on its own: point moves on to the next pending one, a typed answer goes to the topmost question accepting one, and stopping cancels them all.
 - Bugfix: `eca-open-global-config` edited a file the server never reads on Windows when `HOME` is unset (#321), since Emacs defaults `HOME` to `%APPDATA%` while the server uses the user profile directory. The path now comes from the server's `initialize` response (`globalConfigPath`), translated through TRAMP for remote sessions; with older servers the local fallback resolves the home directory like the server does.
 - Bugfix: new chat buffers now get the session's first workspace folder as `default-directory` (#323). It was inherited from whichever buffer was current when the buffer got created, which for a new session is the async `initialize` response, so `(let ((default-directory dir)) (eca))` wrappers ended up with the chat rooted in the previous buffer's directory.
 - User messages in the chat now stand out as a turn marker (#265): `eca-chat-user-messages-face` is bold on the theme-derived block background instead of `font-lock-doc-face`, painted over the whole message so markdown spans in it keep the background, and an empty line separates the message from the previous answer.

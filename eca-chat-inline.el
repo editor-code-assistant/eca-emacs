@@ -685,7 +685,7 @@ Subscribed to `eca-chat-session-status-changed-functions'."
        ((equal (overlay-get ov 'eca-chat-inline--session-id)
                (eca--session-id session))
         (when-let* ((buf (eca-chat-inline--chat-buffer session chat-id)))
-          (when (buffer-local-value 'eca-chat--pending-question buf)
+          (when (buffer-local-value 'eca-chat--pending-questions buf)
             (eca-chat-inline--set-status
              ov "Question pending, open the chat to answer"))))))))
 
@@ -939,7 +939,7 @@ toggle or inline prompt."
                            (eca-chat-inline--chat-buffer session chat-id))))
     (if (and chat-buffer
              (or (buffer-local-value 'eca-chat--chat-loading chat-buffer)
-                 (buffer-local-value 'eca-chat--pending-question chat-buffer)))
+                 (buffer-local-value 'eca-chat--pending-questions chat-buffer)))
         ;; The buffer path also cancels a pending question client-side.
         (eca-chat--with-current-buffer chat-buffer
           (eca-chat--stop-prompt session))

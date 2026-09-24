@@ -22,7 +22,7 @@ buffer only mimics `eca-chat-mode' by setting `major-mode' so
         ('approval (insert (propertize
                             "[accept]"
                             'eca-tool-call-pending-approval-accept t)))
-        ('question (setq-local eca-chat--pending-question '(:question "q")))
+        ('question (setq-local eca-chat--pending-questions (list '(:question "q"))))
         ('loading (setq-local eca-chat--chat-loading t))))
     buf))
 

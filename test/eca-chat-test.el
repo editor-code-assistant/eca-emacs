@@ -2434,8 +2434,8 @@ detected even on filesystems with a coarse modtime resolution."
     ;; is nil (the chat reports idle while awaiting the answer).
     (with-temp-buffer
       (setq-local eca-chat--chat-loading nil)
-      (setq-local eca-chat--pending-question
-                  (list :session (make-eca--session) :request 1))
+      (setq-local eca-chat--pending-questions
+                  (list (list :session (make-eca--session) :request 1)))
       (let ((seg (eca-chat--transient-segment-loading)))
         (expect seg :to-be-truthy)
         (expect (string-match-p "stop" seg) :to-be-truthy))))
@@ -2443,24 +2443,26 @@ detected even on filesystems with a coarse modtime resolution."
   (it "returns nil when idle and no question is pending"
     (with-temp-buffer
       (setq-local eca-chat--chat-loading nil)
-      (setq-local eca-chat--pending-question nil)
+      (setq-local eca-chat--pending-questions nil)
       (expect (eca-chat--transient-segment-loading) :to-be nil))))
 
 (describe "eca-chat--stop-prompt"
-  (it "cancels the pending question and notifies the server when idle"
+  (it "cancels every pending question and notifies the server when idle"
     ;; Regression: stopping must work while a question is pending even if
     ;; `eca-chat--chat-loading' is nil, since the question blocks the turn.
     (with-temp-buffer
-      (let ((session (make-eca--session)))
+      (let ((session (make-eca--session))
+            (q1 (list :session (make-eca--session) :request 1))
+            (q2 (list :session (make-eca--session) :request 2)))
         (setq-local eca-chat--id "chat-1")
         (setq-local eca-chat--chat-loading nil)
-        (setq-local eca-chat--pending-question
-                    (list :session session :request 1))
+        (setq-local eca-chat--pending-questions (list q1 q2))
         (spy-on 'eca-chat--cancel-question)
         (spy-on 'eca-api-notify)
         (spy-on 'eca-chat--set-chat-loading)
         (eca-chat--stop-prompt session)
-        (expect 'eca-chat--cancel-question :to-have-been-called)
+        (expect 'eca-chat--cancel-question :to-have-been-called-with q1)
+        (expect 'eca-chat--cancel-question :to-have-been-called-with q2)
         (expect 'eca-api-notify :to-have-been-called-with
                 session
                 :method "chat/promptStop"
@@ -2475,36 +2477,231 @@ detected even on filesystems with a coarse modtime resolution."
   ;; pending-question state so the prompt leaves answer mode.
   (it "clears the pending question when the tool-call id matches"
     (with-temp-buffer
-      (setq-local eca-chat--pending-question
-                  (list :session (make-eca--session) :request 1
-                        :tool-call-id "tc-1" :allow-freeform t))
+      (setq-local eca-chat--pending-questions
+                  (list (list :session (make-eca--session) :request 1
+                              :tool-call-id "tc-1" :allow-freeform t)))
       (spy-on 'eca-chat--set-question-prompt-prefix)
       (spy-on 'eca-chat--refresh-transient-area)
       (eca-chat--dismiss-pending-question-for-tool-call "tc-1")
-      (expect eca-chat--pending-question :to-be nil)
+      (expect eca-chat--pending-questions :to-be nil)
       (expect 'eca-chat--set-question-prompt-prefix
               :to-have-been-called-with nil)
       (expect 'eca-chat--refresh-transient-area :to-have-been-called)))
 
   (it "leaves the pending question intact when the id does not match"
     (with-temp-buffer
-      (let ((pending (list :session (make-eca--session) :request 1
-                           :tool-call-id "tc-1" :allow-freeform t)))
-        (setq-local eca-chat--pending-question pending)
+      (let ((pending (list (list :session (make-eca--session) :request 1
+                                 :tool-call-id "tc-1" :allow-freeform t))))
+        (setq-local eca-chat--pending-questions pending)
         (spy-on 'eca-chat--set-question-prompt-prefix)
         (spy-on 'eca-chat--refresh-transient-area)
         (eca-chat--dismiss-pending-question-for-tool-call "tc-2")
-        (expect eca-chat--pending-question :to-equal pending)
+        (expect eca-chat--pending-questions :to-equal pending)
         (expect 'eca-chat--set-question-prompt-prefix
                 :not :to-have-been-called))))
 
+  (it "keeps the other pending questions and answer mode"
+    (with-temp-buffer
+      (let ((q1 (list :session (make-eca--session) :request 1
+                      :tool-call-id "tc-1" :allow-freeform t))
+            (q2 (list :session (make-eca--session) :request 2
+                      :tool-call-id "tc-2" :allow-freeform t)))
+        (setq-local eca-chat--pending-questions (list q1 q2))
+        (spy-on 'eca-chat--set-question-prompt-prefix)
+        (spy-on 'eca-chat--refresh-transient-area)
+        (eca-chat--dismiss-pending-question-for-tool-call "tc-1")
+        (expect eca-chat--pending-questions :to-equal (list q2))
+        (expect 'eca-chat--set-question-prompt-prefix
+                :to-have-been-called-with t))))
+
   (it "does nothing when there is no pending question"
     (with-temp-buffer
-      (setq-local eca-chat--pending-question nil)
+      (setq-local eca-chat--pending-questions nil)
       (spy-on 'eca-chat--refresh-transient-area)
       (eca-chat--dismiss-pending-question-for-tool-call "tc-1")
-      (expect eca-chat--pending-question :to-be nil)
+      (expect eca-chat--pending-questions :to-be nil)
       (expect 'eca-chat--refresh-transient-area :not :to-have-been-called))))
+
+(defun eca-chat-test--add-tool-calls (session &rest ids)
+  "Render running tool call blocks for IDS in the current buffer of SESSION."
+  (dolist (id ids)
+    (eca-chat--render-content
+     session (current-buffer) "assistant"
+     (eca-chat-test--tool-call-content "toolCallRun" id) nil)))
+
+(defun eca-chat-test--ask (session tool-call-id request-id labels &optional freeform)
+  "Ask question REQUEST-ID of TOOL-CALL-ID for SESSION like the server.
+LABELS are the option labels; FREEFORM allows typed answers.  Without
+TOOL-CALL-ID the question renders as a standalone block."
+  (eca-chat-handle-ask-question
+   session
+   (list :id request-id :method "chat/askQuestion")
+   (list :chatId "chat-1"
+         :question (format "Question %s?" request-id)
+         :toolCallId tool-call-id
+         :allowFreeform freeform
+         :options (vconcat (mapcar (lambda (label) (list :label label))
+                                   labels)))))
+
+(defun eca-chat-test--press (question label)
+  "Move point onto button LABEL of QUESTION and press it like RET.
+QUESTION is a pending question plist, or (:tool-call-id ID)."
+  (let ((bounds (eca-chat--question-bounds question))
+        (case-fold-search nil))
+    (goto-char (car bounds))
+    (search-forward label (cdr bounds))
+    (goto-char (match-beginning 0))
+    (funcall (get-text-property (point) 'eca-button-on-action))))
+
+(defun eca-chat-test--responses ()
+  "Return (REQUEST-ID RESPONSE) for each question response sent so far."
+  (mapcar (lambda (args) (list (plist-get (nth 1 args) :id) (nth 2 args)))
+          (spy-calls-all-args 'eca-api-send-request-response)))
+
+(describe "concurrent ask_user questions"
+  ;; Regression: parallel `ask_user' tool calls send several
+  ;; `chat/askQuestion' requests at once.  Only the last one was tracked,
+  ;; so any option answered that last request, the other questions stopped
+  ;; reacting to RET and their requests were left hanging.
+  :var (buf session)
+  (before-each
+    (setq buf (eca-chat-test--make-render-buffer)
+          session (make-eca--session))
+    (spy-on 'eca-chat--get-chat-buffer :and-return-value buf)
+    (spy-on 'eca-api-send-request-response)
+    (spy-on 'eca-chat--notify-status-changed))
+
+  (after-each
+    (kill-buffer buf))
+
+  (it "sends each answer to the request of its own question"
+    (eca-chat--with-current-buffer buf
+      (eca-chat-test--add-tool-calls session "tc-1" "tc-2")
+      (eca-chat-test--ask session "tc-1" 1 '("A1" "B1"))
+      (eca-chat-test--ask session "tc-2" 2 '("A2" "B2"))
+      (eca-chat-test--press '(:tool-call-id "tc-1") "B1")
+      (expect (eca-chat-test--responses)
+              :to-equal '((1 (:answer "B1" :cancelled :json-false))))
+      (expect (buffer-string) :to-match "→ B1")
+      (expect (length eca-chat--pending-questions) :to-equal 1)
+      (eca-chat-test--press '(:tool-call-id "tc-2") "A2")
+      (expect (eca-chat-test--responses)
+              :to-equal '((1 (:answer "B1" :cancelled :json-false))
+                          (2 (:answer "A2" :cancelled :json-false))))
+      (expect eca-chat--pending-questions :to-be nil)))
+
+  (it "keeps the other questions answerable after answering the last one"
+    (eca-chat--with-current-buffer buf
+      (eca-chat-test--add-tool-calls session "tc-1" "tc-2" "tc-3")
+      (eca-chat-test--ask session "tc-1" 1 '("A1"))
+      (eca-chat-test--ask session "tc-2" 2 '("A2"))
+      (eca-chat-test--ask session "tc-3" 3 '("A3"))
+      (eca-chat-test--press '(:tool-call-id "tc-3") "A3")
+      (eca-chat-test--press '(:tool-call-id "tc-1") "A1")
+      (eca-chat-test--press '(:tool-call-id "tc-2") "A2")
+      (expect (mapcar (lambda (r) (list (car r) (plist-get (cadr r) :answer)))
+                      (eca-chat-test--responses))
+              :to-equal '((3 "A3") (1 "A1") (2 "A2")))
+      (expect eca-chat--pending-questions :to-be nil)))
+
+  (it "answers a question only once"
+    (eca-chat--with-current-buffer buf
+      (eca-chat-test--add-tool-calls session "tc-1" "tc-2")
+      (eca-chat-test--ask session "tc-1" 1 '("A1"))
+      (eca-chat-test--ask session "tc-2" 2 '("A2"))
+      (let ((question (car eca-chat--pending-questions)))
+        (expect (eca-chat--answer-question question "A1") :to-be-truthy)
+        (expect (eca-chat--answer-question question "A1") :to-be nil)
+        (expect (eca-chat--cancel-question question) :to-be nil))
+      (expect 'eca-api-send-request-response :to-have-been-called-times 1)))
+
+  (it "moves point to the next pending question, then to the prompt"
+    (eca-chat--with-current-buffer buf
+      (eca-chat-test--add-tool-calls session "tc-1" "tc-2")
+      (eca-chat-test--ask session "tc-1" 1 '("A1"))
+      (eca-chat-test--ask session "tc-2" 2 '("A2"))
+      (eca-chat-test--press '(:tool-call-id "tc-1") "A1")
+      (expect (buffer-substring-no-properties (point) (+ (point) 2))
+              :to-equal "A2")
+      (expect (get-text-property (point) 'eca-button-on-action) :to-be-truthy)
+      (eca-chat-test--press '(:tool-call-id "tc-2") "A2")
+      (expect (point) :to-equal (eca-chat--prompt-field-start-point))))
+
+  (it "answers the topmost freeform question with the prompt text"
+    (eca-chat--with-current-buffer buf
+      (spy-on 'eca-session :and-return-value session)
+      (spy-on 'eca-chat--send-prompt)
+      (spy-on 'eca-chat--steer-prompt)
+      (eca-chat-test--add-tool-calls session "tc-1" "tc-2" "tc-3")
+      ;; Questions arrive in another order than their blocks show in.
+      (eca-chat-test--ask session "tc-3" 3 '("A3") t)
+      (eca-chat-test--ask session "tc-1" 1 '("A1"))
+      (eca-chat-test--ask session "tc-2" 2 '("A2") t)
+      (eca-chat--set-prompt "typed")
+      (eca-chat--key-pressed-return)
+      (expect (eca-chat-test--responses)
+              :to-equal '((2 (:answer "typed" :cancelled :json-false))))
+      (expect (eca-chat--prompt-content) :to-equal "")
+      (expect (overlay-get (eca-chat--prompt-field-ov) 'before-string)
+              :to-equal eca-chat-prompt-prefix-question)
+      (eca-chat--set-prompt "again")
+      (eca-chat--key-pressed-return)
+      (expect (cadr (eca-chat-test--responses))
+              :to-equal '(3 (:answer "again" :cancelled :json-false)))
+      ;; Only question 1 is left, which accepts no typed answer.
+      (expect (overlay-get (eca-chat--prompt-field-ov) 'before-string)
+              :to-equal eca-chat-prompt-prefix)
+      (eca-chat--set-prompt "ignored")
+      (eca-chat--key-pressed-return)
+      (expect 'eca-api-send-request-response :to-have-been-called-times 2)
+      (expect 'eca-chat--send-prompt :not :to-have-been-called)
+      (expect 'eca-chat--steer-prompt :not :to-have-been-called)
+      (expect (eca-chat--prompt-content) :to-equal "ignored")))
+
+  (it "cancels every pending question when the prompt is stopped"
+    (eca-chat--with-current-buffer buf
+      (spy-on 'eca-api-notify)
+      (spy-on 'eca-chat--set-chat-loading)
+      (eca-chat-test--add-tool-calls session "tc-1" "tc-2")
+      (eca-chat-test--ask session "tc-1" 1 '("A1"))
+      (eca-chat-test--ask session "tc-2" 2 '("A2"))
+      (eca-chat--stop-prompt session)
+      (expect (eca-chat-test--responses)
+              :to-equal '((1 (:answer nil :cancelled t))
+                          (2 (:answer nil :cancelled t))))
+      (expect eca-chat--pending-questions :to-be nil)))
+
+  (it "keeps the other questions answerable when another client answers one"
+    (eca-chat--with-current-buffer buf
+      (eca-chat-test--add-tool-calls session "tc-1" "tc-2")
+      (eca-chat-test--ask session "tc-1" 1 '("A1"))
+      (eca-chat-test--ask session "tc-2" 2 '("A2"))
+      (eca-chat--render-content
+       session buf "assistant"
+       (eca-chat-test--tool-call-content "toolCalled" "tc-1") nil)
+      (expect 'eca-api-send-request-response :not :to-have-been-called)
+      (eca-chat-test--press '(:tool-call-id "tc-2") "A2")
+      (expect (eca-chat-test--responses)
+              :to-equal '((2 (:answer "A2" :cancelled :json-false))))))
+
+  (it "answers standalone questions on their own"
+    (eca-chat--with-current-buffer buf
+      (eca-chat-test--ask session nil 1 '("A1"))
+      (eca-chat-test--ask session nil 2 '("A2"))
+      (let ((q1 (nth 0 eca-chat--pending-questions))
+            (q2 (nth 1 eca-chat--pending-questions)))
+        (eca-chat-test--press q2 "A2")
+        (expect (buffer-string) :to-match "→ A2")
+        (let ((bounds (eca-chat--question-bounds q1)))
+          (expect (text-property-not-all (car bounds) (cdr bounds)
+                                         'eca-button-on-action nil)
+                  :to-be-truthy))
+        (eca-chat-test--press q1 "A1")
+        (expect (buffer-string) :to-match "→ A1"))
+      (expect (mapcar #'car (eca-chat-test--responses)) :to-equal '(2 1))
+      (expect (text-property-not-all (point-min) (point-max)
+                                     'eca-button-on-action nil)
+              :to-be nil))))
 
 (describe "eca-chat--normalize-question-option"
   ;; Regression: a `chat/askQuestion' option that is a plain string or a

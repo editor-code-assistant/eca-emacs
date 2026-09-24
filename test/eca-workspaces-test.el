@@ -36,7 +36,7 @@
       (when loading
         (setq-local eca-chat--prompt-start-time (current-time)))
       (when question
-        (setq-local eca-chat--pending-question '(:question "q")))
+        (setq-local eca-chat--pending-questions (list '(:question "q"))))
       (when approval
         (insert (propertize "approve"
                             'eca-tool-call-pending-approval-accept t))))

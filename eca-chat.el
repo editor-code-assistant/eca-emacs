@@ -937,14 +937,17 @@ Each task is a plist with :id, :content, :status, :priority, etc.")
   "Safety timer to force-clear \='stopping state.
 Used when server never responds to stop request.")
 
-(defvar-local eca-chat--pending-question nil
-  "When non-nil, holds the active question state.
-A plist with :session :request :question :options :tool-call-id :allow-freeform.")
+(defvar-local eca-chat--pending-questions nil
+  "Unanswered questions, oldest first.
+Parallel `ask_user' tool calls leave several pending at once.  Each
+is a plist with :session :request :question :options :tool-call-id
+:allow-freeform, and :block-ov, the overlay of its block when it has
+no tool call block to render in.")
 
 ;; Buffer-local caches for singleton overlays.  The chat buffer
 ;; contains a fixed set of overlays that are created once at chat
 ;; setup (prompt-area, prompt-field, progress-area, context-area,
-;; task-area) plus optionally one question-block.  Each lookup
+;; task-area).  Each lookup
 ;; historically scanned every overlay in the buffer via
 ;; `(overlays-in (point-min) (point-max))', which scales linearly
 ;; with chat length and is exercised on every streamed chunk.
@@ -957,7 +960,6 @@ A plist with :session :request :question :options :tool-call-id :allow-freeform.
 (defvar-local eca-chat--progress-area-ov-cache nil)
 (defvar-local eca-chat--context-area-ov-cache nil)
 (defvar-local eca-chat--task-area-ov-cache nil)
-(defvar-local eca-chat--question-block-ov-cache nil)
 
 
 (defvar eca-chat--new-chat-id 0)
@@ -1811,13 +1813,12 @@ Recovery path for a corrupted prompt block (see #305)."
 
 (defun eca-chat--stop-prompt (session)
   "Stop the running chat prompt for SESSION.
-A pending question keeps the turn active server-side, so allow
-stopping while one is pending: cancel it, then notify the server."
+Pending questions keep the turn active server-side, so allow
+stopping while any is pending: cancel them, then notify the server."
   (when (or (eq eca-chat--chat-loading t)
-            eca-chat--pending-question)
+            eca-chat--pending-questions)
     (eca-chat--stream-flush)
-    (when eca-chat--pending-question
-      (eca-chat--cancel-question))
+    (mapc #'eca-chat--cancel-question eca-chat--pending-questions)
     (eca-api-notify session
                     :method "chat/promptStop"
                     :params (list :chatId eca-chat--id))
@@ -2011,8 +2012,7 @@ Should be called whenever overlays are wholesale removed, e.g. via
         eca-chat--prompt-field-ov-cache nil
         eca-chat--progress-area-ov-cache nil
         eca-chat--context-area-ov-cache nil
-        eca-chat--task-area-ov-cache nil
-        eca-chat--question-block-ov-cache nil))
+        eca-chat--task-area-ov-cache nil))
 
 (defun eca-chat--prompt-field-ov ()
   "Return the overlay for the prompt field."
@@ -2612,7 +2612,7 @@ without finalizing it)."
 Also returned while a question is pending so the prompt can be
 stopped even if the chat reports idle awaiting the answer."
   (when (or (eq eca-chat--chat-loading t)
-            eca-chat--pending-question)
+            eca-chat--pending-questions)
     (concat (propertize eca-chat-prompt-prefix-loading
                         'font-lock-face 'default)
             (eca-buttonize
@@ -2730,7 +2730,8 @@ characters as part of the URL."
   (interactive)
   (eca-chat--allow-write
    (let* ((session (eca-session))
-          (prompt (eca-chat--prompt-content)))
+          (prompt (eca-chat--prompt-content))
+          (freeform-question (eca-chat--freeform-question)))
      (cond
       ;; check if completion popup is active
       ((eca-chat--completion-active-p)
@@ -2755,14 +2756,15 @@ characters as part of the URL."
                                            markdown-plain-url-face))
        (eca-chat--follow-link-at-point))
 
-      ;; pending question + freeform allowed — answer with prompt text
-      ((and eca-chat--pending-question
-            (plist-get eca-chat--pending-question :allow-freeform)
+      ;; pending question + freeform allowed — answer with prompt text,
+      ;; clearing it even when other questions are left to answer
+      ((and freeform-question
             (not (string-empty-p prompt)))
-       (eca-chat--answer-question prompt))
+       (eca-chat--answer-question freeform-question prompt)
+       (eca-chat--set-prompt ""))
 
       ;; pending question — block normal send/steer
-      (eca-chat--pending-question nil)
+      (eca-chat--pending-questions nil)
 
       ;; check prompt
       ((and (not (string-empty-p prompt))
@@ -2990,7 +2992,7 @@ waiting, so it is not considered."
        (with-current-buffer buffer
          (and (derived-mode-p 'eca-chat-mode)
               (or (eca-chat--has-pending-approvals-p)
-                  (and eca-chat--pending-question t))))))
+                  (and eca-chat--pending-questions t))))))
 
 (defun eca-chat-session-status (session)
   "Return the aggregated status of all chats in SESSION.
@@ -3016,7 +3018,7 @@ One of `waiting-approval', `waiting-answer', `stopping',
   (with-current-buffer buffer
     (cond
      ((eca-chat--has-pending-approvals-p) 'waiting-approval)
-     (eca-chat--pending-question 'waiting-answer)
+     (eca-chat--pending-questions 'waiting-answer)
      ((eq eca-chat--chat-loading 'stopping) 'stopping)
      (eca-chat--chat-loading 'running)
      (t 'idle))))
@@ -5534,10 +5536,12 @@ silently ignored."
 (defun eca-chat-handle-ask-question (session request params)
   "Handle chat/askQuestion REQUEST for SESSION with PARAMS.
 Renders the question in the chat buffer and switches the prompt
-to answer mode.  Returns :async — the response is sent later when
-the user answers or cancels."
+to answer mode.  Several questions can be pending at once, e.g.
+from parallel `ask_user' tool calls, each answered on its own.
+Returns :async — the response is sent later when the user answers
+or cancels."
   (let* ((chat-id (plist-get params :chatId))
-         (question (plist-get params :question))
+         (text (plist-get params :question))
          ;; Guard against a non-sequence `:options` (e.g. a malformed
          ;; string from a misbehaving server): `append' on a string would
          ;; split it into character integers that render as random numbers.
@@ -5545,31 +5549,34 @@ the user answers or cancels."
                     (when (or (listp raw) (vectorp raw))
                       (append raw nil))))
          (tool-call-id (plist-get params :toolCallId))
-         (allow-freeform (plist-get params :allowFreeform))
          (chat-buffer (eca-chat--get-chat-buffer session chat-id)))
     (if (and chat-buffer (buffer-live-p chat-buffer))
         (progn
           (eca-chat--with-current-buffer chat-buffer
-            (setq eca-chat--pending-question
-                  (list :session session :request request
-                        :question question :options options
-                        :tool-call-id tool-call-id
-                        :allow-freeform allow-freeform))
-            (if tool-call-id
-                (progn
-                  (eca-chat--update-expandable-content
-                   tool-call-id
-                   (propertize (concat "Q: " question)
-                               'font-lock-face 'eca-chat-question-face)
-                   (eca-chat--build-question-options-content options))
-                  (eca-chat--expandable-content-toggle tool-call-id t nil))
-              (eca-chat--render-ask-question-standalone question options))
-            (when allow-freeform
-              (eca-chat--set-question-prompt-prefix t))
-            ;; A pending question keeps the turn active server-side, so
-            ;; surface the stop affordance even if the chat reports idle.
-            (eca-chat--refresh-transient-area)
-            (eca-chat--notify-status-changed session))
+            ;; The buttons rendered below answer this very question, so
+            ;; answering one never settles another pending question.
+            (let ((question (list :session session :request request
+                                  :question text :options options
+                                  :tool-call-id tool-call-id
+                                  :allow-freeform (plist-get params :allowFreeform)
+                                  :block-ov nil)))
+              (if tool-call-id
+                  (progn
+                    (eca-chat--update-expandable-content
+                     tool-call-id
+                     (propertize (concat "Q: " text)
+                                 'font-lock-face 'eca-chat-question-face)
+                     (eca-chat--build-question-options-content question))
+                    (eca-chat--expandable-content-toggle tool-call-id t nil))
+                (plist-put question :block-ov
+                           (eca-chat--render-ask-question-standalone question)))
+              (setq eca-chat--pending-questions
+                    (append eca-chat--pending-questions (list question)))
+              (eca-chat--refresh-question-prompt-prefix)
+              ;; A pending question keeps the turn active server-side, so
+              ;; surface the stop affordance even if the chat reports idle.
+              (eca-chat--refresh-transient-area)
+              (eca-chat--notify-status-changed session)))
           :async)
       (list :answer nil :cancelled t))))
 
@@ -5583,48 +5590,52 @@ always a non-nil string so option rendering never fails on bad data."
     (cons (if (stringp label) label (format "%s" (or label opt)))
           (and (stringp desc) desc))))
 
-(defun eca-chat--build-question-options-content (options)
-  "Build expandable block content string with OPTIONS and a cancel button."
+(defun eca-chat--question-button (text action)
+  "Return a button with TEXT calling ACTION.
+ACTION settles a question, returning non-nil when it did.  Point then
+moves on to the next pending question, so questions asked in parallel
+can be answered in a row."
+  (eca-buttonize eca-chat-mode-map
+                 text
+                 (lambda ()
+                   (when (funcall action)
+                     (eca-chat--goto-next-question)))))
+
+(defun eca-chat--build-question-options-content (question)
+  "Build expandable block content with QUESTION options and a cancel button."
   (concat
-   (when options
-     (mapconcat
-      (lambda (opt)
-        (let* ((ld (eca-chat--normalize-question-option opt))
-               (label (car ld))
-               (desc (cdr ld))
-               (btn (eca-buttonize
-                     eca-chat-mode-map
-                     (propertize label 'font-lock-face 'eca-chat-question-option-face)
-                     (lambda ()
-                       (eca-chat--answer-question label)))))
-          (concat btn
-                  (when desc
-                    (concat "  " (propertize desc 'font-lock-face 'eca-chat-question-description-face)))
-                  "\n")))
-      options
-      ""))
-   (eca-buttonize
-    eca-chat-mode-map
+   (mapconcat
+    (lambda (opt)
+      (let* ((ld (eca-chat--normalize-question-option opt))
+             (label (car ld))
+             (desc (cdr ld))
+             (btn (eca-chat--question-button
+                   (propertize label 'font-lock-face 'eca-chat-question-option-face)
+                   (lambda ()
+                     (eca-chat--answer-question question label)))))
+        (concat btn
+                (when desc
+                  (concat "  " (propertize desc 'font-lock-face 'eca-chat-question-description-face)))
+                "\n")))
+    (plist-get question :options)
+    "")
+   (eca-chat--question-button
     (propertize "Cancel" 'font-lock-face '(error :underline t))
-    #'eca-chat--cancel-question)
+    (lambda () (eca-chat--cancel-question question)))
    "\n"))
 
-(defun eca-chat--question-block-ov ()
-  "Return the overlay marking the standalone question block."
-  (eca-chat--cached-overlay eca-chat--question-block-ov-cache
-                            'eca-chat--question-block))
-
-(defun eca-chat--render-ask-question-standalone (question options)
-  "Insert a standalone question block with QUESTION and OPTIONS.
+(defun eca-chat--render-ask-question-standalone (question)
+  "Insert a standalone block for QUESTION and return its overlay.
 Used as fallback when no toolCallId is available."
   (save-excursion
     (goto-char (eca-chat--content-insertion-point))
     (eca-chat--insert
      (concat "\n"
-             (propertize (concat "Q: " question)
+             (propertize (concat "Q: " (plist-get question :question))
                          'font-lock-face 'eca-chat-question-face)
              "\n"))
-    (let ((block-start (point)))
+    (let ((block-start (point))
+          (options (plist-get question :options)))
       (eca-chat--insert
        (concat
         (when options
@@ -5635,11 +5646,10 @@ Used as fallback when no toolCallId is available."
               (let* ((ld (eca-chat--normalize-question-option opt))
                      (label (car ld))
                      (desc (cdr ld))
-                     (btn (eca-buttonize
-                           eca-chat-mode-map
+                     (btn (eca-chat--question-button
                            (propertize label 'font-lock-face 'eca-chat-question-option-face)
                            (lambda ()
-                             (eca-chat--answer-question label)))))
+                             (eca-chat--answer-question question label)))))
                 (concat "  " btn
                         (when desc
                           (concat "  " (propertize desc 'font-lock-face 'eca-chat-question-description-face)))
@@ -5647,17 +5657,16 @@ Used as fallback when no toolCallId is available."
             options
             "")))
         "\n  "
-        (eca-buttonize
-         eca-chat-mode-map
+        (eca-chat--question-button
          (propertize "Cancel" 'font-lock-face '(error :underline t))
-         #'eca-chat--cancel-question)
+         (lambda () (eca-chat--cancel-question question)))
         "\n\n"))
-      (let ((ov (make-overlay block-start (point))))
-        (overlay-put ov 'eca-chat--question-block t)))))
+      (make-overlay block-start (point)))))
 
-(defun eca-chat--collapse-question-block (text)
-  "Replace the standalone question block with TEXT."
-  (when-let* ((ov (eca-chat--question-block-ov)))
+(defun eca-chat--collapse-question-block (question text)
+  "Replace the standalone block of QUESTION with TEXT."
+  (when-let* ((ov (plist-get question :block-ov))
+              ((overlay-buffer ov)))
     (let ((start (overlay-start ov))
           (end (overlay-end ov))
           (inhibit-read-only t))
@@ -5667,76 +5676,101 @@ Used as fallback when no toolCallId is available."
         (delete-region start end)
         (eca-chat--insert text)))))
 
-(defun eca-chat--answer-question (answer)
-  "Send ANSWER for the pending question and restore normal prompt."
-  (when-let* ((pending eca-chat--pending-question))
-    (let ((session (plist-get pending :session))
-          (request (plist-get pending :request))
-          (tool-call-id (plist-get pending :tool-call-id))
-          (allow-freeform (plist-get pending :allow-freeform)))
-      (setq eca-chat--pending-question nil)
-      (when allow-freeform
-        (eca-chat--set-question-prompt-prefix nil))
+(defun eca-chat--settle-question (question result response)
+  "Settle pending QUESTION, showing RESULT and sending RESPONSE.
+RESULT replaces the question options in the chat.  Return non-nil
+when QUESTION was pending, nil when it was already settled."
+  (when (memq question eca-chat--pending-questions)
+    (let ((session (plist-get question :session)))
+      (setq eca-chat--pending-questions
+            (remq question eca-chat--pending-questions))
       (eca-chat--allow-write
-       (if tool-call-id
+       (if-let* ((tool-call-id (plist-get question :tool-call-id)))
            (eca-chat--update-expandable-content
-            tool-call-id nil
-            (concat (propertize (concat "→ " answer)
-                                'font-lock-face 'eca-chat-question-option-face)
-                    "\n"))
-         (eca-chat--collapse-question-block
-          (concat (propertize (concat "→ " answer)
-                              'font-lock-face 'eca-chat-question-option-face)
-                  "\n\n")))
-       (eca-chat--set-prompt "")
+            tool-call-id nil (concat result "\n"))
+         (eca-chat--collapse-question-block question (concat result "\n\n")))
+       (eca-chat--refresh-question-prompt-prefix)
        (eca-chat--refresh-transient-area))
       (eca-api-send-request-response
-       session request
-       (list :answer answer :cancelled :json-false))
-      (eca-chat--notify-status-changed session))))
+       session (plist-get question :request) response)
+      (eca-chat--notify-status-changed session)
+      t)))
 
-(defun eca-chat--cancel-question ()
-  "Cancel the pending question and restore normal prompt."
-  (when-let* ((pending eca-chat--pending-question))
-    (let ((session (plist-get pending :session))
-          (request (plist-get pending :request))
-          (tool-call-id (plist-get pending :tool-call-id))
-          (allow-freeform (plist-get pending :allow-freeform)))
-      (setq eca-chat--pending-question nil)
-      (when allow-freeform
-        (eca-chat--set-question-prompt-prefix nil))
+(defun eca-chat--answer-question (question answer)
+  "Send ANSWER for pending QUESTION.
+Clear the prompt, moving point there, once no question is left.
+Return non-nil when QUESTION was still pending."
+  (when (eca-chat--settle-question
+         question
+         (propertize (concat "→ " answer)
+                     'font-lock-face 'eca-chat-question-option-face)
+         (list :answer answer :cancelled :json-false))
+    (unless eca-chat--pending-questions
       (eca-chat--allow-write
-       (if tool-call-id
-           (eca-chat--update-expandable-content
-            tool-call-id nil
-            (concat (propertize "✗ Cancelled"
-                                'font-lock-face 'font-lock-comment-face)
-                    "\n"))
-         (eca-chat--collapse-question-block
-          (concat (propertize "✗ Cancelled"
-                              'font-lock-face 'font-lock-comment-face)
-                  "\n\n")))
-       (eca-chat--refresh-transient-area))
-      (eca-api-send-request-response
-       session request
-       (list :answer nil :cancelled t))
-      (eca-chat--notify-status-changed session))))
+       (eca-chat--set-prompt "")))
+    t))
+
+(defun eca-chat--cancel-question (question)
+  "Cancel pending QUESTION.
+Return non-nil when QUESTION was still pending."
+  (eca-chat--settle-question
+   question
+   (propertize "✗ Cancelled" 'font-lock-face 'font-lock-comment-face)
+   (list :answer nil :cancelled t)))
+
+(defun eca-chat--question-bounds (question)
+  "Return (START . END) of the block of QUESTION in the chat, or nil."
+  (when-let* ((ov (if-let* ((id (plist-get question :tool-call-id)))
+                      (eca-chat--get-expandable-content id)
+                    (plist-get question :block-ov)))
+              ((overlay-buffer ov)))
+    (cons (overlay-start ov)
+          (overlay-end (or (overlay-get ov 'eca-chat--expandable-content-ov-content)
+                           ov)))))
+
+(defun eca-chat--pending-questions-top-down ()
+  "Return the pending questions in the order they show in the chat."
+  (sort (copy-sequence eca-chat--pending-questions)
+        (-on #'< (lambda (question)
+                   (or (car (eca-chat--question-bounds question))
+                       most-positive-fixnum)))))
+
+(defun eca-chat--freeform-question ()
+  "Return the pending question that prompt text answers, or nil.
+That is the topmost one accepting a freeform answer."
+  (-first (lambda (question) (plist-get question :allow-freeform))
+          (eca-chat--pending-questions-top-down)))
+
+(defun eca-chat--goto-next-question ()
+  "Move point onto the options of the topmost pending question, if any."
+  (when-let* ((question (car (eca-chat--pending-questions-top-down)))
+              (bounds (eca-chat--question-bounds question)))
+    (goto-char (or (text-property-not-all (car bounds) (cdr bounds)
+                                          'eca-button-on-action nil)
+                   (car bounds)))))
 
 (defun eca-chat--dismiss-pending-question-for-tool-call (tool-call-id)
-  "Dismiss the pending question when it belongs to TOOL-CALL-ID.
+  "Dismiss the pending question belonging to TOOL-CALL-ID, if any.
 Used when another client answers the same `ask_user' question first, so
 the server resolves the tool call out from under us.  The tool output is
-rendered by the caller; here we only restore the local question state
-and prompt so this client does not stay stuck in answer mode."
-  (when (and eca-chat--pending-question
-             (equal tool-call-id
-                    (plist-get eca-chat--pending-question :tool-call-id)))
-    (let ((allow-freeform (plist-get eca-chat--pending-question :allow-freeform)))
-      (setq eca-chat--pending-question nil)
-      (when allow-freeform
-        (eca-chat--set-question-prompt-prefix nil))
-      (eca-chat--refresh-transient-area)
-      (eca-chat--notify-status-changed (ignore-errors (eca-session))))))
+rendered by the caller; here we only drop the local question state and
+refresh the prompt so this client does not stay stuck in answer mode."
+  (when-let* ((question (and tool-call-id
+                             (-first (lambda (q)
+                                       (equal tool-call-id
+                                              (plist-get q :tool-call-id)))
+                                     eca-chat--pending-questions))))
+    (setq eca-chat--pending-questions
+          (remq question eca-chat--pending-questions))
+    (eca-chat--refresh-question-prompt-prefix)
+    (eca-chat--refresh-transient-area)
+    (eca-chat--notify-status-changed (ignore-errors (eca-session)))))
+
+(defun eca-chat--refresh-question-prompt-prefix ()
+  "Show the question prompt prefix while prompt text answers a question."
+  (eca-chat--set-question-prompt-prefix
+   (-any? (lambda (question) (plist-get question :allow-freeform))
+          eca-chat--pending-questions)))
 
 (defun eca-chat--set-question-prompt-prefix (active)
   "Toggle the prompt prefix for question mode.
@@ -6919,7 +6953,7 @@ ECA chat state, prompt overlays, and rule-based hints."
          (chat-id (buffer-local-value 'eca-chat--id src-buf))
          (closed (buffer-local-value 'eca-chat--closed src-buf))
          (loading (buffer-local-value 'eca-chat--chat-loading src-buf))
-         (pending (buffer-local-value 'eca-chat--pending-question src-buf))
+         (pending (buffer-local-value 'eca-chat--pending-questions src-buf))
          (session (with-current-buffer src-buf
                     (ignore-errors (eca-session))))
          (prompt-area (with-current-buffer src-buf
@@ -6954,7 +6988,7 @@ emulation map) beats major-mode maps.  If RET above is `evil-ret' / \
 `newline', that is the cause." hints))
     (when (and in-chat-p pending)
       (push "An unanswered question is pending \
-(`eca-chat--pending-question' non-nil).  RET without freeform input is \
+(`eca-chat--pending-questions' non-nil).  RET without freeform input is \
 intentionally a no-op until you answer the question." hints))
     (when (and in-chat-p closed)
       (push "This chat is marked closed (`eca-chat--closed' non-nil); \
@@ -7009,11 +7043,11 @@ Emacs." (plist-get self :source-file) (plist-get self :loaded-file))
       (insert (format "- corfu-mode:            %s\n" corfu-on))
       (insert (format "- company-mode:          %s\n\n" company-on))
       (insert "### ECA chat state\n\n")
-      (insert (format "- eca-chat--id:               %s\n" chat-id))
-      (insert (format "- eca-chat--closed:           %s\n" closed))
-      (insert (format "- eca-chat--chat-loading:     %s\n" loading))
-      (insert (format "- eca-chat--pending-question: %s\n"
-                      (if pending "set" "nil")))
+      (insert (format "- eca-chat--id:                %s\n" chat-id))
+      (insert (format "- eca-chat--closed:            %s\n" closed))
+      (insert (format "- eca-chat--chat-loading:      %s\n" loading))
+      (insert (format "- eca-chat--pending-questions: %d\n"
+                      (length pending)))
       (insert "- (eca-session): ")
       (if session
           (insert (format "found (id=%s, roots=%S)\n\n"
