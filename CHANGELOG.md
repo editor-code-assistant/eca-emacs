@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Bugfix: the `eca-workspaces` dashboard was impossible to navigate while a chat ran, since the live refresh (once a second) scrolled the view and could throw point to the top. Rendering erases the buffer, which collapses every window start marker, so a window shorter than the content recentered on each refresh; point resting on a line with no entity, the footer, fell back to the buffer start. Each window now keeps its scroll position, and point on the footer stays on it.
 - The `stop`, `Steering:` and `Queued:` lines of a running prompt now show right below its progress status, above the `@` context line, instead of splitting that line from the prompt field (#322).
 - Show the `@cursor` context with `eca-chat-context-cursor-unsaved-face` (inheriting `warning`) while its buffer has unsaved changes, since ECA only sees the file on disk (#291).
 - Image mentions show inline as thumbnails: screenshots pasted in the prompt, image files added as context and images mentioned in sent messages. `RET` toggles them back to text. Customize with `eca-chat-image-show-thumbnails` and `eca-chat-image-thumbnail-size`.
