@@ -49,6 +49,9 @@ jobs:
       run: eask test buttercup
 
     - name: Package
+      # eask installs package-build from MELPA to package, which now
+      # requires Emacs 29.1, so skip it on 28.x.
+      if: ${{ !startsWith(matrix.emacs-version, '28.') }}
       # eask-current-time crashes on Emacs snapshot builds where
       # current-time returns the new (TICKS . HZ) format, so don't
       # fail the canary job on it.
