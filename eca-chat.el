@@ -6558,19 +6558,23 @@ FROM-BUFFER is the buffer where the resume command started."
 (defun eca-chat-rename ()
   "Rename last visited chat to a custom NEW-NAME."
   (interactive)
-  (let ((new-name (read-string "Inform the new chat title: ")))
-    (eca-assert-session-running (eca-session))
-    (with-current-buffer (eca-chat--get-active-buffer (eca-session))
-      ;; Update local title immediately for responsiveness
-      (setq-local eca-chat--title new-name)
-      ;; Clear any custom title since we now have an official title
-      (setq-local eca-chat--custom-title nil)
-      (eca-chat--invalidate-tab-line-cache (eca-session))
-      ;; Request server to persist and broadcast to other clients
-      (eca-api-request-sync (eca-session)
-                            :method "chat/update"
-                            :params (list :chatId eca-chat--id :title new-name))
-      (eca-chat--notify-status-changed (eca-session)))))
+  (let ((session (eca-session)))
+    (eca-assert-session-running session)
+    (with-current-buffer (eca-chat--get-active-buffer session)
+      (let* ((current-title (or eca-chat--custom-title eca-chat--title ""))
+             (new-name (read-string "Inform the new chat title: "
+                                    (substring-no-properties current-title))))
+        (unless (string-blank-p new-name)
+          ;; Update local title immediately for responsiveness
+          (setq-local eca-chat--title new-name)
+          ;; Clear any custom title since we now have an official title
+          (setq-local eca-chat--custom-title nil)
+          (eca-chat--invalidate-tab-line-cache session)
+          ;; Request server to persist and broadcast to other clients
+          (eca-api-request-sync session
+                                :method "chat/update"
+                                :params (list :chatId eca-chat--id :title new-name))
+          (eca-chat--notify-status-changed session))))))
 
 ;;;###autoload
 (defun eca-chat-fork ()
