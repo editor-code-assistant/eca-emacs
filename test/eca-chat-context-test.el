@@ -430,6 +430,35 @@
             (set-buffer-modified-p nil))
           (kill-buffer buf))))))
 
+(describe "eca-chat--setup-item-stickiness"
+  (before-each
+    (spy-on 'eca-chat--context-presentable-path :and-call-fake #'identity))
+
+  (it "keeps text typed right after an item out of it"
+    (with-temp-buffer
+      (eca-chat--setup-item-stickiness)
+      (insert (eca-chat--context->str (list :type "file" :path "/x/a.png") 'static))
+      (let ((typed-start (point)))
+        ;; Typing inherits sticky properties, then runs the hook.
+        (dolist (char '(?a ?n ?d))
+          (insert-and-inherit char)
+          (eca-chat--drop-inherited-item-face))
+        (dolist (prop (cons 'font-lock-face eca-chat--item-properties))
+          (expect (text-property-not-all typed-start (point) prop nil) :to-be nil))
+        (expect (get-text-property (1- typed-start) 'eca-chat-item-type)
+                :to-be 'context))
+      (expect (memq #'eca-chat--drop-inherited-item-face post-self-insert-hook)
+              :to-be-truthy)))
+
+  (it "keeps the face the context line query takes from its @"
+    (with-temp-buffer
+      (eca-chat--setup-item-stickiness)
+      (insert (propertize "@" 'font-lock-face 'eca-chat-context-unlinked-face))
+      (insert-and-inherit ?f)
+      (eca-chat--drop-inherited-item-face)
+      (expect (get-text-property (1- (point)) 'font-lock-face)
+              :to-be 'eca-chat-context-unlinked-face))))
+
 (describe "eca-chat--clipboard-image-p"
   (before-each
     (spy-on 'display-graphic-p :and-return-value t))

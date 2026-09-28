@@ -99,6 +99,7 @@ Chat
 - `eca-chat-clear-prompt`: Clear written prompt in chat
 - `eca-chat-repeat-prompt`: Repeat a previously sent prompt
 - `eca-chat-copy-at-point`: Copy the code block or assistant response at point
+- `eca-chat-toggle-image-thumbnail`: Toggle the thumbnail of the image mention at point, also `RET` on it: a screenshot pasted in the prompt, an image file added as context, or an image mentioned in a sent message
 - `eca-chat-stop-prompt`: Stop a running prompt in chat
 - `eca-chat-tool-call-accept-all`: Accept all pending tool calls in chat
 - `eca-chat-tool-call-accept-all-and-remember`: Accept all pending tool calls in chat and remember for session
@@ -198,6 +199,8 @@ Chat
 - `eca-chat-tool-call-prepare-update-interval`: When using `smart` throttle, process every Nth `toolCallPrepare` update.
 - `eca-chat-tool-call-approval-content-size`: Face height used for tool call approval UI text.
 - `eca-chat-save-chat-initial-path`: Default initial path to save chats.
+- `eca-chat-image-show-thumbnails`: Whether image mentions show inline as thumbnails right away (default `t`). When `nil` they show as text until `RET` toggles their thumbnail.
+- `eca-chat-image-thumbnail-size`: Max width and height in pixels of image mention thumbnails (default `200`).
 
 Completion
 

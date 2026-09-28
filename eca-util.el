@@ -84,6 +84,17 @@ for client-generated `chatId' values sent to the eca server."
        (cl-loop for (key val) on plist1 by #'cddr
                 always (equal val (plist-get plist2 key)))))
 
+(defun eca--property-run-bounds (pos prop)
+  "Return (START . END) of the run of text property PROP at POS, or nil.
+The run is the text around POS whose PROP value is `eq' to the one
+at POS, so two adjacent items propertized separately are two runs."
+  (when-let* ((value (and pos (get-text-property pos prop))))
+    (cons (if (and (> pos (point-min))
+                   (eq value (get-text-property (1- pos) prop)))
+              (previous-single-property-change pos prop nil (point-min))
+            pos)
+          (next-single-property-change pos prop nil (point-max)))))
+
 (defvar-local eca--session-id-cache nil)
 
 (defvar eca--sessions '())

@@ -1014,7 +1014,92 @@ around rendering applies, as when the chat window is selected."
               (expect (get-text-property (1- (eca-chat--prompt-field-start-point))
                                          'read-only)
                       :to-be nil))
+          (kill-buffer buf)))))
+
+  (describe "prompt items"
+    (before-each
+      (spy-on 'eca-chat--context-presentable-path :and-call-fake #'identity))
+
+    (it "deletes an item whole with point right after it"
+      (let ((buf (eca-chat-test--make-prompt-buffer "see ")))
+        (unwind-protect
+            (with-current-buffer buf
+              (goto-char (point-max))
+              (insert (eca-chat--context->str (list :type "file" :path "/x/a.png") 'static)
+                      " now")
+              (search-backward " now")
+              (let ((this-command 'backward-delete-char))
+                (eca-chat--key-pressed-deletion
+                 (lambda (n &optional _) (delete-char (- n)))
+                 1))
+              (expect (eca-chat-test--prompt-text buf) :to-equal "see  now"))
+          (kill-buffer buf))))
+
+    (it "deletes the text typed right after an item, not the item"
+      (let ((buf (eca-chat-test--make-prompt-buffer "see ")))
+        (unwind-protect
+            (with-current-buffer buf
+              (eca-chat--setup-item-stickiness)
+              (goto-char (point-max))
+              (insert (eca-chat--context->str (list :type "file" :path "/x/a.png") 'static))
+              (insert-and-inherit "and")
+              (let ((this-command 'backward-delete-char))
+                (eca-chat--key-pressed-deletion
+                 (lambda (n &optional _) (delete-char (- n)))
+                 1))
+              (expect (eca-chat-test--prompt-text buf) :to-equal "see @/x/a.pngan"))
+          (kill-buffer buf))))
+
+    (it "never deletes past the prompt start"
+      ;; A partial deletion leaves an item shorter than its
+      ;; `eca-chat-item-str-length': deleting the rest used to eat the
+      ;; context line, pulling the prompt prefix up there.
+      (let ((buf (eca-chat-test--make-prompt-buffer "")))
+        (unwind-protect
+            (with-current-buffer buf
+              (goto-char (point-max))
+              (insert (eca-chat--context->str
+                       (list :type "file" :path "/some/long/path/a.png") 'static))
+              (delete-region (+ 4 (eca-chat--prompt-field-start-point)) (point-max))
+              (let ((this-command 'backward-delete-char))
+                (eca-chat--key-pressed-deletion
+                 (lambda (n &optional _) (delete-char (- n)))
+                 1))
+              (expect (eca-chat-test--prompt-text buf) :to-equal "")
+              (expect (eca-chat-test--context-text buf) :to-equal "@")
+              (expect (eca-chat--prompt-block-broken-p) :to-be nil))
           (kill-buffer buf))))))
+
+(describe "eca-chat--insert-prompt"
+  (it "pads text glued to the word before it and returns its end"
+    (let ((buf (eca-chat-test--make-prompt-buffer "look")))
+      (unwind-protect
+          (with-current-buffer buf
+            (goto-char (point-max))
+            (let ((end (eca-chat--insert-prompt "@a.el ")))
+              (expect (eca-chat-test--prompt-text buf) :to-equal "look @a.el ")
+              (expect end :to-equal (point-max))))
+        (kill-buffer buf))))
+
+  (it "does not pad text inserted after a space"
+    (let ((buf (eca-chat-test--make-prompt-buffer "look ")))
+      (unwind-protect
+          (with-current-buffer buf
+            (goto-char (point-max))
+            (eca-chat--insert-prompt "@a.el ")
+            (expect (eca-chat-test--prompt-text buf) :to-equal "look @a.el "))
+        (kill-buffer buf))))
+
+  (it "appends to the prompt first line when point is elsewhere"
+    (let ((buf (eca-chat-test--make-prompt-buffer "look")))
+      (unwind-protect
+          (with-current-buffer buf
+            (goto-char (point-min))
+            (let ((end (eca-chat--insert-prompt "@a.el ")))
+              (expect (eca-chat-test--prompt-text buf) :to-equal "look @a.el ")
+              (expect end :to-equal (point-max))
+              (expect (point) :to-equal (point-min))))
+        (kill-buffer buf)))))
 
 (describe "eca-chat--key-pressed-kill"
 

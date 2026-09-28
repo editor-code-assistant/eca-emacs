@@ -2329,7 +2329,15 @@ the prompt/context line."
              (context-item (-some->> text
                              (get-text-property 0 'eca-chat-context-item)))
              (item-str-length (-some->> text
-                                (get-text-property 0 'eca-chat-item-str-length))))
+                                (get-text-property 0 'eca-chat-item-str-length)))
+             ;; The item the symbol at point starts in, unless point is
+             ;; past its end, e.g. after text typed right after it.
+             (item-bounds (when item-str-length
+                            (when-let* ((bounds (eca--property-run-bounds
+                                                 (car (bounds-of-thing-at-point 'symbol))
+                                                 'eca-chat-expanded-item-str)))
+                              (when (<= (car bounds) (point) (cdr bounds))
+                                bounds)))))
         (cond
          ;; expandable item in context area
          ((and cur-ov
@@ -2338,14 +2346,14 @@ the prompt/context line."
           (setq-local eca-chat--context (delete context-item eca-chat--context))
           (eca-chat--refresh-context))
 
-         ;; expandable item in prompt
+         ;; expandable item in prompt: delete it whole, by its actual
+         ;; bounds and never past the prompt start, since a partial
+         ;; deletion can leave it shorter than `eca-chat-item-str-length'
          ((and cur-ov
-               item-str-length
+               item-bounds
                in-prompt?)
-          (while (and (not (eolp))
-                      (get-text-property (point) 'eca-chat-item-str-length))
-            (forward-char 1))
-          (delete-region (- (point) item-str-length) (point)))
+          (delete-region (max (car item-bounds) (overlay-start prompt-ov))
+                         (cdr item-bounds)))
 
          ;; Handle some evil commands
          ((and in-prompt?
@@ -2736,6 +2744,12 @@ characters as part of the URL."
       ;; check if completion popup is active
       ((eca-chat--completion-active-p)
        (eca-chat--completion-accept))
+
+      ;; toggle the thumbnail of the image mention at point; handled
+      ;; here since font-lock strips `keymap' text properties
+      ((when-let* ((link (eca-chat--image-link-at (point))))
+         (eca-chat--toggle-image-thumbnail link)
+         t))
 
       ;; check it's an actionable text
       ((-some->> (thing-at-point 'symbol) (get-text-property 0 'eca-button-on-action))
@@ -3874,19 +3888,18 @@ restore the chat display after smerge quits."
     ('smerge (eca-chat--show-diff-smerge path diff))))
 
 (defun eca-chat--insert-prompt (text)
-  "Insert TEXT to latest chat prompt point unless point is already in prompt."
+  "Insert TEXT to latest chat prompt point unless point is already in prompt.
+A space goes before TEXT on an empty line or when TEXT would be
+glued to the word before it.  Return the position after TEXT."
   (save-excursion
-    (if (eca-chat--point-at-prompt-field-p)
-        (progn
-          (when (and (eolp)
-                     (= (line-beginning-position) (line-end-position)))
-            (eca-chat--insert " "))
-          (eca-chat--insert text))
+    (unless (eca-chat--point-at-prompt-field-p)
       (goto-char (eca-chat--prompt-field-start-point))
-      (goto-char (line-end-position))
-      (when (= (line-beginning-position) (line-end-position))
-        (eca-chat--insert " "))
-      (eca-chat--insert text))))
+      (goto-char (line-end-position)))
+    (when (or (= (line-beginning-position) (line-end-position))
+              (not (memq (char-before) '(nil ?\s ?\t ?\n))))
+      (eca-chat--insert " "))
+    (eca-chat--insert text)
+    (point)))
 
 (defun eca-chat--refresh-theme-faces (&rest _)
   "Recompute chat faces derived from the current theme colors."
@@ -3985,6 +3998,10 @@ CHILD, NAME, DOCSTRING and BODY are passed down."
 
   ;; Turn raw @path/#path tokens into proper items after a space.
   (add-hook 'post-self-insert-hook #'eca-chat--post-self-insert nil t)
+
+  (eca-chat--setup-item-stickiness)
+  (add-hook 'after-change-functions
+            #'eca-chat--auto-show-image-thumbnails-after-change nil t)
 
   (make-local-variable 'company-box-icons-functions)
   (when (featurep 'company-box)
@@ -4622,6 +4639,15 @@ window edge on the last line too.  Text inserted at the overlay start
       (overlay-put ov 'face 'eca-chat-user-messages-face)
       (overlay-put ov 'evaporate t))))
 
+(defun eca-chat--linkify-user-message (session ov-label roots)
+  "Make the image mentions of the user message of OV-LABEL toggleable.
+RET on them toggles their thumbnail.  SESSION maps server paths
+back to local ones, relative paths are resolved against ROOTS."
+  (when-let* ((ov-content (overlay-get ov-label 'eca-chat--expandable-content-ov-content)))
+    (let ((eca--path-session (or eca--path-session session)))
+      (eca-chat--linkify-image-mentions
+       (overlay-start ov-label) (overlay-start ov-content) roots))))
+
 (defun eca-chat--render-content (session chat-buffer role content roots &optional parent-tool-call-id chat-id)
   "Render CONTENT inside CHAT-BUFFER for SESSION.
 ROLE is the message role.  ROOTS is the list of workspace roots.
@@ -4677,7 +4703,8 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
                 (when-let* ((ov (eca-chat--get-expandable-content content-id)))
                   (overlay-put ov 'eca-chat--user-message-id content-id)
                   (overlay-put ov 'eca-chat--timestamp (float-time))
-                  (eca-chat--paint-user-message ov))
+                  (eca-chat--paint-user-message ov)
+                  (eca-chat--linkify-user-message session ov roots))
                 (setq-local eca-chat--last-response-copy-start nil)
                 (setq-local eca-chat--last-response-copy-kind nil)
                 (eca-chat--mark-header)

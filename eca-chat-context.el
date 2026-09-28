@@ -16,6 +16,7 @@
 (require 'eca-util)
 (require 'eca-api)
 (require 'eca-chat-expandable)
+(require 'eca-chat-image)
 
 ;; Forward declarations for eca-chat.el core
 (defvar eca-chat-mode-map)
@@ -323,10 +324,12 @@ If STATIC? return strs with no dynamic values."
                                                                          (format ":L%d-L%d" start end)))
                                    'font-lock-face 'eca-chat-context-buffer-face)))
              (_ (concat eca-chat-context-prefix "unknown:" type)))))
-    (propertize context-str
-                'eca-chat-item-type 'context
-                'eca-chat-item-str-length (length context-str)
-                'eca-chat-context-item context)))
+    (eca-chat--propertize-image-mention
+     (propertize context-str
+                 'eca-chat-item-type 'context
+                 'eca-chat-item-str-length (length context-str)
+                 'eca-chat-context-item context)
+     (and (equal type "file") (plist-get context :path)))))
 
 (defun eca-chat--filepath->str (filepath lines-range)
   "Convert FILEPATH and LINES-RANGE to a presentable str in buffer."
@@ -334,25 +337,50 @@ If STATIC? return strs with no dynamic values."
                            (eca-chat--context-presentable-path filepath)
                            (-when-let ((&plist :start start :end end) lines-range)
                              (format "(%d-%d)" start end)))))
-    (propertize item-str
-                'eca-chat-item-type 'filepath
-                'eca-chat-item-str-length (length item-str)
-                'eca-chat-expanded-item-str (concat eca-chat-filepath-prefix
-                                                    filepath
-                                                    (-when-let ((&plist :start start :end end) lines-range)
-                                                      (format ":L%d-L%d" start end)))
-                'font-lock-face 'eca-chat-context-file-face)))
+    (eca-chat--propertize-image-mention
+     (propertize item-str
+                 'eca-chat-item-type 'filepath
+                 'eca-chat-item-str-length (length item-str)
+                 'eca-chat-expanded-item-str (concat eca-chat-filepath-prefix
+                                                     filepath
+                                                     (-when-let ((&plist :start start :end end) lines-range)
+                                                       (format ":L%d-L%d" start end)))
+                 'font-lock-face 'eca-chat-context-file-face)
+     filepath)))
+
+(defun eca-chat--context-chips (start end)
+  "Return (CONTEXT . IMAGE) for each context chip between START and END.
+IMAGE is the thumbnail the chip shows, or nil."
+  (let ((chips '())
+        (pos start))
+    (while (< pos end)
+      (let ((next (next-single-property-change pos 'eca-chat-context-item nil end)))
+        (when-let* ((context (get-text-property pos 'eca-chat-context-item)))
+          (push (cons context (-some-> (eca-chat--image-thumbnail-at pos next)
+                                (overlay-get 'display)))
+                chips))
+        (setq pos next)))
+    chips))
 
 (defun eca-chat--refresh-context ()
-  "Refresh chat context."
+  "Refresh chat context.
+Redrawn chips keep their thumbnail, or its absence when hidden with
+RET, while new ones follow `eca-chat-image-show-thumbnails'."
   (save-excursion
     (-some-> (eca-chat--prompt-context-field-ov)
       (overlay-start)
       (goto-char))
-    (delete-region (point) (line-end-position))
-    (seq-doseq (context eca-chat--context)
-      (eca-chat--insert (eca-chat--context->str context))
-      (eca-chat--insert " "))
+    (let ((chips (eca-chat--context-chips (point) (line-end-position))))
+      (delete-region (point) (line-end-position))
+      (seq-doseq (context eca-chat--context)
+        (let ((start (point))
+              (chip (assoc context chips)))
+          (let ((eca-chat--inhibit-auto-thumbnails t))
+            (eca-chat--insert (eca-chat--context->str context)))
+          (cond
+           ((cdr chip) (eca-chat--show-image-thumbnail start (point) (cdr chip)))
+           ((not chip) (eca-chat--auto-show-image-thumbnails start (point)))))
+        (eca-chat--insert " ")))
     (eca-chat--insert (propertize eca-chat-context-prefix 'font-lock-face 'eca-chat-context-unlinked-face))))
 
 (defun eca-chat--add-context (context)
@@ -476,9 +504,8 @@ DATA is the binary image data as a string."
         (eca-chat--select-window)
         (if (eq 'system eca-chat-yank-image-context-location)
             (eca-chat--add-context context)
-          (progn
-            (eca-chat--insert-prompt (concat (eca-chat--context->str context 'static) " "))
-            (goto-char (+ (point) (+ 2 (length output-path))))))
+          (goto-char (eca-chat--insert-prompt
+                      (concat (eca-chat--context->str context 'static) " "))))
         (eca-info "Image added, size: %s" file-size)))))
 
 (defun eca-chat--clipboard-image-p ()
@@ -601,6 +628,34 @@ file or directory."
   "Finalize raw context tokens after inserting a space."
   (when (eq last-command-event ?\s)
     (eca-chat--maybe-finalize-context-token)))
+
+(defconst eca-chat--item-properties
+  '(eca-chat-item-type eca-chat-item-str-length eca-chat-context-item
+    eca-chat-expanded-item-str eca-chat-image-path)
+  "Text properties making a prompt item, like a context chip.")
+
+(defun eca-chat--drop-inherited-item-face ()
+  "Drop the item face a char typed right after an item inherited.
+Item properties don't stick to typed text, see
+`eca-chat--setup-item-stickiness', but faces do, since the query
+typed after the context line `@' takes its face."
+  (let ((pos (1- (point))))
+    (when (and (> pos (point-min))
+               (get-text-property (1- pos) 'eca-chat-item-type)
+               (not (get-text-property pos 'eca-chat-item-type)))
+      (with-silent-modifications
+        (remove-text-properties pos (point) '(font-lock-face nil))))))
+
+(defun eca-chat--setup-item-stickiness ()
+  "Keep the text typed right after a prompt item out of it.
+Otherwise the typed text inherits the item properties: it looks
+glued to the item, gets deleted along with it and is replaced by
+the item when the prompt is sent."
+  (setq-local text-property-default-nonsticky
+              (append (mapcar (lambda (prop) (cons prop t))
+                              eca-chat--item-properties)
+                      text-property-default-nonsticky))
+  (add-hook 'post-self-insert-hook #'eca-chat--drop-inherited-item-face nil t))
 
 (declare-function dired-get-marked-files "dired")
 (declare-function treemacs-node-at-point "treemacs")
@@ -917,12 +972,19 @@ Calls CB with the resulting message."
    ((when-let ((item-type (get-text-property (point) 'eca-chat-item-type)))
       (when-let ((item-str (get-text-property (point) 'eca-chat-expanded-item-str)))
         (when-let ((face (get-text-property (point) 'font-lock-face)))
-          (funcall cb (format "%s: %s"
-                              (pcase item-type
-                                ('context "Context")
-                                ('filepath "Filepath"))
-                              (propertize item-str 'face face)))
-          t))))))
+          (funcall cb (concat (format "%s: %s"
+                                      (pcase item-type
+                                        ('context "Context")
+                                        ('filepath "Filepath"))
+                                      (propertize item-str 'face face))
+                              (when (get-text-property (point) 'eca-chat-image-path)
+                                " (RET: toggle thumbnail)")))
+          t))))
+   ;; Image mentions of sent messages
+   ((when-let* ((path (get-text-property (point) 'eca-chat-image-path)))
+      (funcall cb (concat "Image: " (abbreviate-file-name path)
+                          " (RET: toggle thumbnail)"))
+      t))))
 
 ;;;; Completion-at-point function
 

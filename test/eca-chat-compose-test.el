@@ -106,4 +106,55 @@
           (expect 'eca-chat--send-prompt :not :to-have-been-called)
           (when (buffer-live-p buf) (kill-buffer buf)))))))
 
+(describe "eca-chat-compose--yank-image-handler"
+  (it "inserts a mention showing its thumbnail, which RET toggles"
+    (let ((file (make-temp-file "eca-compose-image-" nil ".png"))
+          (buf (generate-new-buffer " *compose-image*")))
+      (spy-on 'eca-chat-media--save-clipboard-image :and-return-value file)
+      (spy-on 'eca-info)
+      (spy-on 'display-images-p :and-return-value t)
+      (spy-on 'create-image :and-return-value '(image :type png :file "thumb"))
+      (unwind-protect
+          (with-current-buffer buf
+            (eca-chat-compose-mode)
+            (eca-chat-compose--yank-image-handler "image/png" "data")
+            (expect (buffer-substring-no-properties (point-min) (point-max))
+                    :to-equal (concat "@" file " "))
+            (expect (eca-chat--image-link-at (point-min))
+                    :to-equal (list (point-min) (+ 2 (length file)) file))
+            (let ((link-ov (seq-find (lambda (ov)
+                                       (and (overlay-get ov 'keymap)
+                                            (not (overlay-get ov 'eca-chat-image-thumbnail))))
+                                     (overlays-at (point-min))))
+                  (thumbnail (lambda ()
+                               (seq-find (lambda (ov) (overlay-get ov 'eca-chat-image-thumbnail))
+                                         (overlays-at (point-min))))))
+              (expect (funcall thumbnail) :not :to-be nil)
+              (funcall (lookup-key (overlay-get link-ov 'keymap) (kbd "RET")))
+              (expect (funcall thumbnail) :to-be nil)
+              (funcall (lookup-key (overlay-get link-ov 'keymap) (kbd "RET")))
+              (expect (funcall thumbnail) :not :to-be nil))
+            ;; Text typed right after the mention is not part of it.
+            (goto-char (+ 2 (length file)))
+            (insert-and-inherit "x")
+            (expect (get-text-property (1- (point)) 'eca-chat-image-path)
+                    :to-be nil))
+        (kill-buffer buf)
+        (delete-file file))))
+
+  (it "separates the mention from the word before it"
+    (let ((file (make-temp-file "eca-compose-image-" nil ".png"))
+          (buf (generate-new-buffer " *compose-image-glued*")))
+      (spy-on 'eca-chat-media--save-clipboard-image :and-return-value file)
+      (spy-on 'eca-info)
+      (unwind-protect
+          (with-current-buffer buf
+            (eca-chat-compose-mode)
+            (insert "look")
+            (eca-chat-compose--yank-image-handler "image/png" "data")
+            (expect (buffer-substring-no-properties (point-min) (point-max))
+                    :to-equal (concat "look @" file " ")))
+        (kill-buffer buf)
+        (delete-file file)))))
+
 ;;; eca-chat-compose-test.el ends here

@@ -32,9 +32,17 @@
   "Save clipboard image DATA of mime TYPE and insert an @file mention.
 Writes the image to a temporary eca-screenshot file, like the eca
 chat buffer does, and inserts \"@/path/to/file \" at point so the
-server picks it up as a file context when the prompt is sent."
+server picks it up as a file context when the prompt is sent.  RET
+on the mention toggles the image thumbnail."
   (when-let* ((output-path (eca-chat-media--save-clipboard-image type data)))
-    (insert eca-chat-context-prefix output-path " ")
+    (unless (memq (char-before) '(nil ?\s ?\t ?\n))
+      (insert " "))
+    (let ((start (point)))
+      (insert (eca-chat--propertize-image-mention
+               (concat eca-chat-context-prefix output-path)
+               output-path))
+      (eca-chat--add-image-link-overlay start (point)))
+    (insert " ")
     (eca-info "Image added, size: %s"
               (file-size-human-readable (file-attribute-size (file-attributes output-path))))))
 
@@ -81,6 +89,9 @@ eca chat buffer behavior.
               (cons '(eca-capf (styles basic substring))
                     completion-category-defaults))
   (setq-local completion-ignore-case t)
+  (eca-chat--setup-item-stickiness)
+  (add-hook 'after-change-functions
+            #'eca-chat--auto-show-image-thumbnails-after-change nil t)
   ;; Paste image from clipboard support, mirroring eca-chat-mode: drop
   ;; the handlers inherited from markdown-mode (which insert markdown
   ;; image links) and register the @file mention handler.

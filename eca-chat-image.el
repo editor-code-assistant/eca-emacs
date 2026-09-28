@@ -9,8 +9,9 @@
 ;;
 ;;  Inline image support for ECA chat: rendering assistant-emitted
 ;;  `ChatImageContent' as overlays, configurable sizing and per-chat
-;;  zoom, and saving the original bytes to disk via a keybinding or
-;;  the image overlay's own RET / mouse-2 handler.
+;;  zoom, saving the original bytes to disk via a keybinding or the
+;;  image overlay's own RET / mouse-2 handler, and thumbnails toggled
+;;  with RET on image mentions, like screenshots pasted in the prompt.
 ;;
 ;;; Code:
 
@@ -56,6 +57,25 @@ is enough since chat images are typically wider than tall."
   :type '(choice (const :tag "Unconstrained" nil)
                  (integer :tag "Pixels"))
   :group 'eca)
+
+(defcustom eca-chat-image-thumbnail-size 200
+  "Maximum width and height in pixels of image mention thumbnails.
+RET on the mention of an image, like a screenshot pasted in the
+prompt, toggles its thumbnail, see `eca-chat-toggle-image-thumbnail'."
+  :type 'integer
+  :group 'eca)
+
+(defcustom eca-chat-image-show-thumbnails t
+  "Whether image mentions show their thumbnail right away.
+Image mentions are screenshots pasted in the prompt, image files
+added as context and images mentioned in sent messages.  When nil
+they show as text until RET toggles their thumbnail.  Mentions of
+remote or missing files always start as text."
+  :type 'boolean
+  :group 'eca)
+
+(defvar eca-chat--inhibit-auto-thumbnails nil
+  "When non-nil, inserted image mentions don't show their thumbnail.")
 
 (defcustom eca-chat-image-scale-step 1.2
   "Multiplicative step for the per-chat image zoom commands.
@@ -120,6 +140,10 @@ intentionally absent so the renderer falls back to text.")
   "Mapping of MIME types to file extensions for saved images.
 Used by `eca-chat--default-save-image-filename' so the suggested
 file name carries a recognizable extension.")
+
+(defconst eca-chat--image-file-extensions
+  '("png" "jpg" "jpeg" "gif" "webp" "svg" "bmp" "tif" "tiff" "heic" "heif")
+  "Extensions of the image files whose mentions toggle a thumbnail.")
 
 ;;;; Image building / sizing
 
@@ -369,6 +393,197 @@ always use the textual fallback."
      (t
       (eca-chat--add-text-content
        (eca-chat--image-fallback-string image-content))))))
+
+(defun eca-chat--image-file-p (path)
+  "Return non-nil when PATH has an image file extension."
+  (when-let* ((ext (and (stringp path) (file-name-extension path))))
+    (and (member (downcase ext) eca-chat--image-file-extensions) t)))
+
+(defun eca-chat--propertize-image-mention (str path)
+  "Mark STR as a mention of the image at PATH, then return STR.
+STR is left as is when PATH is not an image file.  The mark is the
+`eca-chat-image-path' text property, which font-lock leaves alone
+and which travels with the text, e.g. through the prompt history."
+  (when (eca-chat--image-file-p path)
+    (put-text-property 0 (length str) 'eca-chat-image-path path str))
+  str)
+
+(defun eca-chat--image-link-at (pos)
+  "Return (START END PATH) of the image mention at POS, or nil.
+Only the char after POS counts, so a position right after a
+mention is not on it."
+  (when-let* ((bounds (eca--property-run-bounds pos 'eca-chat-image-path)))
+    (list (car bounds) (cdr bounds)
+          (get-text-property pos 'eca-chat-image-path))))
+
+(defun eca-chat--image-thumbnail-at (start end)
+  "Return the thumbnail overlay shown from START to END, or nil."
+  (seq-find (lambda (ov)
+              (and (overlay-get ov 'eca-chat-image-thumbnail)
+                   (= start (overlay-start ov))
+                   (= end (overlay-end ov))))
+            (overlays-in start end)))
+
+(defun eca-chat--image-thumbnail (path)
+  "Return a thumbnail image of the file at PATH, or nil.
+Return nil when Emacs can't decode it.  Remote files are read
+through their file handler, which image loading bypasses."
+  (let ((props (list :max-width eca-chat-image-thumbnail-size
+                     :max-height eca-chat-image-thumbnail-size
+                     :ascent 'center)))
+    (ignore-errors
+      (if (file-remote-p path)
+          (apply #'create-image
+                 (with-temp-buffer
+                   (set-buffer-multibyte nil)
+                   (insert-file-contents-literally path)
+                   (buffer-string))
+                 nil t props)
+        (apply #'create-image path nil nil props)))))
+
+(defun eca-chat--image-keymap (command)
+  "Return a keymap running COMMAND on RET and a middle click.
+Also on a left click when `eca-buttons-allow-mouse' is non-nil."
+  (let ((map (make-sparse-keymap)))
+    (define-key map (kbd "RET") command)
+    (define-key map [mouse-2] command)
+    (when eca-buttons-allow-mouse
+      (define-key map [mouse-1] command))
+    map))
+
+(defun eca-chat--show-image-thumbnail (start end image)
+  "Display IMAGE in place of the image mention from START to END.
+Only the display changes: the overlay goes away with the mention
+text, and RET or a middle click on the thumbnail hides it again.
+Text inserted at either end stays out of the overlay.  Return it."
+  (let* ((ov (make-overlay start end nil t nil))
+         (hide (lambda () (interactive) (delete-overlay ov))))
+    (overlay-put ov 'eca-chat-image-thumbnail t)
+    (overlay-put ov 'display image)
+    (overlay-put ov 'keymap (eca-chat--image-keymap hide))
+    (overlay-put ov 'mouse-face 'highlight)
+    (overlay-put ov 'help-echo "RET or mouse-2: hide the thumbnail")
+    (overlay-put ov 'evaporate t)
+    ov))
+
+(defun eca-chat--toggle-image-thumbnail (link)
+  "Toggle the thumbnail of LINK, a (START END PATH) image mention."
+  (pcase-let ((`(,start ,end ,path) link))
+    (if-let* ((ov (eca-chat--image-thumbnail-at start end)))
+        (delete-overlay ov)
+      (let (image)
+        (cond
+         ((not (display-images-p))
+          (eca-warn "Images can't be displayed in this frame"))
+         ((not (file-readable-p path))
+          (eca-warn "Image not found: %s" path))
+         ((not (setq image (eca-chat--image-thumbnail path)))
+          (eca-warn "Can't display image: %s" path))
+         (t (eca-chat--show-image-thumbnail start end image)))))))
+
+(defun eca-chat-toggle-image-thumbnail ()
+  "Toggle the thumbnail of the image mention at point.
+Image mentions are the image files added to the prompt, like pasted
+screenshots, and their mentions in sent messages.  The thumbnail,
+sized by `eca-chat-image-thumbnail-size', is displayed in place of
+the mention; the text is unchanged, and so is the prompt sent."
+  (interactive)
+  (if-let* ((link (or (eca-chat--image-link-at (point))
+                      (and (> (point) (point-min))
+                           (eca-chat--image-link-at (1- (point)))))))
+      (eca-chat--toggle-image-thumbnail link)
+    (eca-warn "No image mention at point")))
+
+(defun eca-chat--auto-show-image-thumbnails (start end)
+  "Show the thumbnails of the image mentions between START and END.
+Per `eca-chat-image-show-thumbnails', silently skipping frames that
+can't display images, mentions already showing one and those of
+missing or remote files, which would be fetched over the network."
+  (when (and eca-chat-image-show-thumbnails
+             (not eca-chat--inhibit-auto-thumbnails)
+             (display-images-p))
+    (let ((pos start))
+      (while (< pos end)
+        (when-let* ((link (eca-chat--image-link-at pos))
+                    (path (nth 2 link))
+                    ((not (eca-chat--image-thumbnail-at (car link) (cadr link))))
+                    ((not (file-remote-p path)))
+                    ((file-readable-p path))
+                    (image (eca-chat--image-thumbnail path)))
+          (eca-chat--show-image-thumbnail (car link) (cadr link) image))
+        (setq pos (next-single-property-change pos 'eca-chat-image-path
+                                               nil end))))))
+
+(defun eca-chat--auto-show-image-thumbnails-after-change (beg end _len)
+  "Show the thumbnails of the image mentions inserted from BEG to END.
+Meant for `after-change-functions', so image mentions show their
+thumbnail however they land: pasted, completed, recalled from the
+prompt history, yanked or undone."
+  (when (and (< beg end)
+             (text-property-not-all beg end 'eca-chat-image-path nil))
+    (with-demoted-errors "eca-chat image thumbnails: %S"
+      (eca-chat--auto-show-image-thumbnails beg end))))
+
+(defun eca-chat--add-image-link-overlay (start end)
+  "Make RET and a middle click toggle the thumbnail of a mention.
+The mention goes from START to END and carries `eca-chat-image-path'.
+For buffers whose RET doesn't handle image mentions, like the
+compose one; the overlay goes away with the mention text."
+  (let* ((ov (make-overlay start end nil t nil))
+         (toggle (lambda ()
+                   (interactive)
+                   (when-let* ((buffer (overlay-buffer ov)))
+                     (with-current-buffer buffer
+                       (when-let* ((link (eca-chat--image-link-at
+                                          (overlay-start ov))))
+                         (eca-chat--toggle-image-thumbnail link)))))))
+    (overlay-put ov 'keymap (eca-chat--image-keymap toggle))
+    (overlay-put ov 'mouse-face 'highlight)
+    (overlay-put ov 'help-echo "RET or mouse-2: toggle the thumbnail")
+    (overlay-put ov 'evaporate t)
+    ov))
+
+(defun eca-chat--mention-image-path (token roots)
+  "Return the local path of the image mentioned by TOKEN, or nil.
+TOKEN is a mention path as sent to the server: absolute, maybe a
+remote one, or relative to one of ROOTS.  Local paths must exist;
+remote ones are not checked, which would be slow."
+  (when (eca-chat--image-file-p token)
+    (let ((local (eca--path-remote-to-local token)))
+      (cond
+       ((file-remote-p local) local)
+       ((file-name-absolute-p local)
+        (let ((path (expand-file-name local)))
+          (and (file-exists-p path) path)))
+       (t (seq-some (lambda (root)
+                      (let ((path (expand-file-name local root)))
+                        (and (not (file-remote-p path))
+                             (file-exists-p path)
+                             path)))
+                    roots))))))
+
+(defun eca-chat--linkify-image-mentions (start end roots)
+  "Make the image mentions between START and END toggle a thumbnail.
+Mentions are the @path tokens of sent messages, resolved against
+ROOTS by `eca-chat--mention-image-path'.  Their `keymap' is dropped
+so RET on them reaches `eca-chat--key-pressed-return', and they
+show their thumbnail per `eca-chat-image-show-thumbnails'."
+  (with-silent-modifications
+    (save-excursion
+      (goto-char start)
+      (while (re-search-forward "\\(?:^\\|[^[:alnum:]]\\)@\\([^[:space:]]+\\)"
+                                end t)
+        (let* ((mention-start (1- (match-beginning 1)))
+               ;; Punctuation right after a mention is not part of it.
+               (token (replace-regexp-in-string
+                       "[]),.;:!?'\"]+\\'" "" (match-string-no-properties 1)))
+               (mention-end (+ mention-start 1 (length token))))
+          (when-let* ((path (eca-chat--mention-image-path token roots)))
+            (remove-text-properties mention-start mention-end '(keymap nil))
+            (add-text-properties mention-start mention-end
+                                 (list 'eca-chat-image-path path
+                                       'help-echo "RET: toggle the thumbnail"))
+            (eca-chat--auto-show-image-thumbnails mention-start mention-end)))))))
 
 (provide 'eca-chat-image)
 ;;; eca-chat-image.el ends here
