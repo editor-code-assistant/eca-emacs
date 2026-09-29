@@ -611,6 +611,174 @@ around rendering applies, as when the chat window is selected."
         (setq eca-chat--keep-point t))
       (expect (point) :to-equal (point-min)))))
 
+(defconst eca-chat-test--clipped-pos '(0 0 0 16 0 5)
+  "A `pos-visible-in-window-p' result for a row clipped at the bottom.")
+
+(defconst eca-chat-test--spacing-clipped-pos '(0 0 0 2 15 5)
+  "A `pos-visible-in-window-p' result clipping only `line-spacing'.")
+
+(defconst eca-chat-test--full-pos '(0 0)
+  "A `pos-visible-in-window-p' result for a fully visible position.")
+
+(defun eca-chat-test--make-visibility-buffer ()
+  "Create a render buffer with the prompt visibility hooks installed."
+  (let ((buf (eca-chat-test--make-render-buffer)))
+    (with-current-buffer buf
+      (add-hook 'after-change-functions #'eca-chat--note-prompt-edit nil t)
+      (add-hook 'post-command-hook #'eca-chat--keep-prompt-end-visible nil t)
+      (goto-char (point-max)))
+    buf))
+
+(describe "eca-chat multiline prompt visibility"
+  (it "scrolls after a command leaves the prompt end clipped"
+    (let ((buf (eca-chat-test--make-visibility-buffer)))
+      (unwind-protect
+          (save-window-excursion
+            (set-window-buffer (selected-window) buf)
+            (with-current-buffer buf
+              (insert "first line")
+              (run-hooks 'post-command-hook)
+              (spy-on 'pos-visible-in-window-p
+                      :and-return-value eca-chat-test--clipped-pos)
+              (spy-on 'recenter)
+              (insert "\n")
+              (run-hooks 'post-command-hook)
+              (expect 'recenter :to-have-been-called-with -1)
+              (expect (point) :to-equal (point-max))))
+        (kill-buffer buf))))
+
+  (it "does not scroll when the prompt end stays fully visible"
+    (let ((buf (eca-chat-test--make-visibility-buffer)))
+      (unwind-protect
+          (save-window-excursion
+            (set-window-buffer (selected-window) buf)
+            (with-current-buffer buf
+              (spy-on 'pos-visible-in-window-p
+                      :and-return-value eca-chat-test--full-pos)
+              (spy-on 'recenter)
+              (insert "short")
+              (run-hooks 'post-command-hook)
+              (expect 'recenter :not :to-have-been-called)))
+        (kill-buffer buf))))
+
+  (it "does not scroll when only the line spacing is clipped"
+    (let ((buf (eca-chat-test--make-visibility-buffer)))
+      (unwind-protect
+          (save-window-excursion
+            (set-window-buffer (selected-window) buf)
+            (with-current-buffer buf
+              (spy-on 'pos-visible-in-window-p
+                      :and-return-value eca-chat-test--spacing-clipped-pos)
+              (spy-on 'default-font-height :and-return-value 14)
+              (spy-on 'recenter)
+              (let ((start (window-start)))
+                (insert "short")
+                (run-hooks 'post-command-hook)
+                (expect (window-start) :to-equal start))
+              (expect 'recenter :not :to-have-been-called)))
+        (kill-buffer buf))))
+
+  (it "scrolls one screen line at a time instead of recentering"
+    (let ((buf (eca-chat-test--make-visibility-buffer)))
+      (unwind-protect
+          (save-window-excursion
+            (set-window-buffer (selected-window) buf)
+            (with-current-buffer buf
+              (set-window-start (selected-window) (point-min))
+              ;; Clipped until the window has scrolled once.
+              (spy-on 'pos-visible-in-window-p
+                      :and-call-fake
+                      (lambda (&rest _)
+                        (if (eq (window-start) (point-min))
+                            eca-chat-test--clipped-pos
+                          eca-chat-test--full-pos)))
+              (spy-on 'recenter)
+              (insert "\n")
+              (run-hooks 'post-command-hook)
+              (expect (window-start) :to-equal
+                      (save-excursion
+                        (goto-char (point-min))
+                        (vertical-motion 1)
+                        (point)))
+              (expect 'recenter :not :to-have-been-called)))
+        (kill-buffer buf))))
+
+  (it "ignores edits outside the prompt after a command"
+    (let ((buf (eca-chat-test--make-visibility-buffer)))
+      (unwind-protect
+          (save-window-excursion
+            (set-window-buffer (selected-window) buf)
+            (with-current-buffer buf
+              (run-hooks 'post-command-hook)
+              (spy-on 'pos-visible-in-window-p
+                      :and-return-value eca-chat-test--clipped-pos)
+              (spy-on 'recenter)
+              (save-excursion
+                (goto-char (eca-chat--content-insertion-point))
+                (eca-chat--insert "output\n"))
+              (run-hooks 'post-command-hook)
+              (expect 'recenter :not :to-have-been-called)))
+        (kill-buffer buf))))
+
+  (it "keeps a clipped prompt end visible when output arrives"
+    (let ((buf (eca-chat-test--make-render-buffer)))
+      (unwind-protect
+          (save-window-excursion
+            (set-window-buffer (selected-window) buf)
+            (with-current-buffer buf
+              (goto-char (point-max))
+              (insert "first line\nsecond line")
+              (goto-char (eca-chat--prompt-field-start-point))
+              (let ((cursor (point)))
+                (spy-on 'eca-chat--viewing-bottom-p :and-return-value t)
+                (spy-on 'pos-visible-in-window-p
+                        :and-return-value eca-chat-test--clipped-pos)
+                (spy-on 'recenter)
+                (eca-chat--with-point-preserved
+                  (save-excursion
+                    (goto-char (eca-chat--content-insertion-point))
+                    (eca-chat--insert "output\n")))
+                (expect 'recenter :to-have-been-called-with -1)
+                (expect (point) :to-equal (+ cursor 7)))))
+        (kill-buffer buf))))
+
+  (it "does not scroll on output while reading history"
+    (let ((buf (eca-chat-test--make-render-buffer)))
+      (unwind-protect
+          (save-window-excursion
+            (set-window-buffer (selected-window) buf)
+            (with-current-buffer buf
+              (goto-char (point-min))
+              (spy-on 'eca-chat--viewing-bottom-p :and-return-value t)
+              (spy-on 'pos-visible-in-window-p
+                      :and-return-value eca-chat-test--clipped-pos)
+              (spy-on 'recenter)
+              (eca-chat--with-point-preserved
+                (save-excursion
+                  (goto-char (eca-chat--content-insertion-point))
+                  (eca-chat--insert "more output\n")))
+              (expect 'recenter :not :to-have-been-called)))
+        (kill-buffer buf))))
+
+  (it "keeps a clipped prompt end visible after a timer flush"
+    (let ((buf (eca-chat-test--make-render-buffer)))
+      (unwind-protect
+          (save-window-excursion
+            (set-window-buffer (selected-window) buf)
+            (with-current-buffer buf
+              (goto-char (point-max))
+              (insert "first line\nsecond line")
+              (goto-char (eca-chat--prompt-field-start-point))
+              (setq-local eca-chat--stream-pending-chunks (list "output\n"))
+              (spy-on 'eca-chat--schedule-fontify)
+              (spy-on 'eca-chat--viewing-bottom-p :and-return-value t)
+              (spy-on 'pos-visible-in-window-p
+                      :and-return-value eca-chat-test--clipped-pos)
+              (spy-on 'recenter)
+              (eca-chat--stream-flush)
+              (expect 'recenter :to-have-been-called-with -1)))
+        (kill-buffer buf)))))
+
 (describe "eca-chat--ensure-tool-call-approval-visible"
   ;; Issue #308: a tool call awaiting approval whose expanded body is
   ;; taller than the window must keep its label and buttons in view

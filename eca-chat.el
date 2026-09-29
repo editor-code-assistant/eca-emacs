@@ -2130,16 +2130,72 @@ Rendering inserts text wherever the content goes, dragging point
 along, and streaming must not move the cursor.  Helpers that move
 point deliberately set `eca-chat--keep-point' to keep the new
 position: a plain `save-excursion' would undo it whenever the chat
-window is the selected one."
+window is the selected one.  When point is in the prompt and the
+bottom of the chat is shown, keep the end of the prompt visible."
   (declare (indent 0) (debug t))
-  (let ((saved (gensym "saved-point-")))
-    `(let ((eca-chat--keep-point nil)
-           (,saved (point-marker)))
+  (let ((saved (gensym "saved-point-"))
+        (win (gensym "chat-window-")))
+    `(let* ((eca-chat--keep-point nil)
+            (,saved (point-marker))
+            (,win (when-let* ((w (get-buffer-window (current-buffer))))
+                    (and (eca-chat--point-at-prompt-field-p)
+                         (eca-chat--viewing-bottom-p w)
+                         w))))
        (unwind-protect (progn ,@body)
          (when (and (not eca-chat--keep-point)
                     (eq (marker-buffer ,saved) (current-buffer)))
-           (goto-char ,saved))
+           (goto-char ,saved)
+           (when ,win
+             (eca-chat--ensure-prompt-end-visible ,win)))
          (set-marker ,saved nil)))))
+
+(defun eca-chat--prompt-end-fully-visible-p (win)
+  "Return non-nil when the text at the prompt end is fully shown in WIN.
+A row clipped only in its `line-spacing' still counts as visible."
+  (pcase (pos-visible-in-window-p (point-max) win t)
+    (`(,_ ,_) t)
+    (`(,_ ,_ ,_ ,_ ,visible-height ,_)
+     (>= visible-height (default-font-height)))))
+
+(defun eca-chat--ensure-prompt-end-visible (win)
+  "Scroll WIN so the end of the prompt is fully visible, keeping point.
+Point stays on its line, so redisplay alone would leave the prompt
+lines below it clipped by the mode line.  Scroll one screen line at
+a time: `recenter' can leave an empty row with `line-spacing'."
+  (when (and (window-live-p win)
+             (eq (window-buffer win) (current-buffer))
+             (not (eca-chat--prompt-end-fully-visible-p win)))
+    (save-excursion
+      (goto-char (window-start win))
+      (let ((rows (window-body-height win)))
+        (while (and (> rows 0)
+                    (not (eca-chat--prompt-end-fully-visible-p win)))
+          (vertical-motion 1 win)
+          (set-window-start win (point) t)
+          (setq rows (1- rows)))))
+    ;; Far below the window: fall back to one jump.
+    (unless (eca-chat--prompt-end-fully-visible-p win)
+      (with-selected-window win
+        (save-excursion
+          (goto-char (point-max))
+          (recenter -1))))))
+
+(defvar-local eca-chat--prompt-edited nil
+  "Non-nil when the current command edited the prompt.")
+
+(defun eca-chat--note-prompt-edit (beg _end _old-len)
+  "Flag an edit at BEG inside the prompt for `post-command-hook'."
+  (when-let* ((prompt (eca-chat--prompt-field-start-point)))
+    (when (>= beg prompt)
+      (setq eca-chat--prompt-edited t))))
+
+(defun eca-chat--keep-prompt-end-visible ()
+  "Keep the end of the prompt visible after a command that edited it."
+  (when eca-chat--prompt-edited
+    (setq eca-chat--prompt-edited nil)
+    (when-let* ((win (get-buffer-window (current-buffer))))
+      (when (eca-chat--point-at-prompt-field-p)
+        (eca-chat--ensure-prompt-end-visible win)))))
 
 (defun eca-chat--viewing-bottom-p (win)
   "Return non-nil when the prompt separator is displayed in WIN.
@@ -3785,10 +3841,11 @@ Add a overlay before with OVERLAY-KEY = OVERLAY-VALUE if passed."
     (when chunks
       (let ((text (mapconcat #'identity (nreverse chunks) "")))
         (unless (string-empty-p text)
-          (save-excursion
-            (eca-chat--add-text-content text)
-            (eca-chat--schedule-fontify)
-            (eca-chat--protect-non-prompt eca-chat--last-user-message-pos)))))))
+          (eca-chat--with-point-preserved
+            (save-excursion
+              (eca-chat--add-text-content text)
+              (eca-chat--schedule-fontify)
+              (eca-chat--protect-non-prompt eca-chat--last-user-message-pos))))))))
 
 (defun eca-chat--relativize-filename-for-workspace-root (filename roots &optional hide-filename?)
   "Relativize the FILENAME if a workspace root is found for ROOTS.
@@ -4005,6 +4062,8 @@ CHILD, NAME, DOCSTRING and BODY are passed down."
 
   ;; Turn raw @path/#path tokens into proper items after a space.
   (add-hook 'post-self-insert-hook #'eca-chat--post-self-insert nil t)
+  (add-hook 'after-change-functions #'eca-chat--note-prompt-edit nil t)
+  (add-hook 'post-command-hook #'eca-chat--keep-prompt-end-visible nil t)
 
   (eca-chat--setup-item-stickiness)
   (add-hook 'after-change-functions
