@@ -87,6 +87,7 @@ Chat
 - `eca-chat-reset`: Close current chat buffer and start a new one (the chat stays on the server, resumable via `/resume`)
 - `eca-chat-delete`: Delete the active chat from the server without prompting (works from any buffer in the project)
 - `eca-chat-select-model`: Change chat model
+- `eca-chat-refresh-models`: Refresh available models without restarting ECA. Also available from the chat menu and Providers tab.
 - `eca-chat-select-agent`: Change chat agent
 - `eca-chat-cycle-agent`: Change chat agent to next available
 - `eca-chat-add-context-to-system-prompt`: Add file/dirs to system prompt checking multiple modes with range support

@@ -315,7 +315,12 @@ When all methods are just API key entry, returns nil."
         (erase-buffer)
         (insert "\n")
         (insert (propertize "Providers / Models" 'font-lock-face 'eca-settings-heading))
-        (insert "\n")
+        (insert "  "
+                (eca-buttonize
+                 keymap
+                 (propertize "Refresh models" 'font-lock-face 'eca-providers-button-face)
+                 #'eca-chat-refresh-models)
+                "\n")
         (insert (propertize "For more details check " 'face 'shadow))
         (insert-text-button "https://eca.dev/config/models/"
                             'face 'link

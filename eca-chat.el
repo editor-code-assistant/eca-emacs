@@ -19,6 +19,7 @@
 
 (require 'eca-util)
 (require 'eca-api)
+(require 'eca-providers)
 (require 'eca-mcp)
 (require 'eca-diff)
 (require 'eca-table)
@@ -2527,7 +2528,15 @@ without finalizing it)."
   (let* ((prompt-contexts (eca-chat--extract-contexts-from-prompt))
          (refined-contexts (->> (append eca-chat--context prompt-contexts)
                                 (-map #'eca-chat--refine-context)
-                                (-keep #'eca-chat--materialize-context))))
+                                (-keep #'eca-chat--materialize-context)))
+         (model (eca-chat--model))
+         (stale-model (and (not eca-chat-custom-model)
+                           model (seq-first (eca--session-models session))
+                           (not (seq-contains-p (eca--session-models session)
+                                                model))))
+         (chat-buffer (current-buffer))
+         (default-model (eca--session-chat-default-model session))
+         request-id)
     (when eca-chat--welcome-shown (eca-chat--clear))
     (add-to-list 'eca-chat--history prompt)
     (setq eca-chat--history-index -1)
@@ -2537,20 +2546,32 @@ without finalizing it)."
      session
      :method "chat/prompt"
      :params (append (list :message (eca-chat--normalize-prompt prompt)
-                           :request-id (cl-incf eca-chat--last-request-id)
+                           :request-id (setq request-id
+                                             (cl-incf eca-chat--last-request-id))
                            :chatId eca-chat--id
-                           :model (eca-chat--model)
+                           :model (unless stale-model model)
                            :agent (eca-chat--agent)
                            :contexts (vconcat refined-contexts))
                      (when-let* ((variant (eca-chat--variant)))
                        (list :variant variant))
                      (when (eca-chat--trust)
                        (list :trust t)))
-     ;; The chat-id is already set buffer-locally at chat creation
-     ;; time, so the prompt response carries no information we need
-     ;; to act on.  Pass `#'ignore' (rather than nil) so the response
-     ;; dispatcher still removes the pending-handler entry.
-     :success-callback #'ignore)))
+     :success-callback
+     (if stale-model
+         (lambda (result)
+           (let ((resolved (plist-get result :model)))
+             (when (and (buffer-live-p chat-buffer)
+                        resolved
+                        (seq-contains-p (eca--session-models session) resolved))
+               (with-current-buffer chat-buffer
+                 (when (and (= eca-chat--last-request-id request-id)
+                            (equal (eca-chat--model) model))
+                   (setq-local eca-chat--selected-model resolved)
+                   (when (equal (eca--session-chat-default-model session)
+                                default-model)
+                     (setf (eca--session-chat-default-model session) resolved))
+                   (eca-chat--notify-status-changed session))))))
+       #'ignore))))
 
 (defun eca-chat--queued-prompt-display-string (text)
   "Return a display string for queued prompt TEXT, truncated to 40 chars."
@@ -5896,6 +5917,30 @@ When ACTIVE is non-nil, show the question prefix; otherwise restore normal."
                             :method "chat/clear"
                             :params (list :chatId eca-chat--id :messages t)))
     (eca-chat--clear)))
+
+;;;###autoload
+(defun eca-chat-refresh-models ()
+  "Refresh the model catalog for the current ECA session."
+  (interactive)
+  (let ((session (eca-session)))
+    (eca-assert-session-running session)
+    (eca-info "Refreshing models...")
+    (eca-api-request-async session
+      :method "models/refresh"
+      :params nil
+      :success-callback
+      (lambda (result)
+        (eca-info "Model refresh complete: %d models"
+                  (plist-get result :modelCount))
+        (seq-doseq (warning (plist-get result :warnings))
+          (eca-warn "%s: %s" (plist-get warning :provider)
+                    (plist-get warning :message)))
+        (when-let* ((buffer (eca-settings--get-buffer "providers" session))
+                    ((buffer-live-p buffer)))
+          (eca-providers--fetch-and-render session buffer)))
+      :error-callback
+      (lambda (err)
+        (eca-warn "Model refresh failed: %s" err)))))
 
 ;;;###autoload
 (defun eca-chat-select-model ()
