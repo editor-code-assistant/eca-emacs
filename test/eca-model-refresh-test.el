@@ -55,6 +55,38 @@
               (expect (buffer-string) :to-match "Refreshed")))
         (when (buffer-live-p buffer) (kill-buffer buffer))))))
 
+(describe "Providers list request ordering"
+  (it "keeps the newer list and visible tab after older success or error"
+    (let ((session (make-eca--session :id "providers-order"))
+          buffer requests)
+      (spy-on 'eca-api-request-async :and-call-fake
+              (lambda (_session &rest args) (push args requests)))
+      (unwind-protect
+          (progn
+            (setq buffer (eca-settings--create-buffer "providers" session))
+            (eca-providers--fetch-and-render session buffer)
+            (eca-providers--fetch-and-render session buffer)
+            (funcall (plist-get (car requests) :success-callback)
+                     '(:providers [(:id "fresh" :name "Fresh"
+                                   :configured t :modelCount 3)]))
+            (eca-providers--handle-provider-updated
+             session '(:id "fresh" :name "Fresh" :configured t :modelCount 4))
+            (funcall (plist-get (cadr requests) :success-callback)
+                     '(:providers [(:id "old" :name "Old"
+                                   :configured t :modelCount 1)]))
+            (expect (plist-get (car (eca--session-providers session)) :id)
+                    :to-equal "fresh")
+            (expect (plist-get (car (eca--session-providers session)) :modelCount)
+                    :to-equal 4)
+            (with-current-buffer buffer
+              (expect (buffer-string) :to-match "Fresh")
+              (expect (buffer-string) :not :to-match "Old"))
+            (funcall (plist-get (cadr requests) :error-callback) "late error")
+            (with-current-buffer buffer
+              (expect (buffer-string) :to-match "Fresh")
+              (expect (buffer-string) :not :to-match "Failed to load providers")))
+        (when (buffer-live-p buffer) (kill-buffer buffer))))))
+
 (describe "eca-chat-refresh-models"
   (it "requires a session before sending a request"
     (spy-on 'eca-session :and-return-value nil)
@@ -86,6 +118,66 @@
       (expect messages :to-contain "openai: Cached models")
       (expect messages :to-contain "other: Stale models")
       (expect 'eca-providers--fetch-and-render :not :to-have-been-called)))
+
+  (it "keeps every warning in the log and ends with a visible summary"
+    (let ((session (make-eca--session :id "refresh-warnings"))
+          (message-log-max t)
+          (original-info (symbol-function 'eca-info))
+          (original-warn (symbol-function 'eca-warn))
+          request visible)
+      (spy-on 'eca-session :and-return-value session)
+      (spy-on 'eca-api-request-async :and-call-fake
+              (lambda (_session &rest args) (setq request args)))
+      (spy-on 'eca-info :and-call-fake
+              (lambda (fmt &rest args)
+                (push (apply #'format fmt args) visible)
+                (apply original-info fmt args)))
+      (spy-on 'eca-warn :and-call-fake
+              (lambda (fmt &rest args)
+                (push (apply #'format fmt args) visible)
+                (apply original-warn fmt args)))
+      (eca-chat-refresh-models)
+      (funcall (plist-get request :success-callback)
+               '(:modelCount 4
+                 :warnings [(:provider "warning-alpha" :message "alpha-detail")
+                            (:provider "warning-beta" :message "beta-detail")]))
+      (expect (car visible) :to-match "2 warnings")
+      (expect (car visible) :to-match "\\*Messages\\*")
+      (with-current-buffer (get-buffer "*Messages*")
+        (expect (buffer-string) :to-match "warning-alpha: alpha-detail")
+        (expect (buffer-string) :to-match "warning-beta: beta-detail"))))
+
+  (it "leaves the success message visible when there are no warnings"
+    (let ((session (make-eca--session :id "refresh-no-warnings"))
+          request messages)
+      (spy-on 'eca-session :and-return-value session)
+      (spy-on 'eca-api-request-async :and-call-fake
+              (lambda (_session &rest args) (setq request args)))
+      (spy-on 'eca-info :and-call-fake
+              (lambda (fmt &rest args)
+                (push (apply #'format fmt args) messages)))
+      (eca-chat-refresh-models)
+      (funcall (plist-get request :success-callback)
+               '(:modelCount 3 :warnings []))
+      (expect (car messages) :to-equal "Model refresh complete: 3 models")))
+
+  (it "leaves a single warning visible without a count summary"
+    (let ((session (make-eca--session :id "refresh-one-warning"))
+          request messages)
+      (spy-on 'eca-session :and-return-value session)
+      (spy-on 'eca-api-request-async :and-call-fake
+              (lambda (_session &rest args) (setq request args)))
+      (spy-on 'eca-info :and-call-fake
+              (lambda (fmt &rest args)
+                (push (apply #'format fmt args) messages)))
+      (spy-on 'eca-warn :and-call-fake
+              (lambda (fmt &rest args)
+                (push (apply #'format fmt args) messages)))
+      (eca-chat-refresh-models)
+      (funcall (plist-get request :success-callback)
+               '(:modelCount 3
+                 :warnings [(:provider "single" :message "one warning")]))
+      (expect (car messages) :to-equal "single: one warning")))
 
   (it "reports errors without fetching providers or changing models"
     (let ((session (make-eca--session :id "refresh-error" :models '("old")))
@@ -142,6 +234,97 @@
           (let ((kill-buffer-hook nil)) (kill-buffer chat)))))))
 
 (describe "prompt after model refresh"
+  (it "omits a stale default model and variant and adopts the fallback"
+    (let ((session (make-eca--session :models ["new"]
+                                      :chat-default-model "old"
+                                      :chat-default-variant "old-variant"))
+          chat request)
+      (spy-on 'eca-chat--extract-contexts-from-prompt :and-return-value nil)
+      (spy-on 'eca-chat--set-prompt)
+      (spy-on 'eca-chat--set-chat-loading)
+      (spy-on 'eca-api-request-async :and-call-fake
+              (lambda (_session &rest args) (setq request args)))
+      (unwind-protect
+          (progn
+            (setq chat (generate-new-buffer " *eca-stale-default-variant*"))
+            (with-current-buffer chat
+              (setq major-mode 'eca-chat-mode)
+              (setq-local eca-chat--id "A")
+              (setq-local eca--chat-init-session session)
+              (eca-chat--send-prompt session "hello"))
+            (expect (plist-get (plist-get request :params) :model) :to-be nil)
+            (expect (plist-member (plist-get request :params) :variant) :to-be nil)
+            (funcall (plist-get request :success-callback) '(:model "new"))
+            (expect (buffer-local-value 'eca-chat--selected-model chat)
+                    :to-equal "new")
+            (expect (buffer-local-value 'eca-chat--selected-variant chat) :to-be nil)
+            (expect (eca--session-chat-default-variant session) :to-be nil))
+        (when (buffer-live-p chat)
+          (let ((kill-buffer-hook nil)) (kill-buffer chat))))))
+
+  (it "keeps a variant changed while a stale-model prompt is pending"
+    (let ((session (make-eca--session :models ["new"]
+                                      :chat-default-model "old"
+                                      :chat-default-variant "old-variant"))
+          chat request)
+      (spy-on 'eca-chat--extract-contexts-from-prompt :and-return-value nil)
+      (spy-on 'eca-chat--set-prompt)
+      (spy-on 'eca-chat--set-chat-loading)
+      (spy-on 'eca-api-request-async :and-call-fake
+              (lambda (_session &rest args) (setq request args)))
+      (unwind-protect
+          (progn
+            (setq chat (generate-new-buffer " *eca-stale-variant-choice*"))
+            (with-current-buffer chat
+              (setq major-mode 'eca-chat-mode)
+              (setq-local eca-chat--id "A")
+              (setq-local eca--chat-init-session session)
+              (setq-local eca-chat--selected-model "old")
+              (setq-local eca-chat--selected-variant "old-variant")
+              (eca-chat--send-prompt session "hello")
+              (setq-local eca-chat--selected-variant "user-variant"))
+            (setf (eca--session-chat-default-variant session) "user-variant")
+            (expect (plist-member (plist-get request :params) :variant) :to-be nil)
+            (funcall (plist-get request :success-callback) '(:model "new"))
+            (expect (buffer-local-value 'eca-chat--selected-model chat)
+                    :to-equal "new")
+            (expect (buffer-local-value 'eca-chat--selected-variant chat)
+                    :to-equal "user-variant")
+            (expect (eca--session-chat-default-variant session)
+                    :to-equal "user-variant"))
+        (when (buffer-live-p chat)
+          (let ((kill-buffer-hook nil)) (kill-buffer chat))))))
+
+  (it "keeps the variant for a valid or explicit custom model"
+    (let ((session (make-eca--session :models ["valid"]
+                                      :chat-default-model "valid"
+                                      :chat-default-variant "fast"))
+          chat request)
+      (spy-on 'eca-chat--extract-contexts-from-prompt :and-return-value nil)
+      (spy-on 'eca-chat--set-prompt)
+      (spy-on 'eca-chat--set-chat-loading)
+      (spy-on 'eca-api-request-async :and-call-fake
+              (lambda (_session &rest args) (setq request args)))
+      (unwind-protect
+          (progn
+            (setq chat (generate-new-buffer " *eca-valid-model-variant*"))
+            (with-current-buffer chat
+              (setq major-mode 'eca-chat-mode)
+              (setq-local eca-chat--id "A")
+              (setq-local eca--chat-init-session session)
+              (eca-chat--send-prompt session "hello"))
+            (expect (plist-get (plist-get request :params) :variant)
+                    :to-equal "fast")
+            (with-current-buffer chat
+              (let ((eca-chat-custom-model "custom"))
+                (eca-chat--send-prompt session "again")))
+            (expect (plist-get (plist-get request :params) :model)
+                    :to-equal "custom")
+            (expect (plist-get (plist-get request :params) :variant)
+                    :to-equal "fast"))
+        (when (buffer-live-p chat)
+          (let ((kill-buffer-hook nil)) (kill-buffer chat))))))
+
   (it "adopts the server model when a new chat inherits a stale default"
     (let ((session (make-eca--session :models ["new"]
                                       :chat-default-model "old"))
@@ -199,7 +382,8 @@
 
   (it "defers a missing selected model to the server and adopts its reply"
     (let ((session (make-eca--session :models ["old"]
-                                      :chat-default-model "old"))
+                                      :chat-default-model "old"
+                                      :chat-default-variant "old-variant"))
           chat request)
       (spy-on 'eca-chat--extract-contexts-from-prompt :and-return-value nil)
       (spy-on 'eca-chat--set-prompt)
@@ -212,7 +396,8 @@
             (with-current-buffer chat
               (setq major-mode 'eca-chat-mode)
               (setq-local eca-chat--id "A")
-              (setq-local eca-chat--selected-model "old"))
+              (setq-local eca-chat--selected-model "old")
+              (setq-local eca-chat--selected-variant "old-variant"))
             (setf (eca--session-chats session) (list (cons "A" chat)))
             (eca-config-updated session '(:chat (:models ["new"])))
             (expect (buffer-local-value 'eca-chat--selected-model chat)
@@ -221,10 +406,13 @@
               (eca-chat--send-prompt session "hello"))
             (expect (plist-get request :method) :to-equal "chat/prompt")
             (expect (plist-get (plist-get request :params) :model) :to-be nil)
+            (expect (plist-member (plist-get request :params) :variant) :to-be nil)
             (funcall (plist-get request :success-callback) '(:model "new"))
             (expect (buffer-local-value 'eca-chat--selected-model chat)
                     :to-equal "new")
+            (expect (buffer-local-value 'eca-chat--selected-variant chat) :to-be nil)
             (expect (eca--session-chat-default-model session) :to-equal "new")
+            (expect (eca--session-chat-default-variant session) :to-be nil)
             (with-current-buffer chat
               (eca-chat--send-prompt session "again"))
             (expect (plist-get (plist-get request :params) :model)
