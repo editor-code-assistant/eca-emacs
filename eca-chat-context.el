@@ -113,6 +113,11 @@ When nil, send the whole buffer content."
   "Face for contexts of cursor type."
   :group 'eca)
 
+(defface eca-chat-context-cursor-unsaved-face
+  '((t (:inherit (warning eca-chat-context-cursor-face))))
+  "Face for the cursor context when its buffer has unsaved changes."
+  :group 'eca)
+
 (defface eca-chat-context-buffer-face
   '((((background dark))  (:foreground "orchid" :underline t :height 0.9))
     (((background light)) (:foreground "dark magenta" :underline t :height 0.9)))
@@ -125,7 +130,10 @@ When nil, send the whole buffer content."
 (defvar-local eca-chat--file-completion-cache nil)
 (defvar-local eca-chat--command-completion-cache nil)
 (defvar-local eca-chat--context '())
-(defvar-local eca-chat--cursor-context nil)
+(defvar-local eca-chat--cursor-context nil
+  "Tracked cursor plist with :path, :position and :modified.
+:modified is non-nil when the buffer visiting :path has unsaved
+changes; it is only used to render the context, never sent.")
 
 ;; Timer used to debounce post-command driven context updates
 (defvar eca-chat--cursor-context-timer nil)
@@ -312,7 +320,10 @@ If STATIC? return strs with no dynamic values."
                                                  (funcall #'number-to-string))
                                                ")")))
                                    'eca-chat-expanded-item-str (concat eca-chat-context-prefix "cursor")
-                                   'font-lock-face 'eca-chat-context-cursor-face))
+                                   'font-lock-face (if (and (not static?)
+                                                            (plist-get eca-chat--cursor-context :modified))
+                                                       'eca-chat-context-cursor-unsaved-face
+                                                     'eca-chat-context-cursor-face)))
              ("text" (let ((label (plist-get context :label))
                            (lines-range (plist-get context :linesRange)))
                        (propertize (concat eca-chat-context-prefix
@@ -434,7 +445,9 @@ enough for timers running in arbitrary buffers."
           (eca-vals eca--sessions)))
 
 (defun eca-chat--track-cursor (&rest _args)
-  "Change chat context considering current open file and point."
+  "Change chat context considering current open file and point.
+Also track whether that file buffer has unsaved changes, so saving
+it redraws the context even though point did not move."
   (when-let* ((buffer (eca-chat--get-last-visited-buffer))
               (path (buffer-file-name buffer))
               (session (eca-chat--session-for-path path)))
@@ -443,11 +456,15 @@ enough for timers running in arbitrary buffers."
         (when (buffer-live-p chat-buffer)
           (-let* (((start . end) (eca-chat--cur-position))
                   ((start-line . start-character) start)
-                  ((end-line . end-character) end))
+                  ((end-line . end-character) end)
+                  ;; Boolean: after an auto-save `buffer-modified-p' returns
+                  ;; `autosaved', which must not redraw the context.
+                  (modified (and (buffer-modified-p) t)))
             (eca-chat--with-current-buffer chat-buffer
               (let ((new-context (list :path path
                                        :position (list :start (list :line start-line :character start-character)
-                                                       :end (list :line end-line :character end-character)))))
+                                                       :end (list :line end-line :character end-character))
+                                       :modified modified)))
                 (when (not (eca-plist-equal eca-chat--cursor-context new-context))
                   (setq eca-chat--cursor-context new-context)
                   (eca-chat--refresh-context))))))))))

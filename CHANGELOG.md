@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Show the `@cursor` context with `eca-chat-context-cursor-unsaved-face` (inheriting `warning`) while its buffer has unsaved changes, since ECA only sees the file on disk (#291).
 - Image mentions show inline as thumbnails: screenshots pasted in the prompt, image files added as context and images mentioned in sent messages. `RET` toggles them back to text. Customize with `eca-chat-image-show-thumbnails` and `eca-chat-image-thumbnail-size`.
 - Bugfix: text typed right after a context chip in the prompt became part of it: it took the chip color, was dropped from the sent message, and backspacing it could break the prompt, moving the `>` to the context line. Pasted images and contexts added to the prompt are now also spaced from the word before them.
 - Bugfix: questions asked in parallel (several `ask_user` tool calls) stopped reacting to RET once one was answered, and an option could answer another question. Each question is now answered on its own: point moves on to the next pending one, a typed answer goes to the topmost question accepting one, and stopping cancels them all.

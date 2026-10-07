@@ -169,7 +169,7 @@ Chat
 - `eca-chat-window-height`: Height of the chat window when on the top or bottom.
 - `eca-chat-focus-on-open`: Whether to focus the chat when it opens in another window. Same-window display is already focused.
 - `eca-chat-auto-add-repomap`: Whether to automatically include repoMap context when opening ECA.
-- `eca-chat-auto-add-cursor`: Whether to automatically track the cursor position and add it as context.
+- `eca-chat-auto-add-cursor`: Whether to automatically track the cursor position and add it as context. The `@cursor` context uses `eca-chat-context-cursor-unsaved-face` while its buffer has unsaved changes.
 - `eca-chat-cursor-context-debounce`: Seconds to debounce updates when tracking cursor context.
 - `eca-chat-prompt-separator`: Separator string between the chat content and the prompt area.
 - `eca-chat-prompt-prefix`: Prompt prefix string shown before user input.

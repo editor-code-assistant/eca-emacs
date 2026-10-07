@@ -205,7 +205,42 @@
     (let ((eca-chat--cursor-context nil)
           (ctx (list :type "cursor")))
       (expect (substring-no-properties (eca-chat--context->str ctx 'static))
-              :to-equal "@cursor"))))
+              :to-equal "@cursor")))
+
+  (it "uses the unsaved face while the cursor buffer has unsaved changes"
+    (let ((eca-chat--cursor-context
+           (list :path "/tmp/proj-a/foo.el"
+                 :position (list :start (list :line 12 :character 3)
+                                 :end (list :line 12 :character 3))
+                 :modified t))
+          (ctx (list :type "cursor")))
+      (expect (get-text-property 0 'font-lock-face (eca-chat--context->str ctx))
+              :to-be 'eca-chat-context-cursor-unsaved-face)
+      ;; Static strs are not redrawn, so they never get it.
+      (expect (get-text-property 0 'font-lock-face (eca-chat--context->str ctx 'static))
+              :to-be 'eca-chat-context-cursor-face)))
+
+  (it "uses the cursor face when the cursor buffer is saved"
+    (let ((eca-chat--cursor-context
+           (list :path "/tmp/proj-a/foo.el"
+                 :position (list :start (list :line 12 :character 3)
+                                 :end (list :line 12 :character 3))
+                 :modified nil))
+          (ctx (list :type "cursor")))
+      (expect (get-text-property 0 'font-lock-face (eca-chat--context->str ctx))
+              :to-be 'eca-chat-context-cursor-face))))
+
+(describe "eca-chat--refine-context for cursor contexts"
+  (it "sends the tracked path and position but not the modified state"
+    (spy-on 'eca--path-local-to-remote :and-call-fake #'identity)
+    (let* ((position (list :start (list :line 1 :character 1)
+                           :end (list :line 1 :character 1)))
+           (eca-chat--cursor-context
+            (list :path "/tmp/proj-a/foo.el" :position position :modified t))
+           (refined (eca-chat--refine-context (list :type "cursor"))))
+      (expect (plist-get refined :path) :to-equal "/tmp/proj-a/foo.el")
+      (expect (plist-get refined :position) :to-equal position)
+      (expect (plist-member refined :modified) :to-be nil))))
 
 (describe "eca-chat--get-contexts-dwim"
   (it "returns a ranged text context for a region in a non-file buffer"
@@ -428,7 +463,44 @@
           (with-current-buffer buf
             (setq buffer-file-name nil)
             (set-buffer-modified-p nil))
-          (kill-buffer buf))))))
+          (kill-buffer buf)))))
+
+  (it "redraws the context when only the buffer modified state changes"
+    ;; Saving never moves point, so the modified state alone must
+    ;; trigger the redraw that drops the unsaved face (#291).
+    (let ((eca--sessions '())
+          (eca--session-ids 0)
+          (file-buf (generate-new-buffer "cursor-modified-file"))
+          (chat-buf (generate-new-buffer "<eca-chat-cursor-modified-test>")))
+      (eca-create-session (list (expand-file-name "/tmp/proj-a")))
+      (spy-on 'eca-chat--get-last-visited-buffer :and-return-value file-buf)
+      (spy-on 'eca-chat--get-last-buffer :and-return-value chat-buf)
+      (spy-on 'eca-chat--refresh-context)
+      (unwind-protect
+          (with-current-buffer file-buf
+            (setq buffer-file-name (expand-file-name "/tmp/proj-a/file.el"))
+            (eca-chat--track-cursor)
+            (expect (plist-get (buffer-local-value 'eca-chat--cursor-context chat-buf)
+                               :modified)
+                    :to-be nil)
+            (set-buffer-modified-p t)
+            (eca-chat--track-cursor)
+            (expect (plist-get (buffer-local-value 'eca-chat--cursor-context chat-buf)
+                               :modified)
+                    :to-be t)
+            (set-buffer-modified-p nil)
+            (eca-chat--track-cursor)
+            (expect (plist-get (buffer-local-value 'eca-chat--cursor-context chat-buf)
+                               :modified)
+                    :to-be nil)
+            ;; Nothing changed since the last tracking: no redraw.
+            (eca-chat--track-cursor)
+            (expect 'eca-chat--refresh-context :to-have-been-called-times 3))
+        (with-current-buffer file-buf
+          (setq buffer-file-name nil)
+          (set-buffer-modified-p nil))
+        (kill-buffer file-buf)
+        (kill-buffer chat-buf)))))
 
 (describe "eca-chat--setup-item-stickiness"
   (before-each
