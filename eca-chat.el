@@ -1740,14 +1740,19 @@ remember action when nothing can be remembered."
 
 (defun eca-chat--prompt-block-broken-p ()
   "Return non-nil when the prompt block markup is corrupted.
-Checks that the separator, context and prompt overlays exist,
-that the context line ends before the prompt field starts and
-that the prompt field starts a line.  Edits crossing the block
-break these invariants (see #305)."
+Checks that the separator, progress, context and prompt overlays
+exist, that the progress area ends before the context line, that
+the context line ends before the prompt field starts and that the
+prompt field starts a line.  Edits crossing the block break these
+invariants (see #305)."
   (let ((area-ov (eca-chat--prompt-area-ov))
+        (progress-ov (eca-chat--prompt-progress-field-ov))
         (context-ov (eca-chat--prompt-context-field-ov))
         (prompt-ov (eca-chat--prompt-field-ov)))
-    (or (not (and area-ov context-ov prompt-ov))
+    (or (not (and area-ov progress-ov context-ov prompt-ov))
+        ;; The transient area renders in between, see
+        ;; `eca-chat--refresh-transient-area'.
+        (>= (overlay-end progress-ov) (overlay-start context-ov))
         (let ((prompt-start (overlay-start prompt-ov)))
           (or (>= (overlay-end context-ov) prompt-start)
               (not (eq (char-before prompt-start) ?\n)))))))
@@ -2258,8 +2263,8 @@ protected by `eca-chat--apply-within-context-line'.")
 CONTEXT-OV is the context area overlay.  The newlines delimiting its
 line belong to the prompt block markup: a forward `delete-char' at
 the line end or a line-wise evil operator like `dd' would merge the
-line with the prompt field or the progress area and corrupt the
-block (see #305).  The direction of a wrapped deletion cannot be told
+line with the prompt field or the transient/progress area and corrupt
+the block (see #305).  The direction of a wrapped deletion cannot be told
 from its arguments (evil's insert-state backspace, for one, wraps
 `delete-backward-char'), so instead both newlines are made
 `read-only' while FN runs and the `text-read-only' it then signals
@@ -2364,7 +2369,7 @@ the prompt/context line."
 
          ;; start of the context line - its leading `@' is either the
          ;; first context or the unlinked prefix, and a backward deletion
-         ;; would join the line with the progress area above.
+         ;; would join the line with the transient/progress area above.
          ((and in-context?
                (= (point) (overlay-start context-ov)))
           (ding))
@@ -2630,24 +2635,26 @@ stopped even if the chat reports idle awaiting the answer."
             "\n")))
 
 (defvar eca-chat-transient-area-segments
-  '(eca-chat--transient-segment-queued
+  '(eca-chat--transient-segment-loading
     eca-chat--transient-segment-steered
-    eca-chat--transient-segment-loading)
+    eca-chat--transient-segment-queued)
   "Ordered list of zero-arg functions returning a propertized string or nil.
 Each non-nil result is rendered on its own line, top to bottom, between
-the context area and the prompt input.  Add a new function here to make
-a new dynamic line appear in that region.")
+the progress area and the context line, so the controls of the running
+prompt sit below its status while the context line stays right above
+the prompt input (#322).  Add a new function here to make a new
+dynamic line appear in that region.")
 
 (defun eca-chat--refresh-transient-area ()
-  "Re-render the transient area between context and prompt input.
+  "Re-render the transient area between progress and context line.
 Iterates `eca-chat-transient-area-segments', concatenating each
 segment's non-nil string result.  Uses `insert-before-markers' so
-the prompt-field overlay's start advances past inserted content."
-  (when-let* ((context-ov (eca-chat--prompt-context-field-ov))
-              (prompt-ov (eca-chat--prompt-field-ov)))
+the context-area overlay's start advances past inserted content."
+  (when-let* ((progress-ov (eca-chat--prompt-progress-field-ov))
+              (context-ov (eca-chat--prompt-context-field-ov)))
     (save-excursion
-      (let ((start (1+ (overlay-end context-ov)))
-            (end (overlay-start prompt-ov)))
+      (let ((start (1+ (overlay-end progress-ov)))
+            (end (overlay-start context-ov)))
         ;; An edit that crossed the prompt block markup can invert
         ;; these bounds; skip instead of signaling (see #305).
         (when (<= start end)

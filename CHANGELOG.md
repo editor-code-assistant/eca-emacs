@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- The `stop`, `Steering:` and `Queued:` lines of a running prompt now show right below its progress status, above the `@` context line, instead of splitting that line from the prompt field (#322).
 - Show the `@cursor` context with `eca-chat-context-cursor-unsaved-face` (inheriting `warning`) while its buffer has unsaved changes, since ECA only sees the file on disk (#291).
 - Image mentions show inline as thumbnails: screenshots pasted in the prompt, image files added as context and images mentioned in sent messages. `RET` toggles them back to text. Customize with `eca-chat-image-show-thumbnails` and `eca-chat-image-thumbnail-size`.
 - Bugfix: text typed right after a context chip in the prompt became part of it: it took the chip color, was dropped from the sent message, and backspacing it could break the prompt, moving the `>` to the context line. Pasted images and contexts added to the prompt are now also spaced from the word before them.

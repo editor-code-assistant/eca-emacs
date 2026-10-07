@@ -1163,33 +1163,108 @@ around rendering applies, as when the chat window is selected."
         (eca-chat--key-pressed-kill (lambda (&rest _) (setq killed t)))
         (expect killed :to-be t)))))
 
+(defun eca-chat-test--transient-text ()
+  "Return the text between the progress area and the context line."
+  (buffer-substring-no-properties
+   (1+ (overlay-end (eca-chat--prompt-progress-field-ov)))
+   (overlay-start (eca-chat--prompt-context-field-ov))))
+
 (describe "eca-chat--refresh-transient-area"
 
-  (it "renders segments between the context area and the prompt"
+  (it "renders segments between the progress area and the context line"
+    ;; #322: rendered right above the prompt field, the stop line split
+    ;; the context line from the prompt it belongs to.
     (let ((buf (eca-chat-test--make-prompt-buffer "foo")))
       (unwind-protect
           (with-current-buffer buf
             (setq-local eca-chat--chat-loading t)
             (eca-chat--refresh-transient-area)
-            (expect (string-match-p
-                     "stop"
-                     (buffer-substring-no-properties
-                      (1+ (overlay-end (eca-chat--prompt-context-field-ov)))
-                      (eca-chat--prompt-field-start-point)))
-                    :to-be-truthy)
-            (expect (eca-chat-test--prompt-text buf) :to-equal "foo"))
+            (expect (eca-chat-test--transient-text)
+                    :to-equal (concat eca-chat-prompt-prefix-loading "stop\n"))
+            (expect (eca-chat-test--context-text buf) :to-equal "@")
+            (expect (eca-chat-test--prompt-text buf) :to-equal "foo")
+            (expect (eca-chat--prompt-block-broken-p) :to-be nil))
         (kill-buffer buf))))
 
-  (it "does not signal when the prompt block is corrupted"
-    ;; Regression #305: an unguarded kill that ate the newline between
-    ;; the context line and the prompt field inverted the area bounds,
-    ;; making every refresh fail with args-out-of-range.
+  (it "lists the stop line first, then the steered and queued prompts"
     (let ((buf (eca-chat-test--make-prompt-buffer "foo")))
       (unwind-protect
           (with-current-buffer buf
-            (let ((prompt-start (eca-chat--prompt-field-start-point)))
-              (delete-region (1- prompt-start) prompt-start))
-            (expect (eca-chat--refresh-transient-area) :not :to-throw))
+            (setq-local eca-chat--chat-loading t)
+            (setq-local eca-chat--steered-prompt "steer me")
+            (setq-local eca-chat--queued-prompt "queue me")
+            (eca-chat--refresh-transient-area)
+            (expect (eca-chat-test--transient-text)
+                    :to-equal (concat eca-chat-prompt-prefix-loading "stop\n"
+                                      "Steering: steer me [-]\n"
+                                      "Queued: queue me [-]\n"))
+            (expect (eca-chat-test--context-text buf) :to-equal "@"))
+        (kill-buffer buf))))
+
+  (it "re-renders in place and leaves no line behind once idle"
+    (let ((buf (eca-chat-test--make-prompt-buffer "foo")))
+      (unwind-protect
+          (with-current-buffer buf
+            (setq-local eca-chat--chat-loading t)
+            (setq-local eca-chat--queued-prompt "queue me")
+            (eca-chat--refresh-transient-area)
+            (eca-chat--refresh-transient-area)
+            (expect (eca-chat-test--transient-text)
+                    :to-equal (concat eca-chat-prompt-prefix-loading "stop\n"
+                                      "Queued: queue me [-]\n"))
+            (setq-local eca-chat--chat-loading nil)
+            (setq-local eca-chat--queued-prompt nil)
+            (eca-chat--refresh-transient-area)
+            (expect (buffer-substring-no-properties
+                     (point-min) (eca-chat--prompt-field-start-point))
+                    :to-equal "header\n--- \n@\n")
+            (expect (eca-chat-test--prompt-text buf) :to-equal "foo"))
+        (kill-buffer buf))))
+
+  (it "keeps point on the context line"
+    (let ((buf (eca-chat-test--make-prompt-buffer "foo")))
+      (unwind-protect
+          (with-current-buffer buf
+            (goto-char (overlay-start (eca-chat--prompt-context-field-ov)))
+            (setq-local eca-chat--chat-loading t)
+            (eca-chat--refresh-transient-area)
+            (expect (point)
+                    :to-equal (overlay-start (eca-chat--prompt-context-field-ov))))
+        (kill-buffer buf))))
+
+  (it "moves the context line down whole in a real prompt block"
+    ;; Overlays starting the line, like the thumbnail of an image chip,
+    ;; must not grow over the lines inserted above it.
+    (let ((buf (eca-chat-test--make-live-render-buffer "answer")))
+      (unwind-protect
+          (with-current-buffer buf
+            (let* ((context-start (overlay-start (eca-chat--prompt-context-field-ov)))
+                   (chip-ov (make-overlay context-start (1+ context-start))))
+              (setq-local eca-chat--chat-loading t)
+              (eca-chat--refresh-transient-area)
+              (expect (buffer-substring-no-properties
+                       (eca-chat--prompt-area-start-point) (point-max))
+                      :to-equal (concat "\n--- \n"
+                                        eca-chat-prompt-prefix-loading "stop\n"
+                                        "@\n"))
+              (expect (buffer-substring-no-properties
+                       (overlay-start chip-ov) (overlay-end chip-ov))
+                      :to-equal "@")
+              (expect (eca-chat--prompt-block-broken-p) :to-be nil)))
+        (kill-buffer buf))))
+
+  (it "does not signal when the prompt block is corrupted"
+    ;; Regression #305: an unguarded kill that ate a newline of the
+    ;; prompt block markup inverted the area bounds, making every
+    ;; refresh fail with args-out-of-range.  The block must then be
+    ;; reported broken so `eca-chat-clear-prompt' rebuilds it.
+    (let ((buf (eca-chat-test--make-prompt-buffer "foo")))
+      (unwind-protect
+          (with-current-buffer buf
+            (let ((context-start (overlay-start (eca-chat--prompt-context-field-ov))))
+              (delete-region (1- context-start) context-start))
+            (expect (eca-chat--refresh-transient-area) :not :to-throw)
+            (expect (eca-chat--prompt-block-broken-p) :to-be-truthy))
         (kill-buffer buf)))))
 
 (describe "eca-chat--rebuild-prompt-area"
