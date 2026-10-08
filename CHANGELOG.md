@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Bugfix: a multiline prompt could be partly covered by the mode line, making it hard to keep typing: a line just added with `S-RET` or by wrapping long typed or pasted input, or the lines below point while assistant output streamed in. The chat now scrolls just enough to keep the end of the prompt fully visible, without moving point, and still does not scroll while reading earlier content.
 - The `stop`, `Steering:` and `Queued:` lines of a running prompt now show right below its progress status, above the `@` context line, instead of splitting that line from the prompt field (#322).
 - Show the `@cursor` context with `eca-chat-context-cursor-unsaved-face` (inheriting `warning`) while its buffer has unsaved changes, since ECA only sees the file on disk (#291).
 - Image mentions show inline as thumbnails: screenshots pasted in the prompt, image files added as context and images mentioned in sent messages. `RET` toggles them back to text. Customize with `eca-chat-image-show-thumbnails` and `eca-chat-image-thumbnail-size`.
