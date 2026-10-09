@@ -315,7 +315,12 @@ When all methods are just API key entry, returns nil."
         (erase-buffer)
         (insert "\n")
         (insert (propertize "Providers / Models" 'font-lock-face 'eca-settings-heading))
-        (insert "\n")
+        (insert "  "
+                (eca-buttonize
+                 keymap
+                 (propertize "Refresh models" 'font-lock-face 'eca-providers-button-face)
+                 #'eca-chat-refresh-models)
+                "\n")
         (insert (propertize "For more details check " 'face 'shadow))
         (insert-text-button "https://eca.dev/config/models/"
                             'face 'link
@@ -485,26 +490,36 @@ When all methods are just API key entry, returns nil."
 
 ;; Data loading
 
+(defvar-local eca-providers--list-request nil
+  "Latest provider list request for this tab buffer and session.")
+
 (defun eca-providers--fetch-and-render (session buffer)
   "Fetch provider list from SESSION and render into BUFFER."
-  (eca-api-request-async session
-    :method "providers/list"
-    :params nil
-    :success-callback
-    (lambda (result)
-      (setf (eca--session-providers session)
-            (append (plist-get result :providers) nil))
-      (when (buffer-live-p buffer)
-        (eca-providers--render session buffer)))
-    :error-callback
-    (lambda (err)
-      (when (buffer-live-p buffer)
-        (with-current-buffer buffer
-          (let ((inhibit-read-only t))
-            (erase-buffer)
-            (insert "\n")
-            (insert (propertize "Failed to load providers" 'face 'error))
-            (insert (format "\n\n  %s" err))))))))
+  (let ((request (cons session nil)))
+    (with-current-buffer buffer
+      (setq eca-providers--list-request request))
+    (eca-api-request-async session
+      :method "providers/list"
+      :params nil
+      :success-callback
+      (lambda (result)
+        (when (and (buffer-live-p buffer)
+                   (eq (buffer-local-value 'eca-providers--list-request buffer)
+                       request))
+          (setf (eca--session-providers session)
+                (append (plist-get result :providers) nil))
+          (eca-providers--render session buffer)))
+      :error-callback
+      (lambda (err)
+        (when (and (buffer-live-p buffer)
+                   (eq (buffer-local-value 'eca-providers--list-request buffer)
+                       request))
+          (with-current-buffer buffer
+            (let ((inhibit-read-only t))
+              (erase-buffer)
+              (insert "\n")
+              (insert (propertize "Failed to load providers" 'face 'error))
+              (insert (format "\n\n  %s" err)))))))))
 
 ;; Settings tab
 
