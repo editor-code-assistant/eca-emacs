@@ -316,6 +316,39 @@ CHATS is a list of chat buffers ordered oldest-first."
           (expect (eca-workspaces--chat-id-at-point) :to-equal chat-id)
           (expect (current-column) :to-equal column)))))
 
+  (it "keeps point on a line without an entity, like the footer"
+    (eca-workspaces-test--make-session
+     1 "/tmp/proj"
+     (list (eca-workspaces-test--make-chat :title "Chat A")))
+    (with-current-buffer (eca-workspaces-test--render)
+      (eca-workspaces-test--goto "type ?")
+      (let ((line (line-number-at-pos)))
+        (expect (eca-workspaces--entity-at (point)) :to-be nil)
+        (eca-workspaces--render)
+        (expect (line-number-at-pos) :to-equal line))))
+
+  (it "keeps the point and scroll of each window across re-renders"
+    (let ((chat-c (eca-workspaces-test--make-chat :title "Chat C")))
+      (eca-workspaces-test--make-session
+       1 "/tmp/proj"
+       (list (eca-workspaces-test--make-chat :title "Chat A")
+             (eca-workspaces-test--make-chat :title "Chat B")
+             chat-c))
+      (let ((buffer (eca-workspaces-test--render)))
+        (save-window-excursion
+          (set-window-buffer (selected-window) buffer)
+          (with-current-buffer buffer
+            (let ((window (get-buffer-window buffer))
+                  (chat-id (buffer-local-value 'eca-chat--id chat-c)))
+              ;; A window scrolled past the first chat, point on the last one.
+              (set-window-start window (eca-workspaces--line-position 3) t)
+              (eca-workspaces-test--goto "Chat C")
+              (set-window-point window (point))
+              (eca-workspaces--render)
+              (expect (line-number-at-pos (window-start window)) :to-equal 3)
+              (expect (eca-workspaces--entity-at (window-point window))
+                      :to-equal (cons 1 chat-id))))))))
+
   (it "falls back to buffer start when the entity is gone"
     (let ((chat (eca-workspaces-test--make-chat :title "Chat A")))
       (eca-workspaces-test--make-session 1 "/tmp/proj" (list chat))
