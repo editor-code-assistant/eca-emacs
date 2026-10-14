@@ -248,13 +248,35 @@ whitespace."
             (forward-line 1)))
         found))))
 
-(defun eca-workspaces--restore-point (entity column)
-  "Move point to ENTITY line at COLUMN, falling back to buffer start."
-  (if-let* ((position (eca-workspaces--find-entity entity)))
-      (progn
-        (goto-char position)
-        (move-to-column (or column 0)))
-    (goto-char (point-min))))
+(defun eca-workspaces--line-position (line)
+  "Return the position where LINE starts, clamped to the buffer."
+  (save-excursion
+    (goto-char (point-min))
+    (forward-line (1- line))
+    (point)))
+
+(defun eca-workspaces--point-state (position)
+  "Return the (ENTITY COLUMN LINE) state that finds POSITION again."
+  (save-excursion
+    (goto-char position)
+    (list (eca-workspaces--entity-at position)
+          (current-column)
+          (line-number-at-pos position))))
+
+(defun eca-workspaces--point-position (state)
+  "Return where STATE points to in the freshly rendered buffer.
+STATE comes from `eca-workspaces--point-state'.  A line without an
+entity, the footer one, is found back by its line number, so point
+resting there survives a render too.  A row whose entity is gone
+falls back to buffer start."
+  (-let* (((entity column line) state)
+          (position (and entity (eca-workspaces--find-entity entity))))
+    (if (and entity (not position))
+        (point-min)
+      (save-excursion
+        (goto-char (or position (eca-workspaces--line-position line)))
+        (move-to-column (or column 0))
+        (point)))))
 
 (defun eca-workspaces--footer ()
   "Return the dashboard footer hint line."
@@ -268,20 +290,19 @@ whitespace."
           "\n"))
 
 (defun eca-workspaces--window-state (window)
-  "Return (WINDOW ENTITY COLUMN) for WINDOW's current point."
-  (let ((position (window-point window)))
-    (list window
-          (eca-workspaces--entity-at position)
-          (save-excursion
-            (goto-char position)
-            (current-column)))))
+  "Return (WINDOW POINT-STATE START-LINE) of WINDOW.
+START-LINE is the line WINDOW starts at: `erase-buffer' collapses
+the window start marker, so a window shorter than the content
+scrolls back and recenters on every refresh without it."
+  (list window
+        (eca-workspaces--point-state (window-point window))
+        (line-number-at-pos (window-start window))))
 
 (defun eca-workspaces--render ()
   "Render the dashboard into the current buffer.
-Preserves point, per-window points and fold state across renders."
+Preserves point, per-window points and scroll, and fold state."
   (let* ((inhibit-read-only t)
-         (point-entity (eca-workspaces--entity-at (point)))
-         (point-column (current-column))
+         (point-state (eca-workspaces--point-state (point)))
          (window-states (-map #'eca-workspaces--window-state
                               (get-buffer-window-list nil nil t))))
     (erase-buffer)
@@ -297,15 +318,14 @@ Preserves point, per-window points and fold state across renders."
             (dolist (chat-buffer (eca-chat-buffers session))
               (insert (eca-workspaces--chat-line session chat-buffer)))))))
     (insert (eca-workspaces--footer))
-    (eca-workspaces--restore-point point-entity point-column)
+    (goto-char (eca-workspaces--point-position point-state))
     (dolist (state window-states)
-      (-let [(window entity column) state]
-        (when-let* ((position (eca-workspaces--find-entity entity)))
-          (set-window-point window
-                            (save-excursion
-                              (goto-char position)
-                              (move-to-column (or column 0))
-                              (point))))))))
+      (-let [(window window-point-state start-line) state]
+        (set-window-point window
+                          (eca-workspaces--point-position window-point-state))
+        (set-window-start window
+                          (eca-workspaces--line-position start-line)
+                          t)))))
 
 (defun eca-workspaces--any-chat-running-p ()
   "Return non-nil when any chat of any session is loading."
