@@ -516,6 +516,104 @@ those sentinels back to nil so callers can short-circuit with
     (unless (member bg '("unspecified-bg" "unspecified-fg"))
       bg)))
 
+(defface eca-quota-warning-face
+  '((t (:inherit warning)))
+  "Face for subscription quota windows nearing their limit."
+  :group 'eca)
+
+(defface eca-quota-critical-face
+  '((t (:inherit error)))
+  "Face for subscription quota windows at or over their limit."
+  :group 'eca)
+
+(defun eca--quota-windows (quota)
+  "Return the windows of the provider QUOTA as a list of plists."
+  (append (plist-get quota :windows) nil))
+
+(defun eca--quota-window-stale-p (window)
+  "Return non-nil when the quota WINDOW reset time already passed.
+Its usage is then outdated until the next request refreshes it."
+  (when-let* ((resets-at (plist-get window :resetsAt)))
+    (<= resets-at (float-time))))
+
+(defun eca--quota-percent-face (percent)
+  "Return the face for a quota usage of PERCENT, or nil when it is low."
+  (cond
+   ((not (numberp percent)) nil)
+   ((>= percent 95) 'eca-quota-critical-face)
+   ((>= percent 80) 'eca-quota-warning-face)))
+
+(defun eca--format-duration-short (secs)
+  "Format SECS as a short duration like \"2h 13m\" or \"3d 4h\"."
+  (let ((secs (max 0 (floor secs))))
+    (cond
+     ((< secs 60) "<1m")
+     ((< secs 3600) (format "%dm" (/ secs 60)))
+     ((< secs 86400)
+      (let ((h (/ secs 3600))
+            (m (/ (mod secs 3600) 60)))
+        (if (zerop m) (format "%dh" h) (format "%dh %dm" h m))))
+     (t
+      (let ((d (/ secs 86400))
+            (h (/ (mod secs 86400) 3600)))
+        (if (zerop h) (format "%dd" d) (format "%dd %dh" d h)))))))
+
+(defun eca--quota-short-str (quota)
+  "Return a compact QUOTA summary like \"5h 42% · 7d 13%\".
+Each window part carries the `face' of its usage level, stale
+windows show a dash instead of their outdated percentage."
+  (mapconcat
+   (lambda (window)
+     (let ((label (plist-get window :label))
+           (percent (plist-get window :usedPercent)))
+       (if (or (eca--quota-window-stale-p window) (not (numberp percent)))
+           (concat label " —")
+         (let ((str (format "%s %d%%" label (round percent))))
+           (if-let* ((face (eca--quota-percent-face percent)))
+               (propertize str 'face face)
+             str)))))
+   (eca--quota-windows quota)
+   " · "))
+
+(defun eca--quota-reset-str (window)
+  "Return the reset time description of the quota WINDOW, or nil if unknown.
+For example \"resets in 2h 13m (14:00)\"."
+  (when-let* ((resets-at (plist-get window :resetsAt)))
+    (let ((remaining (- resets-at (float-time))))
+      (if (<= remaining 0)
+          "reset, refreshes on next request"
+        (format "resets in %s (%s)"
+                (eca--format-duration-short remaining)
+                (format-time-string (if (< remaining 86400) "%H:%M" "%a %H:%M")
+                                    (seconds-to-time resets-at)))))))
+
+(defun eca--quota-window-lines (quota)
+  "Return one descriptive line per window of QUOTA.
+For example \"5h: 42% used · resets in 2h 13m (14:00)\"."
+  (mapcar (lambda (window)
+            (let ((percent (plist-get window :usedPercent))
+                  (reset (eca--quota-reset-str window)))
+              (concat (format "%s: %s used" (plist-get window :label)
+                              (if (numberp percent) (format "%d%%" (round percent)) "?"))
+                      (when reset (concat " · " reset)))))
+          (eca--quota-windows quota)))
+
+(defun eca--quota-updated-str (quota)
+  "Return how long ago QUOTA was captured, like \"updated 3m ago\"."
+  (let ((age (max 0 (floor (- (float-time) (or (plist-get quota :updatedAt) (float-time)))))))
+    (cond
+     ((< age 60) "updated just now")
+     ((< age 3600) (format "updated %dm ago" (/ age 60)))
+     ((< age 86400) (format "updated %dh ago" (/ age 3600)))
+     (t (format "updated %dd ago" (/ age 86400))))))
+
+(defun eca--quota-bar (percent width)
+  "Return a bar of WIDTH characters filled up to PERCENT."
+  (let* ((percent (min 100 (max 0 (or percent 0))))
+         (filled (round (* width (/ percent 100.0)))))
+    (concat (make-string filled ?█)
+            (make-string (- width filled) ?░))))
+
 (defun eca-buttonize (base-map text callback)
   "Create a actionable TEXT that call CALLBACK when actioned.
 Inheirits BASE-MAP."

@@ -214,6 +214,26 @@ When all methods are just API key entry, returns nil."
           (insert (string-join (nreverse parts) "  "))))
       (insert "\n"))))
 
+(defun eca-providers--render-quota (quota)
+  "Insert one usage bar line per window of the subscription QUOTA."
+  (when-let* ((windows (eca--quota-windows quota)))
+    (let ((width (apply #'max (mapcar (lambda (w) (string-width (or (plist-get w :label) "")))
+                                      windows))))
+      (dolist (window windows)
+        (let* ((label (or (plist-get window :label) ""))
+               (pct (or (plist-get window :usedPercent) 0))
+               (reset (eca--quota-reset-str window)))
+          (insert "   "
+                  label (make-string (- width (string-width label)) ?\s)
+                  "  "
+                  (eca--quota-bar pct 10)
+                  " "
+                  (propertize (format "%d%%" (round pct))
+                              'face (eca--quota-percent-face pct)))
+          (when reset
+            (insert " · " (propertize reset 'face 'eca-providers-auth-info-face)))
+          (insert "\n"))))))
+
 (defun eca-providers--render-provider (provider session keymap)
   "Render a single PROVIDER card for SESSION using KEYMAP for buttons."
   (let* ((id (plist-get provider :id))
@@ -239,6 +259,7 @@ When all methods are just API key entry, returns nil."
       ;; Line 2: auth info (if any)
       (when-let* ((info (eca-providers--auth-info-text auth)))
         (insert "   " (propertize info 'face 'eca-providers-auth-info-face) "\n"))
+      (eca-providers--render-quota (plist-get provider :quota))
       ;; Provider settings
       (eca-providers--render-settings (plist-get provider :settings) "   ")
       ;; Line 3: models count + actions

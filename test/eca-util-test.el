@@ -372,5 +372,50 @@
       (with-temp-buffer
         (expect (eca-session) :to-be session)))))
 
+(describe "eca--format-duration-short"
+  (it "formats short durations"
+    (expect (eca--format-duration-short 30) :to-equal "<1m")
+    (expect (eca--format-duration-short 300) :to-equal "5m")
+    (expect (eca--format-duration-short 7980) :to-equal "2h 13m")
+    (expect (eca--format-duration-short 7200) :to-equal "2h")
+    (expect (eca--format-duration-short 360000) :to-equal "4d 4h")
+    (expect (eca--format-duration-short 172800) :to-equal "2d")))
+
+(describe "eca quota helpers"
+  (let ((quota (lambda (&rest windows)
+                 (list :updatedAt (- (float-time) 90)
+                       :windows (apply #'vector windows)))))
+    (it "renders a short summary with per-window faces"
+      (let ((str (eca--quota-short-str
+                  (funcall quota
+                           (list :id "5h" :label "5h" :usedPercent 42.4 :resetsAt (+ (float-time) 600))
+                           (list :id "7d" :label "7d" :usedPercent 85)))))
+        (expect (substring-no-properties str) :to-equal "5h 42% · 7d 85%")
+        (expect (get-text-property 0 'face str) :to-be nil)
+        (expect (get-text-property (1- (length str)) 'face str) :to-be 'eca-quota-warning-face)))
+
+    (it "shows a dash for stale windows"
+      (let ((q (funcall quota
+                        (list :id "5h" :label "5h" :usedPercent 99 :resetsAt (- (float-time) 10))
+                        (list :id "7d" :label "7d" :usedPercent 10))))
+        (expect (substring-no-properties (eca--quota-short-str q)) :to-equal "5h — · 7d 10%")
+        (expect (eca--quota-window-lines q)
+                :to-equal '("5h: 99% used · reset, refreshes on next request" "7d: 10% used"))))
+
+    (it "picks faces by usage level"
+      (expect (eca--quota-percent-face 50) :to-be nil)
+      (expect (eca--quota-percent-face 80) :to-be 'eca-quota-warning-face)
+      (expect (eca--quota-percent-face 120) :to-be 'eca-quota-critical-face))
+
+    (it "describes the snapshot age"
+      (expect (eca--quota-updated-str (list :updatedAt (float-time))) :to-equal "updated just now")
+      (expect (eca--quota-updated-str (funcall quota)) :to-equal "updated 1m ago")
+      (expect (eca--quota-updated-str (list :updatedAt (- (float-time) 7200))) :to-equal "updated 2h ago"))
+
+    (it "draws clamped bars"
+      (expect (eca--quota-bar 40 10) :to-equal "████░░░░░░")
+      (expect (eca--quota-bar 150 4) :to-equal "████")
+      (expect (eca--quota-bar -5 4) :to-equal "░░░░"))))
+
 (provide 'eca-util-test)
 ;;; eca-util-test.el ends here

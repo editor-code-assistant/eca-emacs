@@ -244,8 +244,13 @@ Must be a valid model supported by server, check `eca-chat-select-model`."
   :type 'boolean
   :group 'eca)
 
-(defcustom eca-chat-usage-string-format '(:session-tokens " / " :context-limit " (" :session-cost ")")
-  "Format to show about chat usage tokens/costs."
+(defcustom eca-chat-usage-string-format '(:session-tokens " / " :context-limit " (" :session-cost :quota ")")
+  "Format to show about chat usage tokens/costs.
+
+Costs are absent for subscription logins (e.g. Claude Pro/Max,
+ChatGPT, GitHub Copilot), which show the subscription quota
+instead.  Segments without a value render empty, and parentheses
+left empty are dropped."
   :type '(repeat
           (choice
            (string :tag "any string like separators")
@@ -254,6 +259,7 @@ Must be a valid model supported by server, check `eca-chat-select-model`."
            (const :tag "The context limit" :context-limit)
            (const :tag "The output limit" :output-limit)
            (const :tag "Last message cost" :last-message-cost)
+           (const :tag "Subscription quota, e.g. 5h 42% · 7d 13%" :quota)
            (const :tag "The percentage of context limt used in the current session" :session-tokens-percentage)))
   :group 'eca)
 
@@ -890,6 +896,7 @@ once by `eca-chat-cleared'.")
   "Kind of latest top-level assistant content for copy scoping.")
 (defvar-local eca-chat--chat-loading nil)
 (defvar-local eca-chat--session-cost nil)
+(defvar-local eca-chat--quota nil)
 (defvar-local eca-chat--message-cost nil)
 (defvar-local eca-chat--message-input-tokens nil)
 (defvar-local eca-chat--message-output-tokens nil)
@@ -2943,29 +2950,74 @@ Returns a string like \"31.5K / 200K\" or \"\" if no usage data."
                (t ""))
               'font-lock-face 'eca-chat-subagent-steps-info-face))
 
+(defun eca-chat--usage-segment-str (segment)
+  "Return the string of the usage SEGMENT of `eca-chat-usage-string-format'.
+Segments without a value return an empty string."
+  (let ((cost (lambda (v) (if v (concat "$" v) ""))))
+    (pcase segment
+      (:message-input-tokens (eca-chat--number->friendly-number eca-chat--message-input-tokens))
+      (:message-output-tokens (eca-chat--number->friendly-number eca-chat--message-output-tokens))
+      (:session-tokens (eca-chat--number->friendly-number eca-chat--session-tokens))
+      ((or :message-cost :last-message-cost) (funcall cost eca-chat--message-cost))
+      (:session-cost (funcall cost eca-chat--session-cost))
+      (:quota (if eca-chat--quota
+                  (eca-chat--mode-line-escape (eca--quota-short-str eca-chat--quota))
+                ""))
+      (:context-limit (eca-chat--number->friendly-number eca-chat--session-limit-context))
+      (:output-limit (eca-chat--number->friendly-number eca-chat--session-limit-output))
+      (:session-tokens-percentage
+       (if (and eca-chat--session-tokens
+                eca-chat--session-limit-context
+                (> eca-chat--session-limit-context 0))
+           (format "%.2f%%%%"
+                   (* 100 (/ (float eca-chat--session-tokens) eca-chat--session-limit-context)))
+         ""))
+      ((pred stringp) segment)
+      (_ ""))))
+
 (defun eca-chat--usage-str ()
-  "Return the usage string of this chat."
+  "Return the usage string of this chat, or nil when there is nothing to show."
   (when (or eca-chat--message-input-tokens
             eca-chat--message-output-tokens
             eca-chat--session-tokens
             eca-chat--message-cost
-            eca-chat--session-cost)
-    (-> (-map (lambda (segment)
-                (propertize
-                 (pcase segment
-                   (:message-input-tokens (eca-chat--number->friendly-number eca-chat--message-input-tokens))
-                   (:message-output-tokens (eca-chat--number->friendly-number eca-chat--message-output-tokens))
-                   (:session-tokens (eca-chat--number->friendly-number eca-chat--session-tokens))
-                   (:message-cost (concat "$" eca-chat--message-cost))
-                   (:session-cost (concat "$" eca-chat--session-cost))
-                   (:context-limit (eca-chat--number->friendly-number eca-chat--session-limit-context))
-                   (:output-limit (eca-chat--number->friendly-number eca-chat--session-limit-output))
-                   (:session-tokens-percentage (format "%.2f%%%%"
-                                                       (* 100 (/ (float eca-chat--session-tokens) eca-chat--session-limit-context))))
-                   (_ segment))
-                 'font-lock-face 'eca-chat-usage-string-face))
-              eca-chat-usage-string-format)
-        (string-join ""))))
+            eca-chat--session-cost
+            eca-chat--quota)
+    (let ((str (->> eca-chat-usage-string-format
+                    (-map (lambda (segment)
+                            (propertize (eca-chat--usage-segment-str segment)
+                                        'font-lock-face 'eca-chat-usage-string-face)))
+                    (string-join)
+                    ;; Drop parens left empty by absent costs/quota.
+                    (replace-regexp-in-string " *( *)" "")
+                    (string-trim))))
+      (unless (string-empty-p str)
+        (propertize str 'help-echo (eca-chat--usage-help))))))
+
+(defun eca-chat--mode-line-escape (str)
+  "Return STR with `%' doubled to be displayed literally in the mode line.
+Text properties of STR are kept."
+  (replace-regexp-in-string "%" (lambda (m) (concat m m)) str t t))
+
+(defun eca-chat--usage-help ()
+  "Return the help-echo text detailing the usage of this chat."
+  (let ((usage (delq nil
+                     (list (when eca-chat--session-tokens
+                             (concat "Session tokens: "
+                                     (eca-chat--number->friendly-number eca-chat--session-tokens)
+                                     (when eca-chat--session-limit-context
+                                       (concat " / " (eca-chat--number->friendly-number
+                                                      eca-chat--session-limit-context)))))
+                           (when eca-chat--message-cost
+                             (concat "Last message cost: $" eca-chat--message-cost))
+                           (when eca-chat--session-cost
+                             (concat "Session cost: $" eca-chat--session-cost)))))
+        (quota (when eca-chat--quota
+                 (cons (format "Subscription quota (%s)"
+                               (eca--quota-updated-str eca-chat--quota))
+                       (mapcar (lambda (line) (concat " " line))
+                               (eca--quota-window-lines eca-chat--quota))))))
+    (string-join (append usage (when (and usage quota) '("")) quota) "\n")))
 
 (defun eca-chat--format-duration (secs)
   "Format SECS into a human-readable duration string.
@@ -5157,8 +5209,9 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
            (setq-local eca-chat--session-tokens        (plist-get content :sessionTokens))
            (setq-local eca-chat--session-limit-context (plist-get (plist-get content :limit) :context))
            (setq-local eca-chat--session-limit-output  (plist-get (plist-get content :limit) :output))
-           (setq-local eca-chat--message-cost          (plist-get content :messageCost))
+           (setq-local eca-chat--message-cost          (plist-get content :lastMessageCost))
            (setq-local eca-chat--session-cost          (plist-get content :sessionCost))
+           (setq-local eca-chat--quota                 (plist-get content :quota))
            (setq-local eca-chat--session-auto-compact-percentage (plist-get content :autoCompactPercentage))
            (setq-local eca-chat--context-breakdown     (plist-get content :contextBreakdown)))
          (force-mode-line-update)))

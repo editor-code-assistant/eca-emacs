@@ -4015,6 +4015,43 @@ CHOOSE receives the candidate list the command offers."
             (expect 'eca-api-request-sync :to-have-been-called))
         (kill-buffer buf)))))
 
+(describe "eca-chat--usage-str"
+  (let ((eca-chat-usage-string-format
+         '(:session-tokens " / " :context-limit " (" :session-cost :quota ")")))
+    (it "returns nil without usage"
+      (with-temp-buffer
+        (expect (eca-chat--usage-str) :to-be nil)))
+
+    (it "shows costs for api key logins"
+      (with-temp-buffer
+        (setq-local eca-chat--session-tokens 12345
+                    eca-chat--session-limit-context 200000
+                    eca-chat--message-cost "0.01"
+                    eca-chat--session-cost "0.12")
+        (let ((str (eca-chat--usage-str)))
+          (expect (substring-no-properties str) :to-equal "12.3K / 200K ($0.12)")
+          (expect (get-text-property 0 'help-echo str)
+                  :to-equal "Session tokens: 12.3K / 200K\nLast message cost: $0.01\nSession cost: $0.12"))))
+
+    (it "shows the quota for subscription logins, escaped for the mode line"
+      (with-temp-buffer
+        (setq-local eca-chat--session-tokens 12345
+                    eca-chat--session-limit-context 200000
+                    eca-chat--quota (list :updatedAt (float-time)
+                                          :windows (vector (list :id "5h" :label "5h" :usedPercent 96))))
+        (let ((str (eca-chat--usage-str)))
+          (expect (substring-no-properties str) :to-equal "12.3K / 200K (5h 96%%)")
+          (expect (get-text-property (- (length str) 3) 'face str) :to-be 'eca-quota-critical-face)
+          (expect (get-text-property 0 'help-echo str)
+                  :to-equal "Session tokens: 12.3K / 200K\n\nSubscription quota (updated just now)\n 5h: 96% used"))))
+
+    (it "drops empty parens and unknown segments"
+      (with-temp-buffer
+        (setq-local eca-chat--session-tokens 1000)
+        (let ((eca-chat-usage-string-format
+               '(:session-tokens " (" :last-message-cost ") " :session-tokens-percentage :bogus)))
+          (expect (substring-no-properties (eca-chat--usage-str)) :to-equal "1K"))))))
+
 (describe "eca-chat-cleared"
 
   (it "restores the stashed prompt into the rebuilt prompt field"

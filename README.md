@@ -192,7 +192,7 @@ Chat
 - `eca-chat-tab-line-close-button-show`: Whether to show close buttons on ECA chat tab-line tabs (default `t`).
 - `eca-chat-custom-model`: Override the model used for chat (nil = server default).
 - `eca-chat-custom-agent`: Override the chat agent (nil = server default).
-- `eca-chat-usage-string-format`: Controls what usage information (tokens/costs/limits) is shown in the mode-line.
+- `eca-chat-usage-string-format`: Controls what usage information (tokens/costs/limits/quota) is shown in the mode-line. Defaults to `(:session-tokens " / " :context-limit " (" :session-cost :quota ")")`. Subscription logins (Claude Pro/Max, ChatGPT, GitHub Copilot) have no costs and show their quota (`:quota`, e.g. `5h 42% · 7d 13%`) instead; hover it for reset times.
 - `eca-chat-mode-line-format`: Controls the layout of the chat mode line. Can be a list of module keywords and literal strings, or a function for full control.
 - `eca-chat-diff-tool`: How to show file diffs from chat (`smerge` or `ediff`).
 - `eca-chat-tool-call-prepare-throttle`: Throttle strategy for `toolCallPrepare` events (`all` or `smart`).
