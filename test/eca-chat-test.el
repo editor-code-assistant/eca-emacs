@@ -3044,6 +3044,25 @@ QUESTION is a pending question plist, or (:tool-call-id ID)."
             (expect (eca-chat--load-older-control-region) :to-be nil))
         (kill-buffer buf)))))
 
+(describe "eca-chat--incremental-updates-capability"
+
+  (it "declares the configured history page size"
+    (let ((eca-chat-history-page-size 30))
+      (expect (eca-chat--incremental-updates-capability)
+              :to-equal '(:historyPageSize 30))))
+
+  (it "asks for an unbounded page when pagination is disabled"
+    (let ((eca-chat-history-page-size nil))
+      (expect (eca-chat--incremental-updates-capability)
+              :to-equal (list :historyPageSize most-positive-fixnum))))
+
+  (it "serializes to a JSON object, keeping the capability enabled"
+    (let ((eca-chat-history-page-size nil))
+      (expect (eca-api--json-serialize
+               (list :incrementalUpdates
+                     (eca-chat--incremental-updates-capability)))
+              :to-match "\"incrementalUpdates\":{\"historyPageSize\":[0-9]+}"))))
+
 (describe "eca-chat--content-insertion-point"
   (it "returns the override marker position when bound"
     (let ((buf (eca-chat-test--make-prompt-buffer "hi")))
@@ -3327,6 +3346,38 @@ precedes the prompt separator.  Caller must kill the buffer."
             (setq registered (eca-get (eca--session-chats session) "chat-DIR"))
             (expect (buffer-local-value 'default-directory registered)
                     :to-equal "/ws/"))
+        (when (buffer-live-p registered)
+          (kill-buffer registered)))))
+
+  (it "shows the load-older control for a paged server-created chat"
+    (spy-on 'eca-chat--force-tab-line-update)
+    (let ((session (make-eca--session))
+          registered)
+      (unwind-protect
+          (progn
+            (eca-chat-opened session
+                             (list :chatId "chat-FORK" :title "Fork"
+                                   :history (list :beforeCursor "cur"
+                                                  :total 80)))
+            (setq registered (eca-get (eca--session-chats session) "chat-FORK"))
+            (with-current-buffer registered
+              (expect eca-chat--history-before-cursor :to-equal "cur")
+              (expect eca-chat--history-total :to-equal 80)
+              (expect (eca-chat--load-older-control-region)
+                      :not :to-be nil)))
+        (when (buffer-live-p registered)
+          (kill-buffer registered)))))
+
+  (it "shows no load-older control without history"
+    (spy-on 'eca-chat--force-tab-line-update)
+    (let ((session (make-eca--session))
+          registered)
+      (unwind-protect
+          (progn
+            (eca-chat-opened session (list :chatId "chat-FULL" :title "Full"))
+            (setq registered (eca-get (eca--session-chats session) "chat-FULL"))
+            (with-current-buffer registered
+              (expect (eca-chat--load-older-control-region) :to-be nil)))
         (when (buffer-live-p registered)
           (kill-buffer registered)))))
 
@@ -4098,6 +4149,161 @@ CHOOSE receives the candidate list the command offers."
         (let ((eca-chat-usage-string-format
                '(:session-tokens " (" :last-message-cost ") " :session-tokens-percentage :bogus)))
           (expect (substring-no-properties (eca-chat--usage-str)) :to-equal "1K"))))))
+
+(describe "eca-chat-truncated"
+
+  (it "removes the message and everything after it, keeping earlier ones"
+    (let ((buf (eca-chat-test--make-live-render-buffer "Final answer.")))
+      (unwind-protect
+          (progn
+            (eca-chat-test--render-user-message buf "first question" "u1")
+            (eca-chat-test--render-user-message buf "second question" "u2")
+            (spy-on 'eca-chat--get-chat-buffer :and-return-value buf)
+            (eca-chat-truncated (make-eca--session)
+                                (list :chatId "chat-1" :contentId "u2"))
+            (with-current-buffer buf
+              (expect (eca-chat-test--history-text buf)
+                      :to-match "\\`Final answer\\.\n\nfirst question\n")
+              (expect (eca-chat-test--history-text buf)
+                      :not :to-match "second question")
+              (expect (eca-chat--get-expandable-content "u2") :to-be nil)
+              (expect (eca-chat--get-expandable-content "u1") :not :to-be nil)
+              ;; Same position `eca-chat--mark-header' set for u1.
+              (expect eca-chat--last-user-message-pos
+                      :to-equal (eca-chat--expandable-block-end "u1"))))
+        (kill-buffer buf))))
+
+  (it "keeps a single empty line before the next user message"
+    (let ((buf (eca-chat-test--make-live-render-buffer "Final answer.")))
+      (unwind-protect
+          (progn
+            (eca-chat-test--render-user-message buf "first question" "u1")
+            (spy-on 'eca-chat--get-chat-buffer :and-return-value buf)
+            (eca-chat-truncated (make-eca--session)
+                                (list :chatId "chat-1" :contentId "u1"))
+            (eca-chat-test--render-user-message buf "retry" "u3")
+            (expect (eca-chat-test--history-text buf)
+                    :to-match "\\`Final answer\\.\n\nretry\n"))
+        (kill-buffer buf))))
+
+  (it "restores the stashed prompt"
+    (let ((buf (eca-chat-test--make-live-render-buffer "Final answer.")))
+      (unwind-protect
+          (progn
+            (eca-chat-test--render-user-message buf "first question" "u1")
+            (with-current-buffer buf
+              (setq-local eca-chat--prompt-after-clear "first question"))
+            (spy-on 'eca-chat--get-chat-buffer :and-return-value buf)
+            (eca-chat-truncated (make-eca--session)
+                                (list :chatId "chat-1" :contentId "u1"))
+            (expect (eca-chat-test--prompt-text buf)
+                    :to-equal "first question")
+            (expect (buffer-local-value 'eca-chat--prompt-after-clear buf)
+                    :to-be nil))
+        (kill-buffer buf))))
+
+  (it "re-opens the chat when the message is not rendered"
+    (let ((buf (eca-chat-test--make-live-render-buffer "Final answer."))
+          (session (make-eca--session)))
+      (unwind-protect
+          (progn
+            (with-current-buffer buf
+              (setq-local eca-chat--prompt-after-clear "old msg"))
+            (spy-on 'eca-chat--get-chat-buffer :and-return-value buf)
+            (spy-on 'eca-chat--reopen)
+            (eca-chat-truncated session
+                                (list :chatId "chat-1" :contentId "missing"))
+            (expect 'eca-chat--reopen
+                    :to-have-been-called-with session "chat-1" "old msg")
+            (expect (eca-chat-test--history-text buf)
+                    :to-match "\\`Final answer\\."))
+        (kill-buffer buf)))))
+
+(defun eca-chat-test--render-flag (buf text id &optional after-id)
+  "Render a flag TEXT with ID into BUF, optionally after AFTER-ID."
+  (with-current-buffer buf
+    (eca-chat--render-content (make-eca--session) buf "system"
+                              (append (list :type "flag" :text text
+                                            :contentId id)
+                                      (when after-id
+                                        (list :afterContentId after-id)))
+                              nil)))
+
+(defun eca-chat-test--block-start (buf id)
+  "Return the start of the expandable block ID in BUF, or nil."
+  (with-current-buffer buf
+    (-some-> (eca-chat--get-expandable-content id) (overlay-start))))
+
+(describe "eca-chat--render-content flag afterContentId"
+
+  (it "inserts the flag right after its anchor block"
+    (let ((buf (eca-chat-test--make-live-render-buffer "Final answer.")))
+      (unwind-protect
+          (progn
+            (eca-chat-test--render-user-message buf "first question" "u1")
+            (eca-chat-test--render-user-message buf "second question" "u2")
+            (eca-chat-test--render-flag buf "checkpoint" "f1" "u1")
+            (expect (eca-chat-test--history-text buf)
+                    :to-match "first question\n\n🚩️️ checkpoint\n\n+second question")
+            (expect (< (eca-chat-test--block-start buf "u1")
+                       (eca-chat-test--block-start buf "f1")
+                       (eca-chat-test--block-start buf "u2"))
+                    :to-be t)
+            (with-current-buffer buf
+              (expect (overlay-get (eca-chat--get-expandable-content "f1")
+                                   'eca-chat--flag-text)
+                      :to-equal "checkpoint"))
+            ;; Rolling back the next message must keep the flag.
+            (spy-on 'eca-chat--get-chat-buffer :and-return-value buf)
+            (eca-chat-truncated (make-eca--session)
+                                (list :chatId "chat-1" :contentId "u2"))
+            (expect (eca-chat-test--history-text buf)
+                    :to-match "first question\n\n🚩️️ checkpoint")
+            (expect (eca-chat-test--history-text buf)
+                    :not :to-match "second question"))
+        (kill-buffer buf))))
+
+  (it "keeps the saved turn positions on the text they pointed at"
+    (let ((buf (eca-chat-test--make-live-render-buffer "Final answer.")))
+      (unwind-protect
+          (progn
+            (eca-chat-test--render-user-message buf "first question" "u1")
+            (eca-chat-test--render-user-message buf "second question" "u2")
+            (with-current-buffer buf
+              (setq-local eca-chat--last-response-copy-start
+                          eca-chat--last-user-message-pos)
+              (expect eca-chat--last-user-message-pos
+                      :to-equal (eca-chat--expandable-block-end "u2")))
+            (eca-chat-test--render-flag buf "checkpoint" "f1" "u1")
+            (with-current-buffer buf
+              (expect eca-chat--last-user-message-pos
+                      :to-equal (eca-chat--expandable-block-end "u2"))
+              (expect eca-chat--last-response-copy-start
+                      :to-equal (eca-chat--expandable-block-end "u2"))))
+        (kill-buffer buf))))
+
+  (it "skips the flag when its anchor is not rendered"
+    (let ((buf (eca-chat-test--make-live-render-buffer "Final answer.")))
+      (unwind-protect
+          (progn
+            (eca-chat-test--render-user-message buf "first question" "u1")
+            (eca-chat-test--render-flag buf "checkpoint" "f1" "missing")
+            (expect (eca-chat-test--block-start buf "f1") :to-be nil)
+            (expect (eca-chat-test--history-text buf)
+                    :not :to-match "checkpoint"))
+        (kill-buffer buf))))
+
+  (it "appends the flag at the end without afterContentId"
+    (let ((buf (eca-chat-test--make-live-render-buffer "Final answer.")))
+      (unwind-protect
+          (progn
+            (eca-chat-test--render-user-message buf "first question" "u1")
+            (eca-chat-test--render-user-message buf "second question" "u2")
+            (eca-chat-test--render-flag buf "checkpoint" "f1")
+            (expect (< (eca-chat-test--block-start buf "u2")
+                       (eca-chat-test--block-start buf "f1"))
+                    :to-be t))
+        (kill-buffer buf)))))
 
 (describe "eca-chat-cleared"
 
