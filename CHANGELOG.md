@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Bugfix: while assistant output streamed in, the lines of a multiline prompt below point could slide under the mode line, since streamed text pushes the prompt down and redisplay only keeps point's line visible. The chat now scrolls just enough to keep the end of the prompt fully visible, without moving point, and still does not scroll while reading earlier content.
 - Show subscription quota instead of costs in the chat mode-line and providers buffer. The last message cost (`:last-message-cost`) now shows too.
 - Bugfix: the `eca-workspaces` dashboard was impossible to navigate while a chat ran, since the live refresh (once a second) scrolled the view and could throw point to the top. Rendering erases the buffer, which collapses every window start marker, so a window shorter than the content recentered on each refresh; point resting on a line with no entity, the footer, fell back to the buffer start. Each window now keeps its scroll position, and point on the footer stays on it.
 - The `stop`, `Steering:` and `Queued:` lines of a running prompt now show right below its progress status, above the `@` context line, instead of splitting that line from the prompt field (#322).
