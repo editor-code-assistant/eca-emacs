@@ -230,6 +230,7 @@ frames captured via `backtrace-get-frames'."
       ("config/updated" (eca-config-updated session params))
       ("chat/contentReceived" (eca-chat-content-received session params))
       ("chat/cleared" (eca-chat-cleared session params))
+      ("chat/truncated" (eca-chat-truncated session params))
       ("chat/deleted" (eca-chat-deleted session params))
       ("chat/opened" (eca-chat-opened session params))
       ("chat/statusChanged" (eca-chat-status-changed session params))
@@ -321,7 +322,8 @@ is only usable asynchronously."
                    (list :clientInfo (list :name "emacs"
                                           :version (emacs-version))
                          :capabilities (list :codeAssistant (list :chat t
-                                                                  :chatCapabilities (list :askQuestion t)
+                                                                  :chatCapabilities (list :askQuestion t
+                                                                                          :incrementalUpdates (eca-chat--incremental-updates-capability))
                                                                   :editor (list :diagnostics t
                                                                                 :definition t
                                                                                 :references t)))
