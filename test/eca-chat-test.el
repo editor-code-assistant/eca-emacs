@@ -1740,6 +1740,63 @@ around rendering applies, as when the chat window is selected."
                   :to-equal "@/remote/path/file.txt")
           (expect 'eca--path-local-to-remote :to-have-been-called-with "file.txt"))))))
 
+(defun eca-chat-test--button-at (text str)
+  "Return the button action of the first STR in TEXT, or nil."
+  (when-let* ((pos (string-search str text)))
+    (get-text-property pos 'eca-button-on-action text)))
+
+(describe "eca-chat--relativize-filename-for-workspace-root"
+  (before-all
+    ;; Loading TRAMP checks files itself, so load it before spying.
+    (file-remote-p "/ssh:host:/proj/a.el"))
+
+  (it "relativizes remote files against their root without touching them"
+    (spy-on 'file-truename)
+    (spy-on 'file-exists-p)
+    (expect (eca-chat--relativize-filename-for-workspace-root
+             "/ssh:host:/proj/src/a.el" '("/ssh:host:/other" "/ssh:host:/proj/"))
+            :to-equal "src/a.el")
+    (expect 'file-truename :not :to-have-been-called)
+    (expect 'file-exists-p :not :to-have-been-called))
+
+  (it "keeps remote files outside every root as they are"
+    (dolist (path '("/ssh:host:/project/a.el" "/ssh:host:/proj" "/ssh:host:/proj/"
+                    "/ssh:other:/proj/a.el"))
+      (expect (eca-chat--relativize-filename-for-workspace-root
+               path '("/ssh:host:/proj"))
+              :to-equal path))))
+
+(describe "eca-chat--file-change-diff"
+  (before-all
+    ;; Loading TRAMP checks files itself, so load it before spying.
+    (file-remote-p "/ssh:host:/proj/a.el"))
+
+  (it "links an existing local file relative to its workspace root"
+    (let* ((root (make-temp-file "eca-chat-test" t))
+           (path (expand-file-name "a.el" root)))
+      (unwind-protect
+          (progn
+            (write-region "" nil path nil 'silent)
+            (let ((text (eca-chat--file-change-diff path "+x" (list root))))
+              (expect (eca-chat-test--button-at text "a.el") :to-be-truthy)
+              (expect (string-search root text) :to-be nil)))
+        (delete-directory root t))))
+
+  (it "does not link a missing local file"
+    (let ((text (eca-chat--file-change-diff "/nonexistent/eca/a.el" "+x" nil)))
+      (expect (string-search "/nonexistent/eca/a.el" text) :to-be-truthy)
+      (expect (eca-chat-test--button-at text "/nonexistent/eca/a.el") :to-be nil)))
+
+  (it "links remote files without checking them, which would block Emacs"
+    (spy-on 'file-exists-p)
+    (spy-on 'file-truename)
+    (let ((text (eca-chat--file-change-diff
+                 "/ssh:host:/proj/src/a.el" "+x" '("/ssh:host:/proj"))))
+      (expect (eca-chat-test--button-at text "src/a.el") :to-be-truthy)
+      (expect (string-search "/ssh:host:" text) :to-be nil)
+      (expect 'file-exists-p :not :to-have-been-called)
+      (expect 'file-truename :not :to-have-been-called))))
+
 (describe "eca-chat copy command"
   (it "copies fenced code block content"
     (let (kill-ring

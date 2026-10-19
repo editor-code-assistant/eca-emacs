@@ -3842,20 +3842,37 @@ Add a overlay before with OVERLAY-KEY = OVERLAY-VALUE if passed."
             (eca-chat--schedule-fontify)
             (eca-chat--protect-non-prompt eca-chat--last-user-message-pos)))))))
 
+(defun eca-chat--remote-relative-filename (filename roots)
+  "Return remote FILENAME relative to the first of ROOTS holding it.
+Return nil when no root holds it.  Names are compared as strings:
+resolving their true names, like `f-ancestor-of?' does, would
+block on remote round trips."
+  (-some (lambda (root)
+           (let ((dir (file-name-as-directory root)))
+             (when (and (string-prefix-p dir filename)
+                        (> (length filename) (length dir)))
+               (substring filename (length dir)))))
+         roots))
+
 (defun eca-chat--relativize-filename-for-workspace-root (filename roots &optional hide-filename?)
   "Relativize the FILENAME if a workspace root is found for ROOTS.
 Show parent upwards if HIDE-FILENAME? is non nil."
-  (let ((relative-path (or (-some->> (-first (lambda (root) (f-ancestor-of? root filename)) roots)
-                             (f-relative filename))
+  (let ((relative-path (or (if (file-remote-p filename)
+                               (eca-chat--remote-relative-filename filename roots)
+                             (-some->> (-first (lambda (root) (f-ancestor-of? root filename)) roots)
+                               (f-relative filename)))
                            filename)))
     (if hide-filename?
         (f-parent relative-path)
       relative-path)))
 
 (defun eca-chat--file-change-diff (path diff roots)
-  "Return a diff block for relative PATH from ROOTS with DIFF."
+  "Return a diff block for relative PATH from ROOTS with DIFF.
+PATH links to its file when it exists.  Remote files aren't
+checked: this runs from the process filter, where a remote round
+trip blocks Emacs and may hang it."
   (concat "\n"
-          (if (and path (f-exists? path))
+          (if (and path (or (file-remote-p path) (f-exists? path)))
               (eca-buttonize
                eca-chat-mode-map
                (propertize (eca-chat--relativize-filename-for-workspace-root path roots)

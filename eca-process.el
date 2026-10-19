@@ -17,6 +17,9 @@
 (require 'eca-util)
 (require 'eca-api)
 
+(defvar tramp-use-ssh-controlmaster-options)
+(defvar tramp-ssh-controlmaster-options)
+
 (defcustom eca-custom-command nil
   "The eca server command.
 If not provided, download and start eca automatically."
@@ -611,6 +614,28 @@ tool calls with full diffs) are reassembled correctly."
           (mapc handle-msg
                 (nreverse messages)))))))
 
+(defun eca-process--make-process (&rest args)
+  "Call `make-process' with ARGS, disabling ssh connection sharing.
+When `default-directory' is remote, the server gets its own ssh
+connection instead of sharing TRAMP's ControlMaster one.  A shared
+connection may hang Emacs: a TRAMP command run while the server
+output isn't read, e.g. from the process filter, can wait forever
+for a reply stuck behind that output, see bug#61350.  Eglot does
+the same for its language servers."
+  (if (not (file-remote-p default-directory))
+      (apply #'make-process args)
+    ;; Load it before binding its variables: since Emacs 30 it makes
+    ;; `tramp-use-ssh-controlmaster-options' an alias, which fails
+    ;; while the variable is let-bound.
+    (require 'tramp-sh)
+    ;; Emacs 29.2+ turns `suppress' into these options (and -noshare
+    ;; for plink), older ones only use the options string.
+    (with-suppressed-warnings ((obsolete tramp-use-ssh-controlmaster-options))
+      (let ((tramp-use-ssh-controlmaster-options 'suppress)
+            (tramp-ssh-controlmaster-options
+             "-o ControlMaster=no -o ControlPath=none"))
+        (apply #'make-process args)))))
+
 ;; Public
 
 (defun eca-process-start (session on-start handle-msg)
@@ -629,7 +654,7 @@ Call HANDLE-MSG for new msgs processed."
                                                    (eca--session-workspace-folders session))))
                                   (eca-info "Starting process '%s'" (string-join command " "))
                                   (setf (eca--session-process session)
-                                        (make-process
+                                        (eca-process--make-process
                                          :coding 'no-conversion
                                          :connection-type 'pipe
                                          :name "eca"
