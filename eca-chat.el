@@ -2113,17 +2113,22 @@ context and prompt input stay editable.  The first protected char
 is `front-sticky' and the last is `rear-nonsticky' for
 `read-only', so the locked region rejects edits while typing in
 the progress/context/prompt still works.  No-op when
-`eca-chat-read-only-history' is nil or the boundary is absent."
+`eca-chat-read-only-history' is nil or the boundary is absent.
+
+The properties are put silently, as font-lock does with faces: they
+don't change the text, and the change hooks would otherwise run over
+the whole range on each streamed chunk that adds some text in it,
+e.g. rescanning the current turn for markdown checkboxes (#337)."
   (when eca-chat-read-only-history
     (when-let* ((end (eca-chat--read-only-end-point)))
-      (let ((inhibit-read-only t)
-            (beg (max (point-min) (or from (point-min)))))
+      (let ((beg (max (point-min) (or from (point-min)))))
         (when (< beg end)
-          (put-text-property beg end 'read-only t)
-          (put-text-property (1- end) end 'rear-nonsticky '(read-only))
-          (when (= beg (point-min))
-            (put-text-property (point-min) (1+ (point-min))
-                               'front-sticky '(read-only))))))))
+          (with-silent-modifications
+            (put-text-property beg end 'read-only t)
+            (put-text-property (1- end) end 'rear-nonsticky '(read-only))
+            (when (= beg (point-min))
+              (put-text-property (point-min) (1+ (point-min))
+                                 'front-sticky '(read-only)))))))))
 
 (defvar eca-chat--keep-point nil
   "Non-nil once a render moved point on purpose, so it is not restored.
@@ -4430,8 +4435,7 @@ Append STATUS symbol.  Optional PARENT-ID for nested rendering."
         ;; step count / status, preserving all rendered children.
         (let* ((ov-content (overlay-get existing-ov 'eca-chat--expandable-content-ov-content))
                (open? (overlay-get existing-ov 'eca-chat--expandable-content-toggle))
-               (content (overlay-get ov-content 'eca-chat--expandable-content-content))
-               (has-content? (or (and content (not (string-empty-p content)))
+               (has-content? (or (not (eca-chat--expandable-content-empty-p ov-content))
                                  has-children?))
                (new-icon-face (get-text-property 0 'font-lock-face new-label))
                (label-indent (when (overlay-get existing-ov 'eca-chat--expandable-content-nested)
@@ -4487,8 +4491,7 @@ Rebuilds the steps-info string with current usage and updates the overlay."
            (new-label (concat (propertize label 'font-lock-face 'eca-chat-subagent-tool-call-label-face)
                               steps-info " " status time))
            (open? (overlay-get ov-label 'eca-chat--expandable-content-toggle))
-           (content (overlay-get ov-content 'eca-chat--expandable-content-content))
-           (has-content? (and content (not (string-empty-p content)))))
+           (has-content? (not (eca-chat--expandable-content-empty-p ov-content))))
       (overlay-put ov-label 'eca-chat--tool-call-steps-info steps-info)
       (save-excursion
         (goto-char (overlay-start ov-label))
@@ -4544,8 +4547,7 @@ Only updates the label line, preserving all nested child content."
            (new-label (concat (propertize label 'font-lock-face 'eca-chat-subagent-tool-call-label-face)
                               steps-info " " new-status time))
            (open? (overlay-get ov-label 'eca-chat--expandable-content-toggle))
-           (content (overlay-get ov-content 'eca-chat--expandable-content-content))
-           (has-content? (and content (not (string-empty-p content)))))
+           (has-content? (not (eca-chat--expandable-content-empty-p ov-content))))
       (save-excursion
         (goto-char (overlay-start ov-label))
         (delete-region (point) (1- (overlay-start ov-content)))
