@@ -2142,16 +2142,41 @@ Rendering inserts text wherever the content goes, dragging point
 along, and streaming must not move the cursor.  Helpers that move
 point deliberately set `eca-chat--keep-point' to keep the new
 position: a plain `save-excursion' would undo it whenever the chat
-window is the selected one."
+window is the selected one.  When point is in the prompt and the
+bottom of the chat is shown, keep the end of the prompt visible."
   (declare (indent 0) (debug t))
-  (let ((saved (gensym "saved-point-")))
-    `(let ((eca-chat--keep-point nil)
-           (,saved (point-marker)))
+  (let ((saved (gensym "saved-point-"))
+        (win (gensym "chat-window-")))
+    `(let* ((eca-chat--keep-point nil)
+            (,saved (point-marker))
+            (,win (when-let* ((w (get-buffer-window (current-buffer))))
+                    (and (eca-chat--point-at-prompt-field-p)
+                         (eca-chat--viewing-bottom-p w)
+                         w))))
        (unwind-protect (progn ,@body)
          (when (and (not eca-chat--keep-point)
                     (eq (marker-buffer ,saved) (current-buffer)))
-           (goto-char ,saved))
+           (goto-char ,saved)
+           (when ,win
+             (eca-chat--ensure-prompt-end-visible ,win)))
          (set-marker ,saved nil)))))
+
+(defun eca-chat--ensure-prompt-end-visible (win)
+  "Scroll WIN so the end of the prompt is fully visible, keeping point.
+Text inserted above the prompt pushes it down, and redisplay only
+keeps the line of point visible, not the prompt lines below it."
+  (when (window-live-p win)
+    (with-selected-window win
+      (save-excursion
+        (unless (pos-visible-in-window-p (point-max))
+          (goto-char (point-max))
+          (recenter -1)
+          ;; `recenter' can leave the last row partly under the mode
+          ;; line when the window is not a whole number of lines tall.
+          (unless (pos-visible-in-window-p (point-max))
+            (goto-char (window-start))
+            (vertical-motion 1)
+            (set-window-start nil (point) t)))))))
 
 (defun eca-chat--viewing-bottom-p (win)
   "Return non-nil when the prompt separator is displayed in WIN.
@@ -3842,10 +3867,11 @@ Add a overlay before with OVERLAY-KEY = OVERLAY-VALUE if passed."
     (when chunks
       (let ((text (mapconcat #'identity (nreverse chunks) "")))
         (unless (string-empty-p text)
-          (save-excursion
-            (eca-chat--add-text-content text)
-            (eca-chat--schedule-fontify)
-            (eca-chat--protect-non-prompt eca-chat--last-user-message-pos)))))))
+          (eca-chat--with-point-preserved
+            (save-excursion
+              (eca-chat--add-text-content text)
+              (eca-chat--schedule-fontify)
+              (eca-chat--protect-non-prompt eca-chat--last-user-message-pos))))))))
 
 (defun eca-chat--remote-relative-filename (filename roots)
   "Return remote FILENAME relative to the first of ROOTS holding it.

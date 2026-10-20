@@ -611,6 +611,74 @@ around rendering applies, as when the chat window is selected."
         (setq eca-chat--keep-point t))
       (expect (point) :to-equal (point-min)))))
 
+(defmacro eca-chat-test--with-streaming-prompt (visible &rest body)
+  "Run BODY in a shown render buffer, point on a two-line prompt.
+VISIBLE is the value `pos-visible-in-window-p' returns."
+  (declare (indent 1) (debug t))
+  `(let ((buf (eca-chat-test--make-render-buffer)))
+     (unwind-protect
+         (save-window-excursion
+           (set-window-buffer (selected-window) buf)
+           (with-current-buffer buf
+             (goto-char (point-max))
+             (insert "first line\nsecond line")
+             (goto-char (eca-chat--prompt-field-start-point))
+             (spy-on 'eca-chat--viewing-bottom-p :and-return-value t)
+             (spy-on 'pos-visible-in-window-p :and-return-value ,visible)
+             (spy-on 'recenter)
+             ,@body))
+       (kill-buffer buf))))
+
+(defun eca-chat-test--stream-output (text)
+  "Render TEXT above the prompt the way streaming does."
+  (eca-chat--with-point-preserved
+    (save-excursion
+      (goto-char (eca-chat--content-insertion-point))
+      (eca-chat--insert text))))
+
+(describe "eca-chat prompt visibility while streaming"
+  (it "scrolls a hidden prompt end into view, keeping point"
+    (eca-chat-test--with-streaming-prompt nil
+      (let ((cursor (point)))
+        (eca-chat-test--stream-output "output\n")
+        (expect 'recenter :to-have-been-called-with -1)
+        (expect (point) :to-equal (+ cursor 7)))))
+
+  (it "scrolls one more line when recenter leaves the end clipped"
+    (eca-chat-test--with-streaming-prompt nil
+      (set-window-start (selected-window) (point-min))
+      (eca-chat-test--stream-output "output\n")
+      (expect 'recenter :to-have-been-called-with -1)
+      (expect (window-start) :to-equal
+              (save-excursion
+                (goto-char (point-min))
+                (vertical-motion 1)
+                (point)))))
+
+  (it "does not scroll when the prompt end stays visible"
+    (eca-chat-test--with-streaming-prompt t
+      (eca-chat-test--stream-output "output\n")
+      (expect 'recenter :not :to-have-been-called)))
+
+  (it "does not scroll when point is outside the prompt"
+    (eca-chat-test--with-streaming-prompt nil
+      (goto-char (point-min))
+      (eca-chat-test--stream-output "output\n")
+      (expect 'recenter :not :to-have-been-called)))
+
+  (it "does not scroll while the user reads earlier content"
+    (eca-chat-test--with-streaming-prompt nil
+      (spy-on 'eca-chat--viewing-bottom-p :and-return-value nil)
+      (eca-chat-test--stream-output "output\n")
+      (expect 'recenter :not :to-have-been-called)))
+
+  (it "scrolls after a timer flush of streamed text"
+    (eca-chat-test--with-streaming-prompt nil
+      (setq-local eca-chat--stream-pending-chunks (list "output\n"))
+      (spy-on 'eca-chat--schedule-fontify)
+      (eca-chat--stream-flush)
+      (expect 'recenter :to-have-been-called-with -1))))
+
 (describe "eca-chat--ensure-tool-call-approval-visible"
   ;; Issue #308: a tool call awaiting approval whose expanded body is
   ;; taller than the window must keep its label and buttons in view
