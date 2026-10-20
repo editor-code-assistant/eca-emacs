@@ -37,6 +37,32 @@ HOME to %APPDATA% in that case."
       (f-join xdg "eca" "config.json")
     (f-join (eca-config--home-directory) ".config" "eca" "config.json")))
 
+(defun eca-config--remote-folder (session)
+  "Return the first remote workspace folder of SESSION, or nil."
+  (and session
+       (-first #'file-remote-p (eca--session-workspace-folders session))))
+
+(defun eca-config--remote-getenv (folder variable)
+  "Return environment VARIABLE on the host of the remote FOLDER.
+Return nil when it is unset or empty, or when the lookup fails."
+  (with-temp-buffer
+    (let ((default-directory (file-name-as-directory folder)))
+      (when (eq 0 (ignore-errors
+                    (process-file "printenv" nil '(t nil) nil variable)))
+        (let ((value (string-trim (buffer-string))))
+          (unless (string-empty-p value)
+            value))))))
+
+(defun eca-config--remote-global-path (folder)
+  "Resolve the global ECA config path on the host of the remote FOLDER.
+Mirror the server running there, since the local environment and
+home directory say nothing about that host.  The remote home is
+left as ~ for TRAMP to expand when the file gets visited."
+  (concat (file-remote-p folder)
+          (if-let* ((xdg (eca-config--remote-getenv folder "XDG_CONFIG_HOME")))
+              (file-name-concat xdg "eca" "config.json")
+            "~/.config/eca/config.json")))
+
 (defun eca-config--server-path-to-local (path session)
   "Translate PATH reported by the server of SESSION to a local path.
 Applies the session path mappings; when the workspace folders are
@@ -54,10 +80,14 @@ is opened on the host running the server."
   "Return the path to the global ECA config file.
 Prefer the path the server of SESSION reported in the `initialize'
 response, so the buffer edits the file the server actually reads.
-Fall back to resolving it locally for servers without support."
-  (if-let* ((path (and session (eca--session-global-config-path session))))
-      (eca-config--server-path-to-local path session)
-    (eca-config--local-global-path)))
+Without it (older servers, or before the response arrived), resolve
+it like the server does, on the remote host for TRAMP sessions."
+  (let ((path (and session (eca--session-global-config-path session)))
+        (remote-folder (eca-config--remote-folder session)))
+    (cond
+     (path (eca-config--server-path-to-local path session))
+     (remote-folder (eca-config--remote-global-path remote-folder))
+     (t (eca-config--local-global-path)))))
 
 ;; Helpers
 
@@ -97,8 +127,9 @@ SESSION is the current ECA session.  PATH is the config file."
         (insert "{}\n"))
       (setq buffer-file-name abs-path)
       (setq buffer-file-truename (file-truename abs-path))
-      (add-hook 'before-save-hook #'eca-config--ensure-directory nil t)
       (eca-config--json-mode)
+      ;; After the major mode, which kills buffer-local hooks.
+      (add-hook 'before-save-hook #'eca-config--ensure-directory nil t)
       (local-set-key (kbd "C-c C-,") (lambda () (interactive) (eca)))
       (local-set-key (kbd "C-c .") #'eca-transient-menu)
       (set-buffer-modified-p nil)
@@ -124,6 +155,7 @@ SESSION is the current ECA session.  PATH is the config file."
       (let ((tab-key eca-settings--tab-key))
         (revert-buffer t t t)
         (eca-config--json-mode)
+        (add-hook 'before-save-hook #'eca-config--ensure-directory nil t)
         (local-set-key (kbd "C-c C-,")
                        (lambda () (interactive) (eca)))
         (local-set-key (kbd "C-c .") #'eca-transient-menu)
