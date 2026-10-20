@@ -1524,6 +1524,25 @@ VISIBLE is the value `pos-visible-in-window-p' returns."
               (goto-char (point-max))
               (insert "!")
               (expect (eca-chat-test--prompt-text buf) :to-equal "hi!")))
+        (kill-buffer buf))))
+
+  ;; Issue #337: the change hooks got the whole protected range on each
+  ;; streamed chunk, e.g. rescanning the turn for markdown checkboxes.
+  (it "protects without running the change hooks nor recording undo"
+    (let ((buf (eca-chat-test--make-prompt-buffer "hello"))
+          (eca-chat-read-only-history t)
+          (changes nil))
+      (unwind-protect
+          (with-current-buffer buf
+            (buffer-enable-undo)
+            (setq buffer-undo-list nil)
+            (add-hook 'after-change-functions
+                      (lambda (beg end _len) (push (cons beg end) changes))
+                      nil t)
+            (eca-chat--protect-non-prompt)
+            (expect (get-text-property (point-min) 'read-only) :to-be t)
+            (expect changes :to-be nil)
+            (expect buffer-undo-list :to-be nil))
         (kill-buffer buf)))))
 
 (describe "eca-chat completion trigger detection"
@@ -1807,6 +1826,63 @@ VISIBLE is the value `pos-visible-in-window-p' returns."
           (expect (eca-chat--normalize-prompt prompt)
                   :to-equal "@/remote/path/file.txt")
           (expect 'eca--path-local-to-remote :to-have-been-called-with "file.txt"))))))
+
+(defun eca-chat-test--button-at (text str)
+  "Return the button action of the first STR in TEXT, or nil."
+  (when-let* ((pos (string-search str text)))
+    (get-text-property pos 'eca-button-on-action text)))
+
+(describe "eca-chat--relativize-filename-for-workspace-root"
+  (before-all
+    ;; Loading TRAMP checks files itself, so load it before spying.
+    (file-remote-p "/ssh:host:/proj/a.el"))
+
+  (it "relativizes remote files against their root without touching them"
+    (spy-on 'file-truename)
+    (spy-on 'file-exists-p)
+    (expect (eca-chat--relativize-filename-for-workspace-root
+             "/ssh:host:/proj/src/a.el" '("/ssh:host:/other" "/ssh:host:/proj/"))
+            :to-equal "src/a.el")
+    (expect 'file-truename :not :to-have-been-called)
+    (expect 'file-exists-p :not :to-have-been-called))
+
+  (it "keeps remote files outside every root as they are"
+    (dolist (path '("/ssh:host:/project/a.el" "/ssh:host:/proj" "/ssh:host:/proj/"
+                    "/ssh:other:/proj/a.el"))
+      (expect (eca-chat--relativize-filename-for-workspace-root
+               path '("/ssh:host:/proj"))
+              :to-equal path))))
+
+(describe "eca-chat--file-change-diff"
+  (before-all
+    ;; Loading TRAMP checks files itself, so load it before spying.
+    (file-remote-p "/ssh:host:/proj/a.el"))
+
+  (it "links an existing local file relative to its workspace root"
+    (let* ((root (make-temp-file "eca-chat-test" t))
+           (path (expand-file-name "a.el" root)))
+      (unwind-protect
+          (progn
+            (write-region "" nil path nil 'silent)
+            (let ((text (eca-chat--file-change-diff path "+x" (list root))))
+              (expect (eca-chat-test--button-at text "a.el") :to-be-truthy)
+              (expect (string-search root text) :to-be nil)))
+        (delete-directory root t))))
+
+  (it "does not link a missing local file"
+    (let ((text (eca-chat--file-change-diff "/nonexistent/eca/a.el" "+x" nil)))
+      (expect (string-search "/nonexistent/eca/a.el" text) :to-be-truthy)
+      (expect (eca-chat-test--button-at text "/nonexistent/eca/a.el") :to-be nil)))
+
+  (it "links remote files without checking them, which would block Emacs"
+    (spy-on 'file-exists-p)
+    (spy-on 'file-truename)
+    (let ((text (eca-chat--file-change-diff
+                 "/ssh:host:/proj/src/a.el" "+x" '("/ssh:host:/proj"))))
+      (expect (eca-chat-test--button-at text "src/a.el") :to-be-truthy)
+      (expect (string-search "/ssh:host:" text) :to-be nil)
+      (expect 'file-exists-p :not :to-have-been-called)
+      (expect 'file-truename :not :to-have-been-called))))
 
 (describe "eca-chat copy command"
   (it "copies fenced code block content"
@@ -3940,6 +4016,227 @@ precedes the prompt separator.  Caller must kill the buffer."
     (let ((km (eca-chat-test--expandable-label-keymap)))
       (expect (lookup-key km (kbd "<tab>")) :to-be nil)
       (expect (lookup-key km (kbd "<return>")) :to-be nil))))
+
+;; ---------------------------------------------------------------------------
+;; Streaming expandable block content (#337)
+;; ---------------------------------------------------------------------------
+
+(defun eca-chat-test--render-assistant (session buf content &optional parent-id)
+  "Render assistant CONTENT of SESSION in BUF, nested under PARENT-ID."
+  (eca-chat--render-content session buf "assistant" content nil parent-id))
+
+(defun eca-chat-test--stream-reasoning (session buf id chunks &optional parent-id)
+  "Stream reasoning block ID of SESSION in BUF as CHUNKS under PARENT-ID."
+  (eca-chat-test--render-assistant
+   session buf (list :type "reasonStarted" :id id) parent-id)
+  (dolist (chunk chunks)
+    (eca-chat-test--render-assistant
+     session buf (list :type "reasonText" :id id :text chunk) parent-id)))
+
+(defun eca-chat-test--subagent-block (id)
+  "Render the collapsed subagent tool call block ID in the current buffer."
+  (eca-chat--tool-call-subagent-details
+   id (list :agent "test-agent" :task "task")
+   "Calling subagent" nil nil
+   eca-chat-mcp-tool-call-loading-symbol nil
+   (list :type "subagent" :model "test-model")))
+
+(defun eca-chat-test--block-ov-content (id)
+  "Return the content overlay of the expandable block ID."
+  (overlay-get (eca-chat--get-expandable-content id)
+               'eca-chat--expandable-content-ov-content))
+
+(defun eca-chat-test--block-text (id)
+  "Return the `eca-chat--expandable-text' of the expandable block ID."
+  (overlay-get (eca-chat-test--block-ov-content id)
+               'eca-chat--expandable-content-content))
+
+(defun eca-chat-test--block-shown (id)
+  "Return the text shown in the content area of the expandable block ID."
+  (let ((ov (eca-chat-test--block-ov-content id)))
+    (buffer-substring-no-properties (overlay-start ov) (overlay-end ov))))
+
+(defun eca-chat-test--block-line-prefix (id string)
+  "Return the `line-prefix' of STRING in the content of block ID.
+The prefix is returned without its text properties."
+  (let* ((ov (eca-chat-test--block-ov-content id))
+         (pos (+ (overlay-start ov)
+                 (string-search string (eca-chat-test--block-shown id)))))
+    (substring-no-properties (get-text-property pos 'line-prefix))))
+
+(describe "eca-chat--expandable-text"
+
+  (it "starts empty"
+    (let ((text (eca-chat--expandable-text-create)))
+      (expect (eca-chat--expandable-text-empty-p text) :to-be-truthy)
+      (expect (eca-chat--expandable-text-string text) :to-equal "")))
+
+  (it "joins the appended chunks once, when the string is needed"
+    (let ((text (eca-chat--expandable-text-create "a")))
+      (dolist (chunk '("b" "" nil "c"))
+        (eca-chat--expandable-text-append text chunk))
+      ;; Appending only queues the non-empty chunks.
+      (expect (eca-chat--expandable-text-joined text) :to-equal "a")
+      (expect (eca-chat--expandable-text-pending text) :to-equal '("c" "b"))
+      (expect (eca-chat--expandable-text-empty-p text) :not :to-be-truthy)
+      (expect (eca-chat--expandable-text-string text) :to-equal "abc")
+      (expect (eca-chat--expandable-text-pending text) :to-be nil)
+      (expect (eca-chat--expandable-text-string text) :to-equal "abc")))
+
+  (it "drops the queued chunks on replace"
+    (let ((text (eca-chat--expandable-text-create "a")))
+      (eca-chat--expandable-text-append text "b")
+      (eca-chat--expandable-text-replace text "z")
+      (expect (eca-chat--expandable-text-string text) :to-equal "z")
+      (eca-chat--expandable-text-replace text nil)
+      (expect (eca-chat--expandable-text-empty-p text) :to-be-truthy))))
+
+(describe "streaming expandable block content (#337)"
+
+  (it "queues the chunks of a collapsed block, leaving the buffer alone"
+    (let ((buf (eca-chat-test--make-render-buffer))
+          (session (make-eca--session))
+          (chunks (mapcar (lambda (i) (format "step %d. " i))
+                          (number-sequence 1 50))))
+      (unwind-protect
+          (eca-chat--with-current-buffer buf
+            (eca-chat-test--stream-reasoning session buf "r1" '("Let me "))
+            (let ((tick (buffer-chars-modified-tick)))
+              (dolist (chunk chunks)
+                (eca-chat-test--render-assistant
+                 session buf (list :type "reasonText" :id "r1" :text chunk)))
+              ;; The label is up to date and the collapsed text is not
+              ;; in the buffer, so streaming does not modify it.
+              (expect (buffer-chars-modified-tick) :to-equal tick))
+            ;; Each chunk was queued instead of concatenated to the
+            ;; whole content, which made long thinking quadratic.
+            (let ((text (eca-chat-test--block-text "r1")))
+              (expect (length (eca-chat--expandable-text-pending text))
+                      :to-equal 51)
+              (expect (eca-chat--expandable-text-joined text) :to-equal ""))
+            (eca-chat-test--render-assistant
+             session buf (list :type "reasonFinished" :id "r1" :totalTimeMs 1200))
+            (expect (buffer-string) :to-match "Thought")
+            (eca-chat--expandable-content-toggle "r1" t nil)
+            (expect (eca-chat-test--block-shown "r1")
+                    :to-equal (concat (apply #'concat "Let me " chunks) "\n"))
+            ;; Joined once into a plain string: the indent only goes on
+            ;; the copy inserted in the buffer.
+            (let ((text (eca-chat-test--block-text "r1")))
+              (expect (eca-chat--expandable-text-pending text) :to-be nil)
+              (expect (object-intervals (eca-chat--expandable-text-joined text))
+                      :to-be nil))
+            (expect (eca-chat-test--block-line-prefix "r1" "step 50.")
+                    :to-equal eca-chat--expandable-content-base-indent))
+        (kill-buffer buf))))
+
+  (it "inserts the chunks of an expanded block as they stream"
+    (let ((buf (eca-chat-test--make-render-buffer))
+          (session (make-eca--session)))
+      (unwind-protect
+          (eca-chat--with-current-buffer buf
+            (eca-chat-test--stream-reasoning session buf "r1" '("Hmm."))
+            (eca-chat--expandable-content-toggle "r1" t nil)
+            (dolist (chunk '(" Let me" " check" " the specs."))
+              (eca-chat-test--render-assistant
+               session buf (list :type "reasonText" :id "r1" :text chunk)))
+            (expect (eca-chat-test--block-shown "r1")
+                    :to-match (regexp-quote " Let me check the specs."))
+            ;; Streamed text is indented, the indent painted with the
+            ;; block face.
+            (let* ((ov (eca-chat-test--block-ov-content "r1"))
+                   (pos (+ (overlay-start ov)
+                           (string-search "check" (eca-chat-test--block-shown "r1"))))
+                   (prefix (get-text-property pos 'line-prefix)))
+              (expect (substring-no-properties prefix)
+                      :to-equal eca-chat--expandable-content-base-indent)
+              (expect (memq 'eca-chat-expandable-block-1-face
+                            (ensure-list (get-text-property 0 'face prefix)))
+                      :to-be-truthy))
+            ;; Collapsing and expanding again shows the same text.
+            (eca-chat--expandable-content-toggle "r1" t t)
+            (eca-chat--expandable-content-toggle "r1" t nil)
+            (expect (eca-chat-test--block-shown "r1")
+                    :to-equal "Hmm. Let me check the specs.\n"))
+        (kill-buffer buf))))
+
+  (it "replaces the queued chunks when updated without appending"
+    (let ((buf (eca-chat-test--make-render-buffer))
+          (session (make-eca--session)))
+      (unwind-protect
+          (eca-chat--with-current-buffer buf
+            (eca-chat-test--stream-reasoning session buf "r1" '("old " "text"))
+            (eca-chat--update-expandable-content "r1" nil "new text")
+            (eca-chat--expandable-content-toggle "r1" t nil)
+            (expect (eca-chat-test--block-shown "r1") :to-equal "new text\n"))
+        (kill-buffer buf))))
+
+  (it "queues nested reasoning while its subagent block is collapsed"
+    (let ((buf (eca-chat-test--make-render-buffer))
+          (session (make-eca--session)))
+      (unwind-protect
+          (eca-chat--with-current-buffer buf
+            (eca-chat-test--subagent-block "sub-1")
+            (eca-chat-test--stream-reasoning
+             session buf "r1" '("alpha " "beta " "gamma") "sub-1")
+            ;; The child is only a spec of the collapsed parent so far.
+            (expect (eca-chat--get-expandable-content "r1") :to-be nil)
+            (eca-chat--expandable-content-toggle "sub-1" t nil)
+            (eca-chat--expandable-content-toggle "r1" t nil)
+            (expect (eca-chat-test--block-shown "r1")
+                    :to-equal "alpha beta gamma\n")
+            (expect (eca-chat-test--block-line-prefix "r1" "gamma")
+                    :to-equal eca-chat--expandable-content-nested-indent))
+        (kill-buffer buf))))
+
+  (it "keeps the text streamed in a nested block across parent toggles"
+    (let ((buf (eca-chat-test--make-render-buffer))
+          (session (make-eca--session)))
+      (unwind-protect
+          (eca-chat--with-current-buffer buf
+            (eca-chat-test--subagent-block "sub-1")
+            (eca-chat--expandable-content-toggle "sub-1" t nil)
+            ;; Rendered in the expanded parent: streamed to the block.
+            (eca-chat-test--stream-reasoning
+             session buf "r1" '("one " "two") "sub-1")
+            ;; Collapsing the parent drops the block, keeping its spec.
+            (eca-chat--expandable-content-toggle "sub-1" t t)
+            (expect (eca-chat--get-expandable-content "r1") :to-be nil)
+            (eca-chat-test--render-assistant
+             session buf (list :type "reasonText" :id "r1" :text " three") "sub-1")
+            (eca-chat--expandable-content-toggle "sub-1" t nil)
+            (eca-chat--expandable-content-toggle "r1" t nil)
+            (expect (eca-chat-test--block-shown "r1")
+                    :to-equal "one two three\n"))
+        (kill-buffer buf))))
+
+  (it "keeps subagent text around nested blocks in order"
+    (let ((buf (eca-chat-test--make-render-buffer))
+          (session (make-eca--session)))
+      (unwind-protect
+          (eca-chat--with-current-buffer buf
+            (eca-chat-test--subagent-block "sub-1")
+            (dolist (chunk '("Looking " "around."))
+              (eca-chat-test--render-assistant
+               session buf (list :type "text" :text chunk) "sub-1"))
+            (eca-chat-test--stream-reasoning
+             session buf "r1" '("hidden thought") "sub-1")
+            (eca-chat-test--render-assistant
+             session buf (list :type "text" :text "Done looking.") "sub-1")
+            (eca-chat--expandable-content-toggle "sub-1" t nil)
+            (let* ((shown (eca-chat-test--block-shown "sub-1"))
+                   (before (string-search "Looking around." shown))
+                   (child (string-search "Thinking..." shown))
+                   (after (string-search "Done looking." shown)))
+              (expect (and before child after (< before child after))
+                      :to-be-truthy)
+              ;; The nested block stays collapsed.
+              (expect (string-search "hidden thought" shown) :to-be nil))
+            (expect (eca-chat-test--block-line-prefix "sub-1" "Looking around.")
+                    :to-equal eca-chat--expandable-content-base-indent)
+            (expect (eca-chat-test--block-line-prefix "sub-1" "Done looking.")
+                    :to-equal eca-chat--expandable-content-base-indent))
+        (kill-buffer buf)))))
 
 ;; ---------------------------------------------------------------------------
 ;; eca-chat--shell-command-state-face

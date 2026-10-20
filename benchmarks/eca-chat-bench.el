@@ -140,6 +140,59 @@
 ;;  to 0, confirming the matcher allocations are eliminated.
 ;;
 ;;
+;;  reason-stream-{closed,open} (issue #337, queued thinking chunks
+;;  + silent read-only protection).  For these rows the `size'
+;;  column is the FINAL thinking text size in chars; each iteration
+;;  streams one 20-char `reasonText' chunk through
+;;  `eca-chat--render-content', then re-protects the current turn
+;;  like `eca-chat-content-received' does:
+;;
+;;    * reason-stream-closed = collapsed block (the default).
+;;    * reason-stream-open   = block expanded while it streams.
+;;
+;;  Before (byte-compiled, best of 2 runs):
+;;
+;;  | op                   |   size | iters |  gc |  wall-ms | per-call-µs |
+;;  |----------------------|-------:|------:|----:|---------:|------------:|
+;;  | reason-stream-closed |  25000 |  1250 |   7 |   563.07 |      450.46 |
+;;  | reason-stream-open   |  25000 |  1250 |   7 |  1372.85 |     1098.28 |
+;;  | reason-stream-closed |  50000 |  2500 |  29 |  2548.57 |     1019.43 |
+;;  | reason-stream-open   |  50000 |  2500 |  28 |  5440.85 |     2176.34 |
+;;  | reason-stream-closed | 100000 |  5000 | 108 | 10628.17 |     2125.63 |
+;;  | reason-stream-open   | 100000 |  5000 | 101 | 21362.65 |     4272.53 |
+;;  | reason-stream-closed | 200000 | 10000 | 388 | 32623.12 |     3262.31 |
+;;  | reason-stream-open   | 200000 | 10000 | 342 | 77092.32 |     7709.23 |
+;;
+;;  After (byte-compiled, best of 3 runs):
+;;
+;;  | op                   |   size | iters |  gc |  wall-ms | per-call-µs |
+;;  |----------------------|-------:|------:|----:|---------:|------------:|
+;;  | reason-stream-closed |  25000 |  1250 |   0 |     8.67 |        6.94 |
+;;  | reason-stream-open   |  25000 |  1250 |   0 |   109.02 |       87.22 |
+;;  | reason-stream-closed |  50000 |  2500 |   0 |    19.85 |        7.94 |
+;;  | reason-stream-open   |  50000 |  2500 |   0 |   419.46 |      167.79 |
+;;  | reason-stream-closed | 100000 |  5000 |   0 |    31.31 |        6.26 |
+;;  | reason-stream-open   | 100000 |  5000 |   0 |  1306.60 |      261.32 |
+;;  | reason-stream-closed | 200000 | 10000 |   0 |    78.35 |        7.83 |
+;;  | reason-stream-open   | 200000 | 10000 |   1 |  5072.66 |      507.27 |
+;;
+;;  Speedups at 200000 chars: closed 32.6 s → 78 ms (416×), open
+;;  77.1 s → 5.1 s (15×).
+;;
+;;  Before, each chunk was concatenated to the whole block content,
+;;  copying it along with one text property interval (the indent's
+;;  `line-prefix') per chunk received so far, so the per-chunk cost
+;;  grew with the block: QUADRATIC streaming, plus heavy GC churn.
+;;  Chunks are now queued raw and joined once when the content is
+;;  needed, so the collapsed per-chunk cost is FLAT (~7 µs) in the
+;;  block size.  Expanded, the old protection also ran the change
+;;  hooks over the whole turn on each chunk (e.g. markdown rescanning
+;;  it for checkboxes); it is now applied silently.  The growth left
+;;  in the expanded rows is `eca-chat--protect-non-prompt' walking
+;;  the text property intervals of the whole turn on each call: each
+;;  chunk inserted in the buffer adds one.
+;;
+;;
 ;;; Code:
 
 (require 'benchmark)
@@ -177,6 +230,15 @@
 Each iteration appends a fixed-size delta until the body reaches
 the listed total; the bench reports the cost-per-chunk averaged
 across that growth.")
+
+(defvar eca-chat-bench-reason-sizes '(25000 50000 100000 200000)
+  "Final thinking block sizes (in chars) for the reasoning stream bench.
+Each iteration streams one `reasonText' chunk of
+`eca-chat-bench-reason-chunk-size' chars until the block reaches the
+listed total, so the per-call column is the cost per chunk.")
+
+(defvar eca-chat-bench-reason-chunk-size 20
+  "Chars per streamed `reasonText' chunk in the reasoning stream bench.")
 
 ;;;; Fixture
 
@@ -424,6 +486,60 @@ Returns a benchmark plist with op label
                                           'eca-chat--expandable-content-ov-content)))
                    (font-lock-fontify-region (overlay-start ov-content)
                                              (overlay-end ov-content)))))
+             iters)))
+      (advice-remove 'face-background #'eca-chat-bench--safe-face-background)
+      (kill-buffer buf))))
+
+(defun eca-chat-bench--reason-chunks (total chunk-size)
+  "Return TOTAL chars of sample thinking text in CHUNK-SIZE slices."
+  (let* ((sample (concat "The user wants the failing spec fixed, so I "
+                         "should read it before touching any code.\n"))
+         (text (substring (apply #'concat
+                                 (make-list (1+ (/ total (length sample)))
+                                            sample))
+                          0 total))
+         (chunks nil))
+    (dotimes (i (/ total chunk-size))
+      (push (substring text (* i chunk-size) (* (1+ i) chunk-size)) chunks))
+    (nreverse chunks)))
+
+(defun eca-chat-bench--bench-reason-stream (total open?)
+  "Time streaming a thinking block of TOTAL chars in `reasonText' chunks.
+Each iteration renders one chunk of `eca-chat-bench-reason-chunk-size'
+chars through `eca-chat--render-content', then re-protects the
+current turn as `eca-chat-content-received' does.  When OPEN? is
+non-nil the block is expanded first, so every chunk also lands in
+the buffer; otherwise it stays collapsed, the default (#337).
+
+Returns a benchmark plist labeled `reason-stream-open' or
+`reason-stream-closed'."
+  (let* ((buf (eca-chat-bench--make-fixture 5))
+         (session (eca-chat-bench--ensure-session))
+         (id "reason-bench")
+         (chunks (eca-chat-bench--reason-chunks
+                  total eca-chat-bench-reason-chunk-size))
+         (iters (length chunks))
+         (render (lambda (content)
+                   (eca-chat--render-content
+                    session buf "assistant" content nil))))
+    (advice-add 'face-background :around #'eca-chat-bench--safe-face-background)
+    (unwind-protect
+        (with-current-buffer buf
+          (let ((inhibit-read-only t))
+            (funcall render (list :type "reasonStarted" :id id))
+            (when open?
+              ;; Expanding needs some content, as when the user
+              ;; expands the block once thinking started.
+              (funcall render (list :type "reasonText" :id id :text "Hmm.\n"))
+              (eca-chat--expandable-content-toggle id t nil))
+            (eca-chat-bench--time
+             (if open? 'reason-stream-open 'reason-stream-closed)
+             (lambda ()
+               (let ((inhibit-read-only t))
+                 (funcall render (list :type "reasonText" :id id
+                                       :text (pop chunks)))
+                 (eca-chat--protect-non-prompt
+                  eca-chat--last-user-message-pos)))
              iters)))
       (advice-remove 'face-background #'eca-chat-bench--safe-face-background)
       (kill-buffer buf))))
@@ -683,8 +799,8 @@ and repeated current-turn protection during assistant text streaming."
   "Return a markdown table built from `eca-chat-bench--results'."
   (let ((rows (reverse eca-chat-bench--results)))
     (concat
-     "| op                     | size | iters  | gc | wall-ms  | per-call-µs |\n"
-     "|------------------------|-----:|-------:|---:|---------:|------------:|\n"
+     "| op                     |   size | iters  |  gc | wall-ms  | per-call-µs |\n"
+     "|------------------------|-------:|-------:|----:|---------:|------------:|\n"
      (mapconcat
       (lambda (entry)
         (let* ((size (car entry))
@@ -697,7 +813,7 @@ and repeated current-turn protection during assistant text streaming."
                (per-us (if (> iters 0)
                            (/ (* elapsed 1000000.0) iters)
                          0.0)))
-          (format "| %-22s | %4d | %6d | %2d | %8.2f | %11.2f |"
+          (format "| %-22s | %6d | %6d | %3d | %8.2f | %11.2f |"
                   label size iters gc wall-ms per-us)))
       rows
       "\n")
@@ -756,6 +872,22 @@ not the chat-turn count used by the other benches."
     (eca-chat-bench--add-result
      size (eca-chat-bench--bench-tool-prep-stream size nil))))
 
+(defun eca-chat-bench-run-reason ()
+  "Run the reasoning stream benchmark for each configured size.
+For each size in `eca-chat-bench-reason-sizes', records streaming a
+thinking block of that many chars while collapsed
+\(`reason-stream-closed') and while expanded (`reason-stream-open').
+The size column in the result table refers to the final thinking
+text size in chars, not the chat-turn count used by the other
+benches."
+  (dolist (size eca-chat-bench-reason-sizes)
+    (message "[eca-chat-bench] reason body=%d (closed) ..." size)
+    (eca-chat-bench--add-result
+     size (eca-chat-bench--bench-reason-stream size nil))
+    (message "[eca-chat-bench] reason body=%d (open) ..." size)
+    (eca-chat-bench--add-result
+     size (eca-chat-bench--bench-reason-stream size t))))
+
 ;;;###autoload
 (defun eca-chat-bench-run ()
   "Run all benchmarks at all sizes; print a markdown table.
@@ -768,6 +900,7 @@ the table is printed to standard output."
     (message "[eca-chat-bench] running size=%d ..." size)
     (eca-chat-bench-run-size size))
   (eca-chat-bench-run-tool-prep)
+  (eca-chat-bench-run-reason)
   (let ((table (eca-chat-bench--format-results)))
     (cond
      (noninteractive

@@ -2113,17 +2113,22 @@ context and prompt input stay editable.  The first protected char
 is `front-sticky' and the last is `rear-nonsticky' for
 `read-only', so the locked region rejects edits while typing in
 the progress/context/prompt still works.  No-op when
-`eca-chat-read-only-history' is nil or the boundary is absent."
+`eca-chat-read-only-history' is nil or the boundary is absent.
+
+The properties are put silently, as font-lock does with faces: they
+don't change the text, and the change hooks would otherwise run over
+the whole range on each streamed chunk that adds some text in it,
+e.g. rescanning the current turn for markdown checkboxes (#337)."
   (when eca-chat-read-only-history
     (when-let* ((end (eca-chat--read-only-end-point)))
-      (let ((inhibit-read-only t)
-            (beg (max (point-min) (or from (point-min)))))
+      (let ((beg (max (point-min) (or from (point-min)))))
         (when (< beg end)
-          (put-text-property beg end 'read-only t)
-          (put-text-property (1- end) end 'rear-nonsticky '(read-only))
-          (when (= beg (point-min))
-            (put-text-property (point-min) (1+ (point-min))
-                               'front-sticky '(read-only))))))))
+          (with-silent-modifications
+            (put-text-property beg end 'read-only t)
+            (put-text-property (1- end) end 'rear-nonsticky '(read-only))
+            (when (= beg (point-min))
+              (put-text-property (point-min) (1+ (point-min))
+                                 'front-sticky '(read-only)))))))))
 
 (defvar eca-chat--keep-point nil
   "Non-nil once a render moved point on purpose, so it is not restored.
@@ -3868,20 +3873,37 @@ Add a overlay before with OVERLAY-KEY = OVERLAY-VALUE if passed."
               (eca-chat--schedule-fontify)
               (eca-chat--protect-non-prompt eca-chat--last-user-message-pos))))))))
 
+(defun eca-chat--remote-relative-filename (filename roots)
+  "Return remote FILENAME relative to the first of ROOTS holding it.
+Return nil when no root holds it.  Names are compared as strings:
+resolving their true names, like `f-ancestor-of?' does, would
+block on remote round trips."
+  (-some (lambda (root)
+           (let ((dir (file-name-as-directory root)))
+             (when (and (string-prefix-p dir filename)
+                        (> (length filename) (length dir)))
+               (substring filename (length dir)))))
+         roots))
+
 (defun eca-chat--relativize-filename-for-workspace-root (filename roots &optional hide-filename?)
   "Relativize the FILENAME if a workspace root is found for ROOTS.
 Show parent upwards if HIDE-FILENAME? is non nil."
-  (let ((relative-path (or (-some->> (-first (lambda (root) (f-ancestor-of? root filename)) roots)
-                             (f-relative filename))
+  (let ((relative-path (or (if (file-remote-p filename)
+                               (eca-chat--remote-relative-filename filename roots)
+                             (-some->> (-first (lambda (root) (f-ancestor-of? root filename)) roots)
+                               (f-relative filename)))
                            filename)))
     (if hide-filename?
         (f-parent relative-path)
       relative-path)))
 
 (defun eca-chat--file-change-diff (path diff roots)
-  "Return a diff block for relative PATH from ROOTS with DIFF."
+  "Return a diff block for relative PATH from ROOTS with DIFF.
+PATH links to its file when it exists.  Remote files aren't
+checked: this runs from the process filter, where a remote round
+trip blocks Emacs and may hang it."
   (concat "\n"
-          (if (and path (f-exists? path))
+          (if (and path (or (file-remote-p path) (f-exists? path)))
               (eca-buttonize
                eca-chat-mode-map
                (propertize (eca-chat--relativize-filename-for-workspace-root path roots)
@@ -4439,8 +4461,7 @@ Append STATUS symbol.  Optional PARENT-ID for nested rendering."
         ;; step count / status, preserving all rendered children.
         (let* ((ov-content (overlay-get existing-ov 'eca-chat--expandable-content-ov-content))
                (open? (overlay-get existing-ov 'eca-chat--expandable-content-toggle))
-               (content (overlay-get ov-content 'eca-chat--expandable-content-content))
-               (has-content? (or (and content (not (string-empty-p content)))
+               (has-content? (or (not (eca-chat--expandable-content-empty-p ov-content))
                                  has-children?))
                (new-icon-face (get-text-property 0 'font-lock-face new-label))
                (label-indent (when (overlay-get existing-ov 'eca-chat--expandable-content-nested)
@@ -4496,8 +4517,7 @@ Rebuilds the steps-info string with current usage and updates the overlay."
            (new-label (concat (propertize label 'font-lock-face 'eca-chat-subagent-tool-call-label-face)
                               steps-info " " status time))
            (open? (overlay-get ov-label 'eca-chat--expandable-content-toggle))
-           (content (overlay-get ov-content 'eca-chat--expandable-content-content))
-           (has-content? (and content (not (string-empty-p content)))))
+           (has-content? (not (eca-chat--expandable-content-empty-p ov-content))))
       (overlay-put ov-label 'eca-chat--tool-call-steps-info steps-info)
       (save-excursion
         (goto-char (overlay-start ov-label))
@@ -4553,8 +4573,7 @@ Only updates the label line, preserving all nested child content."
            (new-label (concat (propertize label 'font-lock-face 'eca-chat-subagent-tool-call-label-face)
                               steps-info " " new-status time))
            (open? (overlay-get ov-label 'eca-chat--expandable-content-toggle))
-           (content (overlay-get ov-content 'eca-chat--expandable-content-content))
-           (has-content? (and content (not (string-empty-p content)))))
+           (has-content? (not (eca-chat--expandable-content-empty-p ov-content))))
       (save-excursion
         (goto-char (overlay-start ov-label))
         (delete-region (point) (1- (overlay-start ov-content)))

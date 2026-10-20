@@ -195,7 +195,58 @@
       (eca-process-start session (lambda () (setq started t)) #'ignore)
       (expect 'make-process :to-have-been-called)
       (expect 'eca-warn :to-have-been-called)
-      (expect started :to-be t))))
+      (expect started :to-be t)))
+
+  (it "starts the server through eca-process--make-process"
+    (let ((session (make-eca--session)))
+      (spy-on 'eca-info)
+      (spy-on 'eca-process--cleanup-old-server)
+      (spy-on 'eca-process--server-command
+              :and-return-value (list :decision 'custom
+                                      :command (list "eca" "server")))
+      (spy-on 'eca-process--make-process :and-return-value 'fake-process)
+      (eca-process-start session #'ignore #'ignore)
+      (expect (eca--session-process session) :to-be 'fake-process)
+      (let ((args (spy-calls-args-for 'eca-process--make-process 0)))
+        (expect (plist-get args :command) :to-equal '("eca" "server"))
+        (expect (plist-get args :file-handler) :to-be t)))))
+
+(describe "eca-process--make-process"
+  (before-all
+    ;; Load TRAMP while `default-directory' is still local.
+    (require 'tramp-sh))
+
+  (it "starts local servers as is"
+    (let ((default-directory temporary-file-directory)
+          (options-before tramp-ssh-controlmaster-options)
+          options-during)
+      (spy-on 'make-process :and-call-fake
+              (lambda (&rest _)
+                (setq options-during tramp-ssh-controlmaster-options)
+                'fake-process))
+      (expect (eca-process--make-process :name "eca" :command '("eca"))
+              :to-be 'fake-process)
+      (expect 'make-process
+              :to-have-been-called-with :name "eca" :command '("eca"))
+      (expect options-during :to-equal options-before)))
+
+  (it "disables ssh connection sharing for remote servers (bug#61350)"
+    (let ((default-directory "/ssh:host:/proj/")
+          (options-before tramp-ssh-controlmaster-options)
+          share-during options-during)
+      (spy-on 'make-process :and-call-fake
+              (lambda (&rest _)
+                (setq share-during tramp-use-ssh-controlmaster-options
+                      options-during tramp-ssh-controlmaster-options)
+                'fake-process))
+      (expect (eca-process--make-process :name "eca" :file-handler t)
+              :to-be 'fake-process)
+      (expect 'make-process
+              :to-have-been-called-with :name "eca" :file-handler t)
+      (expect share-during :to-be 'suppress)
+      (expect options-during
+              :to-equal "-o ControlMaster=no -o ControlPath=none")
+      (expect tramp-ssh-controlmaster-options :to-equal options-before))))
 
 (describe "eca-server-check-updates"
   (before-each
