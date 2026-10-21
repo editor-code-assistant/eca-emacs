@@ -417,6 +417,51 @@ When TITLE is non-nil, use it as the chat title."
         (when (buffer-live-p chat)
           (kill-buffer chat))))))
 
+(describe "eca-chat tab switching"
+
+  (it "binds C-x <left>/<right> in chat buffers"
+    (expect (lookup-key eca-chat-mode-map (kbd "C-x <left>"))
+            :to-be 'eca-chat-previous-tab)
+    (expect (lookup-key eca-chat-mode-map (kbd "C-x <right>"))
+            :to-be 'eca-chat-next-tab)
+    (expect (lookup-key eca-chat-mode-map (kbd "C-x C-<left>"))
+            :to-be 'eca-chat-previous-tab)
+    (expect (lookup-key eca-chat-mode-map (kbd "C-x C-<right>"))
+            :to-be 'eca-chat-next-tab))
+
+  (it "cycles through chat tabs with wrap-around"
+    (let ((session (make-eca--session)) a b c)
+      (spy-on 'eca-session :and-return-value session)
+      (spy-on 'switch-to-buffer :and-call-fake #'set-buffer)
+      (unwind-protect
+          (progn
+            (setq a (eca-chat-test--make-tab-chat session "A" "Alpha")
+                  b (eca-chat-test--make-tab-chat session "B" "Beta")
+                  c (eca-chat-test--make-tab-chat session "C" "Gamma"))
+            (dolist (buffer (list a b c))
+              (with-current-buffer buffer
+                (setq-local tab-line-mode t)))
+            (with-current-buffer a
+              (eca-chat-next-tab)
+              (expect (current-buffer) :to-be b)
+              (eca-chat-next-tab 2)
+              (expect (current-buffer) :to-be a)
+              (eca-chat-previous-tab)
+              (expect (current-buffer) :to-be c)))
+        (dolist (buffer (list a b c))
+          (when (buffer-live-p buffer)
+            (kill-buffer buffer))))))
+
+  (it "falls back to previous/next-buffer without the tab-line"
+    (spy-on 'previous-buffer)
+    (spy-on 'next-buffer)
+    (with-temp-buffer
+      (setq-local tab-line-mode nil)
+      (eca-chat-previous-tab 1)
+      (eca-chat-next-tab 2)
+      (expect 'previous-buffer :to-have-been-called-with 1)
+      (expect 'next-buffer :to-have-been-called-with 2))))
+
 (describe "eca-chat--has-pending-approvals-p"
 
   (it "caches the buffer scan between calls"

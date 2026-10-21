@@ -1036,6 +1036,13 @@ and resume link are not left behind under the replayed messages.")
     (define-key map (kbd "C-c <up>") #'eca-chat-go-to-prev-expandable-block)
     (define-key map (kbd "C-c <down>") #'eca-chat-go-to-next-expandable-block)
     (define-key map (kbd "C-c <tab>") #'eca-chat-toggle-expandable-block)
+    ;; Emacs 30 bound these in `tab-line-mode-map', but Emacs 31 only
+    ;; binds them globally under `global-tab-line-mode', so the
+    ;; buffer-local chat tab-line lost them.  Bind them explicitly.
+    (define-key map (kbd "C-x <left>") #'eca-chat-previous-tab)
+    (define-key map (kbd "C-x <right>") #'eca-chat-next-tab)
+    (define-key map (kbd "C-x C-<left>") #'eca-chat-previous-tab)
+    (define-key map (kbd "C-x C-<right>") #'eca-chat-next-tab)
     ;; Per-chat inline image zoom (browser-style).  Uses `C-c C-z' as
     ;; the prefix because `C-c <letter>' sequences are reserved for
     ;; users by the Emacs key binding conventions; `C-c' followed by
@@ -3260,6 +3267,38 @@ appear on the right."
                  (when (buffer-live-p buf)
                    (append tab `((selected . ,(eq buf current-buf)))))))
              (eca-chat--tab-line-stable-tabs session)))))
+
+(defun eca-chat--switch-tab (offset)
+  "Switch to the chat tab OFFSET positions away, wrapping around.
+Return the selected buffer, or nil when there is nothing to switch."
+  (let* ((buffers (-keep (lambda (tab) (cdr (assq 'buffer tab)))
+                         (eca-chat--tab-line-tabs)))
+         (pos (-elem-index (current-buffer) buffers)))
+    (when (and pos (> (length buffers) 1))
+      (let ((buffer (nth (mod (+ pos offset) (length buffers)) buffers))
+            (switch-to-buffer-obey-display-actions nil))
+        (switch-to-buffer buffer)
+        buffer))))
+
+(defun eca-chat-previous-tab (&optional arg)
+  "Switch to the ARGth previous chat tab, wrapping around.
+Falls back to `previous-buffer' when the chat tab-line is off.
+Emacs 31 only binds `C-x <left>' to tab switching under
+`global-tab-line-mode', so chat buffers bind it themselves."
+  (interactive "p")
+  (if (bound-and-true-p tab-line-mode)
+      (eca-chat--switch-tab (- (or arg 1)))
+    (previous-buffer arg)))
+
+(defun eca-chat-next-tab (&optional arg)
+  "Switch to the ARGth next chat tab, wrapping around.
+Falls back to `next-buffer' when the chat tab-line is off.
+Emacs 31 only binds `C-x <right>' to tab switching under
+`global-tab-line-mode', so chat buffers bind it themselves."
+  (interactive "p")
+  (if (bound-and-true-p tab-line-mode)
+      (eca-chat--switch-tab (or arg 1))
+    (next-buffer arg)))
 
 (defun eca-chat--tab-line-close-tab (&optional e)
   "Close the chat tab clicked on.
