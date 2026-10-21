@@ -488,11 +488,21 @@ works normally."
 When non-nil, `eca-chat-resume' opens chats with a bounded window of the
 newest messages and shows a \"Load older messages\" control to page
 through earlier history on demand, avoiding a full replay of very long
-chats.  When nil, the entire history is replayed on open (legacy
-behavior)."
+chats.  Chats forked from another chat are bounded the same way.  When
+nil, the entire history is replayed (legacy behavior).  Changes reach
+forks only after the server restarts."
   :type '(choice (const :tag "Full replay (no pagination)" nil)
                  (integer :tag "Newest messages per page"))
   :group 'eca)
+
+(defun eca-chat--incremental-updates-capability ()
+  "Return the `incrementalUpdates' chat capability sent on initialize.
+Its `historyPageSize' bounds the messages of chats the server creates,
+like forks, following `eca-chat-history-page-size'."
+  ;; nil means full replay; an empty plist would serialize to JSON null
+  ;; and drop the whole capability, so ask for an unbounded page instead.
+  (list :historyPageSize (or eca-chat-history-page-size
+                             most-positive-fixnum)))
 
 ;; Faces
 
@@ -1162,6 +1172,31 @@ explicitly with `eca-chat-delete' or the /delete-chat command."
   (let ((inhibit-read-only t))
     (apply #'insert contents))
   (setq-local buffer-undo-list nil))
+
+(defmacro eca-chat--with-overlays-pushed-past (pos &rest body)
+  "Run BODY, which inserts text at POS, keeping overlays after it.
+Overlays starting at POS would otherwise stay in front of the inserted
+text.  A nil POS runs BODY unchanged."
+  (declare (indent 1) (debug t))
+  (let ((p (gensym "pos-"))
+        (ovs (gensym "ovs-"))
+        (size (gensym "size-")))
+    `(let* ((,p ,pos)
+            (,ovs (when ,p
+                    (mapcar (lambda (o) (cons o (overlay-end o)))
+                            (-filter (lambda (o) (= (overlay-start o) ,p))
+                                     (overlays-in ,p ,p)))))
+            (,size (buffer-size)))
+       (prog1 (progn ,@body)
+         (let ((delta (- (buffer-size) ,size)))
+           (when (> delta 0)
+             (dolist (entry ,ovs)
+               (let ((o (car entry)))
+                 (when (overlay-buffer o)
+                   (move-overlay o (+ ,p delta)
+                                 (if (= (cdr entry) ,p)
+                                     (+ ,p delta)
+                                   (overlay-end o))))))))))))
 
 (defun eca-chat--spinner-start (callback)
   "Start modeline spinner calling CALLBACK when updating."
@@ -1888,8 +1923,9 @@ current draft appended, after the server clears the chat."
                                     :params (list :chatId eca-chat--id
                                                   :contentId content-id
                                                   :include include))
-            ;; `eca-chat-cleared' consumes the stash during the sync
-            ;; wait; this reset only drops a leftover on request failure.
+            ;; `eca-chat-cleared' or `eca-chat-truncated' consumes the
+            ;; stash during the sync wait; this reset only drops a
+            ;; leftover on request failure.
             (setq-local eca-chat--prompt-after-clear nil)))))))
 
 (defun eca-chat--remove-flag (session content-id)
@@ -4904,11 +4940,26 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
                            eca-chat-mode-map
                            (propertize "Remove flag" 'font-lock-face 'eca-chat-rollback-face)
                            (lambda () (eca-chat--remove-flag session flag-content-id))))
-              (actions (concat fork-btn "\n" remove-btn)))
-         (eca-chat--add-expandable-content flag-content-id flag-str actions)
-         (when-let* ((ov (eca-chat--get-expandable-content flag-content-id)))
-           (overlay-put ov 'eca-chat--flag-text flag-text)
-           (overlay-put ov 'eca-chat--timestamp (float-time)))))
+              (actions (concat fork-btn "\n" remove-btn))
+              (after-id (plist-get content :afterContentId))
+              (at-point (when after-id
+                          (eca-chat--expandable-block-end after-id))))
+         ;; A flag anchored to a block that is not rendered (e.g. on an
+         ;; unloaded history page) is skipped; paging that page in
+         ;; renders it in place.
+         (unless (and after-id (not at-point))
+           (let ((size (buffer-size)))
+             (eca-chat--with-overlays-pushed-past at-point
+               (eca-chat--add-expandable-content flag-content-id flag-str actions
+                                                 nil at-point))
+             (when at-point
+               (eca-chat--shift-saved-positions at-point
+                                                (- (buffer-size) size))))
+           (when-let* ((ov (eca-chat--get-expandable-content flag-content-id)))
+             (overlay-put ov 'eca-chat--flag-text flag-text)
+             (overlay-put ov 'eca-chat--timestamp (float-time)))
+           (when at-point
+             (eca-chat--protect-non-prompt at-point)))))
       ("reasonStarted"
        (let ((id (plist-get content :id))
              (label (propertize "Thinking..." 'font-lock-face 'eca-chat-reason-label-face)))
@@ -5302,8 +5353,11 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
       (_ nil))
     (when approval-acted-on?
       (eca-chat--move-on-from-approval))
-    (eca-chat--mark-response-copy-break
-     content-type parent-tool-call-id)))
+    ;; A flag positioned earlier in the history does not end the
+    ;; response being streamed below it.
+    (unless (plist-get content :afterContentId)
+      (eca-chat--mark-response-copy-break
+       content-type parent-tool-call-id))))
 
 (defun eca-chat-content-received (session params)
   "Handle the content received notification with PARAMS for SESSION."
@@ -5473,6 +5527,103 @@ Shown at the top of the buffer only when an older page is available
             (setq-local eca-chat--prompt-after-clear nil)
             (eca-chat--clear new-prompt)))))))
 
+(defun eca-chat--last-user-message-id ()
+  "Return the id of the last user message block, or nil."
+  (let ((last-pos nil)
+        (last-id nil))
+    (dolist (ov (overlays-in (point-min) (point-max)))
+      (when-let* ((id (overlay-get ov 'eca-chat--user-message-id)))
+        (let ((pos (overlay-start ov)))
+          (when (or (null last-pos) (> pos last-pos))
+            (setq last-pos pos
+                  last-id id)))))
+    last-id))
+
+(defun eca-chat--shift-saved-positions (pos delta)
+  "Move saved turn positions at or after POS by DELTA.
+Needed after inserting text above them, as they are plain numbers."
+  (when (and eca-chat--last-user-message-pos
+             (>= eca-chat--last-user-message-pos pos))
+    (setq-local eca-chat--last-user-message-pos
+                (+ eca-chat--last-user-message-pos delta)))
+  (when (and eca-chat--last-response-copy-start
+             (>= eca-chat--last-response-copy-start pos))
+    (setq-local eca-chat--last-response-copy-start
+                (+ eca-chat--last-response-copy-start delta))))
+
+(defun eca-chat--expandable-block-end (id)
+  "Return the position just after the expandable block ID, or nil."
+  (when-let* ((ov (eca-chat--get-expandable-content id)))
+    (let* ((ov-content (overlay-get ov 'eca-chat--expandable-content-ov-content))
+           (end (if ov-content (overlay-end ov-content) (overlay-end ov))))
+      (if (eq (char-after end) ?\n) (1+ end) end))))
+
+(defun eca-chat--truncate-from (content-id)
+  "Delete the block with CONTENT-ID and all chat content after it.
+Return nil when CONTENT-ID is not rendered in the current buffer."
+  (when-let* ((ov (eca-chat--get-expandable-content content-id)))
+    ;; The blank line before the block is kept, so the next user
+    ;; message reuses it instead of adding another.
+    (let* ((start (overlay-start ov))
+           (end (eca-chat--content-insertion-point))
+           (inhibit-read-only t))
+      (when (< start end)
+        (dolist (o (overlays-in start end))
+          (when (and (>= (overlay-start o) start)
+                     (<= (overlay-end o) end))
+            (when-let* ((id (overlay-get o 'eca-chat--expandable-content-id)))
+              (remhash id eca-chat-expandable--id->ov))
+            (delete-overlay o)))
+        (delete-region start end))
+      ;; Like `eca-chat--mark-header', point at the end of the last
+      ;; user message, where its response starts.
+      (setq-local eca-chat--last-user-message-pos
+                  (-some-> (eca-chat--last-user-message-id)
+                    (eca-chat--expandable-block-end)))
+      (setq-local eca-chat--last-response-copy-start nil)
+      (setq-local eca-chat--last-response-copy-kind nil)
+      t)))
+
+(defun eca-chat--reopen (session chat-id &optional prompt)
+  "Re-render CHAT-ID for SESSION from the server via `chat/open'.
+PROMPT, when non-nil, replaces the prompt field once it is rendered."
+  (eca-api-request-async
+   session
+   :method "chat/open"
+   :params (append (list :chatId chat-id)
+                   (when eca-chat-history-page-size
+                     (list :limit eca-chat-history-page-size)))
+   :success-callback
+   (lambda (res)
+     (when-let* ((buffer (eca-chat--get-chat-buffer session chat-id))
+                 ((buffer-live-p buffer)))
+       (eca-chat--with-current-buffer buffer
+         (eca-chat--apply-history-meta (plist-get res :meta))
+         (eca-chat--refresh-load-older-control)
+         (eca-chat--protect-non-prompt)
+         (when prompt
+           (eca-chat--set-prompt prompt)))))
+   :error-callback
+   (lambda (err)
+     (eca-warn "Failed to refresh chat %s: %s" chat-id err))))
+
+(defun eca-chat-truncated (session params)
+  "Remove a message and all after it, for SESSION and PARAMS.
+When the message is not rendered (e.g. on an unloaded history page),
+re-open the chat from the server instead."
+  (let* ((chat-id (plist-get params :chatId))
+         (content-id (plist-get params :contentId))
+         (chat-buffer (eca-chat--get-chat-buffer session chat-id)))
+    (when (buffer-live-p chat-buffer)
+      (eca-chat--with-current-buffer chat-buffer
+        (eca-chat--stream-flush)
+        (let ((new-prompt eca-chat--prompt-after-clear))
+          (setq-local eca-chat--prompt-after-clear nil)
+          (if (eca-chat--truncate-from content-id)
+              (when new-prompt
+                (eca-chat--set-prompt new-prompt))
+            (eca-chat--reopen session chat-id new-prompt)))))))
+
 (defun eca-chat--legacy-open-config-p (chat-config)
   "Return non-nil for a legacy unscoped chat/open restore update."
   (and (or (plist-member chat-config :selectModel)
@@ -5636,7 +5787,8 @@ update the title and return without creating a duplicate buffer.
 Otherwise, creates a new chat buffer for a server-initiated chat
 \(e.g. /fork or replay via chat/open\) and registers it under the
 real chat-id so subsequent `chat/contentReceived' notifications
-render into it.
+render into it.  A :history plist in PARAMS means only the newest
+page follows, so the load-older control is shown.
 
 A registered buffer marked `eca-chat--closed' (left behind by
 `eca-chat-exit' on restart) is treated as stale, not reused, so a
@@ -5667,7 +5819,12 @@ resumed chat gets a fresh writable buffer."
             (eca-chat-mode))
           (setq-local eca-chat--id chat-id)
           (setq-local eca-chat--title title)
-          (eca-chat--initialize-selection-state session))
+          (eca-chat--initialize-selection-state session)
+          ;; Server-created chats (forks) may stream only their newest
+          ;; page; show the control to load the older ones.
+          (when-let* ((history (plist-get params :history)))
+            (eca-chat--apply-history-meta history)
+            (eca-chat--refresh-load-older-control)))
         (setf (eca--session-chats session)
               (eca-assoc (eca--session-chats session) chat-id new-buffer))
         (eca-chat--invalidate-tab-line-cache session)
