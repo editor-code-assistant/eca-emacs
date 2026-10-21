@@ -206,7 +206,9 @@
         (setq eca-jobs--refresh-timer nil)))))
 
 (defun eca-jobs--ensure-timer (session buffer)
-  "Start or stop the refresh timer for BUFFER based on running jobs in SESSION."
+  "Start or stop the refresh timer for BUFFER based on running jobs in SESSION.
+The timer skips the ticks run where the text must not change, see
+`eca--text-change-unsafe-p'."
   (when (buffer-live-p buffer)
     (with-current-buffer buffer
       (if (eca-jobs--has-running-p session)
@@ -217,7 +219,8 @@
                                     (cond
                                      ((not (buffer-live-p buffer))
                                       (eca-jobs--stop-timer buffer))
-                                     ((get-buffer-window buffer)
+                                     ((and (get-buffer-window buffer)
+                                           (not (eca--text-change-unsafe-p)))
                                       (eca-jobs--render session buffer)))))))
         (eca-jobs--stop-timer buffer)))))
 

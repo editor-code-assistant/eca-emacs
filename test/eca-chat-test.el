@@ -175,6 +175,24 @@ When TITLE is non-nil, use it as the chat title."
   (with-current-buffer buf
     (eca-chat--stream-flush)))
 
+(defun eca-chat-test--capture-timers (fn)
+  "Call FN, capturing the timers it schedules with `run-with-timer'.
+Return a list of (SECS FUNCTION ARGS TIMER), in scheduling order.
+The returned timers are never activated."
+  (let (scheduled)
+    (cl-letf (((symbol-function 'run-with-timer)
+               (lambda (secs _repeat function &rest args)
+                 (let ((timer (timer-create)))
+                   (timer-set-function timer #'ignore)
+                   (push (list secs function args timer) scheduled)
+                   timer))))
+      (funcall fn))
+    (nreverse scheduled)))
+
+(defun eca-chat-test--run-timer (captured)
+  "Run the function of the CAPTURED timer with its arguments."
+  (apply (nth 1 captured) (nth 2 captured)))
+
 ;; ---------------------------------------------------------------------------
 ;; Tests
 ;; ---------------------------------------------------------------------------
@@ -2790,6 +2808,111 @@ detected even on filesystems with a coarse modtime resolution."
             (expect notify-history
                     :to-match (regexp-quote "before stop")))
         (when (buffer-live-p buf)
+          (kill-buffer buf)))))
+
+  (it "defers a flush whose timer runs during redisplay (#335)"
+    ;; emojify calls `sit-for' from `jit-lock-functions', which runs the
+    ;; due timers while redisplay is in progress.
+    (let ((buf (eca-chat-test--make-render-buffer))
+          (session (make-eca--session))
+          (eca-chat-stream-flush-interval 60))
+      (unwind-protect
+          (eca-chat--with-current-buffer buf
+            (eca-chat-test--render-assistant-text session buf "deferred text")
+            (let ((retries (eca-chat-test--capture-timers
+                            (lambda ()
+                              (let ((inhibit-redisplay t))
+                                (eca-chat--stream-flush-callback buf))))))
+              (expect (eca-chat-test--history-text buf)
+                      :not :to-match (regexp-quote "deferred text"))
+              (expect eca-chat--stream-pending-chunks
+                      :to-equal '("deferred text"))
+              (expect (length retries) :to-equal 1)
+              (expect (nth 0 (car retries))
+                      :to-equal eca-chat--stream-deferred-flush-delay)
+              ;; Tracked, so clearing or flushing the chat cancels it.
+              (expect eca-chat--stream-flush-timer
+                      :to-be (nth 3 (car retries)))
+              ;; The retry runs from the command loop: the text renders.
+              (eca-chat-test--run-timer (car retries))
+              (expect (eca-chat-test--history-text buf)
+                      :to-match (regexp-quote "deferred text"))
+              (expect eca-chat--stream-pending-chunks :to-be nil)
+              (expect eca-chat--stream-flush-timer :to-be nil)))
+        (when (buffer-live-p buf)
+          (kill-buffer buf)))))
+
+  (it "defers a flush whose timer runs while text is changed silently"
+    (let ((buf (eca-chat-test--make-render-buffer))
+          (session (make-eca--session))
+          (eca-chat-stream-flush-interval 60))
+      (unwind-protect
+          (eca-chat--with-current-buffer buf
+            (eca-chat-test--render-assistant-text session buf "silent text")
+            (let ((retries (eca-chat-test--capture-timers
+                            (lambda ()
+                              (with-silent-modifications
+                                (eca-chat--stream-flush-callback buf))))))
+              (expect (eca-chat-test--history-text buf)
+                      :not :to-match (regexp-quote "silent text"))
+              (expect (length retries) :to-equal 1)
+              (eca-chat-test--run-timer (car retries))
+              (expect (eca-chat-test--history-text buf)
+                      :to-match (regexp-quote "silent text"))))
+        (when (buffer-live-p buf)
+          (kill-buffer buf)))))
+
+  (it "schedules no retry when a deferred run has nothing to flush"
+    (let ((buf (eca-chat-test--make-render-buffer))
+          (eca-chat-stream-flush-interval 60))
+      (unwind-protect
+          (eca-chat--with-current-buffer buf
+            (expect (eca-chat-test--capture-timers
+                     (lambda ()
+                       (let ((inhibit-redisplay t))
+                         (eca-chat--stream-flush-callback buf))))
+                    :to-be nil)
+            (expect eca-chat--stream-flush-timer :to-be nil))
+        (when (buffer-live-p buf)
+          (kill-buffer buf))))))
+
+(describe "eca-chat periodic timers during redisplay (#335)"
+  (it "skips the spinner ticks run during redisplay"
+    (with-temp-buffer
+      (let* ((calls 0)
+             (tick (car (eca-chat-test--capture-timers
+                         (lambda ()
+                           (eca-chat--spinner-start
+                            (lambda () (cl-incf calls))))))))
+        (unwind-protect
+            (progn
+              (let ((inhibit-redisplay t))
+                (eca-chat-test--run-timer tick))
+              (expect calls :to-equal 0)
+              (expect eca-chat--spinner-string :to-equal "")
+              (eca-chat-test--run-timer tick)
+              (expect calls :to-equal 1)
+              (expect eca-chat--spinner-string :to-equal "."))
+          (eca-chat--spinner-stop)))))
+
+  (it "skips the tool call elapsed time ticks run during redisplay"
+    (let ((buf (eca-chat-test--make-render-buffer)))
+      (unwind-protect
+          (with-current-buffer buf
+            (spy-on 'eca-chat--tool-call-elapsed-tick)
+            (let ((tick (car (eca-chat-test--capture-timers
+                              (lambda ()
+                                (eca-chat--tool-call-elapsed-start "tool-1"))))))
+              (let ((inhibit-redisplay t))
+                (eca-chat-test--run-timer tick))
+              (expect 'eca-chat--tool-call-elapsed-tick
+                      :not :to-have-been-called)
+              (eca-chat-test--run-timer tick)
+              (expect 'eca-chat--tool-call-elapsed-tick
+                      :to-have-been-called-times 1)))
+        (when (buffer-live-p buf)
+          (with-current-buffer buf
+            (eca-chat--tool-call-elapsed-stop-all))
           (kill-buffer buf))))))
 
 (describe "eca-chat--maybe-run-tool-call-functions"

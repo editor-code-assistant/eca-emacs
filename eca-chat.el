@@ -1199,14 +1199,18 @@ text.  A nil POS runs BODY unchanged."
                                    (overlay-end o))))))))))))
 
 (defun eca-chat--spinner-start (callback)
-  "Start modeline spinner calling CALLBACK when updating."
+  "Start modeline spinner calling CALLBACK when updating.
+Skip the ticks run where the text must not change, see
+`eca--text-change-unsafe-p': CALLBACK renders the spinner in the
+buffer."
   (eca-chat--allow-write
    (setq eca-chat--spinner-timer
          (run-with-timer
           0
           0.5
           (lambda ()
-            (when eca-chat--spinner-timer
+            (when (and eca-chat--spinner-timer
+                       (not (eca--text-change-unsafe-p)))
               (if (eq 3 (length eca-chat--spinner-string))
                   (setq eca-chat--spinner-string ".")
                 (setq eca-chat--spinner-string (concat eca-chat--spinner-string ".")))
@@ -1238,7 +1242,8 @@ property so the timer can locate it."
 (defun eca-chat--tool-call-elapsed-start (id)
   "Start tracking elapsed time for tool call ID.
 Records current time (only on first call for ID) and ensures the shared
-update timer is running."
+update timer is running.  The timer skips the ticks run where the text
+must not change, see `eca--text-change-unsafe-p'."
   (unless (gethash id eca-chat--tool-call-elapsed-times)
     (puthash id (current-time) eca-chat--tool-call-elapsed-times))
   (unless eca-chat--tool-call-elapsed-timer
@@ -1249,8 +1254,9 @@ update timer is running."
              1 1
              (lambda ()
                (if (buffer-live-p buf)
-                   (with-current-buffer buf
-                     (eca-chat--tool-call-elapsed-tick))
+                   (unless (eca--text-change-unsafe-p)
+                     (with-current-buffer buf
+                       (eca-chat--tool-call-elapsed-tick)))
                  ;; Buffer was killed — cancel ourselves to avoid leak
                  (cancel-timer timer)))))
       (setq eca-chat--tool-call-elapsed-timer timer))))
@@ -3914,18 +3920,31 @@ Add a overlay before with OVERLAY-KEY = OVERLAY-VALUE if passed."
     (cancel-timer eca-chat--stream-flush-timer))
   (setq-local eca-chat--stream-flush-timer nil))
 
+(defconst eca-chat--stream-deferred-flush-delay 0.05
+  "Seconds before retrying a stream flush that could not run.
+See `eca-chat--stream-flush-callback'.")
+
 (defun eca-chat--stream-flush-callback (buffer)
-  "Flush pending assistant stream text in BUFFER when it is live."
+  "Flush pending assistant stream text in BUFFER when it is live.
+When the timer runs where the text must not change, e.g. from a
+`sit-for' called during redisplay (#335), keep the text pending and
+retry after `eca-chat--stream-deferred-flush-delay' instead.
+`eca--text-change-unsafe-p' tells these runs apart."
   (when (buffer-live-p buffer)
     (with-current-buffer buffer
-      (eca-chat--stream-flush))))
+      (if (and eca-chat--stream-pending-chunks
+               (eca--text-change-unsafe-p))
+          (eca-chat--stream-schedule-flush
+           eca-chat--stream-deferred-flush-delay)
+        (eca-chat--stream-flush)))))
 
-(defun eca-chat--stream-schedule-flush ()
-  "Schedule a timer to flush pending assistant stream text."
+(defun eca-chat--stream-schedule-flush (&optional delay)
+  "Schedule a timer to flush pending assistant stream text.
+Flush after DELAY seconds, `eca-chat-stream-flush-interval' by default."
   (eca-chat--stream-cancel)
   (let ((buffer (current-buffer)))
     (setq-local eca-chat--stream-flush-timer
-                (run-with-timer eca-chat-stream-flush-interval nil
+                (run-with-timer (or delay eca-chat-stream-flush-interval) nil
                                 #'eca-chat--stream-flush-callback
                                 buffer))))
 

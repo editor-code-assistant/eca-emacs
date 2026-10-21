@@ -95,6 +95,17 @@ at POS, so two adjacent items propertized separately are two runs."
             pos)
           (next-single-property-change pos prop nil (point-max)))))
 
+(defun eca--text-change-unsafe-p ()
+  "Return non-nil when a timer must not change buffer text now.
+Timers also run while Lisp code waits, e.g. on the `sit-for' that
+emojify calls from `jit-lock-functions'.  Redisplay is then still in
+progress, with `inhibit-redisplay' bound, and changing the text of a
+buffer under it can crash Emacs (#335).  Code changing text silently
+binds `inhibit-modification-hooks': a change made there would skip
+the change hooks, e.g. jit-lock's.  Timers run from the command loop
+see neither binding, so a deferred change gets made soon after."
+  (or inhibit-redisplay inhibit-modification-hooks))
+
 (defvar-local eca--session-id-cache nil)
 
 (defvar eca--sessions '())

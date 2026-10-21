@@ -661,6 +661,39 @@ CHATS is a list of chat buffers ordered oldest-first."
 
   (it "does not schedule a refresh without a dashboard buffer"
     (eca-workspaces--schedule-refresh)
-    (expect eca-workspaces--refresh-timer :to-be nil)))
+    (expect eca-workspaces--refresh-timer :to-be nil))
+
+  (it "reschedules a refresh whose timer runs during redisplay (#335)"
+    (eca-workspaces-test--render)
+    (spy-on 'eca-workspaces-refresh)
+    (let (scheduled)
+      (cl-letf (((symbol-function 'run-with-timer)
+                 (lambda (_secs _repeat function &rest _args)
+                   (push function scheduled)
+                   (let ((timer (timer-create)))
+                     (timer-set-function timer #'ignore)
+                     timer))))
+        (eca-workspaces--schedule-refresh)
+        (let ((inhibit-redisplay t))
+          (funcall (car scheduled))))
+      (expect 'eca-workspaces-refresh :not :to-have-been-called)
+      (expect (length scheduled) :to-equal 2)
+      (expect (timerp eca-workspaces--refresh-timer) :to-be-truthy)
+      (funcall (car scheduled))
+      (expect 'eca-workspaces-refresh :to-have-been-called-times 1)
+      (expect eca-workspaces--refresh-timer :to-be nil)))
+
+  (it "skips the ticker refreshes run during redisplay (#335)"
+    (let ((buffer (eca-workspaces-test--render)))
+      (spy-on 'eca-workspaces-refresh)
+      (spy-on 'eca-workspaces--stop-ticker)
+      (save-window-excursion
+        (switch-to-buffer buffer)
+        (let ((inhibit-redisplay t))
+          (eca-workspaces--tick))
+        (expect 'eca-workspaces-refresh :not :to-have-been-called)
+        (eca-workspaces--tick)
+        (expect 'eca-workspaces-refresh :to-have-been-called-times 1)
+        (expect 'eca-workspaces--stop-ticker :not :to-have-been-called)))))
 
 ;;; eca-workspaces-test.el ends here

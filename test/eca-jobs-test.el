@@ -166,5 +166,33 @@
         (expect (get-text-property (point) 'eca-job-id)
                 :to-equal "job-1")))))
 
+;; refresh timer
+
+(describe "eca-jobs--ensure-timer"
+  (it "skips the refreshes run during redisplay (#335)"
+    (let ((session (eca-jobs-test--make-session
+                    (list (eca-jobs-test--running-job))))
+          (buffer (generate-new-buffer " *test-eca-jobs*"))
+          tick)
+      (unwind-protect
+          (save-window-excursion
+            (switch-to-buffer buffer)
+            (spy-on 'eca-jobs--render)
+            (cl-letf (((symbol-function 'run-with-timer)
+                       (lambda (_secs _repeat function &rest _args)
+                         (setq tick function)
+                         (let ((timer (timer-create)))
+                           (timer-set-function timer #'ignore)
+                           timer))))
+              (eca-jobs--ensure-timer session buffer))
+            (let ((inhibit-redisplay t))
+              (funcall tick))
+            (expect 'eca-jobs--render :not :to-have-been-called)
+            (funcall tick)
+            (expect 'eca-jobs--render
+                    :to-have-been-called-with session buffer))
+        (eca-jobs--stop-timer buffer)
+        (kill-buffer buffer)))))
+
 (provide 'eca-jobs-test)
 ;;; eca-jobs-test.el ends here

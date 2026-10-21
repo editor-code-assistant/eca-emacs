@@ -417,5 +417,24 @@
       (expect (eca--quota-bar 150 4) :to-equal "████")
       (expect (eca--quota-bar -5 4) :to-equal "░░░░"))))
 
+(describe "eca--text-change-unsafe-p"
+  (it "is nil for timers run from the command loop"
+    (let ((inhibit-redisplay nil)
+          (inhibit-modification-hooks nil))
+      (expect (eca--text-change-unsafe-p) :to-be nil)))
+
+  (it "is non-nil for timers run during redisplay (#335)"
+    ;; Redisplay binds `inhibit-redisplay' while it runs Lisp code like
+    ;; `jit-lock-functions', where emojify calls `sit-for'.
+    (let ((inhibit-redisplay t)
+          (inhibit-modification-hooks nil))
+      (expect (eca--text-change-unsafe-p) :to-be-truthy)))
+
+  (it "is non-nil for timers run while text is changed silently"
+    (let ((inhibit-redisplay nil))
+      (with-temp-buffer
+        (with-silent-modifications
+          (expect (eca--text-change-unsafe-p) :to-be-truthy))))))
+
 (provide 'eca-util-test)
 ;;; eca-util-test.el ends here

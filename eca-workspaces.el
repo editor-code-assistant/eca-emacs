@@ -355,21 +355,28 @@ Preserves point, per-window points and scroll, and fold state."
       (eca-workspaces--stop-ticker))))
 
 (defun eca-workspaces--tick ()
-  "Refresh the dashboard from the elapsed-time ticker."
+  "Refresh the dashboard from the elapsed-time ticker.
+Skip the ticks run where the text must not change, see
+`eca--text-change-unsafe-p'."
   (let ((buffer (get-buffer eca-workspaces-buffer-name)))
     (if (and buffer (buffer-live-p buffer) (get-buffer-window buffer t))
-        (eca-workspaces-refresh)
+        (unless (eca--text-change-unsafe-p)
+          (eca-workspaces-refresh))
       (eca-workspaces--stop-ticker))))
 
 (defun eca-workspaces--schedule-refresh (&rest _)
-  "Schedule a debounced refresh of the dashboard buffer."
+  "Schedule a debounced refresh of the dashboard buffer.
+When the timer runs where the text must not change, see
+`eca--text-change-unsafe-p', schedule the refresh again instead."
   (when (get-buffer eca-workspaces-buffer-name)
     (unless (timerp eca-workspaces--refresh-timer)
       (setq eca-workspaces--refresh-timer
             (run-with-timer 0.2 nil
                             (lambda ()
                               (setq eca-workspaces--refresh-timer nil)
-                              (eca-workspaces-refresh)))))))
+                              (if (eca--text-change-unsafe-p)
+                                  (eca-workspaces--schedule-refresh)
+                                (eca-workspaces-refresh))))))))
 
 (defun eca-workspaces--on-kill ()
   "Clean up dashboard timers when the buffer is killed."
