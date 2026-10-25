@@ -4683,6 +4683,93 @@ CHOOSE receives the candidate list the command offers."
                '(:session-tokens " (" :last-message-cost ") " :session-tokens-percentage :bogus)))
           (expect (substring-no-properties (eca-chat--usage-str)) :to-equal "1K"))))))
 
+(defun eca-chat-test--standard-value (symbol)
+  "Return the default value of the user option SYMBOL."
+  (eval (car (get symbol 'standard-value)) t))
+
+(describe "eca-chat--tps-str"
+  (it "returns nil until the server measured a response"
+    (with-temp-buffer
+      (expect (eca-chat--tps-str) :to-be nil)))
+
+  (it "joins the speed of the last response to what precedes it"
+    (with-temp-buffer
+      (setq-local eca-chat--message-output-tps 87)
+      (let* ((eca-chat-tps-format
+              (eca-chat-test--standard-value 'eca-chat-tps-format))
+             (str (eca-chat--tps-str)))
+        (expect (substring-no-properties str) :to-equal " · 87 tok/s")
+        (expect (get-text-property 1 'face str) :to-be 'eca-chat-tps-face)
+        (expect (get-text-property 1 'help-echo str)
+                :to-match "\\`Output speed of the last response: 87 tokens/s\n"))))
+
+  (it "follows `eca-chat-tps-format', escaped for the mode line"
+    (with-temp-buffer
+      (setq-local eca-chat--message-output-tps 87)
+      (let ((eca-chat-tps-format "%d t/s (100%%)"))
+        (expect (substring-no-properties (eca-chat--tps-str))
+                :to-equal "87 t/s (100%%)")))))
+
+(describe "eca-chat :tps mode-line module"
+  (it "renders the speed of the last response"
+    (with-temp-buffer
+      (setq-local eca-chat--message-output-tps 87)
+      (expect (substring-no-properties
+               (eca-chat--mode-line-module (make-eca--session) :tps))
+              :to-equal (substring-no-properties (eca-chat--tps-str)))))
+
+  (it "follows the elapsed time in the default mode line"
+    (with-temp-buffer
+      (setq-local eca-chat--turn-duration-secs 42)
+      (setq-local eca-chat--message-output-tps 87)
+      (setq-local eca-chat--selected-trust nil)
+      (let ((eca-chat-mode-line-format
+             (eca-chat-test--standard-value 'eca-chat-mode-line-format))
+            (eca-chat-tps-format
+             (eca-chat-test--standard-value 'eca-chat-tps-format)))
+        (expect (substring-no-properties
+                 (eca-chat--mode-line-string (make-eca--session)))
+                :to-match (regexp-quote "⏱ 42s · 87 tok/s")))))
+
+  (it "shows only the elapsed time while the speed is unknown"
+    (with-temp-buffer
+      (setq-local eca-chat--turn-duration-secs 42)
+      (setq-local eca-chat--selected-trust nil)
+      (let ((eca-chat-mode-line-format
+             (eca-chat-test--standard-value 'eca-chat-mode-line-format)))
+        (expect (substring-no-properties
+                 (eca-chat--mode-line-string (make-eca--session)))
+                :not :to-match "tok/s")))))
+
+(describe "eca-chat--render-content usage"
+  (it "keeps the output speed of the last response"
+    (let ((buf (eca-chat-test--make-render-buffer))
+          (session (make-eca--session))
+          (measured (list :type "usage" :sessionTokens 1000 :messageOutputTps 87))
+          ;; Absent when unknown, e.g. non-streamed or after compaction.
+          (unmeasured (list :type "usage" :sessionTokens 1200)))
+      (unwind-protect
+          (with-current-buffer buf
+            (eca-chat--render-content session buf "system" measured nil)
+            (expect eca-chat--message-output-tps :to-equal 87)
+            (eca-chat--render-content session buf "system" unmeasured nil)
+            (expect eca-chat--message-output-tps :to-be nil))
+        (kill-buffer buf))))
+
+  (it "ignores the output speed of subagents"
+    (let ((buf (eca-chat-test--make-render-buffer))
+          (session (make-eca--session))
+          (subagent (list :type "usage" :sessionTokens 500 :messageOutputTps 12)))
+      (unwind-protect
+          (with-current-buffer buf
+            (spy-on 'eca-chat--refresh-subagent-usage-label)
+            (setq-local eca-chat--message-output-tps 87)
+            (eca-chat--render-content session buf "system" subagent nil "tool-1")
+            (expect eca-chat--message-output-tps :to-equal 87)
+            (expect 'eca-chat--refresh-subagent-usage-label
+                    :to-have-been-called-with "tool-1"))
+        (kill-buffer buf)))))
+
 (describe "eca-chat-truncated"
 
   (it "removes the message and everything after it, keeping earlier ones"

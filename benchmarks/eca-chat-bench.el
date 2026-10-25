@@ -568,7 +568,7 @@ Returns a benchmark plist labeled `reason-stream-open' or
 
 (defvar eca-chat-bench-mode-line-format-no-context
   '(:workspace-folders :add-workspace-button :remove-workspace-button
-    :spacer :init-progress "  " :bg-jobs " " :elapsed-time "   "
+    :spacer :init-progress "  " :bg-jobs " " :elapsed-time :tps "   "
     :usage " " :trust)
   "Default mode-line benchmark format without the context bar.")
 
@@ -590,6 +590,7 @@ Returns a benchmark plist labeled `reason-stream-open' or
         :limit (list :context 200000 :output 16000)
         :messageCost "0.0123"
         :sessionCost "0.4567"
+        :messageOutputTps 87
         :autoCompactPercentage 70
         :contextBreakdown (eca-chat-bench--context-breakdown)))
 
@@ -602,6 +603,7 @@ Returns a benchmark plist labeled `reason-stream-open' or
   (setq-local eca-chat--session-limit-output 16000)
   (setq-local eca-chat--message-cost "0.0123")
   (setq-local eca-chat--session-cost "0.4567")
+  (setq-local eca-chat--message-output-tps 87)
   (setq-local eca-chat--session-auto-compact-percentage 70)
   (setq-local eca-chat--context-breakdown
               (eca-chat-bench--context-breakdown)))

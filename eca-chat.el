@@ -263,8 +263,17 @@ left empty are dropped."
            (const :tag "The percentage of context limt used in the current session" :session-tokens-percentage)))
   :group 'eca)
 
+(defcustom eca-chat-tps-format " · %d tok/s"
+  "Format of the `:tps' module of `eca-chat-mode-line-format'.
+Passed to `format' with the output tokens per second of the last
+model response, as measured by the server.  The leading separator
+joins it to `:elapsed-time', which it follows in the default
+mode-line."
+  :type 'string
+  :group 'eca)
+
 (defcustom eca-chat-mode-line-format
-  '(:workspace-folders :add-workspace-button :remove-workspace-button :spacer :init-progress "  " :bg-jobs " " :elapsed-time "   " :context-bar :usage " " :trust)
+  '(:workspace-folders :add-workspace-button :remove-workspace-button :spacer :init-progress "  " :bg-jobs " " :elapsed-time :tps "   " :context-bar :usage " " :trust)
   "Format for the ECA chat mode line.
 
 When set to a list, each element is a module keyword or a
@@ -277,6 +286,7 @@ Available modules:
   `:remove-workspace-button' - clickable [-] button
   `:title' - chat title
   `:elapsed-time' - turn duration timer
+  `:tps' - output tokens/s of the last response, see `eca-chat-tps-format'
   `:context-bar' - colored context-window usage bar (hover for details)
   `:usage' - token/cost info (see `eca-chat-usage-string-format')
   `:server-version' - shows \"ECA <version>\"
@@ -299,6 +309,7 @@ This gives full control for powerline or doom-modeline users."
             (const :tag "Background jobs" :bg-jobs)
             (const :tag "Chat title" :title)
             (const :tag "Elapsed time" :elapsed-time)
+            (const :tag "Output tokens per second" :tps)
             (const :tag "Context usage bar" :context-bar)
             (const :tag "Usage info" :usage)
             (const :tag "ECA server version" :server-version)
@@ -800,6 +811,11 @@ Its foreground is also used as the marker color in graphical frames."
   "Face for the elapsed time indicator in mode-line of the chat."
   :group 'eca)
 
+(defface eca-chat-tps-face
+  '((t :inherit eca-chat-elapsed-time-face))
+  "Face for the output tokens per second in mode-line of the chat."
+  :group 'eca)
+
 (defface eca-chat-command-description-face
   '((t :inherit font-lock-comment-face))
   "Face for the descriptions in chat command completion."
@@ -910,6 +926,10 @@ once by `eca-chat-cleared'.")
 (defvar-local eca-chat--message-cost nil)
 (defvar-local eca-chat--message-input-tokens nil)
 (defvar-local eca-chat--message-output-tokens nil)
+(defvar-local eca-chat--message-output-tps nil
+  "Output tokens per second of the last model response, or nil.
+From the `messageOutputTps' field of the `usage' content, absent
+when the server could not measure it, e.g. non-streamed requests.")
 (defvar-local eca-chat--session-tokens nil)
 (defvar-local eca-chat--session-limit-context nil)
 (defvar-local eca-chat--session-limit-output nil)
@@ -3121,6 +3141,20 @@ or \"Xm\" when seconds are zero."
     (concat (eca-chat--format-duration dur)
             (when eca-chat--prompt-start-time "…"))))
 
+(defun eca-chat--tps-str ()
+  "Return the output tokens per second string of this chat, or nil.
+Formatted with `eca-chat-tps-format', nil while the speed of the
+last model response is unknown."
+  (when (numberp eca-chat--message-output-tps)
+    (propertize
+     (eca-chat--mode-line-escape
+      (format eca-chat-tps-format eca-chat--message-output-tps))
+     'face 'eca-chat-tps-face
+     'help-echo (format (concat "Output speed of the last response: %d tokens/s\n"
+                                "Measured from its first generated token to its end,\n"
+                                "excluding tool runs and approval waits.")
+                        eca-chat--message-output-tps))))
+
 (defun eca-chat--has-pending-approvals-p ()
   "Return non-nil if current buffer has any pending approval tool call.
 The buffer scan result is cached since mode-line, tab-line and
@@ -3484,6 +3518,8 @@ are in progress."
        (let ((icon (if (eca-chat--has-pending-approvals-p) "🚧" "⏱")))
          (propertize (concat icon " " str)
                      'font-lock-face 'eca-chat-elapsed-time-face))))
+    (:tps
+     (eca-chat--tps-str))
     (:context-bar
      (when-let* ((bar (eca-chat--context-bar)))
        (concat bar " ")))
@@ -5360,6 +5396,7 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
                (eca-chat--refresh-subagent-usage-label parent-tool-call-id))
            (setq-local eca-chat--message-input-tokens  (plist-get content :messageInputTokens))
            (setq-local eca-chat--message-output-tokens (plist-get content :messageOutputTokens))
+           (setq-local eca-chat--message-output-tps    (plist-get content :messageOutputTps))
            (setq-local eca-chat--session-tokens        (plist-get content :sessionTokens))
            (setq-local eca-chat--session-limit-context (plist-get (plist-get content :limit) :context))
            (setq-local eca-chat--session-limit-output  (plist-get (plist-get content :limit) :output))
