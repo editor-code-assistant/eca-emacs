@@ -168,6 +168,7 @@ Chat
 - `eca-chat-window-width`: Width of the chat window when on the left or right.
 - `eca-chat-window-height`: Height of the chat window when on the top or bottom.
 - `eca-chat-focus-on-open`: Whether to focus the chat when it opens in another window. Same-window display is already focused.
+- `eca-chat-welcome-logo`: Whether to show ECA's logo above the welcome message of new chats (default `t`): an SVG image in graphic frames, braille in terminals. Style it with `eca-chat-welcome-logo-face` (the cubes) and `eca-chat-welcome-logo-prompt-face` (the prompt).
 - `eca-chat-auto-add-repomap`: Whether to automatically include repoMap context when opening ECA.
 - `eca-chat-auto-add-cursor`: Whether to automatically track the cursor position and add it as context. The `@cursor` context uses `eca-chat-context-cursor-unsaved-face` while its buffer has unsaved changes.
 - `eca-chat-cursor-context-debounce`: Seconds to debounce updates when tracking cursor context.

@@ -15,6 +15,7 @@
 (require 'find-func)
 (require 'markdown-mode)
 (require 'compat)
+(require 'svg)
 (require 'text-property-search)
 
 (require 'eca-util)
@@ -132,6 +133,15 @@ the selected window."
   "Whether to focus the ECA chat window when it opens.
 This has no effect when a new chat replaces the selected window because
 that window is already focused."
+  :type 'boolean
+  :group 'eca)
+
+(defcustom eca-chat-welcome-logo t
+  "Whether to show ECA's logo above the welcome message of new chats.
+The logo draws three cubes around a prompt, the cubes in
+`eca-chat-welcome-logo-face' and the prompt in
+`eca-chat-welcome-logo-prompt-face'.  It is an SVG image on graphic
+displays able to show one, and braille elsewhere, e.g. terminals."
   :type 'boolean
   :group 'eca)
 
@@ -713,6 +723,18 @@ available (TTY)."
 (defface eca-chat-welcome-face
   '((t :inherit font-lock-builtin-face))
   "Face for the welcome message in chat."
+  :group 'eca)
+
+(defface eca-chat-welcome-logo-face
+  '((((class color) (min-colors 88) (background light)) :foreground "#007a95")
+    (((class color) (min-colors 88) (background dark)) :foreground "#35b7d4")
+    (((class color)) :foreground "cyan"))
+  "Face for the cubes of the ECA logo above the welcome message."
+  :group 'eca)
+
+(defface eca-chat-welcome-logo-prompt-face
+  '((t :inherit default))
+  "Face for the prompt inside the ECA logo above the welcome message."
   :group 'eca)
 
 (defface eca-chat-resume-link-face
@@ -4141,7 +4163,8 @@ glued to the word before it.  Return the position after TEXT."
 (defun eca-chat--refresh-theme-faces (&rest _)
   "Recompute chat faces derived from the current theme colors."
   (eca-chat--update-expandable-block-faces)
-  (eca-table-update-faces))
+  (eca-table-update-faces)
+  (eca-chat--refresh-welcome-logos))
 
 (defun eca-chat--register-theme-refresh ()
   "Keep theme-derived faces in sync after a theme switch.
@@ -4155,6 +4178,135 @@ Emacs < 29 has no `enable-theme-functions', so advise
         (add-hook 'disable-theme-functions #'eca-chat--refresh-theme-faces))
     (advice-add 'enable-theme :after #'eca-chat--refresh-theme-faces)
     (advice-add 'disable-theme :after #'eca-chat--refresh-theme-faces)))
+
+(defconst eca-chat--welcome-logo-strokes
+  '(((515 . 149) (665 . 236) (515 . 322) (365 . 236) (515 . 149))
+    ((365 . 236) (365 . 380) (255 . 444) (255 . 527))
+    ((665 . 236) (665 . 380) (775 . 444) (775 . 527))
+    ((255 . 527) (390 . 605) (390 . 766) (255 . 844) (120 . 766)
+     (120 . 605) (255 . 527))
+    ((120 . 605) (255 . 683) (390 . 605))
+    ((255 . 683) (255 . 844))
+    ((775 . 527) (910 . 605) (910 . 766) (775 . 844) (640 . 766)
+     (640 . 605) (775 . 527))
+    ((640 . 605) (775 . 683) (910 . 605))
+    ((775 . 683) (775 . 844))
+    ((390 . 774) (515 . 848) (640 . 774)))
+  "Strokes of the cubes of ECA's logo, polylines of (X . Y) points.
+Measured on the 1024x1024 logo image of the eca repository, as the
+middle of its white strokes, 34 wide.")
+
+(defconst eca-chat--welcome-logo-prompt
+  '((440 . 415) (588 . 474) (588 . 502) (440 . 566) (440 . 534)
+    (547 . 488) (440 . 445))
+  "Outline of the prompt of ECA's logo, in the coordinates of its cubes.")
+
+(defconst eca-chat--welcome-logo-lines 8
+  "Height of the image of ECA's logo, in lines.")
+
+(defconst eca-chat--welcome-logo-rows
+  '("⠀⠀⠀⠀⠀⢀⣠⣴⠟⠻⣦⣄⡀⠀⠀⠀⠀⠀"
+    "⠀⠀⠀⠀⠀⣿⠿⣦⣄⣠⣴⠿⣿⠀⠀⠀⠀⠀"
+    "⠀⠀⠀⠀⣀⣿⠀⠀⠉⠉⠀⠀⣿⣀⠀⠀⠀⠀"
+    "⠀⠀⠀⣿⠋⠀⠀⠛⠶⣦⡄⠀⠀⠙⣿⠀⠀⠀"
+    "⣀⣤⠾⠻⢶⣄⡀⠶⠛⠋⠁⢀⣠⡶⠟⠷⣤⣀"
+    "⣿⠷⣦⣠⣴⠿⣿⠀⠀⠀⠀⣿⠿⣦⣄⣴⠾⣿"
+    "⣿⡀⠈⣿⠀⣀⣿⠀⠀⠀⠀⣿⣀⠀⣿⠁⢀⣿"
+    "⠈⠛⠷⡿⠞⠋⠙⠳⣦⣴⠞⠋⠙⠳⢿⠾⠛⠁")
+  "ECA's logo traced in braille, for displays without SVG images.
+Terminals draw its 36x32 dots evenly, as on eca-cli's welcome
+screen.  Empty cells are blank braille patterns rather than spaces,
+so that a fallback font drawing the braille draws all cells alike.")
+
+(defun eca-chat--welcome-logo-prompt-p (row col)
+  "Return non-nil when the logo cell at ROW and COL draws the prompt."
+  (and (<= 3 row 4) (<= 7 col 10)))
+
+(defun eca-chat--welcome-logo-line (row)
+  "Return line ROW of `eca-chat--welcome-logo-rows' with its faces.
+The cubes are in `eca-chat-welcome-logo-face' and the prompt in
+`eca-chat-welcome-logo-prompt-face'."
+  (let ((line (copy-sequence (nth row eca-chat--welcome-logo-rows))))
+    (dotimes (col (length line))
+      (unless (eq (aref line col) ?\u2800)
+        (put-text-property col (1+ col) 'face
+                           (if (eca-chat--welcome-logo-prompt-p row col)
+                               'eca-chat-welcome-logo-prompt-face
+                             'eca-chat-welcome-logo-face)
+                           line)))
+    line))
+
+(defun eca-chat--welcome-logo-width (height)
+  "Return the width in pixels of ECA's logo drawn HEIGHT pixels tall."
+  (round (* height (/ 838.0 760))))
+
+(defun eca-chat--welcome-logo-svg (height)
+  "Return ECA's logo as an SVG image HEIGHT pixels tall.
+The cubes take the color of `eca-chat-welcome-logo-face' and the
+prompt that of `eca-chat-welcome-logo-prompt-face'."
+  (let ((svg (svg-create (eca-chat--welcome-logo-width height) height
+                         :viewBox "96 120 838 760"))
+        (cubes (face-foreground 'eca-chat-welcome-logo-face nil 'default)))
+    (dolist (points eca-chat--welcome-logo-strokes)
+      (svg-polyline svg points :fill "none" :stroke cubes :stroke-width 34
+                    :stroke-linejoin "round" :stroke-linecap "round"))
+    (svg-polygon svg eca-chat--welcome-logo-prompt
+                 :fill (face-foreground 'eca-chat-welcome-logo-prompt-face
+                                        nil 'default))
+    (svg-image svg :scale 1 :ascent 'center)))
+
+(defun eca-chat--welcome-logo-strings ()
+  "Return the strings drawing ECA's logo, one per line.
+On graphic displays showing SVG, the logo is an image cut in slices
+one line tall, so that the chat scrolls it line by line, unless
+lines are spaced, which would split the slices apart.  Elsewhere,
+the logo is drawn in braille, see `eca-chat--welcome-logo-rows'."
+  (if (not (and (display-graphic-p) (image-type-available-p 'svg)))
+      (mapcar #'eca-chat--welcome-logo-line
+              (number-sequence 0 (1- (length eca-chat--welcome-logo-rows))))
+    (let* ((line (default-font-height))
+           (height (* eca-chat--welcome-logo-lines line))
+           (width (eca-chat--welcome-logo-width height))
+           (image (eca-chat--welcome-logo-svg height))
+           (spacing (or line-spacing (frame-parameter nil 'line-spacing))))
+      (if (and spacing (not (and (numberp spacing) (zerop spacing))))
+          (list (propertize " " 'display image))
+        (mapcar (lambda (row)
+                  (propertize " " 'display
+                              `((slice 0 ,(* row line) ,width ,line) ,image)))
+                (number-sequence 0 (1- eca-chat--welcome-logo-lines)))))))
+
+(defun eca-chat--welcome-logo-overlays ()
+  "Return the overlays showing ECA's logo in the chat, in order."
+  (sort (seq-filter (lambda (ov) (overlay-get ov 'eca-chat-welcome-logo))
+                    (overlays-in (point-min) (point-max)))
+        (lambda (a b) (< (overlay-start a) (overlay-start b)))))
+
+(defun eca-chat--insert-welcome-logo ()
+  "Insert ECA's logo above the welcome message, then a blank line.
+Does nothing when `eca-chat-welcome-logo' is nil.  Each line of the
+logo is an overlay string on an empty line of its own, which keeps
+it out of markdown, and whose newline takes the height of the logo
+alone (`line-height' t), so that image slices join."
+  (when eca-chat-welcome-logo
+    (dolist (string (eca-chat--welcome-logo-strings))
+      (let ((ov (make-overlay (point) (point))))
+        (overlay-put ov 'eca-chat-welcome-logo t)
+        (overlay-put ov 'before-string string))
+      (eca-chat--insert (propertize "\n" 'line-height t)))
+    (eca-chat--insert "\n")))
+
+(defun eca-chat--refresh-welcome-logos ()
+  "Redraw ECA's logo of chats in the colors of the current theme.
+The logo image takes the colors of its faces when drawn."
+  (dolist (buffer (buffer-list))
+    (with-current-buffer buffer
+      (when-let* (((derived-mode-p 'eca-chat-mode))
+                  (ovs (eca-chat--welcome-logo-overlays))
+                  (strings (eca-chat--welcome-logo-strings))
+                  ((= (length ovs) (length strings))))
+        (cl-mapc (lambda (ov string) (overlay-put ov 'before-string string))
+                 ovs strings)))))
 
 (defmacro eca-chat-define-derived-mode (child name &optional docstring &rest body)
   "Wrapper for `define-derived-mode' with support for custom parent mode.
@@ -4256,6 +4408,7 @@ CHILD, NAME, DOCSTRING and BODY are passed down."
         (goto-char (point-min))
         (eca-chat--insert "\n")
         (unless eca--chat-init-skip-welcome
+          (eca-chat--insert-welcome-logo)
           (eca-chat--insert (propertize (eca--session-chat-welcome-message session)
                                         'font-lock-face 'eca-chat-welcome-face))
           (eca-chat--insert "\n")

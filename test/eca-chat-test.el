@@ -2351,6 +2351,174 @@ VISIBLE is the value `pos-visible-in-window-p' returns."
             (expect (nreverse calls)
                     :to-equal (list (list (point-min) prompt-start nil)))))))))
 
+(defun eca-chat-test--logo-roles (line)
+  "Return LINE of the welcome logo with each cell replaced by its role.
+Cubes cells become c, prompt cells p and blank cells a space."
+  (mapconcat (lambda (i)
+               (pcase (get-text-property i 'face line)
+                 ('eca-chat-welcome-logo-face "c")
+                 ('eca-chat-welcome-logo-prompt-face "p")
+                 (_ " ")))
+             (number-sequence 0 (1- (length line)))
+             ""))
+
+(defun eca-chat-test--logo-lines ()
+  "Return the braille lines of the welcome logo, with their faces."
+  (mapcar #'eca-chat--welcome-logo-line
+          (number-sequence 0 (1- (length eca-chat--welcome-logo-rows)))))
+
+(defun eca-chat-test--logo-display (ov)
+  "Return the display spec of the logo line shown by OV."
+  (get-text-property 0 'display (overlay-get ov 'before-string)))
+
+(defun eca-chat-test--svg-data (display)
+  "Return the SVG source of the image in logo DISPLAY spec."
+  (plist-get (cdr (if (eq (car-safe display) 'image) display (cadr display)))
+             :data))
+
+(defmacro eca-chat-test--with-welcome-chat (logo &rest body)
+  "Run BODY in a new chat showing the welcome, with LOGO or not."
+  (declare (indent 1) (debug (form body)))
+  `(with-temp-buffer
+     (let ((eca--chat-init-session
+            (make-eca--session :chat-welcome-message "# Welcome to ECA!"))
+           (eca-chat-welcome-logo ,logo))
+       (eca-chat-mode)
+       ,@body)))
+
+(defmacro eca-chat-test--with-graphic-display (colors &rest body)
+  "Run BODY as on a graphic display of SVG images with 18px lines.
+COLORS is a list of the cubes and prompt colors of the logo."
+  (declare (indent 1) (debug (form body)))
+  `(let ((colors ,colors))
+     (cl-letf (((symbol-function 'display-graphic-p) (lambda (&rest _) t))
+               ((symbol-function 'image-type-available-p) (lambda (&rest _) t))
+               ((symbol-function 'default-font-height) (lambda (&rest _) 18))
+               ((symbol-function 'face-foreground)
+                (lambda (face &rest _)
+                  (if (eq face 'eca-chat-welcome-logo-face)
+                      (car colors)
+                    (cadr colors)))))
+       ,@body)))
+
+(describe "eca-chat welcome logo"
+  (it "draws the logo in braille as eca-cli, for displays without images"
+    (expect (mapcar #'substring-no-properties (eca-chat-test--logo-lines))
+            :to-equal '("⠀⠀⠀⠀⠀⢀⣠⣴⠟⠻⣦⣄⡀⠀⠀⠀⠀⠀"
+                        "⠀⠀⠀⠀⠀⣿⠿⣦⣄⣠⣴⠿⣿⠀⠀⠀⠀⠀"
+                        "⠀⠀⠀⠀⣀⣿⠀⠀⠉⠉⠀⠀⣿⣀⠀⠀⠀⠀"
+                        "⠀⠀⠀⣿⠋⠀⠀⠛⠶⣦⡄⠀⠀⠙⣿⠀⠀⠀"
+                        "⣀⣤⠾⠻⢶⣄⡀⠶⠛⠋⠁⢀⣠⡶⠟⠷⣤⣀"
+                        "⣿⠷⣦⣠⣴⠿⣿⠀⠀⠀⠀⣿⠿⣦⣄⣴⠾⣿"
+                        "⣿⡀⠈⣿⠀⣀⣿⠀⠀⠀⠀⣿⣀⠀⣿⠁⢀⣿"
+                        "⠈⠛⠷⡿⠞⠋⠙⠳⣦⣴⠞⠋⠙⠳⢿⠾⠛⠁")))
+
+  (it "paints the braille cubes and prompt with their own faces"
+    (expect (mapcar #'eca-chat-test--logo-roles (eca-chat-test--logo-lines))
+            :to-equal '("     cccccccc     "
+                        "     cccccccc     "
+                        "    cc  cc  cc    "
+                        "   cc  pppp  cc   "
+                        "cccccccppppccccccc"
+                        "ccccccc    ccccccc"
+                        "cccc cc    cc cccc"
+                        "cccccccccccccccccc")))
+
+  (it "shows the logo above the welcome message of a new chat"
+    (eca-chat-test--with-welcome-chat t
+      (let ((ovs (eca-chat--welcome-logo-overlays)))
+        ;; A line each, after the empty first line.
+        (expect (mapcar #'overlay-start ovs)
+                :to-equal (number-sequence (+ (point-min) 1) (+ (point-min) 8)))
+        (expect (mapcar (lambda (ov)
+                          (eca-chat-test--logo-roles
+                           (overlay-get ov 'before-string)))
+                        ovs)
+                :to-equal (mapcar #'eca-chat-test--logo-roles
+                                  (eca-chat-test--logo-lines)))
+        (expect (mapcar (lambda (ov) (overlay-get ov 'before-string)) ovs)
+                :to-equal (eca-chat-test--logo-lines))
+        ;; Lines as tall as the logo alone, so that slices join.
+        (expect (mapcar (lambda (ov)
+                          (get-text-property (overlay-start ov) 'line-height))
+                        ovs)
+                :to-equal (make-list 8 t))
+        ;; Then a blank line before the message.
+        (expect (buffer-substring-no-properties (point-min) (+ (point-min) 27))
+                :to-equal (concat (make-string 10 ?\n) "# Welcome to ECA!")))))
+
+  (it "keeps the logo out of the buffer text"
+    (eca-chat-test--with-welcome-chat t
+      (expect (string-match-p "[\u2800-\u28ff]" (buffer-string)) :to-be nil)))
+
+  (it "draws the logo as an SVG image in the colors of its faces"
+    (eca-chat-test--with-graphic-display '("#007a95" "#123456")
+      (let ((data (plist-get (cdr (eca-chat--welcome-logo-svg 144)) :data)))
+        (expect (length (split-string data "<polyline")) :to-equal 11)
+        (expect (length (split-string data "<polygon")) :to-equal 2)
+        (expect data :to-match "width=\"159\"")
+        (expect data :to-match "height=\"144\"")
+        (expect data :to-match "stroke=\"#007a95\"")
+        (expect data :to-match "fill=\"#123456\""))))
+
+  (it "cuts the image in slices a line tall on graphic displays"
+    (eca-chat-test--with-graphic-display '("#007a95" "#123456")
+      (let* ((strings (eca-chat--welcome-logo-strings))
+             (displays (mapcar (lambda (s) (get-text-property 0 'display s))
+                               strings))
+             (image (cadr (car displays))))
+        (expect (length strings) :to-equal 8)
+        (expect (mapcar #'car displays)
+                :to-equal (mapcar (lambda (row) `(slice 0 ,(* 18 row) 159 18))
+                                  (number-sequence 0 7)))
+        (expect (plist-get (cdr image) :type) :to-be 'svg)
+        ;; All slices of the same image.
+        (expect (seq-every-p (lambda (d) (eq (cadr d) image)) displays)
+                :to-be-truthy))))
+
+  (it "shows the image whole when lines are spaced"
+    ;; Line spacing would split slices apart.
+    (eca-chat-test--with-graphic-display '("#007a95" "#123456")
+      (let* ((line-spacing 0.2)
+             (strings (eca-chat--welcome-logo-strings))
+             (display (get-text-property 0 'display (car strings))))
+        (expect (length strings) :to-equal 1)
+        (expect (car display) :to-be 'image))))
+
+  (it "redraws the logo image in the colors of a new theme"
+    (eca-chat-test--with-graphic-display '("#007a95" "#123456")
+      (with-temp-buffer
+        (setq major-mode 'eca-chat-mode)
+        (let ((eca-chat-welcome-logo t))
+          (eca-chat--insert-welcome-logo))
+        (setq colors '("#35b7d4" "#fafafa"))
+        (eca-chat--refresh-welcome-logos)
+        (let ((ovs (eca-chat--welcome-logo-overlays)))
+          (expect (length ovs) :to-equal 8)
+          (expect (eca-chat-test--svg-data
+                   (eca-chat-test--logo-display (car ovs)))
+                  :to-match "stroke=\"#35b7d4\"")))))
+
+  (it "removes the logo along with the welcome message"
+    (eca-chat-test--with-welcome-chat t
+      (expect (eca-chat--welcome-logo-overlays) :not :to-be nil)
+      (eca-chat--clear)
+      (expect (eca-chat--welcome-logo-overlays) :to-be nil)))
+
+  (it "shows no logo when `eca-chat-welcome-logo' is nil"
+    (eca-chat-test--with-welcome-chat nil
+      (expect (eca-chat--welcome-logo-overlays) :to-be nil)
+      (expect (buffer-substring-no-properties (point-min) (+ (point-min) 18))
+              :to-equal "\n# Welcome to ECA!")))
+
+  (it "shows no logo in chats opened without the welcome message"
+    (with-temp-buffer
+      (let ((eca--chat-init-session (make-eca--session))
+            (eca--chat-init-skip-welcome t)
+            (eca-chat-welcome-logo t))
+        (eca-chat-mode)
+        (expect (eca-chat--welcome-logo-overlays) :to-be nil)))))
+
 (describe "eca-chat--render-content"
   (describe "progress finished"
     (it "clears progress text and spinner when chat-loading is nil"
