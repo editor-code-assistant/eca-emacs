@@ -632,8 +632,10 @@ when none is left."
        (eca-chat-inline--drop-pending-tool ov (plist-get content :id))
        (eca-chat-inline--set-status
         ov
-        (or (plist-get content :summary)
-            (format "Running tool %s..." (plist-get content :name)))
+        (concat (or (plist-get content :summary)
+                    (format "Running tool %s..." (plist-get content :name)))
+                (eca-chat--tool-call-progress-info
+                 (plist-get content :progress)))
         'running))
       ("toolCalled"
        (if-let* ((remaining (eca-chat-inline--drop-pending-tool
