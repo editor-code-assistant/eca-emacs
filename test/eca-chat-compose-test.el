@@ -1,22 +1,40 @@
 ;;; eca-chat-compose-test.el --- Tests for eca-chat-compose -*- lexical-binding: t; -*-
 ;;; Commentary:
-;; Tests for the compose-buffer prompt flow: targeting, sending and
-;; cancelling.
+;; Tests for the compose-buffer prompt flow: targeting, taking over the
+;; chat prompt text, sending and cancelling.
 ;;; Code:
 (require 'buttercup)
 (require 'eca-chat-compose)
+
+(defconst eca-chat-compose-test--context '(:type "file" :path "/ws/src/foo.el")
+  "The file context of the prompt chip used by the specs.")
+
+(defun eca-chat-compose-test--chip ()
+  "Return the prompt chip of `eca-chat-compose-test--context'."
+  (eca-chat--context->str eca-chat-compose-test--context 'static))
+
+(defun eca-chat-compose-test--prompt (buffer)
+  "Return the text of the prompt field of chat BUFFER."
+  (with-current-buffer buffer
+    (buffer-substring-no-properties
+     (eca-chat--prompt-field-start-point) (point-max))))
 
 (describe "eca-chat-compose"
   (let (target-buffer session)
     (before-each
       (setq target-buffer (generate-new-buffer "*eca-compose-test-chat*"))
       (with-current-buffer target-buffer
+        (insert "\n")
+        (eca-chat--insert-prompt-string)
         (setq major-mode 'eca-chat-mode)
         (setq-local eca-chat--id "chat-1"))
       (setq session (make-eca--session :id "session-1"
                                        :last-chat-buffer target-buffer))
       (spy-on 'eca-session :and-return-value session)
-      (spy-on 'eca--session-workspace-folders :and-return-value '("/ws")))
+      (spy-on 'eca--session-workspace-folders :and-return-value '("/ws"))
+      ;; Chips of workspace files show the file name only.
+      (spy-on 'eca-chat--context-presentable-path
+              :and-call-fake #'file-name-nondirectory))
 
     (after-each
       (when (buffer-live-p target-buffer)
@@ -49,6 +67,24 @@
           (unwind-protect
               (with-current-buffer compose-buffer
                 (expect (eq eca-chat-compose--target-buffer target-buffer) :to-be-truthy))
+            (kill-buffer compose-buffer))))
+
+      (it "moves the chat prompt text into the compose buffer, point after it"
+        (let ((compose-buffer nil)
+              (prompt (concat "explain " (eca-chat-compose-test--chip))))
+          (spy-on 'pop-to-buffer :and-call-fake
+                  (lambda (buf) (setq compose-buffer buf)))
+          (with-current-buffer target-buffer
+            (eca-chat--set-prompt prompt)
+            (eca-chat-compose))
+          (unwind-protect
+              (with-current-buffer compose-buffer
+                (expect (buffer-string) :to-equal prompt)
+                (expect (point) :to-equal (point-max))
+                ;; The chip keeps the properties making it a context.
+                (expect (get-text-property (1- (point-max)) 'eca-chat-context-item)
+                        :to-equal eca-chat-compose-test--context)
+                (expect (eca-chat-compose-test--prompt target-buffer) :to-equal ""))
             (kill-buffer compose-buffer)))))
 
     (describe "eca-chat-compose-send"
@@ -91,7 +127,31 @@
           (expect (eq sent-session session) :to-be-truthy)
           (expect (eq (eca--session-last-chat-buffer session) target-buffer) :to-be-truthy)
           (expect 'quit-window :to-have-been-called)
-          (when (buffer-live-p buf) (kill-buffer buf)))))
+          (when (buffer-live-p buf) (kill-buffer buf))))
+
+      (it "sends from the chat prompt field, keeping the items of the text"
+        (let ((buf (generate-new-buffer " *compose-items*"))
+              (prompt (concat "explain " (eca-chat-compose-test--chip)))
+              (sent nil))
+          (spy-on 'eca--path-local-to-remote :and-call-fake #'identity)
+          ;; What the real `eca-chat--send-prompt' reads in the chat.
+          (spy-on 'eca-chat--send-prompt
+                  :and-call-fake
+                  (lambda (_session text)
+                    (setq sent (list (eca-chat--prompt-content)
+                                     (eca-chat--extract-contexts-from-prompt)
+                                     (eca-chat--normalize-prompt text)))))
+          (spy-on 'quit-window)
+          (unwind-protect
+              (with-current-buffer buf
+                (eca-chat-compose-mode)
+                (setq eca-chat-compose--target-buffer target-buffer)
+                (insert prompt)
+                (eca-chat-compose-send))
+            (kill-buffer buf))
+          (expect (nth 0 sent) :to-equal prompt)
+          (expect (nth 1 sent) :to-equal (list eca-chat-compose-test--context))
+          (expect (nth 2 sent) :to-equal "explain @/ws/src/foo.el"))))
 
     (describe "eca-chat-compose-cancel"
       (it "kills the compose buffer without sending anything"
@@ -104,7 +164,54 @@
             (eca-chat-compose-cancel))
           (expect 'quit-window :to-have-been-called)
           (expect 'eca-chat--send-prompt :not :to-have-been-called)
-          (when (buffer-live-p buf) (kill-buffer buf)))))))
+          (when (buffer-live-p buf) (kill-buffer buf)))))
+
+    (describe "restoring the chat prompt"
+      (let (compose-buffer)
+        (before-each
+          (spy-on 'pop-to-buffer :and-call-fake
+                  (lambda (buf) (setq compose-buffer buf)))
+          (with-current-buffer target-buffer
+            (eca-chat--set-prompt "draft")
+            (eca-chat-compose)))
+
+        (after-each
+          (when (buffer-live-p compose-buffer)
+            (kill-buffer compose-buffer)))
+
+        (it "puts the taken-over text back when the compose is cancelled"
+          (spy-on 'quit-window :and-call-fake
+                  (lambda (&rest _) (kill-buffer (current-buffer))))
+          (with-current-buffer compose-buffer
+            (insert " edited")
+            (eca-chat-compose-cancel))
+          (expect (eca-chat-compose-test--prompt target-buffer) :to-equal "draft"))
+
+        (it "puts the taken-over text back when the compose buffer is killed"
+          (kill-buffer compose-buffer)
+          (expect (eca-chat-compose-test--prompt target-buffer) :to-equal "draft"))
+
+        (it "keeps it when a later compose of the same chat is killed"
+          (let ((first compose-buffer))
+            (with-current-buffer target-buffer
+              (eca-chat-compose))
+            (kill-buffer first)
+            (kill-buffer compose-buffer)
+            (expect (eca-chat-compose-test--prompt target-buffer) :to-equal "draft")))
+
+        (it "does not put it back once the compose is sent"
+          (spy-on 'eca-chat--send-prompt :and-call-fake
+                  (lambda (&rest _) (eca-chat--set-prompt "")))
+          (spy-on 'quit-window :and-call-fake
+                  (lambda (&rest _) (kill-buffer (current-buffer))))
+          (with-current-buffer compose-buffer
+            (eca-chat-compose-send))
+          (expect 'eca-chat--send-prompt :to-have-been-called)
+          (expect (eca-chat-compose-test--prompt target-buffer) :to-equal ""))
+
+        (it "kills the compose buffer when the chat buffer is gone"
+          (kill-buffer target-buffer)
+          (expect (kill-buffer compose-buffer) :to-be t))))))
 
 (describe "eca-chat-compose--yank-image-handler"
   (it "inserts a mention showing its thumbnail, which RET toggles"
