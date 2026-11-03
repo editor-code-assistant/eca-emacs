@@ -2393,6 +2393,10 @@ COLORS is a list of the cubes and prompt colors of the logo."
   `(let ((colors ,colors))
      (cl-letf (((symbol-function 'display-graphic-p) (lambda (&rest _) t))
                ((symbol-function 'image-type-available-p) (lambda (&rest _) t))
+               ;; Builds without librsvg reject SVG images, as on CI.
+               ((symbol-function 'create-image)
+                (lambda (data type _data-p &rest props)
+                  `(image :type ,type :data ,data ,@props)))
                ((symbol-function 'default-font-height) (lambda (&rest _) 18))
                ((symbol-function 'face-foreground)
                 (lambda (face &rest _)
