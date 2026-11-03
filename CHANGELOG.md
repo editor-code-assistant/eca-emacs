@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.11.0
 
 - Show the progress a running tool reports, e.g. an MCP tool's `notifications/progress`, after its label in the chat and in inline overlays: `(3/10 · Indexing files)`, or just the message when the total is unknown. It is styled with `eca-chat-tool-call-progress-face` and shows once the server sends `progress` on `toolCallRunning`.
 - `eca-chat-compose` starts with the text already typed in the chat prompt, point after it, and puts it back if the compose buffer is killed without sending. `@context` and `#filepath` mentions written there now attach their contexts when sent, as in the chat prompt.
