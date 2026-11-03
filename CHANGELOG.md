@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Show the progress a running tool reports, e.g. an MCP tool's `notifications/progress`, after its label in the chat and in inline overlays: `(3/10 · Indexing files)`, or just the message when the total is unknown. It is styled with `eca-chat-tool-call-progress-face` and shows once the server sends `progress` on `toolCallRunning`.
 - `eca-chat-compose` starts with the text already typed in the chat prompt, point after it, and puts it back if the compose buffer is killed without sending. `@context` and `#filepath` mentions written there now attach their contexts when sent, as in the chat prompt.
 - Show ECA's logo, the three cubes around a prompt of its icon, above the welcome message of new chats. Graphic frames draw it as an SVG image, redrawn in the new colors on theme changes, and terminals in braille, as eca-cli's welcome screen. It goes away with the welcome message on the first prompt. Hide it with `eca-chat-welcome-logo`, style it with `eca-chat-welcome-logo-face` (the cubes) and `eca-chat-welcome-logo-prompt-face` (the prompt).
 - Show the output tokens per second of the last model response in the chat mode-line, right after the elapsed time: `⏱ 42s · 87 tok/s`. It is the new `:tps` module of `eca-chat-mode-line-format`, formatted by `eca-chat-tps-format`, and shows once the server sends `messageOutputTps` (editor-code-assistant/eca#658).

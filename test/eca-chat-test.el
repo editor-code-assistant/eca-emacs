@@ -658,6 +658,53 @@ around rendering applies, as when the chat window is selected."
   (eca-chat-content-received
    session (list :chatId "chat-1" :role "assistant" :content content)))
 
+(describe "eca-chat--tool-call-progress-info"
+  (it "shows progress over total and the message"
+    (expect (eca-chat--tool-call-progress-info
+             '(:progress 3 :total 10 :message "Indexing"))
+            :to-equal " (3/10 · Indexing)"))
+
+  (it "shows only the message when total is unknown"
+    (expect (eca-chat--tool-call-progress-info
+             '(:progress 3 :message "Indexing"))
+            :to-equal " (Indexing)"))
+
+  (it "falls back to the bare progress value"
+    (expect (eca-chat--tool-call-progress-info '(:progress 3))
+            :to-equal " (3)"))
+
+  (it "drops a zero fraction from float values"
+    (expect (eca-chat--tool-call-progress-info '(:progress 2.0 :total 4.0))
+            :to-equal " (2/4)")
+    (expect (eca-chat--tool-call-progress-info '(:progress 0.5 :total 1))
+            :to-equal " (0.5/1)"))
+
+  (it "is empty without progress"
+    (expect (eca-chat--tool-call-progress-info nil) :to-equal "")))
+
+(describe "tool call progress rendering"
+  (it "shows the latest progress on the running tool call label"
+    (let ((buf (eca-chat-test--make-render-buffer))
+          (session (make-eca--session)))
+      (unwind-protect
+          (eca-chat--with-current-buffer buf
+            (eca-chat-test--receive
+             session buf (eca-chat-test--tool-call-content "toolCallRunning" "tool-1"))
+            (eca-chat-test--receive
+             session buf (append (eca-chat-test--tool-call-content "toolCallRunning" "tool-1")
+                                 '(:progress (:progress 1 :total 4 :message "Indexing"))))
+            (expect (buffer-string) :to-match "(1/4 · Indexing)")
+            (eca-chat-test--receive
+             session buf (append (eca-chat-test--tool-call-content "toolCallRunning" "tool-1")
+                                 '(:progress (:progress 3 :total 4 :message "Writing"))))
+            (expect (buffer-string) :to-match "(3/4 · Writing)")
+            (expect (buffer-string) :not :to-match "Indexing")
+            (expect (how-many "Running tool: testServer__testTool"
+                              (point-min) (point-max))
+                    :to-equal 1))
+        (eca-chat--tool-call-elapsed-stop-all)
+        (kill-buffer buf)))))
+
 (describe "eca-chat--with-point-preserved"
   (it "restores point moved by the body"
     (with-temp-buffer

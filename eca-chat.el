@@ -640,6 +640,11 @@ available (TTY)."
   "Face for the steps done by subagent."
   :group 'eca)
 
+(defface eca-chat-tool-call-progress-face
+  '((t :inherit font-lock-comment-face :slant italic :height 0.9))
+  "Face for the progress reported by a running tool call."
+  :group 'eca)
+
 (defface eca-chat-file-change-label-face
   '((t :inherit diff-file-header))
   "Face for file changes labels in chat."
@@ -3055,6 +3060,33 @@ Returns a string like \"31.5K / 200K\" or \"\" if no usage data."
               (eca-chat--number->friendly-number context-limit))
     ""))
 
+(defun eca-chat--progress-number-string (n)
+  "Format progress number N, dropping a zero fraction."
+  (if (and (floatp n) (= n (ffloor n)))
+      (number-to-string (truncate n))
+    (number-to-string n)))
+
+(defun eca-chat--tool-call-progress-info (progress)
+  "Build a propertized progress string from tool call PROGRESS.
+PROGRESS is a plist with :progress, and optional :total and :message."
+  (let* ((value (plist-get progress :progress))
+         (total (plist-get progress :total))
+         (message (plist-get progress :message))
+         (message (unless (or (null message) (string-empty-p message))
+                    message))
+         (count (cond
+                 ((and value total)
+                  (format "%s/%s"
+                          (eca-chat--progress-number-string value)
+                          (eca-chat--progress-number-string total)))
+                 ((and value (not message))
+                  (eca-chat--progress-number-string value))))
+         (text (string-join (delq nil (list count message)) " · ")))
+    (if (string-empty-p text)
+        ""
+      (propertize (format " (%s)" text)
+                  'font-lock-face 'eca-chat-tool-call-progress-face))))
+
 (defun eca-chat--subagent-steps-info (step max-steps usage-str)
   "Build a propertized steps-info string from STEP, MAX-STEPS and USAGE-STR."
   (propertize (cond
@@ -5355,6 +5387,7 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
              (_ (eca-chat--update-expandable-content
                  id
                  (concat (propertize label 'font-lock-face 'eca-chat-mcp-tool-call-label-face)
+                         (eca-chat--tool-call-progress-info (plist-get content :progress))
                          " " status elapsed-time)
                  (eca-chat--content-table
                   `(("Tool" . ,name)

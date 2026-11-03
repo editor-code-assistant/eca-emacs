@@ -440,6 +440,15 @@
            '(:type "progress" :state "running" :text "Generating"))
           (expect (overlay-get ov 'before-string) :to-match "Generating"))
 
+        (it "shows a running tool call's progress"
+          (eca-chat-inline-test--content
+           session "chat-1" "assistant"
+           '(:type "toolCallRunning" :id "t1" :name "index"
+             :summary "Indexing repo"
+             :progress (:progress 2 :total 5 :message "src")))
+          (expect (overlay-get ov 'before-string)
+                  :to-match "Indexing repo (2/5 · src)"))
+
         (it "approves pending tool calls from the overlay"
           (spy-on 'eca-api-notify)
           (eca-chat-inline-test--content
