@@ -26,7 +26,21 @@
 (defvar-local eca-chat-compose--target-buffer nil
   "The chat buffer the composed prompt will be sent to.")
 
+(defvar-local eca-chat-compose--original-prompt nil
+  "The text of the target chat prompt this buffer took over, or nil.
+It goes back to the chat prompt when the buffer is killed unsent.")
+
 ;; Internal
+
+(defun eca-chat-compose--restore-prompt ()
+  "Put the taken-over prompt text back into the target chat prompt.
+Run from `kill-buffer-hook', so cancelling or killing the compose
+buffer unsent leaves the chat prompt as it was."
+  (when-let* ((prompt eca-chat-compose--original-prompt)
+              (target eca-chat-compose--target-buffer)
+              ((buffer-live-p target)))
+    (eca-chat--with-current-buffer target
+      (eca-chat--set-prompt prompt))))
 
 (defun eca-chat-compose--yank-image-handler (type data)
   "Save clipboard image DATA of mime TYPE and insert an @file mention.
@@ -92,6 +106,7 @@ eca chat buffer behavior.
   (eca-chat--setup-item-stickiness)
   (add-hook 'after-change-functions
             #'eca-chat--auto-show-image-thumbnails-after-change nil t)
+  (add-hook 'kill-buffer-hook #'eca-chat-compose--restore-prompt nil t)
   ;; Paste image from clipboard support, mirroring eca-chat-mode: drop
   ;; the handlers inherited from markdown-mode (which insert markdown
   ;; image links) and register the @file mention handler.
@@ -113,10 +128,11 @@ eca chat buffer behavior.
 (defun eca-chat-compose ()
   "Compose a prompt for the current chat in a dedicated buffer.
 When called from a chat buffer the prompt targets that chat,
-otherwise it targets the session's last used chat.
+otherwise it targets the session's last used chat.  The text typed
+in the chat prompt moves into the buffer, with point after it.
 \\<eca-chat-compose-mode-map>\\[eca-chat-compose-send] sends the \
 buffer content as a prompt to that chat;
-\\[eca-chat-compose-cancel] discards it."
+\\[eca-chat-compose-cancel] discards it and puts the moved text back."
   (interactive)
   (let ((session (eca-session)))
     (eca-assert-session-running session)
@@ -138,15 +154,21 @@ buffer content as a prompt to that chat;
             (setq-local default-directory dir))
           ;; Carry the target's chat id so @/# completion queries
           ;; (chat/queryContext, chat/queryFiles) run against that chat.
-          (setq-local eca-chat--id (buffer-local-value 'eca-chat--id target)))
+          (setq-local eca-chat--id (buffer-local-value 'eca-chat--id target))
+          (when-let* ((prompt (with-current-buffer target
+                                (eca-chat--prompt-content)))
+                      ((not (string-empty-p prompt))))
+            (insert prompt)
+            (setq eca-chat-compose--original-prompt prompt)
+            (eca-chat--with-current-buffer target
+              (eca-chat--set-prompt ""))))
         (pop-to-buffer buffer)))))
 
 (defun eca-chat-compose-send ()
   "Send the composed prompt to the captured target chat.
 Kills the compose buffer afterwards."
   (interactive)
-  (let ((text (string-trim
-               (buffer-substring-no-properties (point-min) (point-max))))
+  (let ((text (string-trim (buffer-string)))
         (target eca-chat-compose--target-buffer)
         (session (eca-session)))
     (eca-assert-session-running session)
@@ -156,12 +178,18 @@ Kills the compose buffer afterwards."
       (user-error "The target chat buffer no longer exists"))
     (setf (eca--session-last-chat-buffer session) target)
     (eca-chat--with-current-buffer target
+      ;; Sent with its text properties from the prompt field, as on RET:
+      ;; `eca-chat--send-prompt' expands the @context and #filepath items
+      ;; of the text and takes their contexts from the prompt field.
+      (eca-chat--set-prompt text)
       (eca-chat--send-prompt session text))
+    (setq eca-chat-compose--original-prompt nil)
     (quit-window t)
     (eca-info "Prompt sent to %s" (buffer-name target))))
 
 (defun eca-chat-compose-cancel ()
-  "Discard the composed prompt and kill the compose buffer."
+  "Discard the composed prompt and kill the compose buffer.
+The chat prompt gets back the text the buffer took over."
   (interactive)
   (quit-window t)
   (eca-info "Compose cancelled"))
