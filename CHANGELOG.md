@@ -1,5 +1,7 @@
 # Changelog
 
+## Unreleased
+
 ## 0.11.0
 
 - Show the progress a running tool reports, e.g. an MCP tool's `notifications/progress`, after its label in the chat and in inline overlays: `(3/10 · Indexing files)`, or just the message when the total is unknown. It is styled with `eca-chat-tool-call-progress-face` and shows once the server sends `progress` on `toolCallRunning`.
