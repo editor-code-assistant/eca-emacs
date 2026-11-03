@@ -2470,12 +2470,15 @@ COLORS is a list of the cubes and prompt colors of the logo."
       (let* ((strings (eca-chat--welcome-logo-strings))
              (displays (mapcar (lambda (s) (get-text-property 0 'display s))
                                strings))
-             (image (cadr (car displays))))
+             (image (cadr (car displays)))
+             ;; Out of `expect': on Emacs 29, `:type' evaluates to
+             ;; `buttercup--thunk' in the closures it wraps args in.
+             (type (plist-get (cdr image) :type)))
         (expect (length strings) :to-equal 8)
         (expect (mapcar #'car displays)
                 :to-equal (mapcar (lambda (row) `(slice 0 ,(* 18 row) 159 18))
                                   (number-sequence 0 7)))
-        (expect (plist-get (cdr image) :type) :to-be 'svg)
+        (expect type :to-be 'svg)
         ;; All slices of the same image.
         (expect (seq-every-p (lambda (d) (eq (cadr d) image)) displays)
                 :to-be-truthy))))
