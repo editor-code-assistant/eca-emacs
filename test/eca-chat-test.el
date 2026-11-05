@@ -4145,6 +4145,113 @@ precedes the prompt separator.  Caller must kill the buffer."
       (expect help :to-match "Auto-compaction at 75%"))))
 
 ;; ---------------------------------------------------------------------------
+;; Mode-line layout in narrow windows (#341)
+;; ---------------------------------------------------------------------------
+
+(describe "eca-chat--mode-line-elide-start"
+  (before-each
+    ;; One pixel per column, as on terminals.
+    (spy-on 'eca-chat--mode-line-pixel-width :and-call-fake #'string-width))
+
+  (it "keeps a string that fits"
+    (expect (eca-chat--mode-line-elide-start "abcdef" 6) :to-equal 0))
+
+  (it "elides the fewest first chars, keeping the end"
+    (expect (eca-chat--mode-line-elided
+             "abcdefghij" (eca-chat--mode-line-elide-start "abcdefghij" 5))
+            :to-equal "…ghij"))
+
+  (it "keeps the properties of the kept end, e.g. a button keymap"
+    (let* ((string (concat "abcdef" (propertize "[+]" 'local-map 'map)))
+           (elided (eca-chat--mode-line-elided
+                    string (eca-chat--mode-line-elide-start string 5))))
+      (expect elided :to-equal "…f[+]")
+      (expect (get-text-property 4 'local-map elided) :to-be 'map)))
+
+  (it "drops the whole string when not even the ellipsis fits"
+    (expect (eca-chat--mode-line-elided
+             "abc" (eca-chat--mode-line-elide-start "abc" 0))
+            :to-equal "")))
+
+(describe "eca-chat--mode-line-string in narrow windows"
+  :var (session width)
+  (before-each
+    ;; Outside the home dir, as projects on Windows, where Emacs
+    ;; defaults HOME to %APPDATA%, so it isn't abbreviated to ~.
+    (setq session (make-eca--session
+                   :workspace-folders (list "/srv/source/repos/my-project"))
+          width 30)
+    ;; One pixel per column, as on terminals.
+    (spy-on 'eca-chat--mode-line-pixel-width :and-call-fake #'string-width)
+    (spy-on 'eca-chat--mode-line-available-width
+            :and-call-fake (lambda () width)))
+
+  (cl-flet ((mode-line (right)
+              (with-temp-buffer
+                (setq-local eca-chat--selected-trust nil)
+                (let ((eca-chat-trust-off-symbol "T")
+                      (eca-chat-trust-off-symbol-tty "T")
+                      (eca-chat-mode-line-format
+                       `(:workspace-folders :add-workspace-button
+                         :spacer ,right :trust)))
+                  (eca-chat--mode-line-string session)))))
+
+    (it "elides the start of the workspace folders to keep :trust visible"
+      (unless (fboundp 'string-pixel-width)
+        (buttercup-skip "string-pixel-width not available"))
+      (let ((line (mode-line "usage ")))
+        (expect (substring-no-properties line)
+                :to-equal "…/repos/my-project [+] usage T")
+        ;; The right side stays flush right.
+        (expect (get-text-property 22 'display line)
+                :to-equal '((space :align-to (- right (7)))))))
+
+    (it "elides the start of the right side when it does not fit alone"
+      (unless (fboundp 'string-pixel-width)
+        (buttercup-skip "string-pixel-width not available"))
+      (setq width 10)
+      (let ((line (mode-line "tokens 45.2K ")))
+        (expect (substring-no-properties line) :to-equal " …s 45.2K T")
+        (expect (get-text-property 0 'display line)
+                :to-equal '((space :align-to (- right (10)))))))
+
+    (it "keeps both sides whole when they fit"
+      (unless (fboundp 'string-pixel-width)
+        (buttercup-skip "string-pixel-width not available"))
+      (setq width 80)
+      (expect (substring-no-properties (mode-line "usage "))
+              :to-equal "/srv/source/repos/my-project [+] usage T"))
+
+    (it "reuses the layout until the window width or the theme changes"
+      (unless (fboundp 'string-pixel-width)
+        (buttercup-skip "string-pixel-width not available"))
+      (with-temp-buffer
+        (setq-local eca-chat--selected-trust nil)
+        (let ((eca-chat-trust-off-symbol "T")
+              (eca-chat-trust-off-symbol-tty "T")
+              (eca-chat-mode-line-format
+               '(:workspace-folders :add-workspace-button
+                 :spacer "usage " :trust)))
+          (eca-chat--mode-line-string session)
+          (let ((measures (spy-calls-count 'eca-chat--mode-line-pixel-width)))
+            (eca-chat--mode-line-string session)
+            (expect (spy-calls-count 'eca-chat--mode-line-pixel-width)
+                    :to-equal measures)
+            (setq width 80)
+            (expect (substring-no-properties
+                     (eca-chat--mode-line-string session))
+                    :to-equal "/srv/source/repos/my-project [+] usage T")
+            (setq measures (spy-calls-count 'eca-chat--mode-line-pixel-width))
+            (expect measures :to-be-greater-than 0)
+            (spy-on 'eca-chat--update-expandable-block-faces)
+            (spy-on 'eca-table-update-faces)
+            (spy-on 'eca-chat--refresh-welcome-logos)
+            (eca-chat--refresh-theme-faces)
+            (eca-chat--mode-line-string session)
+            (expect (spy-calls-count 'eca-chat--mode-line-pixel-width)
+                    :to-be-greater-than measures)))))))
+
+;; ---------------------------------------------------------------------------
 ;; eca-chat--display-buffer
 ;; ---------------------------------------------------------------------------
 

@@ -304,6 +304,9 @@ Available modules:
   `:trust' - trust mode indicator (🔥 when ON, 🛡 when OFF)
   `:spacer' - elastic space that right-aligns everything after it
 
+When the window is too narrow, the start of the mode line is elided
+with \"…\" so that the right-aligned modules stay visible.
+
 When set to a function, it receives the session as its sole
 argument and should return a valid `mode-line-format' value.
 The function is called once at buffer creation; include
@@ -928,6 +931,10 @@ once by `eca-chat-cleared'.")
   "Duration in seconds of the last completed turn.")
 (defvar-local eca-chat--modeline-timer nil
   "Timer that refreshes the mode-line every second during loading.")
+(defvar-local eca-chat--mode-line-layout-cache nil
+  "Cons of the key and value of the last `eca-chat--mode-line-layout'.")
+(defvar eca-chat--theme-generation 0
+  "Count of theme switches, to invalidate caches of rendered widths.")
 
 (defvar-local eca-chat--tool-call-elapsed-times (make-hash-table :test 'equal)
   "Mapping tool-call ID to `current-time' when toolCallRunning was received.")
@@ -3618,8 +3625,86 @@ available, falling back to `string-width' on Emacsen without it."
    ((fboundp 'string-pixel-width) (string-pixel-width string))
    (t (string-width string))))
 
+(defun eca-chat--mode-line-pixel-width (string)
+  "Return the pixel width of STRING when shown in the mode line.
+It is measured with the `mode-line' face appended, as its font or
+box may differ from the default face."
+  (if (string-empty-p string)
+      0
+    (let ((string (copy-sequence string)))
+      (add-face-text-property 0 (length string) 'mode-line t string)
+      (eca-chat--string-pixel-width string))))
+
+(defun eca-chat--mode-line-available-width ()
+  "Return the pixel width usable by the mode line of the selected window.
+It spans from the window left edge to the right edge of its text area,
+the `right' position where right-aligned segments end."
+  (- (nth 2 (window-inside-pixel-edges))
+     (nth 0 (window-pixel-edges))))
+
+(defun eca-chat--mode-line-elided (string start)
+  "Return STRING with its first START chars replaced by \"…\".
+START 0 keeps STRING whole, and START past its end drops all of it."
+  (cond
+   ((zerop start) string)
+   ((> start (length string)) "")
+   (t (concat "…" (substring string start)))))
+
+(defun eca-chat--mode-line-elide-start (string max-width)
+  "Return how many first chars of STRING to elide to fit MAX-WIDTH pixels.
+The result is for `eca-chat--mode-line-elided': 0 when STRING fits,
+past its end when not even \"…\" does."
+  (cond
+   ((<= (eca-chat--mode-line-pixel-width string) max-width) 0)
+   ((> (eca-chat--mode-line-pixel-width "…") max-width)
+    (1+ (length string)))
+   (t
+    ;; Bisect the smallest start whose elided tail fits.
+    (let ((lo 1)
+          (hi (length string)))
+      (while (< lo hi)
+        (let ((mid (/ (+ lo hi) 2)))
+          (if (<= (eca-chat--mode-line-pixel-width
+                   (eca-chat--mode-line-elided string mid))
+                  max-width)
+              (setq hi mid)
+            (setq lo (1+ mid)))))
+      lo))))
+
+(defun eca-chat--mode-line-layout (left right)
+  "Return (LEFT-START RIGHT-START RIGHT-WIDTH) to show LEFT and RIGHT.
+The starts are the chars to elide from each side, see
+`eca-chat--mode-line-elided', for RIGHT, then RIGHT-WIDTH pixels wide,
+to fit flush right in the mode line of the selected window: LEFT is
+elided first, then RIGHT when it does not fit alone.  The layout is
+cached while the texts, window width, font and theme are the same."
+  (let* ((width (eca-chat--mode-line-available-width))
+         (key (list left right width (frame-char-width)
+                    eca-chat--theme-generation)))
+    (if (equal key (car eca-chat--mode-line-layout-cache))
+        (cdr eca-chat--mode-line-layout-cache)
+      (let* ((right-px (eca-chat--mode-line-pixel-width right))
+             (layout
+              (if (<= right-px width)
+                  ;; Keep a space between both sides.
+                  (list (eca-chat--mode-line-elide-start
+                         left (- width right-px
+                                 (eca-chat--mode-line-pixel-width " ")))
+                        0
+                        right-px)
+                (let ((start (eca-chat--mode-line-elide-start right width)))
+                  (list (1+ (length left))
+                        start
+                        (eca-chat--mode-line-pixel-width
+                         (eca-chat--mode-line-elided right start)))))))
+        (setq eca-chat--mode-line-layout-cache (cons key layout))
+        layout))))
+
 (defun eca-chat--mode-line-string (session)
-  "Build mode-line string for SESSION from `eca-chat-mode-line-format'."
+  "Build mode-line string for SESSION from `eca-chat-mode-line-format'.
+When the window is too narrow for both sides, the start of the left
+side is elided, or of the right side when it does not fit alone, so
+that the end of the mode line, e.g. `:trust', stays visible."
   (if eca-chat--closed
       (propertize "*Closed session*"
                   'font-lock-face 'eca-chat-system-messages-face)
@@ -3641,13 +3726,19 @@ available, falling back to `string-width' on Emacsen without it."
                              (eca-chat--mode-line-module session m))
                            right-modules))
                     "")))
-           (fill (if (or (string-empty-p right)
-                         (not (fboundp 'string-pixel-width)))
-                     ""
-                   (let ((px (eca-chat--string-pixel-width right)))
-                     (propertize
+           (fill ""))
+      ;; Pixel widths need Emacs 29+, on 28 right segments follow left.
+      ;; `:align-to' never moves back, so a left side wider than the room
+      ;; left would push the right side past the window edge (#341).
+      (when (and (not (string-empty-p right))
+                 (fboundp 'string-pixel-width))
+        (pcase-let ((`(,left-start ,right-start ,right-px)
+                     (eca-chat--mode-line-layout left right)))
+          (setq left (eca-chat--mode-line-elided left left-start)
+                right (eca-chat--mode-line-elided right right-start)
+                fill (propertize
                       " " 'display
-                      `((space :align-to (- right (,px)))))))))
+                      `((space :align-to (- right (,right-px))))))))
       (let ((result (concat left fill right)))
         (if (eca-chat--has-pending-approvals-p)
             (propertize result 'face
@@ -4194,6 +4285,8 @@ glued to the word before it.  Return the position after TEXT."
 
 (defun eca-chat--refresh-theme-faces (&rest _)
   "Recompute chat faces derived from the current theme colors."
+  ;; Themes may change the mode-line font or box, hence its layout.
+  (cl-incf eca-chat--theme-generation)
   (eca-chat--update-expandable-block-faces)
   (eca-table-update-faces)
   (eca-chat--refresh-welcome-logos))

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Bugfix: the trust indicator could be missing from the chat mode-line (#341), pushed out of the window with the other right-aligned segments (usage, context bar) whenever the left side didn't leave them enough room, e.g. in the default 40% side window on Windows, where workspace folders outside `HOME` (`%APPDATA%` unless set) aren't abbreviated to `~`. `:align-to` never moves back, so the right side then followed the left one past the window edge. The start of the left side (the workspace folders) is now elided with `…` to keep the right side flush right, and the start of the right side too when it doesn't fit alone, so `:trust` stays visible. Widths are measured with the `mode-line` face, and the layout is cached until the texts, window width, font or theme change, so redisplays while a response streams don't measure them again (Emacs 29+).
+
 ## 0.11.0
 
 - Show the progress a running tool reports, e.g. an MCP tool's `notifications/progress`, after its label in the chat and in inline overlays: `(3/10 · Indexing files)`, or just the message when the total is unknown. It is styled with `eca-chat-tool-call-progress-face` and shows once the server sends `progress` on `toolCallRunning`.
