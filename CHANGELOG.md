@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Bugfix: a compaction summary offered "Rollback chat to before this message" (#136), though it has no message id. The request then sent a null `contentId`, which older servers took as a rollback to the first message without an id, dropping nearly the whole chat and, with tool changes included, reverting the files changed since (editor-code-assistant/eca#669). Messages without an id no longer offer it, and each gets a block of its own: they all shared the `nil` id, so expanding one could toggle another.
 - Bugfix: the trust indicator could be missing from the chat mode-line (#341), pushed out of the window with the other right-aligned segments (usage, context bar) whenever the left side didn't leave them enough room, e.g. in the default 40% side window on Windows, where workspace folders outside `HOME` (`%APPDATA%` unless set) aren't abbreviated to `~`. `:align-to` never moves back, so the right side then followed the left one past the window edge. The start of the left side (the workspace folders) is now elided with `…` to keep the right side flush right, and the start of the right side too when it doesn't fit alone, so `:trust` stays visible. Widths are measured with the `mode-line` face, and the layout is cached until the texts, window width, font or theme change, so redisplays while a response streams don't measure them again (Emacs 29+).
 
 ## 0.11.0

@@ -5200,19 +5200,25 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
               ;; Capture the insertion point before adding the user
               ;; expandable so we can scope `font-lock-ensure' to just
               ;; the newly-inserted region instead of the whole buffer.
-              (let ((user-msg-start (eca-chat--content-insertion-point)))
+              (let ((user-msg-start (eca-chat--content-insertion-point))
+                    ;; Messages without a content id, like a compaction
+                    ;; summary, can't be rolled back to, and get a block
+                    ;; id of their own instead of all sharing nil.
+                    (block-id (or content-id
+                                  (symbol-name (gensym "eca-user-message-")))))
                 (when eca-chat--steered-prompt
                   (setq-local eca-chat--steered-prompt nil)
                   (eca-chat--update-steer-area))
                 (eca-chat--ensure-empty-line-before user-msg-start)
                 (eca-chat--add-expandable-content
-                 content-id
+                 block-id
                  (propertize (string-trim text) 'font-lock-face 'eca-chat-user-messages-face)
-                 (eca-buttonize
-                  eca-chat-mode-map
-                  (propertize "Rollback chat to before this message" 'font-lock-face 'eca-chat-rollback-face)
-                  (lambda () (eca-chat--rollback session content-id (string-trim text)))))
-                (when-let* ((ov (eca-chat--get-expandable-content content-id)))
+                 (when content-id
+                   (eca-buttonize
+                    eca-chat-mode-map
+                    (propertize "Rollback chat to before this message" 'font-lock-face 'eca-chat-rollback-face)
+                    (lambda () (eca-chat--rollback session content-id (string-trim text))))))
+                (when-let* ((ov (eca-chat--get-expandable-content block-id)))
                   (overlay-put ov 'eca-chat--user-message-id content-id)
                   (overlay-put ov 'eca-chat--timestamp (float-time))
                   (eca-chat--paint-user-message ov)

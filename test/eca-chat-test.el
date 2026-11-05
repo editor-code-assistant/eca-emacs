@@ -3840,6 +3840,57 @@ precedes the prompt separator.  Caller must kill the buffer."
               (expect (get-char-property (point-min) 'face) :to-be nil)))
         (kill-buffer buf)))))
 
+(defun eca-chat-test--expandable-ids (buf)
+  "Return the ids of the expandable blocks in BUF, in buffer order."
+  (with-current-buffer buf
+    (mapcar (lambda (ov) (overlay-get ov 'eca-chat--expandable-content-id))
+            (sort (-filter (lambda (ov)
+                             (overlay-get ov 'eca-chat--expandable-content-id))
+                           (overlays-in (point-min) (point-max)))
+                  (lambda (a b) (< (overlay-start a) (overlay-start b)))))))
+
+(describe "eca-chat--render-content user message without a content id"
+  ;; A compaction summary has no content id: offering a rollback to it
+  ;; sent a null contentId, which older servers took as a rollback to
+  ;; the first message without an id (editor-code-assistant/eca#669).
+  (it "offers no rollback to it"
+    (let ((buf (eca-chat-test--make-live-render-buffer "")))
+      (unwind-protect
+          (with-current-buffer buf
+            (eca-chat-test--render-user-message buf "a compaction summary" nil)
+            (let ((id (car (eca-chat-test--expandable-ids buf))))
+              (expect id :to-be-truthy)
+              (eca-chat--expandable-content-toggle id t nil))
+            (expect (eca-chat-test--history-text buf)
+                    :to-match "\\`a compaction summary\n")
+            (expect (eca-chat-test--history-text buf)
+                    :not :to-match "Rollback chat to before this message")
+            (expect (eca-chat-test--user-face-overlay buf) :to-be-truthy))
+        (kill-buffer buf))))
+
+  (it "still offers it to a message with a content id"
+    (let ((buf (eca-chat-test--make-live-render-buffer "")))
+      (unwind-protect
+          (with-current-buffer buf
+            (eca-chat-test--render-user-message buf "first question" "u1")
+            (eca-chat--expandable-content-toggle "u1" t nil)
+            (expect (eca-chat-test--history-text buf)
+                    :to-match "Rollback chat to before this message"))
+        (kill-buffer buf))))
+
+  (it "gives each of them a block of its own"
+    (let ((buf (eca-chat-test--make-live-render-buffer "")))
+      (unwind-protect
+          (with-current-buffer buf
+            (eca-chat-test--render-user-message buf "first summary" nil)
+            (eca-chat-test--render-user-message buf "second summary" nil)
+            (let ((ids (eca-chat-test--expandable-ids buf)))
+              (expect (length ids) :to-equal 2)
+              (expect (car ids) :not :to-equal (cadr ids))
+              (goto-char (overlay-start (eca-chat--get-expandable-content (car ids))))
+              (expect (looking-at-p "first summary") :to-be-truthy)))
+        (kill-buffer buf)))))
+
 (describe "eca-chat--create-buffer"
   ;; Regression (#323): the buffer used to inherit `default-directory'
   ;; from whatever buffer was current, which for a new session is
