@@ -31,6 +31,7 @@
 (declare-function eca-chat--new-context-start-point "eca-chat")
 (declare-function eca-chat--select-window "eca-chat")
 (declare-function eca-chat--get-last-buffer "eca-chat")
+(declare-function eca-chat--get-active-buffer "eca-chat")
 (declare-function eca-chat--insert-prompt "eca-chat")
 (declare-function eca-chat--relativize-filename-for-workspace-root "eca-chat")
 (declare-function eca-chat--task-find-by-id "eca-chat")
@@ -513,7 +514,7 @@ chat buffer and the compose buffer clipboard-paste handlers."
 TYPE is the MIME type (e.g., image/png).
 DATA is the binary image data as a string."
   (when-let* ((session (eca-session))
-              (chat-buffer (eca-chat--get-last-buffer session))
+              (chat-buffer (eca-chat--get-active-buffer session))
               (output-path (eca-chat-media--save-clipboard-image type data)))
     (eca-chat--with-current-buffer chat-buffer
       (let ((context (list :type "file" :path output-path))
