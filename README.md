@@ -180,6 +180,7 @@ Chat
 - `eca-chat-hide-markdown-markup`: Whether to hide markdown markup in chat buffers (default `t`). Set to `nil` to keep fences/backticks visible, which may avoid fenced code blocks jumping while typing or streaming.
 - `eca-chat-fontify-prompt`: Whether to apply Markdown fontification to prompt text (default `t`). Set to `nil` to skip prompt-area Markdown block scans in large chat buffers.
 - `eca-chat-history-page-size`: Number of newest messages to load when opening a persisted chat (default `50`). When non-nil, `eca-chat-resume` opens chats with a bounded window and shows a "Load older messages" control to page through earlier history on demand; set to `nil` to replay the entire history on open.
+- `eca-chat-restore-on-restart`: Which chats `eca-restart` reopens once the server is back (default `all`): `all` reopens the chats that were open in their tab order, showing the active one first, `active` only the active chat, and `nil` none, the session then starting with a new chat. Chats reopen once the server synced its models, with their newest messages (see `eca-chat-history-page-size`) and their model, agent, variant and trust.
 - `eca-chat-context-prefix`: Prefix used for context references in the chat buffer (default `@`).
 - `eca-chat-filepath-prefix`: Prefix used for file path references in the chat buffer (default `#`).
 - `eca-chat-expandable-block-open-symbol`: Symbol used for expandable blocks in open state.

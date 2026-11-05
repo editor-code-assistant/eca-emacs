@@ -519,6 +519,19 @@ forks only after the server restarts."
                  (integer :tag "Newest messages per page"))
   :group 'eca)
 
+(defcustom eca-chat-restore-on-restart 'all
+  "Which chats `eca-restart' reopens once the server is back.
+When `all', the chats open before the restart are reopened in their
+tab order, showing the one that was active.  When `active', only the
+active chat is reopened.  When nil, no chat is reopened: the session
+starts with a new chat, the others stay resumable with
+`eca-chat-resume'.  Reopened chats load their newest messages, see
+`eca-chat-history-page-size'."
+  :type '(choice (const :tag "All open chats" all)
+                 (const :tag "Only the active chat" active)
+                 (const :tag "None" nil))
+  :group 'eca)
+
 (defun eca-chat--incremental-updates-capability ()
   "Return the `incrementalUpdates' chat capability sent on initialize.
 Its `historyPageSize' bounds the messages of chats the server creates,
@@ -1173,6 +1186,16 @@ Returns nil when SESSION has no other live chat."
      ((< (1+ pos) (length chats)) (nth (1+ pos) chats))
      (t nil))))
 
+(defun eca-chat--switch-windows (buffer other)
+  "Switch the windows showing BUFFER, on any frame, to OTHER.
+Each window keeps its dedication flag, so the dedicated chat window
+keeps showing a chat instead of falling back to an unrelated buffer."
+  (dolist (win (get-buffer-window-list buffer nil t))
+    (let ((dedicated (window-dedicated-p win)))
+      (set-window-dedicated-p win nil)
+      (set-window-buffer win other)
+      (set-window-dedicated-p win dedicated))))
+
 (defun eca-chat--switch-windows-to-sibling (session buffer)
   "Switch any window showing BUFFER to a sibling chat of SESSION.
 Updates the session `last-chat-buffer' and preserves each window's
@@ -1181,11 +1204,7 @@ instead of falling back to an unrelated buffer.  Returns the
 sibling buffer switched to, or nil when SESSION has no other chat."
   (when-let* ((other (eca-chat--sibling-chat-buffer session buffer)))
     (setf (eca--session-last-chat-buffer session) other)
-    (dolist (win (get-buffer-window-list buffer nil t))
-      (let ((dedicated (window-dedicated-p win)))
-        (set-window-dedicated-p win nil)
-        (set-window-buffer win other)
-        (set-window-dedicated-p win dedicated)))
+    (eca-chat--switch-windows buffer other)
     other))
 
 (defun eca-chat--user-initiated-kill-p ()
@@ -4673,9 +4692,13 @@ Returns the task plist or nil."
     (force-mode-line-update)))
 
 (defun eca-chat--handle-init-progress (session)
-  "Handle init progress update for SESSION."
-  (eca-chat--with-current-buffer (eca-chat--get-last-buffer session)
-    (force-mode-line-update)))
+  "Handle init progress update for SESSION.
+Starts reopening the chats of a restart once the models are synced,
+see `eca-chat-restore-chats'."
+  (eca-chat--restore-maybe-start session)
+  (when-let* ((buffer (eca-chat--get-last-buffer session)))
+    (eca-chat--with-current-buffer buffer
+      (force-mode-line-update))))
 
 (defun eca-chat--set-agent (session new-agent &optional buffer)
   "Set new agent to NEW-AGENT notifying server for SESSION.
@@ -7115,6 +7138,23 @@ the empty buffer that was used to trigger the resume."
   (when (equal chat-id (eca--session-opening-chat-id session))
     (setf (eca--session-opening-chat-id session) nil)))
 
+(defun eca-chat--hydrate-opened-chat (session chat-buffer response)
+  "Apply the chat/open RESPONSE to CHAT-BUFFER of SESSION.
+Restores the chat selection (model, agent, variant, trust), its title
+and the history paging state, the server having already replayed the
+messages."
+  (when (plist-member response :selection)
+    (eca-chat--apply-selection-snapshot
+     (plist-get response :selection)
+     chat-buffer))
+  (eca-chat--with-current-buffer chat-buffer
+    (when-let* ((title (plist-get response :title)))
+      (setq-local eca-chat--title title)
+      (eca-chat--invalidate-tab-line-cache session))
+    (eca-chat--apply-history-meta (plist-get response :meta))
+    (eca-chat--refresh-load-older-control)
+    (eca-chat--protect-non-prompt)))
+
 (defun eca-chat--handle-open-response
     (session from-buffer chat-id response)
   "Hydrate CHAT-ID from chat/open RESPONSE for SESSION.
@@ -7132,18 +7172,8 @@ FROM-BUFFER is the buffer where the resume command started."
     (user-error "Resume: no buffer was registered for chat %s" chat-id))
    (t
     (let ((chat-buffer (eca-get (eca--session-chats session) chat-id)))
-      (when (plist-member response :selection)
-        (eca-chat--apply-selection-snapshot
-         (plist-get response :selection)
-         chat-buffer))
+      (eca-chat--hydrate-opened-chat session chat-buffer response)
       (setf (eca--session-last-chat-buffer session) chat-buffer)
-      (eca-chat--with-current-buffer chat-buffer
-        (when-let* ((title (plist-get response :title)))
-          (setq-local eca-chat--title title)
-          (eca-chat--invalidate-tab-line-cache session))
-        (eca-chat--apply-history-meta (plist-get response :meta))
-        (eca-chat--refresh-load-older-control)
-        (eca-chat--protect-non-prompt))
       (eca-chat-open session)
       (eca-chat--kill-empty-welcome-buffer
        session from-buffer chat-buffer)
@@ -7222,6 +7252,242 @@ FROM-BUFFER is the buffer where the resume command started."
               (error
                (eca-chat--finish-opening session chat-id)
                (signal (car err) (cdr err))))))))))
+
+;;; Reopening chats after a restart
+
+(defvar eca-chat--restore-models-timeout 30
+  "Seconds to wait for the models before reopening chats anyway.
+Chats reopen once the server synced its models, see
+`eca-chat--restore-ready-p'; this is the fallback for when the server
+never reports it.")
+
+(defun eca-chat--restorable-p (buffer)
+  "Return non-nil when chat BUFFER can be reopened after a restart.
+That is a live chat the server knows: a prompt was sent in it, or the
+server created it, like resumed or forked chats.  A new chat still
+showing the welcome message only exists on the client."
+  (and (buffer-live-p buffer)
+       (with-current-buffer buffer
+         (and (derived-mode-p 'eca-chat-mode)
+              eca-chat--id
+              (not eca-chat--closed)
+              (not eca-chat--welcome-shown)))))
+
+(defun eca-chat-restorable-chats (session)
+  "Return the chats of SESSION to reopen after a restart, or nil.
+A plist with :ids, the ids of the chats in their tab order, and
+:active, the id of the active chat when it is one of them, following
+`eca-chat-restore-on-restart'.  The chats a restore in progress did
+not reopen yet are kept, so restarting again does not lose them."
+  (when eca-chat-restore-on-restart
+    (let* ((pending (eca--session-chat-restore session))
+           (queue (remq nil (cons (plist-get pending :opening)
+                                  (plist-get pending :queue))))
+           (active-buffer (eca-chat--get-active-buffer session))
+           (active (cond
+                    ((eca-chat--restorable-p active-buffer)
+                     (buffer-local-value 'eca-chat--id active-buffer))
+                    ((member (plist-get pending :active) queue)
+                     (plist-get pending :active))))
+           (ids (if (eq eca-chat-restore-on-restart 'active)
+                    (when active (list active))
+                  (-distinct
+                   (append
+                    (-keep (lambda (buffer)
+                             (when (eca-chat--restorable-p buffer)
+                               (buffer-local-value 'eca-chat--id buffer)))
+                           (eca-chat--session-chats-oldest-first session))
+                    queue)))))
+      (when ids
+        (list :ids ids :active active)))))
+
+(defun eca-chat-restore-chats (session chats)
+  "Reopen CHATS in SESSION, a session started by a restart.
+CHATS is a plist from `eca-chat-restorable-chats'.  Chats reopen one
+at a time once the server synced its models, see
+`eca-chat--restore-ready-p': the active one first, in place of the new
+chat SESSION opened on start if nobody used it, then the others in the
+background, keeping their tab order."
+  (when-let* ((ids (plist-get chats :ids)))
+    (let ((active (plist-get chats :active)))
+      (eca-chat--restore-cancel session)
+      (setf (eca--session-chat-restore session)
+            (list :queue (if (member active ids)
+                             (cons active (remove active ids))
+                           ids)
+                  :order ids
+                  :active active
+                  :new-chat (eca-chat--get-last-buffer session)
+                  :restored nil
+                  :timer (run-with-timer eca-chat--restore-models-timeout nil
+                                         #'eca-chat--restore-start session)))
+      (eca-info "Reopening %d chat%s..." (length ids) (if (cdr ids) "s" ""))
+      (eca-chat--restore-maybe-start session))))
+
+(defun eca-chat--restore-ready-p (session)
+  "Return non-nil when SESSION can reopen chats.
+That is once the server synced its models, which it reports with the
+`models' init task: chat/open only restores the model of a chat the
+server knows, and the first models list resets the selection of every
+open chat to the session defaults."
+  (equal "finish"
+         (plist-get (eca-get (eca--session-init-tasks session) "models")
+                    :type)))
+
+(defun eca-chat--restore-maybe-start (session)
+  "Start reopening SESSION's chats if it is ready for it."
+  (when (and (eca--session-chat-restore session)
+             (eca-chat--restore-ready-p session))
+    (eca-chat--restore-start session)))
+
+(defun eca-chat--restore-start (session)
+  "Start reopening SESSION's chats, unless already started."
+  (when-let* ((state (eca--session-chat-restore session)))
+    (unless (plist-get state :started)
+      (when-let* ((timer (plist-get state :timer)))
+        (cancel-timer timer))
+      (setf (eca--session-chat-restore session)
+            (plist-put (plist-put state :timer nil) :started t))
+      (eca-chat--restore-next session))))
+
+(defun eca-chat--restore-next (session)
+  "Reopen the next chat of SESSION's restore, or finish it.
+Chats opened meanwhile, e.g. resumed by hand, count as reopened."
+  (when-let* ((state (eca--session-chat-restore session)))
+    (let ((queue (plist-get state :queue))
+          (restored (plist-get state :restored)))
+      (while (and queue
+                  (buffer-live-p
+                   (eca-chat--get-chat-buffer session (car queue))))
+        (push (car queue) restored)
+        (setq queue (cdr queue)))
+      (setq state (plist-put state :queue (cdr queue)))
+      (setq state (plist-put state :opening (car queue)))
+      (setf (eca--session-chat-restore session)
+            (plist-put state :restored restored))
+      (if queue
+          (eca-chat--restore-open session (car queue))
+        (eca-chat--restore-finish session)))))
+
+(defun eca-chat--restore-open (session chat-id)
+  "Reopen CHAT-ID in SESSION, then the next chat of the restore."
+  ;; Lets the unscoped selection updates of legacy servers reach it.
+  (unless (eca--session-opening-chat-id session)
+    (setf (eca--session-opening-chat-id session) chat-id))
+  (eca-api-request-async
+   session
+   :method "chat/open"
+   :params (append (list :chatId chat-id)
+                   (when eca-chat-history-page-size
+                     (list :limit eca-chat-history-page-size)))
+   :success-callback
+   (lambda (response)
+     (eca-chat--finish-opening session chat-id)
+     (with-demoted-errors "eca-chat restore: %S"
+       (eca-chat--restore-opened session chat-id response))
+     (eca-chat--restore-next session))
+   :error-callback
+   (lambda (_err)
+     (eca-chat--finish-opening session chat-id)
+     (eca-chat--restore-next session))))
+
+(defun eca-chat--restore-opened (session chat-id response)
+  "Finish reopening CHAT-ID in SESSION from its chat/open RESPONSE."
+  (let ((state (eca--session-chat-restore session))
+        (buffer (eca-chat--get-chat-buffer session chat-id)))
+    (when (and state
+               (eca-chat--open-response-found-p response)
+               (not (plist-get response :error))
+               (buffer-live-p buffer))
+      (eca-chat--hydrate-opened-chat session buffer response)
+      (eca-chat--restore-replace-closed chat-id buffer)
+      (setf (eca--session-chat-restore session)
+            (plist-put state :restored
+                       (cons chat-id (plist-get state :restored))))
+      (eca-chat--restore-sort-tabs session (plist-get state :order))
+      (when (equal chat-id (plist-get state :active))
+        (eca-chat--restore-show session buffer
+                                (plist-get state :new-chat))))))
+
+(defun eca-chat--restore-replace-closed (chat-id buffer)
+  "Replace the closed buffers of CHAT-ID with its reopened BUFFER.
+They are left behind by the stopped session, see `eca-chat-exit'.
+Windows showing them switch to BUFFER before they are killed."
+  (dolist (closed (buffer-list))
+    (when (and (not (eq closed buffer))
+               (buffer-local-value 'eca-chat--closed closed)
+               (equal chat-id (buffer-local-value 'eca-chat--id closed)))
+      (eca-chat--switch-windows closed buffer)
+      (kill-buffer closed))))
+
+(defun eca-chat--unused-p (buffer)
+  "Return non-nil when chat BUFFER is a new chat nobody used yet.
+That is a live chat still showing the welcome message, with nothing
+typed in its prompt."
+  (and (buffer-live-p buffer)
+       (buffer-local-value 'eca-chat--welcome-shown buffer)
+       (with-current-buffer buffer
+         (string-empty-p (or (eca-chat--prompt-content) "")))))
+
+(defun eca-chat--restore-show (session buffer new-chat)
+  "Show reopened chat BUFFER of SESSION in place of NEW-CHAT.
+NEW-CHAT is the chat SESSION opened on start.  While nobody used it,
+its windows switch to BUFFER and it is killed; otherwise BUFFER stays
+in the background, as a tab."
+  (cond
+   ((eca-chat--unused-p new-chat)
+    (eca-chat--switch-windows new-chat buffer)
+    (setf (eca--session-last-chat-buffer session) buffer)
+    (eca-chat--kill-empty-welcome-buffer session new-chat buffer))
+   ((not (buffer-live-p new-chat))
+    (setf (eca--session-last-chat-buffer session) buffer))))
+
+(defun eca-chat--restore-sort-tabs (session order)
+  "Sort SESSION's chat tabs so the chats in ORDER come first, in order.
+The other chats, e.g. created during the restore, follow them."
+  (let* ((oldest-first (reverse (eca--session-chats session)))
+         (in-order (-keep (lambda (id) (assoc id oldest-first)) order))
+         (others (-remove (lambda (entry) (member (car entry) order))
+                          oldest-first)))
+    (setf (eca--session-chats session) (reverse (append in-order others)))
+    (eca-chat--invalidate-tab-line-cache session)
+    (eca-chat--force-tab-line-update)
+    (eca-chat--notify-status-changed session)))
+
+(defun eca-chat--restore-finish (session)
+  "End SESSION's restore, reporting how many chats were reopened.
+When the active chat could not be reopened, the first reopened chat
+shows in its place."
+  (when-let* ((state (eca--session-chat-restore session)))
+    (setf (eca--session-chat-restore session) nil)
+    (let* ((order (plist-get state :order))
+           (active (plist-get state :active))
+           (restored (-filter (lambda (id)
+                                (member id (plist-get state :restored)))
+                              order)))
+      (eca-chat--restore-sort-tabs session order)
+      (when-let* (((and active restored (not (member active restored))))
+                  (buffer (eca-chat--get-chat-buffer session (car restored)))
+                  ((buffer-live-p buffer)))
+        (eca-chat--restore-show session buffer (plist-get state :new-chat)))
+      (cond
+       ((null restored)
+        (eca-warn "Could not reopen the chats open before the restart"))
+       ((< (length restored) (length order))
+        (eca-info "Reopened %d of the %d chats open before the restart"
+                  (length restored) (length order)))
+       (t
+        (eca-info "Reopened %d chat%s"
+                  (length restored) (if (cdr restored) "s" "")))))))
+
+(defun eca-chat--restore-cancel (session)
+  "Stop reopening SESSION's chats, e.g. as it is deleted."
+  (when-let* ((state (eca--session-chat-restore session)))
+    (when-let* ((timer (plist-get state :timer)))
+      (cancel-timer timer))
+    (setf (eca--session-chat-restore session) nil)))
+
+(add-hook 'eca-session-deleting-functions #'eca-chat--restore-cancel)
 
 ;;;###autoload
 (defun eca-chat-rename ()

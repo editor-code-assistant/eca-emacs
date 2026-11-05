@@ -349,7 +349,56 @@
     (let* ((eca--sessions '())
            (session (eca-create-session '("/"))))
       (expect (eca--session-workspace-folders session)
-              :to-equal (list (expand-file-name "/"))))))
+              :to-equal (list (expand-file-name "/")))))
+
+  (it "remembers the folders it started with apart from later ones"
+    (spy-on 'eca-info)
+    (let* ((eca--sessions '())
+           (session (eca-create-session (list "/tmp/proj/"))))
+      (eca--session-add-workspace-folder session "/tmp/other")
+      (expect (eca--session-initial-workspace-folders session)
+              :to-equal (list (expand-file-name "/tmp/proj")))
+      (expect (eca--session-workspace-folders session)
+              :to-equal (list (expand-file-name "/tmp/proj")
+                              (expand-file-name "/tmp/other"))))))
+
+(describe "eca--session-sync-workspace-folders"
+  (before-each
+    (spy-on 'eca-api-notify)
+    (spy-on 'eca-info))
+
+  (it "adds the missing folders and removes the extra ones"
+    (let ((session (make-eca--session)))
+      (setf (eca--session-workspace-folders session)
+            (list (expand-file-name "/tmp/a") (expand-file-name "/tmp/b")))
+      (eca--session-sync-workspace-folders session '("/tmp/a/" "/tmp/c"))
+      (expect (eca--session-workspace-folders session)
+              :to-equal (list (expand-file-name "/tmp/a")
+                              (expand-file-name "/tmp/c")))
+      (expect 'eca-api-notify :to-have-been-called-times 2)))
+
+  (it "can replace every folder"
+    (let ((session (make-eca--session)))
+      (setf (eca--session-workspace-folders session)
+            (list (expand-file-name "/tmp/a")))
+      (eca--session-sync-workspace-folders session '("/tmp/c"))
+      (expect (eca--session-workspace-folders session)
+              :to-equal (list (expand-file-name "/tmp/c")))))
+
+  (it "notifies nothing when the folders already match"
+    (let ((session (make-eca--session)))
+      (setf (eca--session-workspace-folders session)
+            (list (expand-file-name "/tmp/a")))
+      (eca--session-sync-workspace-folders session '("/tmp/a"))
+      (expect 'eca-api-notify :not :to-have-been-called)))
+
+  (it "keeps the folders when given none"
+    (let ((session (make-eca--session)))
+      (setf (eca--session-workspace-folders session)
+            (list (expand-file-name "/tmp/a")))
+      (eca--session-sync-workspace-folders session nil)
+      (expect (eca--session-workspace-folders session)
+              :to-equal (list (expand-file-name "/tmp/a"))))))
 
 (describe "eca-session workspace resolution"
   (before-each

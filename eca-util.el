@@ -139,6 +139,14 @@ Each function receives the session being deleted.")
   ;; A list of workspace folders of this session
   (workspace-folders '())
 
+  ;; The workspace folders this session started with, which key its
+  ;; chats storage on the server, so a restart starts with them again.
+  (initial-workspace-folders '())
+
+  ;; The chats being reopened after a restart, see
+  ;; `eca-chat-restore-chats', or nil.
+  (chat-restore nil)
+
   ;; A plist of request method names (strings) -> handlers used when
   ;; receiving requests from server.
   (request-handlers '())
@@ -315,6 +323,20 @@ time a buffer under it is visited."
                                            :name (file-name-nondirectory (directory-file-name folder)))))))
       (eca-info "Removed workspace folder: %s" folder)))))
 
+(defun eca--session-sync-workspace-folders (session folders)
+  "Add and remove SESSION's workspace folders so they match FOLDERS.
+Used once a restarted session is up: it starts with the folders the
+previous one started with, keying the same chats storage on the
+server, then gets the folders added or removed since back."
+  (when folders
+    (let ((folders (--map (directory-file-name (expand-file-name it))
+                          folders)))
+      (dolist (folder folders)
+        (eca--session-add-workspace-folder session folder))
+      (dolist (folder (eca--session-workspace-folders session))
+        (unless (member folder folders)
+          (eca--session-remove-workspace-folder session folder))))))
+
 (defun eca-session ()
   "Return the session related to root of current buffer otherwise nil."
   (or (eca-get eca--sessions eca--session-id-cache)
@@ -348,10 +370,13 @@ time a buffer under it is visited."
   "Create a new ECA session for WORKSPACE-ROOTS."
   (clrhash eca--git-common-dir-cache)
   (let ((session (make-eca--session))
-        (id (cl-incf eca--session-ids)))
+        (id (cl-incf eca--session-ids))
+        (folders (-distinct (--map (directory-file-name (expand-file-name it))
+                                   workspace-roots))))
     (setf (eca--session-id session) id)
-    (setf (eca--session-workspace-folders session)
-          (-distinct (--map (directory-file-name (expand-file-name it)) workspace-roots)))
+    (setf (eca--session-workspace-folders session) folders)
+    (setf (eca--session-initial-workspace-folders session)
+          (copy-sequence folders))
     (setf (eca--session-chat-default-trust session)
           (and (boundp 'eca-chat-trust-enable)
                (symbol-value 'eca-chat-trust-enable)))

@@ -461,10 +461,24 @@ When ARG is current prefix, ask for workspace roots to use."
 
 ;;;###autoload
 (defun eca-restart ()
-  "Restart eca, if not running just start."
+  "Restart eca, if not running just start.
+The session restarts with the same workspace folders, then reopens
+the chats that were open, see `eca-chat-restore-on-restart'."
   (interactive)
-  (eca-stop)
-  (eca))
+  (let ((session (eca-session)))
+    (if (not (eca-process-running-p session))
+        (eca)
+      (let ((initial-folders (eca--session-initial-workspace-folders session))
+            (folders (eca--session-workspace-folders session))
+            (chats (eca-chat-restorable-chats session)))
+        (eca-stop-session session)
+        ;; Start with the folders the session started with: they key
+        ;; its chats storage on the server, so the chats can reopen.
+        (eca-start-session
+         (eca-create-session (or initial-folders folders))
+         (lambda (new-session)
+           (eca--session-sync-workspace-folders new-session folders)
+           (eca-chat-restore-chats new-session chats)))))))
 
 (defun eca--chat-buffer-candidates-for-session (session seen)
   "Return completion candidates for SESSION.
