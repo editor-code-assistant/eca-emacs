@@ -6679,18 +6679,31 @@ point.  Works with any message type (user, tool call, etc)."
                                                 :text flag-text))))
       (message "No message found before point"))))
 
+(defun eca-chat--running-subagent-chat-ids ()
+  "Return the chat ids of the subagents running in the current chat."
+  (hash-table-keys eca-chat--subagent-chat-id->tool-call-id))
+
 ;;;###autoload
 (defun eca-chat-toggle-trust ()
   "Toggle trust mode (auto-accept all tool call).
-Sends chat/update to server so trust applies immediately to the next tool call."
+Sends chat/update to server so trust applies immediately to the next
+tool call.  Subagents running in the chat follow the toggle too, as
+they keep the trust they were spawned with otherwise."
   (interactive)
-  (let ((new-value (not (eca-chat--trust))))
+  (let* ((new-value (not (eca-chat--trust)))
+         (trust (if new-value t :json-false)))
     (eca-chat--set-trust (eca-session) new-value (current-buffer))
     (when eca-chat--id
       (eca-api-request-sync (eca-session)
                             :method "chat/update"
                             :params (list :chatId eca-chat--id
-                                          :trust (if new-value t :json-false))))
+                                          :trust trust)))
+    (dolist (chat-id (eca-chat--running-subagent-chat-ids))
+      (eca-api-request-async (eca-session)
+                             :method "chat/update"
+                             :params (list :chatId chat-id :trust trust)
+                             :success-callback #'ignore
+                             :error-callback #'ignore))
     (eca-info (if new-value
                   "Enabled trust-mode (Auto accept tool calls)"
                 "Disabled trust-mode (Auto accept tool calls)"))))
