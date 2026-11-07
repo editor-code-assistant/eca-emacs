@@ -244,6 +244,73 @@ The returned timers are never activated."
         (when (buffer-live-p chat)
           (kill-buffer chat))))))
 
+(defun eca-chat-test--async-update-params ()
+  "Return the params of the async `chat/update' requests, sorted by chat id."
+  (sort (->> (spy-calls-all-args 'eca-api-request-async)
+             (--filter (equal (plist-get (cdr it) :method) "chat/update"))
+             (--map (plist-get (cdr it) :params)))
+        (-on #'string< (lambda (params) (plist-get params :chatId)))))
+
+(defun eca-chat-test--toggle-trust (session subagent-ids trust)
+  "Toggle trust in a chat of SESSION starting with TRUST.
+SUBAGENT-IDS are the chat ids of the subagents running in it."
+  (let ((chat (eca-chat-test--make-tab-chat session "chat-1")))
+    (unwind-protect
+        (with-current-buffer chat
+          (setq-local eca-chat--selected-trust trust)
+          (--each subagent-ids
+            (puthash it (concat "tool-" it)
+                     eca-chat--subagent-chat-id->tool-call-id))
+          (eca-chat-toggle-trust))
+      (kill-buffer chat))))
+
+(describe "eca-chat-toggle-trust"
+  :var (session)
+
+  (before-each
+    (setq session (make-eca--session))
+    (spy-on 'eca-session :and-return-value session)
+    (spy-on 'eca-api-request-sync)
+    (spy-on 'eca-api-request-async)
+    (spy-on 'eca-info))
+
+  (it "updates its own chat and nothing else without running subagents"
+    (eca-chat-test--toggle-trust session nil nil)
+    (expect 'eca-api-request-sync :to-have-been-called-with
+            session
+            :method "chat/update"
+            :params '(:chatId "chat-1" :trust t))
+    (expect 'eca-api-request-async :not :to-have-been-called))
+
+  (it "enables trust in the running subagents"
+    (eca-chat-test--toggle-trust session '("sub-2" "sub-1") nil)
+    (expect (eca-chat-test--async-update-params)
+            :to-equal '((:chatId "sub-1" :trust t)
+                        (:chatId "sub-2" :trust t))))
+
+  (it "disables trust in the running subagents"
+    (eca-chat-test--toggle-trust session '("sub-1" "sub-2") t)
+    (expect 'eca-api-request-sync :to-have-been-called-with
+            session
+            :method "chat/update"
+            :params '(:chatId "chat-1" :trust :json-false))
+    (expect (eca-chat-test--async-update-params)
+            :to-equal '((:chatId "sub-1" :trust :json-false)
+                        (:chatId "sub-2" :trust :json-false))))
+
+  (it "skips the subagents that finished"
+    (let ((chat (eca-chat-test--make-tab-chat session "chat-1")))
+      (unwind-protect
+          (with-current-buffer chat
+            (setq-local eca-chat--selected-trust nil)
+            (puthash "sub-1" "tool-1" eca-chat--subagent-chat-id->tool-call-id)
+            (puthash "sub-2" "tool-2" eca-chat--subagent-chat-id->tool-call-id)
+            (remhash "sub-1" eca-chat--subagent-chat-id->tool-call-id)
+            (eca-chat-toggle-trust))
+        (kill-buffer chat)))
+    (expect (eca-chat-test--async-update-params)
+            :to-equal '((:chatId "sub-2" :trust t)))))
+
 (describe "eca-chat tab-line cache"
 
   (it "reuses stable tab labels between redisplay calls"
