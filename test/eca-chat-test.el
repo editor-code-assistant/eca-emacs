@@ -5582,4 +5582,174 @@ DETAILS is the task state details plist sent with toolCalled."
             (expect (eca-chat-test--task-widget-text) :to-match "Fix the bug"))
         (kill-buffer buf)))))
 
+;; ---------------------------------------------------------------------------
+;; Accept all pending tool calls of a batch
+;; ---------------------------------------------------------------------------
+
+(defun eca-chat-test--approvals ()
+  "Return the params of each `chat/toolCallApprove' notified so far."
+  (mapcar (lambda (args) (plist-get (cdr args) :params))
+          (seq-filter (lambda (args)
+                        (equal (plist-get (cdr args) :method)
+                               "chat/toolCallApprove"))
+                      (spy-calls-all-args 'eca-api-notify))))
+
+(defun eca-chat-test--receive-params (session params)
+  "Deliver PARAMS for SESSION like the server notification does."
+  (eca-chat-content-received
+   session (append params (list :role "assistant"))))
+
+(defun eca-chat-test--receive-all (session chat-params contents)
+  "Deliver each content of CONTENTS for SESSION with CHAT-PARAMS."
+  (dolist (content contents)
+    (eca-chat-test--receive-params
+     session (append chat-params (list :content content)))))
+
+(defun eca-chat-test--prepare-batch (session ids &optional chat-params)
+  "Prepare tool calls IDS for SESSION and ask approval for the first.
+CHAT-PARAMS default to the top-level chat \"chat-1\"."
+  (let ((chat-params (or chat-params (list :chatId "chat-1"))))
+    (eca-chat-test--receive-all
+     session chat-params
+     (append (mapcar (lambda (id)
+                       (eca-chat-test--tool-call-content "toolCallPrepare" id))
+                     ids)
+             (list (eca-chat-test--tool-call-content
+                    "toolCallRun" (car ids) t))))))
+
+(defmacro eca-chat-test--with-accept-batch-chat (bindings &rest body)
+  "Run BODY with a live chat buffer of an ECA session.
+BINDINGS is (SESSION BUF): the symbols bound to them."
+  (declare (indent 1) (debug (sexp body)))
+  (let ((session (car bindings))
+        (buf (cadr bindings)))
+    `(let ((,buf (eca-chat-test--make-render-buffer))
+           (,session (make-eca--session))
+           (inhibit-message t))
+       (unwind-protect
+           (eca-chat--with-current-buffer ,buf
+             (setf (eca--session-chats ,session) (list (cons "chat-1" ,buf)))
+             (spy-on 'eca-session :and-return-value ,session)
+             (spy-on 'eca-assert-session-running)
+             (spy-on 'eca-chat--get-active-buffer :and-return-value ,buf)
+             (spy-on 'eca-chat--get-chat-buffer :and-return-value ,buf)
+             (spy-on 'eca--session-workspace-folders :and-return-value nil)
+             (spy-on 'eca-api-notify)
+             ,@body)
+         (kill-buffer ,buf)))))
+
+(describe "eca-chat-tool-call-accept-all"
+  (it "accepts the visible call and auto-accepts the rest of the batch"
+    (eca-chat-test--with-accept-batch-chat (session _buf)
+      (eca-chat-test--prepare-batch session '("tool-1" "tool-2" "tool-3"))
+      (eca-chat-tool-call-accept-all)
+      (expect (eca-chat-test--approvals)
+              :to-equal '((:chatId "chat-1" :toolCallId "tool-1")))
+      (eca-chat-test--receive-all
+       session '(:chatId "chat-1")
+       (list (eca-chat-test--tool-call-content "toolCallRunning" "tool-1")
+             (eca-chat-test--tool-call-content "toolCalled" "tool-1")
+             (eca-chat-test--tool-call-content "toolCallRun" "tool-3" t)))
+      (expect (eca-chat-test--approvals)
+              :to-equal '((:chatId "chat-1" :toolCallId "tool-1")
+                          (:chatId "chat-1" :toolCallId "tool-3")))
+      (expect eca-chat--accept-batch
+              :to-equal '(:save nil :ids ("tool-2")))))
+
+  (it "stops once every call of the batch is approved or finished"
+    (eca-chat-test--with-accept-batch-chat (session _buf)
+      (eca-chat-test--prepare-batch session '("tool-1" "tool-2" "tool-3"))
+      (eca-chat-tool-call-accept-all)
+      (eca-chat-test--receive-all
+       session '(:chatId "chat-1")
+       (list (eca-chat-test--tool-call-content "toolCallRun" "tool-2" t)
+             (eca-chat-test--tool-call-content "toolCallRejected" "tool-3")))
+      (expect eca-chat--accept-batch :to-be nil)
+      (expect (length (eca-chat-test--approvals)) :to-equal 2)))
+
+  (it "does not auto-accept calls prepared after it"
+    (eca-chat-test--with-accept-batch-chat (session _buf)
+      (eca-chat-test--prepare-batch session '("tool-1" "tool-2"))
+      (eca-chat-tool-call-accept-all)
+      (eca-chat-test--receive-all
+       session '(:chatId "chat-1")
+       (list (eca-chat-test--tool-call-content "toolCallPrepare" "tool-9")
+             (eca-chat-test--tool-call-content "toolCallRun" "tool-9" t)))
+      (expect (eca-chat-test--approvals)
+              :to-equal '((:chatId "chat-1" :toolCallId "tool-1")))))
+
+  (it "remembers queued calls for the session with accept-and-remember"
+    (eca-chat-test--with-accept-batch-chat (session _buf)
+      (eca-chat-test--prepare-batch session '("tool-1" "tool-2"))
+      (eca-chat-tool-call-accept-all-and-remember)
+      (eca-chat-test--receive-params
+       session (list :chatId "chat-1"
+                     :content (eca-chat-test--tool-call-content
+                               "toolCallRun" "tool-2" t)))
+      (expect (eca-chat-test--approvals)
+              :to-equal '((:chatId "chat-1" :save "session"
+                                   :toolCallId "tool-1")
+                          (:chatId "chat-1" :toolCallId "tool-2"
+                                   :save "session")))))
+
+  (it "never auto-accepts ask_user questions of the batch"
+    (eca-chat-test--with-accept-batch-chat (session _buf)
+      (eca-chat-test--prepare-batch session '("tool-1" "ask-1"))
+      (eca-chat-tool-call-accept-all)
+      (eca-chat-test--receive-params
+       session (list :chatId "chat-1"
+                     :content (plist-put (eca-chat-test--tool-call-content
+                                          "toolCallRun" "ask-1" t)
+                                         :name "ask_user")))
+      (expect (eca-chat-test--approvals)
+              :to-equal '((:chatId "chat-1" :toolCallId "tool-1")))))
+
+  (it "forgets the batch when the chat goes idle"
+    (eca-chat-test--with-accept-batch-chat (session _buf)
+      (spy-on 'eca-chat--invalidate-tab-line-cache)
+      (spy-on 'eca-chat--force-tab-line-update)
+      (spy-on 'eca-chat--refresh-transient-area)
+      (setq-local eca-chat--chat-loading t)
+      (eca-chat-test--prepare-batch session '("tool-1" "tool-2"))
+      (eca-chat-tool-call-accept-all)
+      (eca-chat--set-chat-loading session nil)
+      (expect eca-chat--accept-batch :to-be nil)
+      (expect eca-chat--awaiting-tool-call-ids :to-be nil)
+      (eca-chat-test--receive-params
+       session (list :chatId "chat-1"
+                     :content (eca-chat-test--tool-call-content
+                               "toolCallRun" "tool-2" t)))
+      (expect (length (eca-chat-test--approvals)) :to-equal 1)))
+
+  (it "approves subagent tool calls with the subagent chat id"
+    (eca-chat-test--with-accept-batch-chat (session _buf)
+      (eca-chat--tool-call-subagent-details
+       "parent-1" (list :agent "test-agent" :task "task")
+       "Calling subagent" nil nil
+       eca-chat-mcp-tool-call-loading-symbol nil
+       (list :type "subagent" :model "test-model"))
+      (puthash "sub-chat" "parent-1" eca-chat--subagent-chat-id->tool-call-id)
+      (eca-chat-test--prepare-batch
+       session '("tool-1" "tool-2")
+       (list :chatId "sub-chat" :parentChatId "chat-1"))
+      (eca-chat-tool-call-accept-all)
+      (eca-chat-test--receive-params
+       session (list :chatId "sub-chat" :parentChatId "chat-1"
+                     :content (eca-chat-test--tool-call-content
+                               "toolCallRun" "tool-2" t)))
+      (expect (eca-chat-test--approvals)
+              :to-equal '((:chatId "sub-chat" :toolCallId "tool-1")
+                          (:chatId "sub-chat" :toolCallId "tool-2"))))))
+
+(describe "eca-chat--awaiting-tool-call-ids-update"
+  (it "adds prepared calls once and drops started or finished ones"
+    (let ((step (lambda (ids type)
+                  (eca-chat--awaiting-tool-call-ids-update
+                   ids (list :type type :id "tool-1")))))
+      (expect (funcall step nil "toolCallPrepare") :to-equal '("tool-1"))
+      (expect (funcall step '("tool-1") "toolCallPrepare") :to-equal '("tool-1"))
+      (dolist (type '("toolCallRunning" "toolCalled" "toolCallRejected"))
+        (expect (funcall step '("tool-1" "tool-2") type) :to-equal '("tool-2")))
+      (expect (funcall step '("tool-2") "text") :to-equal '("tool-2")))))
+
 ;;; eca-chat-test.el ends here
