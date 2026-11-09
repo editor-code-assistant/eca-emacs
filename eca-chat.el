@@ -953,6 +953,16 @@ once by `eca-chat-cleared'.")
   "Mapping tool-call ID to `current-time' when toolCallRunning was received.")
 (defvar-local eca-chat--tool-call-elapsed-timer nil
   "Repeating timer that updates elapsed-time display for running tool calls.")
+(defvar-local eca-chat--awaiting-tool-call-ids nil
+  "Ids of tool calls shown in this chat that may still ask for approval.
+A tool call is added when prepared or run and removed once it starts
+running, is called or is rejected.  Forgotten when the chat goes idle.")
+(defvar-local eca-chat--accept-batch nil
+  "Tool calls `eca-chat-tool-call-accept-all' still has to approve.
+A plist (:save SAVE :ids IDS): each tool call of IDS is approved
+when it asks for manual approval, with SAVE as the
+`chat/toolCallApprove' :save value, or none when SAVE is nil.
+Nil when no batch is being accepted.")
 
 (defvar-local eca-chat--table-resize-timer nil)
 (defvar-local eca-chat--stream-pending-chunks nil
@@ -1815,6 +1825,7 @@ remember action when nothing can be remembered."
                 eca-chat-mode-map
                 (propertize "Accept and remember"
                             'eca-tool-call-pending-approval-accept-and-remember t
+                            'eca-tool-call-id id
                             'line-prefix spacing-line-prefix
                             'font-lock-face 'eca-chat-tool-call-accept-and-remember-face)
                 (lambda ()
@@ -2073,6 +2084,9 @@ LOADING can be t (loading), \\='stopping (stop in progress), or nil (idle)."
        (when eca-chat--modeline-timer
          (cancel-timer eca-chat--modeline-timer)
          (setq-local eca-chat--modeline-timer nil))
+       ;; The turn is over: no tool call is left to ask for approval.
+       (setq-local eca-chat--awaiting-tool-call-ids nil)
+       (setq-local eca-chat--accept-batch nil)
        (eca-chat--force-tab-line-update)))
     (eca-chat--refresh-transient-area)
     (eca-chat--notify-status-changed session)))
@@ -3327,6 +3341,59 @@ subscribers are not called for every chunk streamed to SESSION."
                 '("toolCallRun" "toolCallRunning" "toolCalled" "toolCallRejected"))
     (with-demoted-errors "eca-chat-tool-call-functions: %S"
       (run-hook-with-args 'eca-chat-tool-call-functions session content))))
+
+(defun eca-chat--awaiting-tool-call-ids-update (ids content)
+  "Return the tool call IDS awaiting approval updated with CONTENT.
+Preparing or running a tool call adds its id; once it starts running,
+is called or is rejected the id is removed.  Other content leaves IDS
+unchanged."
+  (let ((id (plist-get content :id)))
+    (pcase (plist-get content :type)
+      ((or "toolCallPrepare" "toolCallRun")
+       (if (member id ids) ids (cons id ids)))
+      ((or "toolCallRunning" "toolCalled" "toolCallRejected")
+       (remove id ids))
+      (_ ids))))
+
+(defun eca-chat--accept-batch-auto-approve-p (batch content)
+  "Non-nil when CONTENT asks approval for a tool call of BATCH.
+BATCH is shaped like `eca-chat--accept-batch'.  `ask_user' tool calls
+are questions to the user, so they are never approved automatically."
+  (and (equal (plist-get content :type) "toolCallRun")
+       (plist-get content :manualApproval)
+       (not (equal (plist-get content :name) "ask_user"))
+       (member (plist-get content :id) (plist-get batch :ids))))
+
+(defun eca-chat--accept-batch-narrow (batch ids)
+  "Return BATCH keeping only its tool calls among IDS.
+BATCH is shaped like `eca-chat--accept-batch'.  Nil once no tool call
+of BATCH is left."
+  (when-let* ((kept (seq-filter (lambda (id) (member id ids))
+                                (plist-get batch :ids))))
+    (list :save (plist-get batch :save) :ids kept)))
+
+(defun eca-chat--track-tool-call (session chat-id content)
+  "Track tool call CONTENT and auto-approve it for the accept batch.
+Updates `eca-chat--awaiting-tool-call-ids' and, when CONTENT asks
+approval for a tool call of `eca-chat--accept-batch', approves it
+through SESSION.  CHAT-ID is the chat owning the tool call, the
+subagent chat for subagent tool calls.  Runs in the chat buffer
+showing the tool call."
+  (let* ((batch eca-chat--accept-batch)
+         (id (plist-get content :id))
+         (approve? (eca-chat--accept-batch-auto-approve-p batch content))
+         (awaiting (eca-chat--awaiting-tool-call-ids-update
+                    eca-chat--awaiting-tool-call-ids content)))
+    (setq-local eca-chat--awaiting-tool-call-ids awaiting)
+    (setq-local eca-chat--accept-batch
+                (eca-chat--accept-batch-narrow
+                 batch (if approve? (remove id awaiting) awaiting)))
+    (when approve?
+      (eca-api-notify session
+                      :method "chat/toolCallApprove"
+                      :params (append (list :chatId chat-id :toolCallId id)
+                                      (when-let* ((save (plist-get batch :save)))
+                                        (list :save save)))))))
 
 (defun eca-chat--maybe-revert-changed-file (content)
   "Revert the buffer visiting the file changed by tool call CONTENT.
@@ -5744,7 +5811,8 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
                 (eca-chat--protect-non-prompt eca-chat--last-user-message-pos)
                 (eca-chat--maybe-notify-status-changed session content)
                 (eca-chat--maybe-revert-changed-file content)
-                (eca-chat--maybe-run-tool-call-functions session content)))))
+                (eca-chat--maybe-run-tool-call-functions session content)
+                (eca-chat--track-tool-call session chat-id content)))))
       ;; Normal content
       (when-let* ((chat-buffer (eca-chat--get-chat-buffer session chat-id))
                   ((buffer-live-p chat-buffer)))
@@ -5755,7 +5823,8 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
             (eca-chat--protect-non-prompt eca-chat--last-user-message-pos)
             (eca-chat--maybe-notify-status-changed session content)
             (eca-chat--maybe-revert-changed-file content)
-            (eca-chat--maybe-run-tool-call-functions session content)))))))
+            (eca-chat--maybe-run-tool-call-functions session content)
+            (eca-chat--track-tool-call session chat-id content)))))))
 
 (defun eca-chat--render-history-contents (session chat-buffer contents)
   "Prepend CONTENTS above existing content in CHAT-BUFFER for SESSION.
@@ -6695,27 +6764,58 @@ Sends chat/update to server so trust applies immediately to the next tool call."
                   "Enabled trust-mode (Auto accept tool calls)"
                 "Disabled trust-mode (Auto accept tool calls)"))))
 
+(defun eca-chat--approval-buttons (prop)
+  "Return (ID . ACTION) of each approval button with text property PROP.
+Scans the current buffer in order; ID is the button's tool call id and
+ACTION its callback."
+  (save-excursion
+    (goto-char (point-min))
+    (let (buttons match)
+      (while (setq match (text-property-search-forward prop t t))
+        (let ((beg (prop-match-beginning match)))
+          (when-let* ((action (get-text-property beg 'eca-button-on-action)))
+            (push (cons (get-text-property beg 'eca-tool-call-id) action)
+                  buttons))))
+      (cl-remove-duplicates (nreverse buttons) :key #'cdr :test #'eq))))
+
+(defun eca-chat--accept-pending-batch (prop save)
+  "Accept the pending tool call batch of the active chat.
+Press every approval button with text property PROP, then approve the
+other tool calls still awaiting approval as each asks for it, passing
+SAVE as the `chat/toolCallApprove' :save value when non-nil."
+  (let ((session (eca-session)))
+    (eca-assert-session-running session)
+    (eca-chat--with-current-buffer (eca-chat--get-active-buffer session)
+      (let* ((buttons (eca-chat--approval-buttons prop))
+             (queued (seq-difference eca-chat--awaiting-tool-call-ids
+                                     (mapcar #'car buttons))))
+        (setq-local eca-chat--accept-batch
+                    (and queued (list :save save :ids queued)))
+        (mapc (lambda (button) (funcall (cdr button))) buttons)
+        (eca-info "Accepted %d pending tool call(s)%s"
+                  (length buttons)
+                  (if queued
+                      (format "; auto-accepting %d more in this batch"
+                              (length queued))
+                    ""))))))
+
 ;;;###autoload
 (defun eca-chat-tool-call-accept-all ()
-  "Accept all pending approval tool call in chat."
+  "Accept all pending approval tool calls of the current batch in chat.
+Accept every tool call waiting for approval, then accept the other tool
+calls of the batch as the server asks about them, one by one.  Tool
+calls of later batches ask as usual; `ask_user' is never accepted."
   (interactive)
-  (eca-assert-session-running (eca-session))
-  (save-excursion
-    (eca-chat--with-current-buffer (eca-chat--get-active-buffer (eca-session))
-      (goto-char (point-min))
-      (when (text-property-search-forward 'eca-tool-call-pending-approval-accept t t)
-        (call-interactively #'eca-chat--key-pressed-return)))))
+  (eca-chat--accept-pending-batch 'eca-tool-call-pending-approval-accept nil))
 
 ;;;###autoload
 (defun eca-chat-tool-call-accept-all-and-remember ()
-  "Accept all pending approval tool call in chat and remember for session."
+  "Accept all pending approval tool calls of the batch, remembering them.
+Like `eca-chat-tool-call-accept-all', but each approval is remembered
+for the session."
   (interactive)
-  (eca-assert-session-running (eca-session))
-  (save-excursion
-    (eca-chat--with-current-buffer (eca-chat--get-active-buffer (eca-session))
-      (goto-char (point-min))
-      (when (text-property-search-forward 'eca-tool-call-pending-approval-accept-and-remember t t)
-        (call-interactively #'eca-chat--key-pressed-return)))))
+  (eca-chat--accept-pending-batch
+   'eca-tool-call-pending-approval-accept-and-remember "session"))
 
 ;;;###autoload
 (defun eca-chat-tool-call-accept-next ()
