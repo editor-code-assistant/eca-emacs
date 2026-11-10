@@ -5041,6 +5041,56 @@ a :tagged-face."
   (it "keeps pending approvals longer than the max collapsed"
     (expect (eca-chat-test--approval-block-open-p 100 500) :not :to-be-truthy)))
 
+(defun eca-chat-test--called-tool-block-no-fontify-p (fontify-markdown)
+  "Return the `eca-no-fontify' of a called tool's shown body.
+The tool call is rendered with `eca-chat-tool-call-fontify-markdown'
+bound to FONTIFY-MARKDOWN."
+  (let ((buf (eca-chat-test--make-render-buffer))
+        (session (make-eca--session))
+        (eca-chat-tool-call-fontify-markdown fontify-markdown)
+        (eca-chat-shrink-called-tools nil))
+    (unwind-protect
+        (eca-chat--with-current-buffer buf
+          (eca-chat--render-content
+           session buf "assistant"
+           (plist-put (eca-chat-test--tool-call-content "toolCalled" "tool-1")
+                      :outputs (list (list :type "text" :text "some **output**")))
+           nil)
+          (eca-chat--expandable-content-toggle "tool-1" t nil)
+          (eca-chat-test--block-no-fontify-p "tool-1" "**output**"))
+      (kill-buffer buf))))
+
+(describe "eca-chat-tool-call-fontify-markdown"
+
+  (it "fontifies tool call bodies as markdown by default"
+    (expect (eca-chat-test--called-tool-block-no-fontify-p t) :to-be nil)
+    (let ((text (eca-chat--file-change-diff nil "+added" nil)))
+      (expect text :to-match (regexp-quote "```diff\n+added\n```"))))
+
+  (it "shows tool call bodies without markdown fontification when nil"
+    (expect (eca-chat-test--called-tool-block-no-fontify-p nil) :to-be t))
+
+  (it "colors diffs with diff-mode instead of a markdown code block"
+    (let* ((eca-chat-tool-call-fontify-markdown nil)
+           (text (eca-chat--file-change-diff nil "-removed\n+added" nil))
+           (added (string-search "+added" text)))
+      (expect (string-search "```" text) :to-be nil)
+      (expect (get-text-property added 'font-lock-face text) :to-be-truthy)
+      (expect (text-property-not-all 0 (length text) 'face nil text) :to-be nil)))
+
+  (it "shows the tool name of file changes as plain inline code"
+    (let ((eca-chat-tool-call-fontify-markdown nil))
+      (expect (eca-chat--tool-call-inline-code "edit_file")
+              :to-equal "edit_file")
+      (expect (get-text-property 0 'font-lock-face
+                                 (eca-chat--tool-call-inline-code "edit_file"))
+              :to-be 'markdown-inline-code-face)))
+
+  (it "falls back to plain code when the mode is unavailable"
+    (let ((eca-chat-tool-call-fontify-markdown nil))
+      (expect (eca-chat--tool-call-code "x" "nope" 'eca-chat-test--no-such-mode)
+              :to-equal "x"))))
+
 ;; ---------------------------------------------------------------------------
 ;; eca-chat--shell-command-state-face
 ;; ---------------------------------------------------------------------------
