@@ -219,6 +219,16 @@ to nil to keep the whole chat buffer writable."
   :type 'boolean
   :group 'eca)
 
+(defcustom eca-chat-tool-call-auto-expansion-max-length 10000
+  "Max content length of a pending approval tool call to auto expand.
+With `eca-chat-expand-pending-approval-tools', tool calls pending
+approval with more content characters than this stay collapsed: they
+can be approved from their label and expanded manually.  When nil,
+there is no limit."
+  :type '(choice (const :tag "No limit" nil)
+                 (integer :tag "Max characters"))
+  :group 'eca)
+
 (defcustom eca-chat-shrink-called-tools t
   "Whether to auto shrink tool calls after called."
   :type 'boolean
@@ -3972,6 +3982,27 @@ FRAME is the resized frame."
                          (setq-local word-wrap t)))))
                  buf)))))))
 
+(defun eca-chat--untagged-stretch (beg end)
+  "Return the bounds of the untagged text around BEG..END.
+The bounds are a cons (LO . HI) of the closest `eca-no-fontify'
+runs before BEG and after END, or of the fontifiable buffer edges.
+Return nil when BEG..END is not next to any tagged run."
+  (save-restriction
+    (widen)
+    (let* ((limit (eca-chat--fontification-history-end (point-max)))
+           (lo (if (and (> beg (point-min))
+                        (not (get-text-property (1- beg) 'eca-no-fontify)))
+                   (or (previous-single-property-change beg 'eca-no-fontify)
+                       (point-min))
+                 beg))
+           (hi (if (and (< end limit)
+                        (not (get-text-property end 'eca-no-fontify)))
+                   (or (next-single-property-change end 'eca-no-fontify nil limit)
+                       limit)
+                 end)))
+      (unless (and (= lo (point-min)) (>= hi limit))
+        (cons lo (max hi end))))))
+
 (defun eca-chat--fontify-region (beg end &optional loudly)
   "Custom `font-lock-fontify-region-function' for chat buffers.
 Walks BEG..END in `eca-no-fontify' property runs.  For each
@@ -3981,6 +4012,11 @@ avoids running gfm/markdown matchers (the dominant CPU cost
 reported in #234) over still-streaming tool-call argument bodies
 that have not yet stabilized.
 
+Each untagged sub-range is fontified narrowed to the untagged text
+around it: font-lock extends the region to whole lines and markdown
+extends it to paragraph and block boundaries, which would otherwise
+pull the adjacent tagged text back in and fontify it anyway.
+
 Cleanup is automatic: the `toolCalled' arm replaces the body with
 fresh, un-tagged content, so on the next redisplay jit-lock asks
 this function to refontify, the property is gone and the default
@@ -3989,14 +4025,23 @@ fontifier runs normally.
 Returns `(jit-lock-bounds BEG . END)' so jit-lock's bookkeeping
 matches the region we considered."
   (let ((pos beg)
-        (fontify-end (eca-chat--fontification-history-end end)))
+        (fontify-end (min (eca-chat--fontification-history-end end)
+                          (1+ (buffer-size)))))
     (while (< pos fontify-end)
       (let ((skip (get-text-property pos 'eca-no-fontify))
             (next (or (next-single-property-change
                        pos 'eca-no-fontify nil fontify-end)
                       fontify-end)))
         (unless skip
-          (font-lock-default-fontify-region pos next loudly))
+          (if-let* ((stretch (eca-chat--untagged-stretch pos next)))
+              (progn
+                ;; `syntax-propertize' refuses to run while narrowed.
+                (syntax-propertize next)
+                (save-restriction
+                  (narrow-to-region (car stretch) (cdr stretch))
+                  (let ((font-lock-dont-widen t))
+                    (font-lock-default-fontify-region pos next loudly))))
+            (font-lock-default-fontify-region pos next loudly)))
         (setq pos next))))
   `(jit-lock-bounds ,beg . ,end))
 
@@ -4792,6 +4837,13 @@ the last chat buffer of SESSION."
     (force-mode-line-update))
   (setf (eca--session-chat-default-trust session) value))
 
+(defun eca-chat--tool-call-auto-expandable-p (id)
+  "Return non-nil when the tool call block ID may be auto expanded.
+See `eca-chat-tool-call-auto-expansion-max-length'."
+  (or (null eca-chat-tool-call-auto-expansion-max-length)
+      (<= (or (eca-chat--expandable-content-length id) 0)
+          eca-chat-tool-call-auto-expansion-max-length)))
+
 (defun eca-chat--tool-call-file-change-details
     (content label approval-text time status _tool-call-next-line-spacing roots &optional parent-id)
   "Update tool call UI showing file change details.
@@ -5537,7 +5589,10 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
            (when (and eca-chat-expand-pending-approval-tools manual?)
              (when parent-tool-call-id
                (eca-chat--expandable-content-toggle parent-tool-call-id t nil))
-             (eca-chat--expandable-content-toggle id t nil)
+             ;; The approval buttons live in the label, so a too long
+             ;; tool call stays collapsed and is still approvable.
+             (when (eca-chat--tool-call-auto-expandable-p id)
+               (eca-chat--expandable-content-toggle id t nil))
              (when viewing-bottom?
                (eca-chat--ensure-tool-call-approval-visible id)))
            ;; Update parent subagent status to show pending approval

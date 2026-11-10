@@ -86,6 +86,16 @@ darkens for light themes."
   :type 'number
   :group 'eca)
 
+(defcustom eca-chat-expandable-block-fontify-max-length 20000
+  "Max content length of an expandable block that gets syntax highlighting.
+Content of blocks longer than this many characters, like huge tool
+call arguments or outputs, is shown without markdown/code
+fontification, which can freeze Emacs on very long text.
+When nil, block content is always fontified."
+  :type '(choice (const :tag "Always fontify" nil)
+                 (integer :tag "Max characters"))
+  :group 'eca)
+
 ;;;; State
 
 (defvar-local eca-chat-expandable--id->ov (make-hash-table :test 'equal)
@@ -111,7 +121,9 @@ Should be called whenever overlays are wholesale removed (e.g.
 
 (cl-defstruct (eca-chat--expandable-text
                (:constructor eca-chat--expandable-text-create
-                             (&optional string &aux (joined (or string ""))))
+                             (&optional string
+                                        &aux (joined (or string ""))
+                                        (length (length joined))))
                (:copier nil))
   "Content text of an expandable block, cheap to grow chunk by chunk.
 JOINED is a string and PENDING the chunks appended after it, newest
@@ -119,23 +131,27 @@ first.  Streaming events like `reasonText' append a small chunk at a
 time: concatenating on each append copied the whole content every
 time, making long thinking blocks quadratic (#337).  Appending only
 conses the chunk now, and the chunks are joined once, when the full
-string is needed by `eca-chat--expandable-text-string'.
+string is needed by `eca-chat--expandable-text-string'.  LENGTH is
+the length of the whole text, kept up to date without joining.
 
 The text is kept raw: the block indent is only added as `line-prefix'
 when inserting it in the buffer, so plain chunks join into a string
 without text property intervals, which are costly to copy."
   (joined "")
-  (pending nil))
+  (pending nil)
+  (length 0))
 
 (defun eca-chat--expandable-text-append (text chunk)
   "Append the string CHUNK to TEXT."
   (when (and chunk (not (string-empty-p chunk)))
-    (push chunk (eca-chat--expandable-text-pending text))))
+    (push chunk (eca-chat--expandable-text-pending text))
+    (cl-incf (eca-chat--expandable-text-length text) (length chunk))))
 
 (defun eca-chat--expandable-text-replace (text string)
   "Replace all of TEXT with STRING."
   (setf (eca-chat--expandable-text-joined text) (or string "")
-        (eca-chat--expandable-text-pending text) nil))
+        (eca-chat--expandable-text-pending text) nil
+        (eca-chat--expandable-text-length text) (length string)))
 
 (defun eca-chat--expandable-text-string (text)
   "Return the full string of TEXT, joining its pending chunks once."
@@ -156,10 +172,24 @@ without text property intervals, which are costly to copy."
   (let ((text (overlay-get ov-content 'eca-chat--expandable-content-content)))
     (or (null text) (eca-chat--expandable-text-empty-p text))))
 
-(defun eca-chat--expandable-content-indented (ov-content string)
-  "Return STRING with the content indent of OV-CONTENT as `line-prefix'."
-  (propertize string 'line-prefix
-              (overlay-get ov-content 'eca-chat--expandable-content-indent)))
+(defun eca-chat--expandable-content-length (id)
+  "Return the content length of the rendered expandable block ID, or nil."
+  (when-let* ((ov-label (eca-chat--get-expandable-content id))
+              (ov-content (overlay-get ov-label 'eca-chat--expandable-content-ov-content))
+              (text (overlay-get ov-content 'eca-chat--expandable-content-content)))
+    (eca-chat--expandable-text-length text)))
+
+(defun eca-chat--expandable-content-indented (ov-content string &optional total-length)
+  "Return STRING with the content indent of OV-CONTENT as `line-prefix'.
+STRING is tagged with `eca-no-fontify' when TOTAL-LENGTH, the length of
+the whole block content (defaults to STRING's), exceeds
+`eca-chat-expandable-block-fontify-max-length'."
+  (let ((indent (overlay-get ov-content 'eca-chat--expandable-content-indent)))
+    (if (and eca-chat-expandable-block-fontify-max-length
+             (> (or total-length (length string))
+                eca-chat-expandable-block-fontify-max-length))
+        (propertize string 'line-prefix indent 'eca-no-fontify t)
+      (propertize string 'line-prefix indent))))
 
 ;;;; Faces
 
@@ -546,7 +576,9 @@ in parent."
                 (eca-chat--paint-nested-label ov-label))))
           (when open?
             (let ((block-face (overlay-get ov-content 'face))
-                  (delta (eca-chat--expandable-content-indented ov-content content)))
+                  (delta (eca-chat--expandable-content-indented
+                          ov-content content
+                          (eca-chat--expandable-text-length text))))
               (if append-content?
                   (let ((insert-start (overlay-end ov-content)))
                     (goto-char insert-start)
@@ -645,7 +677,8 @@ If FORCE? decide to CLOSE? or not."
                         (dolist (seg segments)
                           (pcase (plist-get seg :type)
                             ('text (eca-chat--insert (eca-chat--expandable-content-indented
-                                                      ov-content (plist-get seg :content))))
+                                                      ov-content (plist-get seg :content)
+                                                      (length content))))
                             ('child
                              (eca-chat--render-nested-block ov-label seg)
                              ;; render-nested-block uses save-excursion so point stays
@@ -654,7 +687,7 @@ If FORCE? decide to CLOSE? or not."
                         ;; Insert any trailing text not yet captured in segments
                         (when (and trailing-text (not (string-empty-p trailing-text)))
                           (eca-chat--insert (eca-chat--expandable-content-indented
-                                             ov-content trailing-text)))
+                                             ov-content trailing-text (length content))))
                         (eca-chat--insert "\n"))
                     ;; Legacy path: no segments, insert content then children
                     (eca-chat--insert (eca-chat--expandable-content-indented ov-content content)
