@@ -155,6 +155,82 @@ Cells must then be padded by source width, not display width."
   (and (fboundp 'markdown--fontify-table-alignment)
        (or markdown-hide-markup markdown-hide-urls)))
 
+;; Fontification speed ----------------------------------------------------
+;;
+;; markdown-mode treats a table as one paragraph, which makes fontifying
+;; long tables grow with the square of their size.  Each row is
+;; self-contained, so in chat buffers these advices keep the work to
+;; the rows being fontified.
+
+(defun eca-table--fast-fontify-p ()
+  "Return non-nil when tables are fontified row by row in this buffer."
+  (derived-mode-p 'eca-chat-mode))
+
+(defun eca-table--table-line-at-p (pos)
+  "Return non-nil when the line at POS is a markdown table row."
+  (save-excursion
+    (goto-char pos)
+    (beginning-of-line)
+    (looking-at-p markdown-table-line-regexp)))
+
+(defun eca-table--inline-code-at-pos-a (orig pos &optional from)
+  "Look for the code span at POS within its table row only.
+ORIG is `markdown-inline-code-at-pos', called with POS and FROM.  It
+scans from the start of the paragraph, the whole table for a row,
+while code spans can't cross table rows."
+  (if (and (null from)
+           (eca-table--fast-fontify-p)
+           (eca-table--table-line-at-p pos))
+      (save-excursion
+        (goto-char pos)
+        (save-restriction
+          (narrow-to-region (line-beginning-position) (line-end-position))
+          (funcall orig pos)))
+    (funcall orig pos from)))
+
+(defun eca-table--extend-region-a (orig start end)
+  "Extend START..END by whole lines at its table row edges.
+ORIG is `markdown-syntax-propertize-extend-region', which extends
+the region to whole paragraphs, the whole table at a table row."
+  (let ((res (funcall orig start end)))
+    (if (and res (eca-table--fast-fontify-p))
+        (let ((s (if (eca-table--table-line-at-p start)
+                     (save-excursion
+                       (goto-char start)
+                       (line-beginning-position))
+                   (car res)))
+              (e (if (and (> end (point-min))
+                          (eca-table--table-line-at-p (1- end)))
+                     (save-excursion
+                       (goto-char end)
+                       (if (bolp)
+                           end
+                         (min (point-max) (1+ (line-end-position)))))
+                   (cdr res))))
+          (unless (and (= s start) (= e end))
+            (cons s e)))
+      res)))
+
+(defun eca-table--fontify-tables-a (orig last)
+  "Stop the table row match of ORIG at its own line.
+ORIG is `markdown-fontify-tables', called with LAST.  It leaves point
+on the next row, so font-lock flags each row as continuing on the next
+one, and every fontification then goes back to the table start."
+  (let ((res (funcall orig last)))
+    (when (and res
+               (eca-table--fast-fontify-p)
+               (bolp)
+               (eq (char-before) ?\n))
+      (backward-char))
+    res))
+
+(advice-add 'markdown-inline-code-at-pos :around
+            #'eca-table--inline-code-at-pos-a)
+(advice-add 'markdown-syntax-propertize-extend-region :around
+            #'eca-table--extend-region-a)
+(advice-add 'markdown-fontify-tables :around
+            #'eca-table--fontify-tables-a)
+
 ;; Helpers ----------------------------------------------------------------
 
 (defun eca-table--action-overlay-at-point ()

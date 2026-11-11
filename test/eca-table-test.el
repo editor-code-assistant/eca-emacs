@@ -401,5 +401,116 @@
         (expect (key-binding (kbd "o") nil nil (point))
                 :not :to-equal 'eca-table-open)))))
 
+(defun eca-table-test--table (rows)
+  "Return a markdown table of ROWS rows with inline markup."
+  (concat "Intro **text**.\n\n"
+          "| Name | Code | Note |\n|---|---|---|\n"
+          (mapconcat (lambda (r)
+                       (format "| **item %d** | `a | b` | _note_ [l](http://x/%d) |"
+                               r r))
+                     (number-sequence 1 rows) "\n")
+          "\n\nAfter the `table`.\n"))
+
+(defmacro eca-table-test--with-table (rows fast &rest body)
+  "Run BODY in a gfm buffer holding a table of ROWS rows.
+Tables are fontified row by row when FAST is non-nil."
+  (declare (indent 2))
+  `(with-temp-buffer
+     (cl-letf (((symbol-function 'eca-table--fast-fontify-p)
+                (lambda () ,fast)))
+       (gfm-mode)
+       (setq-local markdown-hide-markup t)
+       (insert (eca-table-test--table ,rows))
+       ,@body)))
+
+(defun eca-table-test--rendering ()
+  "Return the face, display and invisibility runs of the buffer."
+  (let (runs (pos (point-min)))
+    (while (< pos (point-max))
+      (push (list pos
+                  (get-text-property pos 'face)
+                  (get-text-property pos 'display)
+                  (get-text-property pos 'invisible))
+            runs)
+      (setq pos (1+ pos)))
+    (nreverse runs)))
+
+(describe "eca-table row by row fontification"
+  (it "renders tables the same as markdown-mode"
+    (let ((slow (eca-table-test--with-table 8 nil
+                  (font-lock-ensure)
+                  (eca-table-test--rendering)))
+          (fast (eca-table-test--with-table 8 t
+                  (font-lock-ensure)
+                  (eca-table-test--rendering))))
+      (expect fast :to-equal slow)))
+
+  (it "renders the same when fontifying a few rows at a time"
+    (let ((slow (eca-table-test--with-table 8 nil
+                  (font-lock-ensure)
+                  (eca-table-test--rendering)))
+          (fast (eca-table-test--with-table 8 t
+                  (let ((pos (point-min)))
+                    (while (< pos (point-max))
+                      (font-lock-fontify-region pos (min (point-max) (+ pos 60)))
+                      (setq pos (+ pos 60))))
+                  (eca-table-test--rendering))))
+      (expect fast :to-equal slow)))
+
+  (it "finds code spans holding pipes within their row"
+    (eca-table-test--with-table 3 t
+      (goto-char (point-min))
+      (search-forward "`a | b`")
+      (expect (markdown-inline-code-at-pos-p (- (point) 4)) :to-be-truthy)
+      (search-forward "| _note")
+      (expect (markdown-inline-code-at-pos-p (- (point) 6)) :not :to-be-truthy)))
+
+  (it "does not flag table rows as continuing on the next one"
+    (eca-table-test--with-table 20 t
+      (font-lock-ensure)
+      (goto-char (point-min))
+      (search-forward "| Name")
+      (let ((end (save-excursion (search-forward "After") (point)))
+            flagged)
+        (while (< (line-end-position) end)
+          (when (get-text-property (line-end-position) 'font-lock-multiline)
+            (push (line-number-at-pos) flagged))
+          (forward-line 1))
+        (expect flagged :to-be nil))))
+
+  (it "extends regions inside a table by whole lines only"
+    (eca-table-test--with-table 20 t
+      (goto-char (point-min))
+      (search-forward "item 10")
+      (let* ((beg (line-beginning-position))
+             (end (1+ (line-end-position)))
+             (res (markdown-syntax-propertize-extend-region (+ beg 3) (1- end))))
+        (expect res :to-equal (cons beg end)))))
+
+  (it "keeps fontification of a table chunk bounded"
+    (eca-table-test--with-table 200 t
+      (let (sizes)
+        (font-lock-ensure)
+        (cl-letf* ((orig (symbol-function 'font-lock-fontify-keywords-region))
+                   ((symbol-function 'font-lock-fontify-keywords-region)
+                    (lambda (beg end &rest args)
+                      (push (- end beg) sizes)
+                      (apply orig beg end args))))
+          (goto-char (point-min))
+          (search-forward "item 100")
+          (font-lock-fontify-region (point) (+ (point) 500)))
+        (expect (apply #'max sizes) :to-be-less-than 1000))))
+
+  (it "leaves tables outside chat buffers to markdown-mode"
+    (with-temp-buffer
+      (gfm-mode)
+      (insert (eca-table-test--table 20))
+      (goto-char (point-min))
+      (search-forward "item 10")
+      (expect (eca-table--fast-fontify-p) :not :to-be-truthy)
+      (let ((res (markdown-syntax-propertize-extend-region
+                  (point) (1+ (point)))))
+        (expect (car res) :to-be-less-than (line-beginning-position))))))
+
 (provide 'eca-table-test)
 ;;; eca-table-test.el ends here
