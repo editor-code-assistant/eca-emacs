@@ -682,7 +682,17 @@ available (TTY)."
 
 (defface eca-chat-file-change-label-face
   '((t :inherit diff-file-header))
-  "Face for file changes labels in chat."
+  "Face for file change labels in chat, for files inside the workspace.
+Files outside it use `eca-chat-file-change-label-outside-workspace-face'."
+  :group 'eca)
+
+(defface eca-chat-file-change-label-outside-workspace-face
+  '((((background dark))  :foreground "#b8860b" :slant italic)
+    (((background light)) :foreground "#8b6914" :slant italic))
+  "Face for file change labels in chat, for files outside the workspace.
+Those, like the scratch files models write to /tmp, are usually not
+part of the project, so they show in a dark yellow, in italic, apart
+from the files inside it, see `eca-chat-file-change-label-face'."
   :group 'eca)
 
 (defface eca-chat-file-path-face
@@ -4311,13 +4321,23 @@ block on remote round trips."
                (substring filename (length dir)))))
          roots))
 
+(defun eca-chat--workspace-relative-filename (filename roots)
+  "Return FILENAME relative to the first of ROOTS holding it, or nil.
+Local names are only checked against local roots: no remote root can
+hold them, and resolving its true name, like `f-ancestor-of?' does,
+would block on a remote round trip."
+  (if (file-remote-p filename)
+      (eca-chat--remote-relative-filename filename roots)
+    (-some->> (-first (lambda (root)
+                        (and (not (file-remote-p root))
+                             (f-ancestor-of? root filename)))
+                      roots)
+      (f-relative filename))))
+
 (defun eca-chat--relativize-filename-for-workspace-root (filename roots &optional hide-filename?)
   "Relativize the FILENAME if a workspace root is found for ROOTS.
 Show parent upwards if HIDE-FILENAME? is non nil."
-  (let ((relative-path (or (if (file-remote-p filename)
-                               (eca-chat--remote-relative-filename filename roots)
-                             (-some->> (-first (lambda (root) (f-ancestor-of? root filename)) roots)
-                               (f-relative filename)))
+  (let ((relative-path (or (eca-chat--workspace-relative-filename filename roots)
                            filename)))
     (if hide-filename?
         (f-parent relative-path)
@@ -4385,12 +4405,17 @@ trip blocks Emacs and may hang it."
             (or path "")) "\n"
           (eca-chat--tool-call-code (or diff "") "diff" 'diff-mode)))
 
-(defun eca-chat--file-change-details-label (details)
-  "Build the label from DETAILS for a file change block."
-  (let ((path (plist-get details :path))
-        (added (plist-get details :linesAdded))
-        (removed (plist-get details :linesRemoved)))
-    (concat (propertize (if path (f-filename path) "") 'font-lock-face 'eca-chat-file-change-label-face)
+(defun eca-chat--file-change-details-label (details roots)
+  "Build the label from DETAILS for a file change block.
+The face of the file name tells whether the file is inside the
+workspace ROOTS."
+  (let* ((path (plist-get details :path))
+         (added (plist-get details :linesAdded))
+         (removed (plist-get details :linesRemoved))
+         (face (if (and path (eca-chat--workspace-relative-filename path roots))
+                   'eca-chat-file-change-label-face
+                 'eca-chat-file-change-label-outside-workspace-face)))
+    (concat (propertize (if path (f-filename path) "") 'font-lock-face face)
             " "
             (propertize (concat "+" (number-to-string (or added 0))) 'font-lock-face 'success)
             " "
@@ -4930,7 +4955,8 @@ Append STATUS, ROOTS and optional PARENT-ID."
     (eca-chat--update-expandable-content
      id
      (concat (propertize label 'font-lock-face 'eca-chat-mcp-tool-call-label-face)
-             " " (eca-chat--file-change-details-label (plist-put (copy-sequence details) :path path))
+             " " (eca-chat--file-change-details-label
+                  (plist-put (copy-sequence details) :path path) roots)
              " " status time
              (when view-diff-btn
                (concat " " view-diff-btn))

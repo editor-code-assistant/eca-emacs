@@ -2227,6 +2227,99 @@ VISIBLE is the value `pos-visible-in-window-p' returns."
       (expect 'file-exists-p :not :to-have-been-called)
       (expect 'file-truename :not :to-have-been-called))))
 
+(defun eca-chat-test--file-change-label-face (path roots)
+  "Return the face of the file name in the file change label of PATH.
+ROOTS are the workspace roots."
+  (get-text-property 0 'font-lock-face
+                     (eca-chat--file-change-details-label
+                      (list :path path :linesAdded 1 :linesRemoved 0)
+                      roots)))
+
+(defun eca-chat-test--label-face (id string)
+  "Return the `font-lock-face' of STRING in the label of block ID."
+  (save-excursion
+    (goto-char (overlay-start (eca-chat--get-expandable-content id)))
+    (search-forward string)
+    (get-text-property (match-beginning 0) 'font-lock-face)))
+
+(describe "eca-chat--file-change-details-label"
+  (before-all
+    ;; Loading TRAMP checks files itself, so load it before spying.
+    (file-remote-p "/ssh:host:/proj/a.el"))
+
+  (it "keeps the file change label face for files inside the workspace"
+    (let ((other (make-temp-file "eca-chat-test" t))
+          (root (make-temp-file "eca-chat-test" t)))
+      (unwind-protect
+          ;; New files don't exist yet while their change awaits approval.
+          (expect (eca-chat-test--file-change-label-face
+                   (expand-file-name "src/new.el" root) (list other root))
+                  :to-be 'eca-chat-file-change-label-face)
+        (delete-directory other t)
+        (delete-directory root t))))
+
+  (it "shows files outside every workspace root with the outside face"
+    (let ((root (make-temp-file "eca-chat-test" t))
+          (scratch (make-temp-file "eca-chat-test" t)))
+      (unwind-protect
+          (progn
+            (expect (eca-chat-test--file-change-label-face
+                     (expand-file-name "foo.py" scratch) (list root))
+                    :to-be 'eca-chat-file-change-label-outside-workspace-face)
+            (expect (eca-chat-test--file-change-label-face
+                     (expand-file-name "foo.py" scratch) nil)
+                    :to-be 'eca-chat-file-change-label-outside-workspace-face))
+        (delete-directory root t)
+        (delete-directory scratch t))))
+
+  (it "tells remote files apart without touching them, which would block Emacs"
+    (spy-on 'file-truename)
+    (spy-on 'file-exists-p)
+    (expect (eca-chat-test--file-change-label-face
+             "/ssh:host:/proj/src/a.el" '("/ssh:host:/proj"))
+            :to-be 'eca-chat-file-change-label-face)
+    (expect (eca-chat-test--file-change-label-face
+             "/ssh:host:/tmp/foo.py" '("/ssh:host:/proj"))
+            :to-be 'eca-chat-file-change-label-outside-workspace-face)
+    (expect 'file-truename :not :to-have-been-called)
+    (expect 'file-exists-p :not :to-have-been-called))
+
+  (it "never checks remote roots for local files, which would block Emacs"
+    ;; Server paths outside its TRAMP roots, like its /tmp, aren't
+    ;; translated to TRAMP names, so they look local.
+    (spy-on 'file-truename)
+    (expect (eca-chat-test--file-change-label-face
+             "/tmp/foo.py" '("/ssh:host:/proj"))
+            :to-be 'eca-chat-file-change-label-outside-workspace-face)
+    (expect 'file-truename :not :to-have-been-called))
+
+  (it "colors the file name of rendered file change tool calls"
+    (let* ((buf (eca-chat-test--make-render-buffer))
+           (root (make-temp-file "eca-chat-test" t))
+           (session (make-eca--session :workspace-folders (list root)))
+           ;; Resolve path mappings from SESSION, as the server
+           ;; message handling does, instead of from the buffer.
+           (eca--path-session session)
+           (eca-chat-shrink-called-tools nil))
+      (unwind-protect
+          (eca-chat--with-current-buffer buf
+            (pcase-dolist (`(,id . ,path)
+                           `(("tool-1" . ,(expand-file-name "inside.el" root))
+                             ("tool-2" . "/nonexistent/eca/outside.el")))
+              (eca-chat--render-content
+               session buf "assistant"
+               (list :type "toolCalled" :id id :name "edit_file"
+                     :server "eca" :summary "Editing file"
+                     :details (list :type "fileChange" :path path :diff "+x"
+                                    :linesAdded 1 :linesRemoved 0))
+               (eca--session-workspace-folders session)))
+            (expect (eca-chat-test--label-face "tool-1" "inside.el")
+                    :to-be 'eca-chat-file-change-label-face)
+            (expect (eca-chat-test--label-face "tool-2" "outside.el")
+                    :to-be 'eca-chat-file-change-label-outside-workspace-face))
+        (kill-buffer buf)
+        (delete-directory root t)))))
+
 (describe "eca-chat copy command"
   (it "copies fenced code block content"
     (let (kill-ring
