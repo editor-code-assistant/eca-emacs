@@ -219,6 +219,25 @@ to nil to keep the whole chat buffer writable."
   :type 'boolean
   :group 'eca)
 
+(defcustom eca-chat-tool-call-auto-expansion-max-length 10000
+  "Max content length of a pending approval tool call to auto expand.
+With `eca-chat-expand-pending-approval-tools', tool calls pending
+approval with more content characters than this stay collapsed: they
+can be approved from their label and expanded manually.  When nil,
+there is no limit."
+  :type '(choice (const :tag "No limit" nil)
+                 (integer :tag "Max characters"))
+  :group 'eca)
+
+(defcustom eca-chat-tool-call-fontify-markdown t
+  "Whether to fontify tool call bodies as markdown.
+When nil, tool call arguments and outputs are shown as plain text,
+skipping the markdown fontification that is slow on long bodies.
+Diffs and JSON outputs are still colored once, with their own major
+mode.  Subagent conversations are still fontified as markdown."
+  :type 'boolean
+  :group 'eca)
+
 (defcustom eca-chat-shrink-called-tools t
   "Whether to auto shrink tool calls after called."
   :type 'boolean
@@ -3972,6 +3991,27 @@ FRAME is the resized frame."
                          (setq-local word-wrap t)))))
                  buf)))))))
 
+(defun eca-chat--untagged-stretch (beg end)
+  "Return the bounds of the untagged text around BEG..END.
+The bounds are a cons (LO . HI) of the closest `eca-no-fontify'
+runs before BEG and after END, or of the fontifiable buffer edges.
+Return nil when BEG..END is not next to any tagged run."
+  (save-restriction
+    (widen)
+    (let* ((limit (eca-chat--fontification-history-end (point-max)))
+           (lo (if (and (> beg (point-min))
+                        (not (get-text-property (1- beg) 'eca-no-fontify)))
+                   (or (previous-single-property-change beg 'eca-no-fontify)
+                       (point-min))
+                 beg))
+           (hi (if (and (< end limit)
+                        (not (get-text-property end 'eca-no-fontify)))
+                   (or (next-single-property-change end 'eca-no-fontify nil limit)
+                       limit)
+                 end)))
+      (unless (and (= lo (point-min)) (>= hi limit))
+        (cons lo (max hi end))))))
+
 (defun eca-chat--fontify-region (beg end &optional loudly)
   "Custom `font-lock-fontify-region-function' for chat buffers.
 Walks BEG..END in `eca-no-fontify' property runs.  For each
@@ -3981,6 +4021,15 @@ avoids running gfm/markdown matchers (the dominant CPU cost
 reported in #234) over still-streaming tool-call argument bodies
 that have not yet stabilized.
 
+Each untagged sub-range is fontified narrowed to the untagged text
+around it: font-lock extends the region to whole lines and markdown
+extends it to paragraph and block boundaries, which would otherwise
+pull the adjacent tagged text back in and fontify it anyway.  A
+construct crossing the edge of the tagged text, like a code block
+fenced on both sides of it, keeps the match data markdown stores
+out of the narrowing, and font-lock signals: the sub-range is then
+fontified widened, as without the narrowing.
+
 Cleanup is automatic: the `toolCalled' arm replaces the body with
 fresh, un-tagged content, so on the next redisplay jit-lock asks
 this function to refontify, the property is gone and the default
@@ -3989,14 +4038,27 @@ fontifier runs normally.
 Returns `(jit-lock-bounds BEG . END)' so jit-lock's bookkeeping
 matches the region we considered."
   (let ((pos beg)
-        (fontify-end (eca-chat--fontification-history-end end)))
+        (fontify-end (min (eca-chat--fontification-history-end end)
+                          (1+ (buffer-size)))))
     (while (< pos fontify-end)
       (let ((skip (get-text-property pos 'eca-no-fontify))
             (next (or (next-single-property-change
                        pos 'eca-no-fontify nil fontify-end)
                       fontify-end)))
         (unless skip
-          (font-lock-default-fontify-region pos next loudly))
+          (if-let* ((stretch (eca-chat--untagged-stretch pos next)))
+              (progn
+                ;; Propertize widened first: narrowed, `syntax-propertize'
+                ;; can't see the text before the narrowing.
+                (syntax-propertize next)
+                (condition-case nil
+                    (save-restriction
+                      (narrow-to-region (car stretch) (cdr stretch))
+                      (let ((font-lock-dont-widen t))
+                        (font-lock-default-fontify-region pos next loudly)))
+                  ;; Match data out of the narrowing, see the docstring.
+                  (error (font-lock-default-fontify-region pos next loudly))))
+            (font-lock-default-fontify-region pos next loudly)))
         (setq pos next))))
   `(jit-lock-bounds ,beg . ,end))
 
@@ -4258,6 +4320,53 @@ Show parent upwards if HIDE-FILENAME? is non nil."
         (f-parent relative-path)
       relative-path)))
 
+(defun eca-chat--tool-call-body (body)
+  "Return the tool call BODY, tagged to skip markdown fontification.
+BODY is returned as is when `eca-chat-tool-call-fontify-markdown' is
+non-nil."
+  (if eca-chat-tool-call-fontify-markdown
+      body
+    (propertize body 'eca-no-fontify t)))
+
+(defun eca-chat--fontify-code (code mode)
+  "Return CODE colored by major MODE with `font-lock-face' properties.
+Return CODE as is when MODE is unavailable or fails."
+  (if (fboundp mode)
+      (condition-case nil
+          (with-temp-buffer
+            ;; Modes like `diff-mode' only match lines ending in a newline.
+            (insert code "\n")
+            (delay-mode-hooks (funcall mode))
+            (font-lock-ensure)
+            (let ((pos (point-min)))
+              (while (< pos (point-max))
+                (let ((next (next-single-property-change pos 'face nil (point-max)))
+                      (face (get-text-property pos 'face)))
+                  (when face
+                    (put-text-property pos next 'font-lock-face face))
+                  (setq pos next))))
+            (remove-list-of-text-properties (point-min) (point-max)
+                                            '(face fontified))
+            (buffer-substring (point-min) (1- (point-max))))
+        (error code))
+    code))
+
+(defun eca-chat--tool-call-code (code lang mode)
+  "Return CODE as a markdown code block of LANG.
+When `eca-chat-tool-call-fontify-markdown' is nil, return CODE colored
+by major MODE instead."
+  (if eca-chat-tool-call-fontify-markdown
+      (concat "```" lang "\n" code "\n```")
+    (eca-chat--fontify-code code mode)))
+
+(defun eca-chat--tool-call-inline-code (code)
+  "Return CODE as markdown inline code.
+When `eca-chat-tool-call-fontify-markdown' is nil, return CODE with the
+inline code face instead."
+  (if eca-chat-tool-call-fontify-markdown
+      (concat "`" code "`")
+    (propertize code 'font-lock-face 'markdown-inline-code-face)))
+
 (defun eca-chat--file-change-diff (path diff roots)
   "Return a diff block for relative PATH from ROOTS with DIFF.
 PATH links to its file when it exists.  Remote files aren't
@@ -4271,7 +4380,7 @@ trip blocks Emacs and may hang it."
                            'font-lock-face 'eca-chat-file-path-face)
                (lambda () (find-file-other-window path)))
             (or path "")) "\n"
-          "```diff\n" (or diff "") "\n```"))
+          (eca-chat--tool-call-code (or diff "") "diff" 'diff-mode)))
 
 (defun eca-chat--file-change-details-label (details)
   "Build the label from DETAILS for a file change block."
@@ -4792,6 +4901,13 @@ the last chat buffer of SESSION."
     (force-mode-line-update))
   (setf (eca--session-chat-default-trust session) value))
 
+(defun eca-chat--tool-call-auto-expandable-p (id)
+  "Return non-nil when the tool call block ID may be auto expanded.
+See `eca-chat-tool-call-auto-expansion-max-length'."
+  (or (null eca-chat-tool-call-auto-expansion-max-length)
+      (<= (or (eca-chat--expandable-content-length id) 0)
+          eca-chat-tool-call-auto-expansion-max-length)))
+
 (defun eca-chat--tool-call-file-change-details
     (content label approval-text time status _tool-call-next-line-spacing roots &optional parent-id)
   "Update tool call UI showing file change details.
@@ -4816,8 +4932,9 @@ Append STATUS, ROOTS and optional PARENT-ID."
              (when view-diff-btn
                (concat " " view-diff-btn))
              approval-text)
-     (concat "Tool: `" name "`\n"
-             (eca-chat--file-change-diff path diff roots))
+     (eca-chat--tool-call-body
+      (concat "Tool: " (eca-chat--tool-call-inline-code name) "\n"
+              (eca-chat--file-change-diff path diff roots)))
      nil
      parent-id)))
 
@@ -4898,7 +5015,7 @@ auto-allowed or manually approved), coloring commands accordingly."
      (concat (propertize label 'font-lock-face 'eca-chat-mcp-tool-call-label-face)
              " " status time
              approval-text)
-     body
+     (eca-chat--tool-call-body body)
      nil
      parent-id)))
 
@@ -4912,14 +5029,15 @@ auto-allowed or manually approved), coloring commands accordingly."
      id
      (concat (propertize label 'font-lock-face 'eca-chat-mcp-tool-call-label-face)
              " " status time)
-     (eca-chat--content-table
-      `(("Tool"   . ,name)
-        ("Server" . ,server)
-        ("Arguments" . ,arguments)
-        ("Json output" . ,(concat "\n"
-                                  "```javascript\n"
-                                  (string-join jsons "\n")
-                                  "\n```"))))
+     (eca-chat--tool-call-body
+      (eca-chat--content-table
+       `(("Tool"   . ,name)
+         ("Server" . ,server)
+         ("Arguments" . ,arguments)
+         ("Json output" . ,(concat "\n"
+                                   (eca-chat--tool-call-code
+                                    (string-join jsons "\n")
+                                    "javascript" 'js-mode))))))
      nil
      parent-id)))
 
@@ -5205,9 +5323,10 @@ SPACING-LINE-PREFIX build the approval prompt for the tool call id."
                          (eca-chat--build-tool-call-approval-str-content
                           session id spacing-line-prefix chat-id))))
     (eca-chat--set-task-widget label
-                               (eca-chat--content-table `(("Tool" . ,name)
-                                                          ("Server" . ,server)
-                                                          ("Arguments" . ,args)))
+                               (eca-chat--tool-call-body
+                                (eca-chat--content-table `(("Tool" . ,name)
+                                                           ("Server" . ,server)
+                                                           ("Arguments" . ,args))))
                                id)
     (when eca-chat-expand-pending-approval-tools
       (eca-chat--expandable-content-toggle eca-chat--task-block-id t nil)
@@ -5523,10 +5642,11 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
                          " " status
                          "\n"
                          approval-text)
-                 (eca-chat--content-table
-                  `(("Tool" . ,name)
-                    ("Server" . ,server)
-                    ("Arguments" . ,args)))
+                 (eca-chat--tool-call-body
+                  (eca-chat--content-table
+                   `(("Tool" . ,name)
+                     ("Server" . ,server)
+                     ("Arguments" . ,args))))
                  nil
                  parent-tool-call-id)))
            ;; Mark this ID as having received toolCallRun so that any late-arriving
@@ -5537,7 +5657,10 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
            (when (and eca-chat-expand-pending-approval-tools manual?)
              (when parent-tool-call-id
                (eca-chat--expandable-content-toggle parent-tool-call-id t nil))
-             (eca-chat--expandable-content-toggle id t nil)
+             ;; The approval buttons live in the label, so a too long
+             ;; tool call stays collapsed and is still approvable.
+             (when (eca-chat--tool-call-auto-expandable-p id)
+               (eca-chat--expandable-content-toggle id t nil))
              (when viewing-bottom?
                (eca-chat--ensure-tool-call-approval-visible id)))
            ;; Update parent subagent status to show pending approval
@@ -5578,10 +5701,11 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
                  (concat (propertize label 'font-lock-face 'eca-chat-mcp-tool-call-label-face)
                          (eca-chat--tool-call-progress-info (plist-get content :progress))
                          " " status elapsed-time)
-                 (eca-chat--content-table
-                  `(("Tool" . ,name)
-                    ("Server" . ,server)
-                    ("Arguments" . ,args)))
+                 (eca-chat--tool-call-body
+                  (eca-chat--content-table
+                   `(("Tool" . ,name)
+                     ("Server" . ,server)
+                     ("Arguments" . ,args))))
                  nil
                  parent-tool-call-id)))
            (eca-chat--mark-tool-call-approval-resolved id)
@@ -5630,11 +5754,12 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
                  id
                  (concat (propertize label 'font-lock-face 'eca-chat-mcp-tool-call-label-face)
                          " " status time)
-                 (eca-chat--content-table
-                  `(("Tool"   . ,name)
-                    ("Server" . ,server)
-                    ("Arguments" . ,args)
-                    ("Output" . ,output-text)))
+                 (eca-chat--tool-call-body
+                  (eca-chat--content-table
+                   `(("Tool"   . ,name)
+                     ("Server" . ,server)
+                     ("Arguments" . ,args)
+                     ("Output" . ,output-text))))
                  nil
                  parent-tool-call-id)))
            (when eca-chat-shrink-called-tools
@@ -5675,9 +5800,10 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
                                      'font-lock-face 'eca-chat-mcp-tool-call-label-face)
                          " "
                          eca-chat-mcp-tool-call-error-symbol)
-                 (eca-chat--content-table `(("Tool" . ,name)
-                                            ("Server" . ,server)
-                                            ("Arguments" . ,args)))
+                 (eca-chat--tool-call-body
+                  (eca-chat--content-table `(("Tool" . ,name)
+                                             ("Server" . ,server)
+                                             ("Arguments" . ,args))))
                  nil
                  parent-tool-call-id)))
            (eca-chat--mark-tool-call-approval-resolved id)

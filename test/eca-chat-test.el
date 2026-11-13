@@ -4682,6 +4682,20 @@ The prefix is returned without its text properties."
       (expect (eca-chat--expandable-text-pending text) :to-be nil)
       (expect (eca-chat--expandable-text-string text) :to-equal "abc")))
 
+  (it "keeps the whole text length without joining the chunks"
+    (let ((text (eca-chat--expandable-text-create "abc")))
+      (expect (eca-chat--expandable-text-length text) :to-equal 3)
+      (dolist (chunk '("de" "" nil "fgh"))
+        (eca-chat--expandable-text-append text chunk))
+      (expect (eca-chat--expandable-text-length text) :to-equal 8)
+      (expect (eca-chat--expandable-text-joined text) :to-equal "abc")
+      (eca-chat--expandable-text-replace text "z")
+      (expect (eca-chat--expandable-text-length text) :to-equal 1)
+      (eca-chat--expandable-text-replace text nil)
+      (expect (eca-chat--expandable-text-length text) :to-equal 0)
+      (expect (eca-chat--expandable-text-length (eca-chat--expandable-text-create))
+              :to-equal 0)))
+
   (it "drops the queued chunks on replace"
     (let ((text (eca-chat--expandable-text-create "a")))
       (eca-chat--expandable-text-append text "b")
@@ -4836,6 +4850,291 @@ The prefix is returned without its text properties."
             (expect (eca-chat-test--block-line-prefix "sub-1" "Done looking.")
                     :to-equal eca-chat--expandable-content-base-indent))
         (kill-buffer buf)))))
+
+(defun eca-chat-test--block-no-fontify-p (id string)
+  "Return the `eca-no-fontify' property of STRING in block ID."
+  (let ((ov (eca-chat-test--block-ov-content id)))
+    (get-text-property (+ (overlay-start ov)
+                          (string-search string (eca-chat-test--block-shown id)))
+                       'eca-no-fontify)))
+
+(describe "eca-chat-expandable-block-fontify-max-length"
+
+  (it "fontifies all block content when nil"
+    (let ((buf (eca-chat-test--make-render-buffer))
+          (eca-chat-expandable-block-fontify-max-length nil))
+      (unwind-protect
+          (eca-chat--with-current-buffer buf
+            (eca-chat--add-expandable-content "t1" "Tool" (make-string 100 ?x))
+            (eca-chat--expandable-content-toggle "t1" t nil)
+            (expect (eca-chat-test--block-no-fontify-p "t1" "xxx") :to-be nil))
+        (kill-buffer buf))))
+
+  (it "skips fontification of content longer than the max on toggle"
+    (let ((buf (eca-chat-test--make-render-buffer))
+          (eca-chat-expandable-block-fontify-max-length 10))
+      (unwind-protect
+          (eca-chat--with-current-buffer buf
+            (eca-chat--add-expandable-content "short" "Tool" "tiny")
+            (eca-chat--add-expandable-content "long" "Tool" (make-string 50 ?x))
+            (eca-chat--expandable-content-toggle "short" t nil)
+            (eca-chat--expandable-content-toggle "long" t nil)
+            (expect (eca-chat-test--block-no-fontify-p "short" "tiny") :to-be nil)
+            (expect (eca-chat-test--block-no-fontify-p "long" "xxx") :to-be t))
+        (kill-buffer buf))))
+
+  (it "skips fontification when an open block is updated past the max"
+    (let ((buf (eca-chat-test--make-render-buffer))
+          (eca-chat-expandable-block-fontify-max-length 10))
+      (unwind-protect
+          (eca-chat--with-current-buffer buf
+            (eca-chat--add-expandable-content "t1" "Tool" "tiny")
+            (eca-chat--expandable-content-toggle "t1" t nil)
+            (eca-chat--update-expandable-content "t1" nil "small")
+            (expect (eca-chat-test--block-no-fontify-p "t1" "small") :to-be nil)
+            (eca-chat--update-expandable-content "t1" nil (make-string 50 ?y))
+            (expect (eca-chat-test--block-no-fontify-p "t1" "yyy") :to-be t))
+        (kill-buffer buf))))
+
+  (it "skips fontification of chunks appended past the max"
+    (let ((buf (eca-chat-test--make-render-buffer))
+          (eca-chat-expandable-block-fontify-max-length 10))
+      (unwind-protect
+          (eca-chat--with-current-buffer buf
+            (eca-chat--add-expandable-content "t1" "Tool" "abc")
+            (eca-chat--expandable-content-toggle "t1" t nil)
+            (eca-chat--update-expandable-content "t1" nil "def" t)
+            (expect (eca-chat-test--block-no-fontify-p "t1" "def") :to-be nil)
+            (eca-chat--update-expandable-content "t1" nil "ghijklmnop" t)
+            (expect (eca-chat-test--block-no-fontify-p "t1" "ghij") :to-be t))
+        (kill-buffer buf))))
+
+  (it "does not count open nested blocks in a parent's length"
+    (let ((buf (eca-chat-test--make-render-buffer))
+          (session (make-eca--session))
+          (eca-chat-expandable-block-fontify-max-length 100))
+      (unwind-protect
+          (eca-chat--with-current-buffer buf
+            (eca-chat-test--subagent-block "sub-1")
+            (eca-chat--expandable-content-toggle "sub-1" t nil)
+            (eca-chat-test--stream-reasoning
+             session buf "r1" (list (make-string 300 ?x)) "sub-1")
+            (eca-chat--expandable-content-toggle "r1" t nil)
+            (eca-chat-test--render-assistant
+             session buf (list :type "text" :text "short subagent text") "sub-1")
+            (expect (eca-chat-test--block-no-fontify-p "sub-1" "short subagent")
+                    :to-be nil)
+            (expect (eca-chat-test--block-no-fontify-p "r1" "xxx") :to-be t))
+        (kill-buffer buf)))))
+
+(defun eca-chat-test--fontify-around-tagged (before tagged after)
+  "Fontify BEFORE, TAGGED and AFTER inserted in a chat buffer.
+TAGGED is inserted with `eca-no-fontify'.  Fontifies from the end of
+TAGGED to the end of AFTER, as jit-lock does when redisplay reaches
+the line after a block.  Returns a plist with the :calls to
+`font-lock-fontify-keywords-region' and whether the tagged text got
+a :tagged-face."
+  (with-temp-buffer
+    (let ((eca--chat-init-session (make-eca--session))
+          (eca--chat-init-skip-welcome t)
+          calls tag-start tag-end end)
+      (eca-chat-mode)
+      (font-lock-set-defaults)
+      (save-excursion
+        (goto-char (eca-chat--content-insertion-point))
+        (eca-chat--insert before)
+        (setq tag-start (point))
+        (eca-chat--insert (propertize tagged 'eca-no-fontify t))
+        (setq tag-end (point))
+        (eca-chat--insert after)
+        (setq end (point)))
+      (let ((orig (symbol-function 'font-lock-fontify-keywords-region)))
+        (cl-letf (((symbol-function 'font-lock-fontify-keywords-region)
+                   (lambda (beg fend &rest args)
+                     (push (cons beg fend) calls)
+                     (apply orig beg fend args))))
+          (eca-chat--fontify-region tag-end end)))
+      (list :calls calls
+            :tag-start tag-start
+            :tag-end tag-end
+            :tagged-face (text-property-not-all tag-start tag-end 'face nil)))))
+
+(describe "eca-chat--fontify-region"
+
+  (it "keeps fontification out of a tagged line it is adjacent to"
+    ;; A one-line tagged body (e.g. JSON tool arguments) followed by
+    ;; untagged text: whole-line extension used to pull it back in.
+    (let ((res (eca-chat-test--fontify-around-tagged
+                "intro\n"
+                (apply #'concat (make-list 200 "**bold** `code` "))
+                "\nafter **x**\n")))
+      (expect (plist-get res :calls) :to-be-truthy)
+      (dolist (call (plist-get res :calls))
+        (expect (car call) :not :to-be-less-than (plist-get res :tag-end)))
+      (expect (plist-get res :tagged-face) :to-be nil)))
+
+  (it "keeps fontification out of a tagged multi-line block"
+    (let ((res (eca-chat-test--fontify-around-tagged
+                "intro\n"
+                (mapconcat (lambda (i) (format "line %d **bold** `code`" i))
+                           (number-sequence 1 200) "\n")
+                "\nafter **x**\n")))
+      (dolist (call (plist-get res :calls))
+        (expect (car call) :not :to-be-less-than (plist-get res :tag-end)))
+      (expect (plist-get res :tagged-face) :to-be nil)))
+
+  (it "tolerates a region ending past the buffer end"
+    (with-temp-buffer
+      (let ((eca--chat-init-session (make-eca--session))
+            (eca--chat-init-skip-welcome t)
+            start)
+        (eca-chat-mode)
+        (font-lock-set-defaults)
+        (goto-char (point-max))
+        (let ((inhibit-read-only t))
+          (insert (propertize "tagged\n" 'eca-no-fontify t))
+          (setq start (point))
+          (insert "after\n"))
+        (expect (eca-chat--fontify-region start (+ (point-max) 100))
+                :not :to-throw))))
+
+  (it "still fontifies untagged text next to a tagged run"
+    (with-temp-buffer
+      (let ((eca--chat-init-session (make-eca--session))
+            (eca--chat-init-skip-welcome t)
+            start end)
+        (eca-chat-mode)
+        (font-lock-set-defaults)
+        (save-excursion
+          (goto-char (eca-chat--content-insertion-point))
+          (eca-chat--insert (propertize "tagged\n" 'eca-no-fontify t))
+          (setq start (point))
+          (eca-chat--insert "some **bold** text\n")
+          (setq end (point)))
+        (eca-chat--fontify-region start end)
+        (expect (text-property-not-all start end 'face nil) :to-be-truthy))))
+
+  (it "fontifies around a code block crossing the edge of a tagged run"
+    ;; The fence opens before the tagged run (e.g. streaming tool call
+    ;; arguments) and closes after it: the code block match data
+    ;; markdown-mode stores reaches out of the narrowed untagged text.
+    (with-temp-buffer
+      (let ((eca--chat-init-session (make-eca--session))
+            (eca--chat-init-skip-welcome t)
+            tag-start tag-end end)
+        (eca-chat-mode)
+        (font-lock-set-defaults)
+        (save-excursion
+          (goto-char (eca-chat--content-insertion-point))
+          (eca-chat--insert "Running:\n\n```elisp\n(setq x 1)\n")
+          (setq tag-start (point))
+          (eca-chat--insert (propertize "{\"path\": \"init.el\"}\n"
+                                        'eca-no-fontify t))
+          (setq tag-end (point))
+          (eca-chat--insert "\n```\n\nDone with **bold**.\n")
+          (setq end (point)))
+        (expect (eca-chat--fontify-region (point-min) tag-start)
+                :not :to-throw)
+        (expect (eca-chat--fontify-region tag-end end) :not :to-throw)
+        (expect (text-property-not-all tag-end end 'face nil)
+                :to-be-truthy))))
+
+  (it "fontifies a block streamed past the max length mid code block"
+    ;; The chunks past `eca-chat-expandable-block-fontify-max-length'
+    ;; are tagged while the code block is open: the end of stream
+    ;; `font-lock-ensure' used to signal, leaving the chat loading.
+    (with-temp-buffer
+      (let ((eca--chat-init-session (make-eca--session))
+            (eca--chat-init-skip-welcome t)
+            (eca-chat-expandable-block-fontify-max-length 100))
+        (eca-chat-mode)
+        (font-lock-set-defaults)
+        (eca-chat--add-expandable-content "r1" "Thinking" "Let me think.\n")
+        (eca-chat--expandable-content-toggle "r1" t nil)
+        (dolist (chunk (list "A sketch:\n\n```elisp\n(defun f (x)\n"
+                             (make-string 100 ?z)
+                             "\n  x)\n```\n\nThat works.\n"))
+          (eca-chat--update-expandable-content "r1" nil chunk t))
+        (expect (text-property-any (point-min) (point-max) 'eca-no-fontify t)
+                :to-be-truthy)
+        (expect (font-lock-ensure (point-min) (point-max)) :not :to-throw)))))
+
+(defun eca-chat-test--approval-block-open-p (max-length lines)
+  "Return whether an approval with LINES args opens under MAX-LENGTH."
+  (let ((buf (eca-chat-test--make-render-buffer))
+        (session (make-eca--session))
+        (eca-chat-expand-pending-approval-tools t)
+        (eca-chat-tool-call-auto-expansion-max-length max-length))
+    (unwind-protect
+        (eca-chat--with-current-buffer buf
+          (eca-chat--render-content
+           session buf "assistant"
+           (eca-chat-test--tall-approval-content "tool-1" lines)
+           nil)
+          (overlay-get (eca-chat--get-expandable-content "tool-1")
+                       'eca-chat--expandable-content-toggle))
+      (kill-buffer buf))))
+
+(describe "eca-chat-tool-call-auto-expansion-max-length"
+
+  (it "auto expands any pending approval when nil"
+    (expect (eca-chat-test--approval-block-open-p nil 500) :to-be-truthy))
+
+  (it "auto expands pending approvals within the max"
+    (expect (eca-chat-test--approval-block-open-p 10000 3) :to-be-truthy))
+
+  (it "keeps pending approvals longer than the max collapsed"
+    (expect (eca-chat-test--approval-block-open-p 100 500) :not :to-be-truthy)))
+
+(defun eca-chat-test--called-tool-block-no-fontify-p (fontify-markdown)
+  "Return the `eca-no-fontify' of a called tool's shown body.
+The tool call is rendered with `eca-chat-tool-call-fontify-markdown'
+bound to FONTIFY-MARKDOWN."
+  (let ((buf (eca-chat-test--make-render-buffer))
+        (session (make-eca--session))
+        (eca-chat-tool-call-fontify-markdown fontify-markdown)
+        (eca-chat-shrink-called-tools nil))
+    (unwind-protect
+        (eca-chat--with-current-buffer buf
+          (eca-chat--render-content
+           session buf "assistant"
+           (plist-put (eca-chat-test--tool-call-content "toolCalled" "tool-1")
+                      :outputs (list (list :type "text" :text "some **output**")))
+           nil)
+          (eca-chat--expandable-content-toggle "tool-1" t nil)
+          (eca-chat-test--block-no-fontify-p "tool-1" "**output**"))
+      (kill-buffer buf))))
+
+(describe "eca-chat-tool-call-fontify-markdown"
+
+  (it "fontifies tool call bodies as markdown by default"
+    (expect (eca-chat-test--called-tool-block-no-fontify-p t) :to-be nil)
+    (let ((text (eca-chat--file-change-diff nil "+added" nil)))
+      (expect text :to-match (regexp-quote "```diff\n+added\n```"))))
+
+  (it "shows tool call bodies without markdown fontification when nil"
+    (expect (eca-chat-test--called-tool-block-no-fontify-p nil) :to-be t))
+
+  (it "colors diffs with diff-mode instead of a markdown code block"
+    (let* ((eca-chat-tool-call-fontify-markdown nil)
+           (text (eca-chat--file-change-diff nil "-removed\n+added" nil))
+           (added (string-search "+added" text)))
+      (expect (string-search "```" text) :to-be nil)
+      (expect (get-text-property added 'font-lock-face text) :to-be-truthy)
+      (expect (text-property-not-all 0 (length text) 'face nil text) :to-be nil)))
+
+  (it "shows the tool name of file changes as plain inline code"
+    (let ((eca-chat-tool-call-fontify-markdown nil))
+      (expect (eca-chat--tool-call-inline-code "edit_file")
+              :to-equal "edit_file")
+      (expect (get-text-property 0 'font-lock-face
+                                 (eca-chat--tool-call-inline-code "edit_file"))
+              :to-be 'markdown-inline-code-face)))
+
+  (it "falls back to plain code when the mode is unavailable"
+    (let ((eca-chat-tool-call-fontify-markdown nil))
+      (expect (eca-chat--tool-call-code "x" "nope" 'eca-chat-test--no-such-mode)
+              :to-equal "x"))))
 
 ;; ---------------------------------------------------------------------------
 ;; eca-chat--shell-command-state-face
