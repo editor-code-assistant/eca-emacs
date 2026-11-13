@@ -4024,7 +4024,11 @@ that have not yet stabilized.
 Each untagged sub-range is fontified narrowed to the untagged text
 around it: font-lock extends the region to whole lines and markdown
 extends it to paragraph and block boundaries, which would otherwise
-pull the adjacent tagged text back in and fontify it anyway.
+pull the adjacent tagged text back in and fontify it anyway.  A
+construct crossing the edge of the tagged text, like a code block
+fenced on both sides of it, keeps the match data markdown stores
+out of the narrowing, and font-lock signals: the sub-range is then
+fontified widened, as without the narrowing.
 
 Cleanup is automatic: the `toolCalled' arm replaces the body with
 fresh, un-tagged content, so on the next redisplay jit-lock asks
@@ -4044,12 +4048,16 @@ matches the region we considered."
         (unless skip
           (if-let* ((stretch (eca-chat--untagged-stretch pos next)))
               (progn
-                ;; `syntax-propertize' refuses to run while narrowed.
+                ;; Propertize widened first: narrowed, `syntax-propertize'
+                ;; can't see the text before the narrowing.
                 (syntax-propertize next)
-                (save-restriction
-                  (narrow-to-region (car stretch) (cdr stretch))
-                  (let ((font-lock-dont-widen t))
-                    (font-lock-default-fontify-region pos next loudly))))
+                (condition-case nil
+                    (save-restriction
+                      (narrow-to-region (car stretch) (cdr stretch))
+                      (let ((font-lock-dont-widen t))
+                        (font-lock-default-fontify-region pos next loudly)))
+                  ;; Match data out of the narrowing, see the docstring.
+                  (error (font-lock-default-fontify-region pos next loudly))))
             (font-lock-default-fontify-region pos next loudly)))
         (setq pos next))))
   `(jit-lock-bounds ,beg . ,end))

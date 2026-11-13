@@ -5012,7 +5012,52 @@ a :tagged-face."
           (eca-chat--insert "some **bold** text\n")
           (setq end (point)))
         (eca-chat--fontify-region start end)
-        (expect (text-property-not-all start end 'face nil) :to-be-truthy)))))
+        (expect (text-property-not-all start end 'face nil) :to-be-truthy))))
+
+  (it "fontifies around a code block crossing the edge of a tagged run"
+    ;; The fence opens before the tagged run (e.g. streaming tool call
+    ;; arguments) and closes after it: the code block match data
+    ;; markdown-mode stores reaches out of the narrowed untagged text.
+    (with-temp-buffer
+      (let ((eca--chat-init-session (make-eca--session))
+            (eca--chat-init-skip-welcome t)
+            tag-start tag-end end)
+        (eca-chat-mode)
+        (font-lock-set-defaults)
+        (save-excursion
+          (goto-char (eca-chat--content-insertion-point))
+          (eca-chat--insert "Running:\n\n```elisp\n(setq x 1)\n")
+          (setq tag-start (point))
+          (eca-chat--insert (propertize "{\"path\": \"init.el\"}\n"
+                                        'eca-no-fontify t))
+          (setq tag-end (point))
+          (eca-chat--insert "\n```\n\nDone with **bold**.\n")
+          (setq end (point)))
+        (expect (eca-chat--fontify-region (point-min) tag-start)
+                :not :to-throw)
+        (expect (eca-chat--fontify-region tag-end end) :not :to-throw)
+        (expect (text-property-not-all tag-end end 'face nil)
+                :to-be-truthy))))
+
+  (it "fontifies a block streamed past the max length mid code block"
+    ;; The chunks past `eca-chat-expandable-block-fontify-max-length'
+    ;; are tagged while the code block is open: the end of stream
+    ;; `font-lock-ensure' used to signal, leaving the chat loading.
+    (with-temp-buffer
+      (let ((eca--chat-init-session (make-eca--session))
+            (eca--chat-init-skip-welcome t)
+            (eca-chat-expandable-block-fontify-max-length 100))
+        (eca-chat-mode)
+        (font-lock-set-defaults)
+        (eca-chat--add-expandable-content "r1" "Thinking" "Let me think.\n")
+        (eca-chat--expandable-content-toggle "r1" t nil)
+        (dolist (chunk (list "A sketch:\n\n```elisp\n(defun f (x)\n"
+                             (make-string 100 ?z)
+                             "\n  x)\n```\n\nThat works.\n"))
+          (eca-chat--update-expandable-content "r1" nil chunk t))
+        (expect (text-property-any (point-min) (point-max) 'eca-no-fontify t)
+                :to-be-truthy)
+        (expect (font-lock-ensure (point-min) (point-max)) :not :to-throw)))))
 
 (defun eca-chat-test--approval-block-open-p (max-length lines)
   "Return whether an approval with LINES args opens under MAX-LENGTH."
