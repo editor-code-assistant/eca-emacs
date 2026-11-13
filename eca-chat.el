@@ -2291,23 +2291,26 @@ Bound by `eca-chat--with-point-preserved' and set by the scroll
 helpers when they move point to the prompt or onto an approval
 button.")
 
-(defmacro eca-chat--with-point-preserved (&rest body)
+(defmacro eca-chat--with-point-preserved (maintain-visibility &rest body)
   "Run BODY, restoring point afterwards unless BODY moved it on purpose.
 Rendering inserts text wherever the content goes, dragging point
 along, and streaming must not move the cursor.  Helpers that move
 point deliberately set `eca-chat--keep-point' to keep the new
 position: a plain `save-excursion' would undo it whenever the chat
-window is the selected one.  When point is in the prompt and the
-bottom of the chat is shown, keep the end of the prompt visible."
-  (declare (indent 0) (debug t))
+window is the selected one.  When MAINTAIN-VISIBILITY is non-nil,
+point is in the prompt and the bottom of the chat is shown, keep
+the end of the prompt visible.  Queue-only updates can pass nil
+to avoid layout checks while still preserving point."
+  (declare (indent 1) (debug (form body)))
   (let ((saved (gensym "saved-point-"))
         (win (gensym "chat-window-")))
     `(let* ((eca-chat--keep-point nil)
             (,saved (point-marker))
-            (,win (when-let* ((w (get-buffer-window (current-buffer))))
-                    (and (eca-chat--point-at-prompt-field-p)
-                         (eca-chat--viewing-bottom-p w)
-                         w))))
+            (,win (when ,maintain-visibility
+                    (when-let* ((w (get-buffer-window (current-buffer))))
+                      (and (eca-chat--point-at-prompt-field-p)
+                           (eca-chat--viewing-bottom-p w)
+                           w)))))
        (unwind-protect (progn ,@body)
          (when (and (not eca-chat--keep-point)
                     (eq (marker-buffer ,saved) (current-buffer)))
@@ -4290,7 +4293,7 @@ Flush after DELAY seconds, `eca-chat-stream-flush-interval' by default."
     (when chunks
       (let ((text (mapconcat #'identity (nreverse chunks) "")))
         (unless (string-empty-p text)
-          (eca-chat--with-point-preserved
+          (eca-chat--with-point-preserved t
             (save-excursion
               (eca-chat--add-text-content text)
               (eca-chat--schedule-fontify)
@@ -5932,7 +5935,7 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
           (eca-chat--with-current-buffer parent-buffer
             (when-let* ((tool-call-id (gethash chat-id eca-chat--subagent-chat-id->tool-call-id)))
               ;; Preserve the user's point: streaming must not move the cursor.
-              (eca-chat--with-point-preserved
+              (eca-chat--with-point-preserved t
                 (eca-chat--render-content session parent-buffer role content roots tool-call-id chat-id)
                 (eca-chat--protect-non-prompt eca-chat--last-user-message-pos)
                 (eca-chat--maybe-notify-status-changed session content)
@@ -5943,8 +5946,14 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
       (when-let* ((chat-buffer (eca-chat--get-chat-buffer session chat-id))
                   ((buffer-live-p chat-buffer)))
         (eca-chat--with-current-buffer chat-buffer
-          ;; Preserve the user's point: streaming must not move the cursor.
+          ;; Buffered assistant text does not change the display.  Preserve
+          ;; point and receiver bookkeeping, but leave layout checks to the
+          ;; actual flush.  All other content keeps visibility maintenance.
           (eca-chat--with-point-preserved
+              (not (and (equal role "assistant")
+                        (equal (plist-get content :type) "text")
+                        (stringp (plist-get content :text))
+                        (eca-chat--stream-buffering-enabled-p)))
             (eca-chat--render-content session chat-buffer role content roots)
             (eca-chat--protect-non-prompt eca-chat--last-user-message-pos)
             (eca-chat--maybe-notify-status-changed session content)

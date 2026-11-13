@@ -709,14 +709,14 @@ around rendering applies, as when the chat window is selected."
   (it "restores point moved by the body"
     (with-temp-buffer
       (insert "abc")
-      (eca-chat--with-point-preserved
+      (eca-chat--with-point-preserved t
         (goto-char (point-min)))
       (expect (point) :to-equal (point-max))))
 
   (it "keeps point when the body moved it on purpose"
     (with-temp-buffer
       (insert "abc")
-      (eca-chat--with-point-preserved
+      (eca-chat--with-point-preserved t
         (goto-char (point-min))
         (setq eca-chat--keep-point t))
       (expect (point) :to-equal (point-min)))))
@@ -741,7 +741,7 @@ VISIBLE is the value `pos-visible-in-window-p' returns."
 
 (defun eca-chat-test--stream-output (text)
   "Render TEXT above the prompt the way streaming does."
-  (eca-chat--with-point-preserved
+  (eca-chat--with-point-preserved t
     (save-excursion
       (goto-char (eca-chat--content-insertion-point))
       (eca-chat--insert text))))
@@ -788,6 +788,239 @@ VISIBLE is the value `pos-visible-in-window-p' returns."
       (spy-on 'eca-chat--schedule-fontify)
       (eca-chat--stream-flush)
       (expect 'recenter :to-have-been-called-with -1))))
+
+(describe "eca-chat queued receiver visibility"
+  (it "queues distinct chunks without bottom or end checks"
+    (eca-chat-test--with-streaming-prompt nil
+      (let ((session (make-eca--session))
+            (eca-chat-stream-flush-interval 1)
+            (before (buffer-string)) (cursor (point))
+            (chunks (mapcar (lambda (n) (format "chunk-%d\n" n))
+                            (number-sequence 1 40))))
+        (spy-on 'eca-chat--ensure-prompt-end-visible)
+        (unwind-protect
+            (progn
+              (eca-chat-test--capture-timers
+               (lambda ()
+                 (dolist (text chunks)
+                   (eca-chat-test--receive
+                    session buf (list :type "text" :text text)))))
+              (expect eca-chat--stream-pending-chunks
+                      :to-equal (reverse chunks))
+              (expect (buffer-string) :to-equal before)
+              (expect (point) :to-equal cursor)
+              (expect 'eca-chat--viewing-bottom-p :not :to-have-been-called)
+              (expect 'eca-chat--ensure-prompt-end-visible
+                      :not :to-have-been-called)
+              (expect 'pos-visible-in-window-p :not :to-have-been-called))
+          (eca-chat--stream-cancel)))))
+
+  (it "runs one maintenance pass in the captured real flush"
+    (eca-chat-test--with-streaming-prompt t
+      (let* ((session (make-eca--session))
+             (eca-chat-stream-flush-interval 1)
+             (before (buffer-substring-no-properties (point-min) (point-max)))
+             (at (1- (eca-chat--content-insertion-point)))
+             (cursor (copy-marker (point))) timers)
+        (spy-on 'eca-chat--schedule-fontify)
+        (unwind-protect
+            (progn
+              (setq timers
+                    (eca-chat-test--capture-timers
+                     (lambda ()
+                       (dolist (text '("one\n" "two\n" "three\n"))
+                         (eca-chat-test--receive
+                          session buf (list :type "text" :text text))))))
+              (eca-chat-test--run-timer (car (last timers)))
+              (expect (buffer-substring-no-properties (point-min) (point-max))
+                      :to-equal (concat (substring before 0 at)
+                                        "one\ntwo\nthree\n" (substring before at)))
+              (expect (point) :to-equal (marker-position cursor))
+              (expect (point) :to-equal (eca-chat--prompt-field-start-point))
+              (expect (length (spy-calls-all 'eca-chat--viewing-bottom-p))
+                      :to-equal 1)
+              (expect (length (spy-calls-all 'pos-visible-in-window-p))
+                      :to-equal 1)
+              (expect eca-chat--stream-pending-chunks :to-be nil)
+              (expect eca-chat--stream-flush-timer :to-be nil))
+          (set-marker cursor nil)
+          (eca-chat--stream-cancel)))))
+
+  (it "keeps receiver callbacks in order and restores moved point"
+    (eca-chat-test--with-streaming-prompt t
+      (let* ((session (make-eca--session))
+             (eca-chat-stream-flush-interval 1)
+             (cursor (point)) events
+             (eca-chat-content-received-functions
+              (list (lambda (&rest _) (push 'callback events)))))
+        (spy-on 'eca-chat--protect-non-prompt :and-call-fake
+                (lambda (&rest _) (push 'protect events)))
+        (spy-on 'eca-chat--maybe-notify-status-changed :and-call-fake
+                (lambda (&rest _) (push 'status events) (goto-char (point-min))))
+        (spy-on 'eca-chat--maybe-revert-changed-file :and-call-fake
+                (lambda (&rest _) (push 'revert events)))
+        (spy-on 'eca-chat--maybe-run-tool-call-functions :and-call-fake
+                (lambda (&rest _) (push 'tool events)))
+        (spy-on 'eca-chat--track-tool-call :and-call-fake
+                (lambda (&rest _) (push 'track events)))
+        (unwind-protect
+            (progn
+              (eca-chat-test--capture-timers
+               (lambda ()
+                 (eca-chat-test--receive session buf '(:type "text" :text "x"))))
+              (expect (reverse events)
+                      :to-equal '(callback protect status revert tool track))
+              (expect eca-chat--stream-pending-chunks :to-equal '("x"))
+              (expect (point) :to-equal cursor))
+          (eca-chat--stream-cancel)))))
+
+  (it "rechecks history navigation and point location at flush time"
+    (dolist (navigation '(history outside))
+      (eca-chat-test--with-streaming-prompt nil
+        (let ((session (make-eca--session))
+              (eca-chat-stream-flush-interval 1) timers)
+          (spy-on 'eca-chat--schedule-fontify)
+          (unwind-protect
+              (progn
+                (setq timers
+                      (eca-chat-test--capture-timers
+                       (lambda ()
+                         (eca-chat-test--receive
+                          session buf '(:type "text" :text "later")))))
+                (if (eq navigation 'history)
+                    (spy-on 'eca-chat--viewing-bottom-p :and-return-value nil)
+                  (goto-char (point-min)))
+                (spy-on 'recenter)
+                (spy-on 'eca-chat--ensure-prompt-end-visible)
+                (eca-chat-test--run-timer (car timers))
+                (expect (eca-chat-test--history-text buf) :to-match "later")
+                (expect 'recenter :not :to-have-been-called)
+                (expect 'eca-chat--ensure-prompt-end-visible
+                        :not :to-have-been-called)
+                (expect (point) :to-equal
+                        (if (eq navigation 'history)
+                            (eca-chat--prompt-field-start-point) (point-min))))
+            (eca-chat--stream-cancel))))))
+
+  (it "maintains visibility for disabled buffering and other roles"
+    (dolist (case '((nil "assistant") (-1 "assistant")
+                    (1 "user") (1 "system")))
+      (eca-chat-test--with-streaming-prompt t
+        (let ((session (make-eca--session))
+              (eca-chat-stream-flush-interval (car case)))
+          (spy-on 'eca-chat--get-chat-buffer :and-return-value buf)
+          (spy-on 'eca--session-workspace-folders :and-return-value nil)
+          (spy-on 'eca-chat--schedule-fontify)
+          (spy-on 'font-lock-ensure)
+          (unwind-protect
+              (progn
+                (eca-chat-content-received
+                 session (list :chatId "chat-1" :role (cadr case)
+                               :content '(:type "text" :text "immediate")))
+                (expect 'eca-chat--viewing-bottom-p :to-have-been-called)
+                (expect eca-chat--stream-pending-chunks :to-be nil)
+                (expect eca-chat--stream-flush-timer :to-be nil)
+                (expect (eca-chat-test--history-text buf) :to-match "immediate"))
+            (eca-chat--stream-cancel))))))
+
+  (it "maintains visibility for nested subagent text"
+    (eca-chat-test--with-streaming-prompt t
+      (let ((session (make-eca--session)) (eca-chat-stream-flush-interval 1))
+        (setf (eca--session-chats session) (list (cons "chat-1" buf)))
+        (puthash "child" "parent" eca-chat--subagent-chat-id->tool-call-id)
+        (eca-chat--tool-call-subagent-details
+         "parent" '(:agent "agent" :task "task") "Calling" nil nil
+         eca-chat-mcp-tool-call-loading-symbol nil '(:type "subagent"))
+        (spy-on 'eca--session-workspace-folders :and-return-value nil)
+        (spy-on 'eca-chat--viewing-bottom-p :and-return-value t)
+        (unwind-protect
+            (progn
+              (eca-chat-content-received
+               session '(:chatId "child" :parentChatId "chat-1"
+                         :role "assistant" :content (:type "text" :text "nested")))
+              (expect 'eca-chat--viewing-bottom-p :to-have-been-called)
+              (expect 'pos-visible-in-window-p :to-have-been-called)
+              (expect eca-chat--stream-pending-chunks :to-be nil)
+              (let ((inhibit-read-only t))
+                (eca-chat--expandable-content-toggle "parent" t nil))
+              (expect (buffer-string) :to-match "nested"))
+          (eca-chat--stream-cancel)))))
+
+  (it "flushes pending text before applying a non-text state update"
+    (eca-chat-test--with-streaming-prompt t
+      (let ((session (make-eca--session)) (eca-chat-stream-flush-interval 1))
+        (spy-on 'eca-chat--schedule-fontify)
+        (unwind-protect
+            (progn
+              (eca-chat-test--capture-timers
+               (lambda ()
+                 (eca-chat-test--receive session buf '(:type "text" :text "before\n"))))
+              (spy-on 'eca-chat--maybe-notify-status-changed :and-call-fake
+                      (lambda (&rest _)
+                        (expect (eca-chat-test--history-text buf) :to-match "before\n")
+                        (expect eca-chat--title :to-equal "Updated")))
+              (eca-chat-test--receive session buf '(:type "metadata" :title "Updated"))
+              (expect eca-chat--title :to-equal "Updated")
+              (expect 'eca-chat--maybe-notify-status-changed :to-have-been-called)
+              (expect eca-chat--stream-pending-chunks :to-be nil)
+              (expect eca-chat--stream-flush-timer :to-be nil))
+          (eca-chat--stream-cancel)))))
+
+  (it "keeps Accept accessible after queued text and a tall approval"
+    (let ((buf (eca-chat-test--make-render-buffer))
+          (session (make-eca--session)) (eca-chat-stream-flush-interval 1))
+      (spy-on 'eca-chat--schedule-fontify)
+      (unwind-protect
+          (save-window-excursion
+            (set-window-buffer (selected-window) buf)
+            (with-current-buffer buf
+              (eca-chat-test--capture-timers
+               (lambda ()
+                 (eca-chat-test--receive session buf '(:type "text" :text "before\n"))))
+              (eca-chat-test--receive
+               session buf (eca-chat-test--tall-approval-content "queued-tool"))
+              (expect (eca-chat-test--history-index buf "before\n")
+                      :to-be-less-than (eca-chat-test--label-start "queued-tool"))
+              (expect (window-start) :to-equal
+                      (eca-chat-test--label-start "queued-tool"))
+              (expect (eca-chat-test--on-accept-button-p "queued-tool") :to-be-truthy)
+              (expect eca-chat--stream-pending-chunks :to-be nil)))
+        (with-current-buffer buf (eca-chat--stream-cancel))
+        (kill-buffer buf))))
+
+  (it "releases the saved marker and restores point on queue-only errors"
+    (with-temp-buffer
+      (insert "abc")
+      (let ((original (symbol-function 'point-marker)) markers)
+        (cl-letf (((symbol-function 'point-marker)
+                   (lambda () (let ((marker (funcall original)))
+                                (push marker markers) marker))))
+          (expect (eca-chat--with-point-preserved nil
+                    (goto-char (point-min))
+                    (error "receiver failed"))
+                  :to-throw 'error))
+        (expect (point) :to-equal (point-max))
+        (expect (length markers) :to-equal 1)
+        (expect (marker-buffer (car markers)) :to-be nil))))
+
+  (it "queues and flushes a hidden chat without visibility work"
+    (let ((buf (eca-chat-test--make-render-buffer))
+          (session (make-eca--session)) (eca-chat-stream-flush-interval 1))
+      (unwind-protect
+          (with-current-buffer buf
+            (spy-on 'eca-chat--viewing-bottom-p)
+            (spy-on 'eca-chat--ensure-prompt-end-visible)
+            (spy-on 'eca-chat--schedule-fontify)
+            (let ((timers (eca-chat-test--capture-timers
+                           (lambda ()
+                             (eca-chat-test--receive
+                              session buf '(:type "text" :text "hidden"))))))
+              (eca-chat-test--run-timer (car timers)))
+            (expect (eca-chat-test--history-text buf) :to-match "hidden")
+            (expect 'eca-chat--viewing-bottom-p :not :to-have-been-called)
+            (expect 'eca-chat--ensure-prompt-end-visible :not :to-have-been-called))
+        (with-current-buffer buf (eca-chat--stream-cancel))
+        (kill-buffer buf)))))
 
 (describe "eca-chat--ensure-tool-call-approval-visible"
   ;; Issue #308: a tool call awaiting approval whose expanded body is
