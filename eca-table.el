@@ -177,16 +177,19 @@ Cells must then be padded by source width, not display width."
   "Look for the code span at POS within its table row only.
 ORIG is `markdown-inline-code-at-pos', called with POS and FROM.  It
 scans from the start of the paragraph, the whole table for a row,
-while code spans can't cross table rows."
-  (if (and (null from)
-           (eca-table--fast-fontify-p)
-           (eca-table--table-line-at-p pos))
-      (save-excursion
-        (goto-char pos)
-        (save-restriction
-          (narrow-to-region (line-beginning-position) (line-end-position))
-          (funcall orig pos)))
-    (funcall orig pos from)))
+while code spans can't cross table rows.  FROM is only passed on
+when non-nil, as `markdown-mode' before 2.7 takes POS only."
+  (cond
+   ((and (null from)
+         (eca-table--fast-fontify-p)
+         (eca-table--table-line-at-p pos))
+    (save-excursion
+      (goto-char pos)
+      (save-restriction
+        (narrow-to-region (line-beginning-position) (line-end-position))
+        (funcall orig pos))))
+   (from (funcall orig pos from))
+   (t (funcall orig pos))))
 
 (defun eca-table--extend-region-a (orig start end)
   "Extend START..END by whole lines at its table row edges.

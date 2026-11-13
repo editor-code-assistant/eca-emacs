@@ -510,7 +510,30 @@ Tables are fontified row by row when FAST is non-nil."
       (expect (eca-table--fast-fontify-p) :not :to-be-truthy)
       (let ((res (markdown-syntax-propertize-extend-region
                   (point) (1+ (point)))))
-        (expect (car res) :to-be-less-than (line-beginning-position))))))
+        (expect (car res) :to-be-less-than (line-beginning-position)))))
+
+  (it "calls a markdown-inline-code-at-pos taking POS only"
+    ;; markdown-mode before 2.7 defines it without FROM: passing FROM
+    ;; broke the fontification of all markdown buffers.
+    (let ((orig (lambda (pos) (list :pos pos))))
+      (with-temp-buffer
+        (gfm-mode)
+        (insert "Some `code` here.\n")
+        (expect (eca-table--inline-code-at-pos-a orig 7)
+                :to-equal '(:pos 7)))
+      (eca-table-test--with-table 3 t
+        (goto-char (point-min))
+        (search-forward "item 2")
+        (expect (eca-table--inline-code-at-pos-a orig (point))
+                :to-equal (list :pos (point))))))
+
+  (it "passes FROM on to markdown-inline-code-at-pos"
+    (with-temp-buffer
+      (gfm-mode)
+      (insert "Some `code` here.\n")
+      (expect (eca-table--inline-code-at-pos-a
+               (lambda (pos &optional from) (list pos from)) 7 1)
+              :to-equal '(7 1)))))
 
 (provide 'eca-table-test)
 ;;; eca-table-test.el ends here
