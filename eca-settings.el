@@ -164,10 +164,66 @@ preserving the base FACE."
                     'help-echo "Return to ECA chat"
                     'keymap eca-settings--close-keymap)))
 
+(defun eca-settings--switch-tab (offset)
+  "Switch to the settings tab OFFSET positions away, wrapping around.
+Return the selected buffer, or nil when there is nothing to switch."
+  (let* ((buffers (-keep (lambda (tab) (cdr (assq 'buffer tab)))
+                         (eca-settings--tab-line-tabs)))
+         (pos (-elem-index (current-buffer) buffers)))
+    (when (and pos (> (length buffers) 1))
+      (let ((buffer (nth (mod (+ pos offset) (length buffers)) buffers))
+            (switch-to-buffer-obey-display-actions nil))
+        (switch-to-buffer buffer)
+        buffer))))
+
+(defun eca-settings-previous-tab (&optional arg)
+  "Switch to the ARGth previous settings tab, wrapping around.
+Falls back to `previous-buffer' when the settings tab-line is off.
+Emacs 31 only binds `C-x <left>' to tab switching under
+`global-tab-line-mode', so settings buffers bind it themselves."
+  (interactive "p")
+  (if (bound-and-true-p tab-line-mode)
+      (eca-settings--switch-tab (- (or arg 1)))
+    (previous-buffer arg)))
+
+(defun eca-settings-next-tab (&optional arg)
+  "Switch to the ARGth next settings tab, wrapping around.
+Falls back to `next-buffer' when the settings tab-line is off.
+Emacs 31 only binds `C-x <right>' to tab switching under
+`global-tab-line-mode', so settings buffers bind it themselves."
+  (interactive "p")
+  (if (bound-and-true-p tab-line-mode)
+      (eca-settings--switch-tab (or arg 1))
+    (next-buffer arg)))
+
+(defvar eca-settings-tabs-map
+  (let ((map (make-sparse-keymap)))
+    ;; Only Emacs 30 bound these in `tab-line-mode-map': Emacs 28 and
+    ;; 29 never did, and Emacs 31 only binds them globally under
+    ;; `global-tab-line-mode', so the buffer-local settings tab-line
+    ;; lacks them.  Bind them explicitly.
+    (define-key map (kbd "C-x <left>") #'eca-settings-previous-tab)
+    (define-key map (kbd "C-x <right>") #'eca-settings-next-tab)
+    (define-key map (kbd "C-x C-<left>") #'eca-settings-previous-tab)
+    (define-key map (kbd "C-x C-<right>") #'eca-settings-next-tab)
+    map)
+  "Keymap switching between settings tabs.
+Active in settings buffers through `eca-settings--tabs-mode'.")
+
+(define-minor-mode eca-settings--tabs-mode
+  "Keys switching between the tabs of ECA settings buffers.
+Internal; enabled by `eca-settings--setup-tab-line' with the
+tab-line.  A minor mode, so the keys also work in tabs running their
+own major mode, like the JSON one of the global config tab."
+  :keymap eca-settings-tabs-map
+  :lighter nil)
+
 (defun eca-settings--setup-tab-line (tab-key &optional session)
   "Setup tab-line in current buffer for TAB-KEY.
-When SESSION is provided, cache its ID so that
-`eca-session' can find it from this buffer."
+With the tab-line come the keys switching tabs, see
+`eca-settings--tabs-mode'.  When SESSION is provided,
+cache its ID so that `eca-session' can find it from
+this buffer."
   (setq-local eca-settings--tab-key tab-key)
   (when session
     (setq-local eca--session-id-cache
@@ -183,6 +239,7 @@ When SESSION is provided, cache its ID so that
     (setq-local tab-line-separator "")
     (face-remap-add-relative 'tab-line :height 0.9)
     (tab-line-mode 1)
+    (eca-settings--tabs-mode 1)
     (setq-local tab-line-format
                 '(:eval (eca-settings--tab-line-with-close)))))
 

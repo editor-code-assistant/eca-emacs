@@ -168,7 +168,19 @@ FN gets the buffer, its session and the path of the file."
        (delete-directory (file-name-directory path) t)
        (eca-config-test--edit-and-save buffer)
        (expect (file-exists-p path) :to-be-truthy)
-       (expect 'y-or-n-p :not :to-have-been-called)))))
+       (expect 'y-or-n-p :not :to-have-been-called))))
+
+  (it "keeps the keys switching tabs once a refresh re-enabled the major mode"
+    (eca-config-test--call-with-buffer
+     (lambda (buffer session _path)
+       (with-current-buffer buffer
+         (expect (memq eca-settings-tabs-map (current-active-maps))
+                 :to-be-truthy))
+       (eca-config-test--edit-and-save buffer)
+       (eca-config--refresh session buffer)
+       (with-current-buffer buffer
+         (expect (memq eca-settings-tabs-map (current-active-maps))
+                 :to-be-truthy))))))
 
 (provide 'eca-config-test)
 ;;; eca-config-test.el ends here
