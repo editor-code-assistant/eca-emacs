@@ -327,7 +327,6 @@ is only usable asynchronously."
                                                                   :editor (list :diagnostics t
                                                                                 :definition t
                                                                                 :references t)))
-                         :initializationOptions (list :chatAgent eca-chat-custom-agent)
                          :workspaceFolders (vconcat (-map (lambda (folder)
                                                            (list :uri (eca--path-to-uri folder)
                                                                  :name (file-name-nondirectory (directory-file-name folder))))
