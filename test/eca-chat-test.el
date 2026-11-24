@@ -2446,7 +2446,26 @@ ROOTS are the workspace roots."
             (expect (eca-chat-test--label-face "tool-2" "outside.el")
                     :to-be 'eca-chat-file-change-label-outside-workspace-face))
         (kill-buffer buf)
-        (delete-directory root t)))))
+        (delete-directory root t))))
+
+  (it "ends the label with a diff button"
+    (let ((buf (eca-chat-test--make-render-buffer)))
+      (unwind-protect
+          (eca-chat--with-current-buffer buf
+            (eca-chat--render-content
+             (make-eca--session) buf "assistant"
+             (list :type "toolCalled" :id "tool-1" :name "write_file"
+                   :server "eca" :summary "Creating"
+                   :details (list :type "fileChange" :path "/tmp/a.el" :diff "+x"
+                                  :linesAdded 1 :linesRemoved 0))
+             nil)
+            (goto-char (eca-chat-test--label-start "tool-1"))
+            (let ((label (buffer-substring-no-properties (point) (line-end-position))))
+              (expect label :to-match " diff\\'")
+              (expect label :not :to-match "view diff"))
+            (expect (eca-chat-test--label-face "tool-1" "diff")
+                    :to-be 'eca-chat-diff-view-face))
+        (kill-buffer buf)))))
 
 (describe "eca-chat copy command"
   (it "copies fenced code block content"
@@ -5955,9 +5974,11 @@ bound to FONTIFY-MARKDOWN."
 
 (defun eca-chat-test--status-symbol-face (content symbol)
   "Render tool call CONTENT and return the face of SYMBOL in its label.
-Return `:missing' when its label line has no SYMBOL."
+Return `:missing' when its label line has no SYMBOL.  The success
+and error symbols only show with `eca-chat-expandable-block-arrows'."
   (let ((buf (eca-chat-test--make-render-buffer))
-        (eca-chat-shrink-called-tools nil))
+        (eca-chat-shrink-called-tools nil)
+        (eca-chat-expandable-block-arrows t))
     (unwind-protect
         (eca-chat--with-current-buffer buf
           (eca-chat--render-content (make-eca--session) buf "assistant" content nil)
@@ -6135,6 +6156,55 @@ PROPS override the ones of `eca-chat-test--tool-call-content'."
         (eca-chat--tool-call-elapsed-stop-all)
         (kill-buffer buf))))
 
+  (it "leaves out the symbols of tool calls that succeeded or failed"
+    (let ((buf (eca-chat-test--make-render-buffer))
+          (session (make-eca--session)))
+      (unwind-protect
+          (eca-chat--with-current-buffer buf
+            (cl-flet ((render (type id &rest props)
+                        (apply #'eca-chat-test--render-tool-call
+                               session buf type id props))
+                      (label (id)
+                        (save-excursion
+                          (goto-char (eca-chat-test--label-start id))
+                          (buffer-substring-no-properties (point) (line-end-position)))))
+              (render "toolCalled" "t1" :totalTimeMs 2000)
+              (render "toolCalled" "t2" :error t)
+              (render "toolCallRejected" "t3")
+              (render "toolCalled" "t4" :details (list :type "generic" :background t))
+              ;; Without a double space where they were.
+              (expect (label "t1") :to-equal
+                      (concat "Called tool: testServer__testTool "
+                              (eca-chat--time->presentable-time 2000)))
+              (expect (label "t2") :to-equal "Called tool: testServer__testTool")
+              (expect (label "t3") :to-equal "Rejected tool: testServer__testTool")
+              ;; The bar tells them instead.
+              (expect (eca-chat-test--bar-face (eca-chat-test--label-prefix "t1"))
+                      :to-be 'eca-chat-tool-call-success-face)
+              (expect (eca-chat-test--bar-face (eca-chat-test--label-prefix "t2"))
+                      :to-be 'eca-chat-tool-call-error-face)
+              (expect (eca-chat-test--bar-face (eca-chat-test--label-prefix "t3"))
+                      :to-be 'eca-chat-tool-call-error-face)
+              ;; Other states keep their symbol.
+              (expect (label "t4") :to-equal "Called tool: testServer__testTool 🟡")))
+        (kill-buffer buf))))
+
+  (it "leaves out the symbol of a finished subagent, keeping its color"
+    (let ((buf (eca-chat-test--make-render-buffer))
+          (session (make-eca--session)))
+      (unwind-protect
+          (eca-chat--with-current-buffer buf
+            (apply #'eca-chat-test--render-tool-call session buf "toolCalled" "sub-1"
+                   eca-chat-test--subagent-props)
+            (expect (buffer-substring-no-properties
+                     (eca-chat-test--label-start "sub-1")
+                     (save-excursion (goto-char (eca-chat-test--label-start "sub-1"))
+                                     (line-end-position)))
+                    :to-equal "Called tool: testServer__testTool")
+            (expect (eca-chat-test--bar-face (eca-chat-test--label-prefix "sub-1"))
+                    :to-be 'eca-chat-subagent-tool-call-bar-face))
+        (kill-buffer buf))))
+
   (it "keeps the bar of subagents in their own color until they fail"
     (let ((buf (eca-chat-test--make-render-buffer))
           (session (make-eca--session))
@@ -6274,7 +6344,14 @@ PROPS override the ones of `eca-chat-test--tool-call-content'."
             (expect (eca-chat-test--line-prefix-at "Accept") :to-equal "   ")
             (eca-chat-test--render-tool-call session buf "toolCalled" "t1" :error t)
             (expect (get-text-property 0 'face (eca-chat-test--label-prefix "t1"))
-                    :to-be 'eca-chat-mcp-tool-call-label-face))
+                    :to-be 'eca-chat-mcp-tool-call-label-face)
+            ;; Which don't tell the state, unlike the bar: the symbol does.
+            (expect (buffer-substring-no-properties
+                     (eca-chat-test--label-start "t1")
+                     (save-excursion (goto-char (eca-chat-test--label-start "t1"))
+                                     (line-end-position)))
+                    :to-equal (concat "Called tool: testServer__testTool "
+                                      eca-chat-mcp-tool-call-error-symbol)))
         (kill-buffer buf))))
 
   (it "indents nested blocks under the arrow of their parent"
