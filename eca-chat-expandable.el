@@ -61,13 +61,28 @@ visible content from jumping when buffer text is inserted or deleted
 ;;;; Defcustoms
 
 (defcustom eca-chat-expandable-block-open-symbol "⏵ "
-  "The string used in eca chat buffer for blocks in open mode like tool calls."
+  "The string used in eca chat buffer for blocks in open mode like tool calls.
+Only shown with `eca-chat-expandable-block-arrows'."
   :type 'string
   :group 'eca)
 
 (defcustom eca-chat-expandable-block-close-symbol "⏷ "
-  "The string used in eca chat buffer for blocks in close mode like tool calls."
+  "The string used in eca chat buffer for blocks in close mode like tool calls.
+Only shown with `eca-chat-expandable-block-arrows'."
   :type 'string
+  :group 'eca)
+
+(defcustom eca-chat-expandable-block-arrows nil
+  "Whether to mark expandable blocks with arrows instead of a bar.
+By default, a bar runs along the blocks with content to expand, like
+tool calls and reasoning.  Its color follows the state of tool calls,
+see `eca-chat-tool-call-running-face' and the other tool call faces,
+and the color of the label for other blocks.  When non-nil, the label
+of these blocks starts with `eca-chat-expandable-block-open-symbol' or
+`eca-chat-expandable-block-close-symbol' instead, in the color of the
+label.  Either way, blocks without content to expand show neither, and
+user messages keep their bar."
+  :type 'boolean
   :group 'eca)
 
 (defcustom eca-chat-expandable-block-bg-shift-1 5
@@ -179,17 +194,26 @@ without text property intervals, which are costly to copy."
               (text (overlay-get ov-content 'eca-chat--expandable-content-content)))
     (eca-chat--expandable-text-length text)))
 
+(defun eca-chat--expandable-closing-line (ov-content)
+  "Return the newline closing the content of OV-CONTENT when opened.
+It carries the bar of the block down to the empty line it ends with,
+unless `eca-chat-expandable-block-arrows'."
+  (if eca-chat-expandable-block-arrows
+      "\n"
+    (eca-chat--expandable-content-indented ov-content "\n")))
+
 (defun eca-chat--expandable-content-indented (ov-content string &optional total-length)
   "Return STRING with the content indent of OV-CONTENT as `line-prefix'.
-STRING is tagged with `eca-no-fontify' when TOTAL-LENGTH, the length of
-the whole block content (defaults to STRING's), exceeds
-`eca-chat-expandable-block-fontify-max-length'."
+Wrapped lines get it as `wrap-prefix' too, so they keep the bar or the
+indent of the block.  STRING is tagged with `eca-no-fontify' when
+TOTAL-LENGTH, the length of the whole block content (defaults to
+STRING's), exceeds `eca-chat-expandable-block-fontify-max-length'."
   (let ((indent (overlay-get ov-content 'eca-chat--expandable-content-indent)))
     (if (and eca-chat-expandable-block-fontify-max-length
              (> (or total-length (length string))
                 eca-chat-expandable-block-fontify-max-length))
-        (propertize string 'line-prefix indent 'eca-no-fontify t)
-      (propertize string 'line-prefix indent))))
+        (propertize string 'line-prefix indent 'wrap-prefix indent 'eca-no-fontify t)
+      (propertize string 'line-prefix indent 'wrap-prefix indent))))
 
 ;;;; Faces
 
@@ -299,21 +323,139 @@ space, tab, or newline."
       (concat first rest))))
 
 (defconst eca-chat--expandable-content-base-indent (make-string 3 ?\s))
-(defconst eca-chat--expandable-content-nested-indent (make-string 6 ?\s))
 
-(defun eca-chat--make-expandable-icons (icon-face &optional label-prefix)
+(defconst eca-chat--expandable-bar-symbol "▍"
+  "The bar drawn along expandable blocks.")
+
+(defun eca-chat--expandable-bar-face (label)
+  "Return the face of the bar of a block labeled LABEL.
+That is the `eca-chat-expandable-bar-face' of LABEL, which tool calls
+give their state symbol, else the face of LABEL."
+  (when (and (stringp label) (not (string-empty-p label)))
+    (if-let* ((pos (text-property-not-all 0 (length label)
+                                          'eca-chat-expandable-bar-face nil label)))
+        (get-text-property pos 'eca-chat-expandable-bar-face label)
+      (get-text-property 0 'font-lock-face label))))
+
+(defun eca-chat--expandable-bar (face)
+  "Return the bar of a block in FACE.
+Return nil with `eca-chat-expandable-block-arrows', which draws none."
+  (unless eca-chat-expandable-block-arrows
+    (propertize eca-chat--expandable-bar-symbol 'face face)))
+
+(defun eca-chat--expandable-line-prefix (bar-face)
+  "Return the prefix of the content lines of a block, bar in BAR-FACE.
+It is as wide as `eca-chat--expandable-content-base-indent', starting
+with the bar unless `eca-chat-expandable-block-arrows'."
+  (if eca-chat-expandable-block-arrows
+      eca-chat--expandable-content-base-indent
+    (concat (eca-chat--expandable-bar bar-face)
+            (make-string (max 0 (- (length eca-chat--expandable-content-base-indent)
+                                   (string-width eca-chat--expandable-bar-symbol)))
+                         ?\s))))
+
+(defun eca-chat--expandable-parent-prefix (parent-id)
+  "Return what the lines of the block PARENT-ID start with, or nil.
+The lines of blocks nested in it start with it too, its bar first."
+  (when parent-id
+    (eca-chat--expandable-line-prefix
+     (-some-> (eca-chat--get-expandable-content parent-id)
+       (overlay-get 'eca-chat--expandable-content-bar-face)))))
+
+(defun eca-chat--make-expandable-icons (icon-face &optional label-prefix bar-face)
   "Create open/close icons with ICON-FACE and optional LABEL-PREFIX.
+Both are the bar in BAR-FACE, ICON-FACE when nil, unless
+`eca-chat-expandable-block-arrows' makes them the open and close
+symbols in ICON-FACE.
 Uses the `face' property (not `font-lock-face') because these strings
 are used as `line-prefix' values, where `font-lock-face' is not rendered."
-  (let ((open-icon (if icon-face
-                       (propertize eca-chat-expandable-block-open-symbol 'face icon-face)
-                     eca-chat-expandable-block-open-symbol))
-        (close-icon (if icon-face
-                        (propertize eca-chat-expandable-block-close-symbol 'face icon-face)
-                      eca-chat-expandable-block-close-symbol)))
-    (if label-prefix
-        (cons (concat label-prefix open-icon) (concat label-prefix close-icon))
-      (cons open-icon close-icon))))
+  (if-let* ((bar (eca-chat--expandable-bar (or bar-face icon-face))))
+      (let ((icon (concat label-prefix bar " ")))
+        (cons icon icon))
+    (let ((icon (lambda (symbol)
+                  (concat label-prefix
+                          (if icon-face (propertize symbol 'face icon-face) symbol)))))
+      (cons (funcall icon eca-chat-expandable-block-open-symbol)
+            (funcall icon eca-chat-expandable-block-close-symbol)))))
+
+(defun eca-chat--expandable-plain-prefix (&optional label-prefix)
+  "Return the label prefix of a block without content to expand.
+It shows no bar, as the bar tells which blocks expand, and lines up
+with the text around it: that is LABEL-PREFIX, what the lines of the
+parent of a nested block start with, or nothing.  With
+`eca-chat-expandable-block-arrows', a nested label gets spaces in
+place of the arrow instead, lining up with the labels of the blocks
+around it."
+  (if eca-chat-expandable-block-arrows
+      (when label-prefix
+        (concat label-prefix
+                (make-string (length eca-chat-expandable-block-open-symbol) ?\s)))
+    label-prefix))
+
+(defun eca-chat--expandable-label-prefix (ov-label has-content? open?)
+  "Return the `line-prefix' of the label line of block OV-LABEL.
+That is its close or open icon, as OPEN? tells, when HAS-CONTENT?,
+else its plain prefix."
+  (overlay-get ov-label
+               (cond ((not has-content?) 'eca-chat--expandable-content-plain-prefix)
+                     (open? 'eca-chat--expandable-content-close-icon)
+                     (t 'eca-chat--expandable-content-open-icon))))
+
+(defun eca-chat--expandable-set-prefixes (ov-label label)
+  "Store on block OV-LABEL its prefixes for LABEL, when they changed.
+Its icons, plain prefix, bar face and content indent follow the faces
+of LABEL and of its bar, see `eca-chat--expandable-bar-face'.  Return
+non-nil when they changed.  Storing equal prefixes again on every
+streamed chunk would count as an overlay change, making redisplay lay
+out the window again for nothing."
+  (let* ((icon-face (get-text-property 0 'font-lock-face label))
+         (bar-face (eca-chat--expandable-bar-face label))
+         (faces (list icon-face bar-face))
+         (old-faces (overlay-get ov-label 'eca-chat--expandable-content-icon-face)))
+    (unless (equal faces old-faces)
+      (let* ((label-indent (eca-chat--expandable-parent-prefix
+                            (overlay-get ov-label 'eca-chat--expandable-content-parent-id)))
+             (icons (eca-chat--make-expandable-icons icon-face label-indent bar-face)))
+        (overlay-put ov-label 'eca-chat--expandable-content-icon-face faces)
+        (overlay-put ov-label 'eca-chat--expandable-content-bar-face bar-face)
+        (overlay-put ov-label 'eca-chat--expandable-content-open-icon (car icons))
+        (overlay-put ov-label 'eca-chat--expandable-content-close-icon (cdr icons))
+        (overlay-put ov-label 'eca-chat--expandable-content-plain-prefix
+                     (eca-chat--expandable-plain-prefix label-indent))
+        (when-let* ((ov-content (overlay-get ov-label 'eca-chat--expandable-content-ov-content)))
+          (overlay-put ov-content 'eca-chat--expandable-content-indent
+                       (concat label-indent (eca-chat--expandable-line-prefix bar-face))))
+        t))))
+
+(defun eca-chat--expandable-repaint-bar (ov-label old-face)
+  "Repaint in its current face the bar of the open block OV-LABEL.
+Its content lines, nested blocks included, drew it in OLD-FACE.  The
+bar sits at the start of their prefixes, after the prefix of the
+parent for a nested block."
+  (when-let* (((not eca-chat-expandable-block-arrows))
+              ((overlay-get ov-label 'eca-chat--expandable-content-toggle))
+              (ov-content (overlay-get ov-label 'eca-chat--expandable-content-ov-content))
+              (new-face (overlay-get ov-label 'eca-chat--expandable-content-bar-face))
+              ((not (eq new-face old-face))))
+    (let ((column (length (eca-chat--expandable-parent-prefix
+                           (overlay-get ov-label 'eca-chat--expandable-content-parent-id))))
+          (inhibit-read-only t))
+      (dolist (prop '(line-prefix wrap-prefix))
+        (let ((pos (overlay-start ov-content))
+              (end (overlay-end ov-content)))
+          (while (< pos end)
+            (let ((next (or (next-single-property-change pos prop nil end) end))
+                  (prefix (get-text-property pos prop)))
+              (when (and (stringp prefix) (> (length prefix) column))
+                (let* ((face (get-text-property column 'face prefix))
+                       (repainted (cond ((eq face old-face) new-face)
+                                        ((consp face) (cl-substitute new-face old-face face))
+                                        (t face))))
+                  (unless (equal repainted face)
+                    (let ((new-prefix (copy-sequence prefix)))
+                      (put-text-property column (1+ column) 'face repainted new-prefix)
+                      (put-text-property pos next prop new-prefix)))))
+              (setq pos next))))))))
 
 (defun eca-chat--expandable-block-face (nested?)
   "Return the appropriate background face for an expandable block.
@@ -323,37 +465,44 @@ When NESTED? is non-nil, return the level-2 face; otherwise level-1."
     'eca-chat-expandable-block-1-face))
 
 (defun eca-chat--apply-face-to-line-prefixes (start end face)
-  "Add FACE to every `line-prefix' string between START and END.
+  "Add FACE to every `line-prefix' and `wrap-prefix' between START and END.
 The face symbol itself is stored instead of its resolved background
 color, so prefixes follow theme switches (#301).  FACE only defines a
 background, so existing foreground colors (e.g. icon faces) are
 preserved."
-  (let ((pos start))
-    (while (< pos end)
-      (let* ((next-change (or (next-single-property-change pos 'line-prefix nil end) end))
-             (prefix (get-text-property pos 'line-prefix)))
-        (when (and prefix (stringp prefix))
-          (let ((existing (get-text-property 0 'face prefix)))
-            ;; Skip when already painted to avoid re-consing the same
-            ;; face onto frequently repainted prefixes.
-            (unless (or (eq existing face)
-                        (and (listp existing) (memq face existing)))
-              (let ((new-prefix (copy-sequence prefix)))
-                (add-face-text-property 0 (length new-prefix) face nil new-prefix)
-                (put-text-property pos next-change 'line-prefix new-prefix)))))
-        (setq pos next-change)))))
+  (dolist (prop '(line-prefix wrap-prefix))
+    (let ((pos start))
+      (while (< pos end)
+        (let* ((next-change (or (next-single-property-change pos prop nil end) end))
+               (prefix (get-text-property pos prop)))
+          (when (and prefix (stringp prefix))
+            (let ((existing (get-text-property 0 'face prefix)))
+              ;; Skip when already painted to avoid re-consing the same
+              ;; face onto frequently repainted prefixes.
+              (unless (or (eq existing face)
+                          (and (listp existing) (memq face existing)))
+                (let ((new-prefix (copy-sequence prefix)))
+                  (add-face-text-property 0 (length new-prefix) face nil new-prefix)
+                  (put-text-property pos next-change prop new-prefix)))))
+          (setq pos next-change))))))
 
 (defun eca-chat--paint-nested-label (ov-label)
   "Paint OV-LABEL's `line-prefix` with the parent block's background face.
-Does nothing for top-level blocks or when parent has no face set."
+So are the other lines of the label, like the approval lines of a tool
+call, and the empty line closing the block, which carries the bar of
+the parent.  Does nothing for top-level blocks or when parent has no
+face set."
   (when (overlay-get ov-label 'eca-chat--expandable-content-nested)
     (when-let* ((parent-id (overlay-get ov-label 'eca-chat--expandable-content-parent-id))
                 (parent-ov (eca-chat--get-expandable-content parent-id))
                 (parent-content-ov (overlay-get parent-ov 'eca-chat--expandable-content-ov-content))
-                (parent-face (overlay-get parent-content-ov 'face)))
-      (save-excursion
-        (goto-char (overlay-start ov-label))
-        (eca-chat--apply-face-to-line-prefixes (point) (line-end-position) parent-face)))))
+                (parent-face (overlay-get parent-content-ov 'face))
+                (ov-content (overlay-get ov-label 'eca-chat--expandable-content-ov-content)))
+      (eca-chat--apply-face-to-line-prefixes
+       (overlay-start ov-label) (overlay-start ov-content) parent-face)
+      (let ((end (overlay-end ov-content)))
+        (when (< end (point-max))
+          (eca-chat--apply-face-to-line-prefixes end (1+ end) parent-face))))))
 
 (defun eca-chat--insert-expandable-block (id label content open-icon close-icon content-indent &optional nested-props)
   "Insert an expandable block with ID, LABEL, CONTENT, icons and indent.
@@ -377,11 +526,18 @@ NESTED-PROPS is a plist with :parent-id and :label-indent for nested blocks."
       (overlay-put ov-label 'eca-chat--expandable-content-parent-id (plist-get nested-props :parent-id)))
     (unless nested-props
       (overlay-put ov-label 'eca-chat--expandable-content-segments nil))
+    ;; The callers made the icons and content indent for these faces.
+    (let ((bar-face (eca-chat--expandable-bar-face label)))
+      (overlay-put ov-label 'eca-chat--expandable-content-bar-face bar-face)
+      (overlay-put ov-label 'eca-chat--expandable-content-icon-face
+                   (list (get-text-property 0 'font-lock-face label) bar-face))
+      (overlay-put ov-label 'eca-chat--expandable-content-plain-prefix
+                   (eca-chat--expandable-plain-prefix label-indent)))
     (eca-chat--insert (propertize (eca-chat--propertize-only-first-word label
-                                                                        'line-prefix (cond
-                                                                                      ((not (eca-chat--expandable-text-empty-p text)) open-icon)
-                                                                                      (label-indent (concat label-indent
-                                                                                                            (make-string (length eca-chat-expandable-block-open-symbol) ?\s)))))
+                                                                        'line-prefix (eca-chat--expandable-label-prefix
+                                                                                      ov-label
+                                                                                      (not (eca-chat--expandable-text-empty-p text))
+                                                                                      nil))
                                   'keymap (let ((km (make-sparse-keymap)))
                                             (define-key km (kbd "<mouse-1>") (lambda () (interactive) (eca-chat--expandable-content-toggle id)))
                                             (define-key km (kbd "TAB") (lambda () (interactive) (eca-chat--expandable-content-toggle id)))
@@ -390,7 +546,13 @@ NESTED-PROPS is a plist with :parent-id and :label-indent for nested blocks."
                                   'help-echo "mouse-1 / tab / RET: expand/collapse"))
     (eca-chat--insert "\n")
     (let* ((start-point (point))
-           (_ (eca-chat--insert "\n"))
+           ;; The empty line closing a nested block carries the bar
+           ;; of the parent, which goes on past it.
+           (_ (eca-chat--insert (if (and label-indent
+                                         (not eca-chat-expandable-block-arrows))
+                                    (propertize "\n" 'line-prefix label-indent
+                                                'wrap-prefix label-indent)
+                                  "\n")))
            (ov-content (make-overlay start-point start-point (current-buffer) nil t))
            (nested? (plist-get nested-props :parent-id)))
       (overlay-put ov-content 'eca-chat--expandable-content-content text)
@@ -402,16 +564,20 @@ NESTED-PROPS is a plist with :parent-id and :label-indent for nested blocks."
 (defun eca-chat--render-nested-block (parent-ov child-spec)
   "Render a nested block CHILD-SPEC within PARENT-OV's content area."
   (-let* (((&plist :id id :label label :content content :icon-face icon-face) child-spec)
+          (parent-id (overlay-get parent-ov 'eca-chat--expandable-content-id))
           (parent-content-ov (overlay-get parent-ov 'eca-chat--expandable-content-ov-content))
-          (label-indent eca-chat--expandable-content-base-indent)
-          (icons (eca-chat--make-expandable-icons icon-face label-indent)))
+          ;; The lines of the child start with the bar of the parent.
+          (label-indent (eca-chat--expandable-parent-prefix parent-id))
+          (bar-face (eca-chat--expandable-bar-face label))
+          (icons (eca-chat--make-expandable-icons icon-face label-indent bar-face)))
     (save-excursion
       (goto-char (overlay-end parent-content-ov))
       (unless (bolp) (eca-chat--insert "\n"))
       (eca-chat--insert-expandable-block id label content
                                          (car icons) (cdr icons)
-                                         eca-chat--expandable-content-nested-indent
-                                         (list :parent-id (overlay-get parent-ov 'eca-chat--expandable-content-id)
+                                         (concat label-indent
+                                                 (eca-chat--expandable-line-prefix bar-face))
+                                         (list :parent-id parent-id
                                                :label-indent label-indent))
       ;; Paint label's line-prefix with parent's background when parent is open
       (when-let* ((child-ov (eca-chat--get-expandable-content id)))
@@ -493,12 +659,13 @@ the default content insertion point."
     (save-excursion
       (let* ((start-point (or at-point (eca-chat--content-insertion-point)))
              (icon-face (get-text-property 0 'font-lock-face label))
-             (icons (eca-chat--make-expandable-icons icon-face)))
+             (bar-face (eca-chat--expandable-bar-face label))
+             (icons (eca-chat--make-expandable-icons icon-face nil bar-face)))
         (goto-char start-point)
         (unless (bolp) (eca-chat--insert "\n"))
         (eca-chat--insert-expandable-block id label content
                                            (car icons) (cdr icons)
-                                           eca-chat--expandable-content-base-indent)))))
+                                           (eca-chat--expandable-line-prefix bar-face))))))
 
 (defun eca-chat--remove-expandable-content (id)
   "Remove the expandable block with ID from the buffer.
@@ -551,36 +718,23 @@ in parent."
           (eca-chat--expandable-text-replace text content))
         (save-excursion
           (when label
-            ;; Update stored icons when the label face changes.  Storing
-            ;; equal icons again on every streamed chunk would count as
-            ;; an overlay change, making redisplay and the visibility
-            ;; checks redo the window layout for nothing.
-            (let ((new-icon-face (get-text-property 0 'font-lock-face label))
-                  (icon-face (overlay-get ov-label 'eca-chat--expandable-content-icon-face)))
-              (unless (and icon-face (equal (car icon-face) new-icon-face))
-                (let* ((label-indent (when nested? eca-chat--expandable-content-base-indent))
-                       (new-icons (eca-chat--make-expandable-icons new-icon-face label-indent)))
-                  (overlay-put ov-label 'eca-chat--expandable-content-icon-face (list new-icon-face))
-                  (overlay-put ov-label 'eca-chat--expandable-content-open-icon (car new-icons))
-                  (overlay-put ov-label 'eca-chat--expandable-content-close-icon (cdr new-icons)))))
-            (let* ((children (eca-chat--segments-children
+            (let* ((old-bar-face (overlay-get ov-label 'eca-chat--expandable-content-bar-face))
+                   ;; A new label face or state changes the prefixes.
+                   (prefixes-changed? (eca-chat--expandable-set-prefixes ov-label label))
+                   (children (eca-chat--segments-children
                               (overlay-get ov-label 'eca-chat--expandable-content-segments)))
                    (has-content? (or (not (eca-chat--expandable-text-empty-p text)) children))
-                   (label-prefix (cond
-                                  (has-content?
-                                   (if open?
-                                       (overlay-get ov-label 'eca-chat--expandable-content-close-icon)
-                                     (overlay-get ov-label 'eca-chat--expandable-content-open-icon)))
-                                  (nested?
-                                   (concat eca-chat--expandable-content-base-indent
-                                           (make-string (length eca-chat-expandable-block-open-symbol) ?\s)))))
+                   (label-prefix (eca-chat--expandable-label-prefix ov-label has-content? open?))
                    (label-start (overlay-start ov-label))
                    (label-end (1- (overlay-start ov-content)))
                    (cur-prefix (get-text-property label-start 'line-prefix)))
+              (when prefixes-changed?
+                (eca-chat--expandable-repaint-bar ov-label old-bar-face))
               ;; Skip the delete/re-insert when the rendered label is
               ;; already up to date; frequent while toolCallPrepare
               ;; streams argsText updates (#268).
-              (unless (and (string= (substring-no-properties label)
+              (unless (and (not prefixes-changed?)
+                           (string= (substring-no-properties label)
                                     (buffer-substring-no-properties label-start label-end))
                            (equal (get-text-property 0 'font-lock-face label)
                                   (get-text-property label-start 'font-lock-face))
@@ -674,8 +828,8 @@ If FORCE? decide to CLOSE? or not."
             (if (or close? (not has-content?))
                 (progn
                   (put-text-property (point) (line-end-position)
-                                     'line-prefix (when has-content?
-                                                    (overlay-get ov-label 'eca-chat--expandable-content-open-icon)))
+                                     'line-prefix (eca-chat--expandable-label-prefix
+                                                   ov-label has-content? nil))
                   (goto-char (1+ (line-end-position)))
                   ;; Destroy nested blocks first (they are within content region)
                   (eca-chat--destroy-nested-blocks id)
@@ -707,10 +861,10 @@ If FORCE? decide to CLOSE? or not."
                         (when (and trailing-text (not (string-empty-p trailing-text)))
                           (eca-chat--insert (eca-chat--expandable-content-indented
                                              ov-content trailing-text (length content))))
-                        (eca-chat--insert "\n"))
+                        (eca-chat--insert (eca-chat--expandable-closing-line ov-content)))
                     ;; Legacy path: no segments, insert content then children
                     (eca-chat--insert (eca-chat--expandable-content-indented ov-content content)
-                                      "\n")
+                                      (eca-chat--expandable-closing-line ov-content))
                     (dolist (child-spec children)
                       (eca-chat--render-nested-block ov-label child-spec))))
                 (let ((block-face (eca-chat--expandable-block-face

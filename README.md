@@ -183,8 +183,9 @@ Chat
 - `eca-chat-restore-on-restart`: Which chats `eca-restart` reopens once the server is back (default `all`): `all` reopens the chats that were open in their tab order, showing the active one first, `active` only the active chat, and `nil` none, the session then starting with a new chat. Chats reopen once the server synced its models, with their newest messages (see `eca-chat-history-page-size`) and their model, agent, variant and trust.
 - `eca-chat-context-prefix`: Prefix used for context references in the chat buffer (default `@`).
 - `eca-chat-filepath-prefix`: Prefix used for file path references in the chat buffer (default `#`).
-- `eca-chat-expandable-block-open-symbol`: Symbol used for expandable blocks in open state.
-- `eca-chat-expandable-block-close-symbol`: Symbol used for expandable blocks in closed state.
+- `eca-chat-expandable-block-arrows`: Whether expandable blocks like reasoning and tool calls show the open/close symbols below instead of a bar along them (default `nil`). The bar of tool calls is colored by their state, with `eca-chat-tool-call-running-face`, `eca-chat-tool-call-pending-face` (waiting for approval or running in the background), `eca-chat-tool-call-success-face` and `eca-chat-tool-call-error-face`; subagents keep `eca-chat-subagent-tool-call-bar-face` unless they fail, and other blocks take the color of their label. Either way, blocks with nothing to expand show neither, and user messages keep their bar.
+- `eca-chat-expandable-block-open-symbol`: Symbol used for expandable blocks in open state, with `eca-chat-expandable-block-arrows`.
+- `eca-chat-expandable-block-close-symbol`: Symbol used for expandable blocks in closed state, with `eca-chat-expandable-block-arrows`.
 - `eca-chat-mcp-tool-call-loading-symbol`: Symbol used for MCP tool calls while loading.
 - `eca-chat-mcp-tool-call-error-symbol`: Symbol used for MCP tool calls when they fail or are rejected (default `✕`), shown with `eca-chat-tool-call-error-face`.
 - `eca-chat-mcp-tool-call-success-symbol`: Symbol used for MCP tool calls when they succeed (default `✔`), shown with `eca-chat-tool-call-success-face`.

@@ -693,6 +693,13 @@ under the mouse."
   "Face for subagent tool call labels in chat."
   :group 'eca)
 
+(defface eca-chat-subagent-tool-call-bar-face
+  '((t :inherit eca-chat-subagent-tool-call-label-face :slant normal :weight normal))
+  "Face for the bar of subagent tool calls, unless they failed.
+It stays the color of their label whatever their state, unlike the
+bars of the tool calls they run.  See `eca-chat-expandable-block-arrows'."
+  :group 'eca)
+
 (defface eca-chat-subagent-steps-info-face
   '((t :inherit font-lock-comment-face :slant italic :height 0.9))
   "Face for the steps done by subagent."
@@ -703,17 +710,32 @@ under the mouse."
   "Face for the progress reported by a running tool call."
   :group 'eca)
 
+(defface eca-chat-tool-call-running-face
+  '((t :inherit font-lock-constant-face))
+  "Face for the bar of tool calls being prepared or running.
+See `eca-chat-expandable-block-arrows'."
+  :group 'eca)
+
+(defface eca-chat-tool-call-pending-face
+  '((t :inherit warning :underline nil))
+  "Face for the bar of tool calls waiting for approval.
+Also tool calls running a job in the background.  See
+`eca-chat-expandable-block-arrows'."
+  :group 'eca)
+
 (defface eca-chat-tool-call-success-face
   '((t :inherit success :underline nil))
-  "Face for the symbol of tool calls that succeeded.
-See `eca-chat-mcp-tool-call-success-symbol'."
+  "Face for the symbol and bar of tool calls that succeeded.
+See `eca-chat-mcp-tool-call-success-symbol' and
+`eca-chat-expandable-block-arrows'."
   :group 'eca)
 
 (defface eca-chat-tool-call-error-face
   '((t :inherit error :underline nil))
-  "Face for the symbol of tool calls that failed or were rejected.
-See `eca-chat-mcp-tool-call-error-symbol'.  Some themes underline
-the `error' face, which this one leaves out."
+  "Face for the symbol and bar of tool calls that failed or were rejected.
+See `eca-chat-mcp-tool-call-error-symbol' and
+`eca-chat-expandable-block-arrows'.  Some themes underline the `error'
+face, which this one leaves out."
   :group 'eca)
 
 (defface eca-chat-file-change-label-face
@@ -1867,7 +1889,10 @@ remember action when nothing can be remembered."
                       (propertize " " 'font-lock-face 'eca-chat-tool-call-approval-content-face))
             (propertize " for this session "
                         'font-lock-face 'eca-chat-tool-call-approval-content-face))))
-    (concat (propertize "\n" 'font-lock-face 'eca-chat-tool-call-spacing-face)
+    (concat (propertize "\n" 'font-lock-face 'eca-chat-tool-call-spacing-face
+                        ;; Under a label ending its line, it starts an
+                        ;; empty line, which keeps the bar of the block.
+                        'line-prefix spacing-line-prefix)
             (eca-buttonize
              eca-chat-mode-map
              (propertize "Accept"
@@ -4492,15 +4517,27 @@ inline code face instead."
       (concat "`" code "`")
     (propertize code 'font-lock-face 'markdown-inline-code-face)))
 
-(defun eca-chat--tool-call-success-symbol ()
-  "Return `eca-chat-mcp-tool-call-success-symbol' for a tool call label."
-  (propertize eca-chat-mcp-tool-call-success-symbol
-              'font-lock-face 'eca-chat-tool-call-success-face))
-
-(defun eca-chat--tool-call-error-symbol ()
-  "Return `eca-chat-mcp-tool-call-error-symbol' for a tool call label."
-  (propertize eca-chat-mcp-tool-call-error-symbol
-              'font-lock-face 'eca-chat-tool-call-error-face))
+(defun eca-chat--tool-call-status-symbol (state)
+  "Return the symbol of a tool call in STATE, for its label.
+STATE is `running', `pending' (approval), `background', `success'
+or `error'.  The symbol tells the block the face of its bar, see
+`eca-chat-expandable-block-arrows'."
+  (pcase-let ((`(,symbol ,face ,bar-face)
+               (pcase-exhaustive state
+                 ('running (list eca-chat-mcp-tool-call-loading-symbol
+                                 nil 'eca-chat-tool-call-running-face))
+                 ('pending (list eca-chat-mcp-tool-call-pending-approval-symbol
+                                 nil 'eca-chat-tool-call-pending-face))
+                 ('background (list "🟡" nil 'eca-chat-tool-call-pending-face))
+                 ('success (list eca-chat-mcp-tool-call-success-symbol
+                                 'eca-chat-tool-call-success-face
+                                 'eca-chat-tool-call-success-face))
+                 ('error (list eca-chat-mcp-tool-call-error-symbol
+                               'eca-chat-tool-call-error-face
+                               'eca-chat-tool-call-error-face)))))
+    (if face
+        (propertize symbol 'font-lock-face face 'eca-chat-expandable-bar-face bar-face)
+      (propertize symbol 'eca-chat-expandable-bar-face bar-face))))
 
 (defun eca-chat--file-change-diff (path diff roots)
   "Return a diff block for relative PATH from ROOTS with DIFF.
@@ -5182,6 +5219,20 @@ auto-allowed or manually approved), coloring commands accordingly."
      nil
      parent-id)))
 
+(defun eca-chat--subagent-label (label status)
+  "Return the subagent LABEL, the start of a subagent tool call label.
+Its bar shows in `eca-chat-subagent-tool-call-bar-face' rather than
+in the color of its STATUS, unless that tells it failed."
+  (propertize label
+              'font-lock-face 'eca-chat-subagent-tool-call-label-face
+              'eca-chat-expandable-bar-face
+              (if (and (stringp status)
+                       (> (length status) 0)
+                       (eq (get-text-property 0 'eca-chat-expandable-bar-face status)
+                           'eca-chat-tool-call-error-face))
+                  'eca-chat-tool-call-error-face
+                'eca-chat-subagent-tool-call-bar-face)))
+
 (defun eca-chat--tool-call-subagent-details (id args label approval-text time status parent-id details &optional output-text)
   "Update tool call UI for a subagent tool call.
 ID and ARGS are from the tool call content.
@@ -5204,9 +5255,9 @@ Append STATUS symbol.  Optional PARENT-ID for nested rendering."
                            (string= status eca-chat-mcp-tool-call-loading-symbol)
                            (string= (overlay-get existing-ov 'eca-chat--tool-call-status)
                                     eca-chat-mcp-tool-call-pending-approval-symbol))
-                      eca-chat-mcp-tool-call-pending-approval-symbol
+                      (eca-chat--tool-call-status-symbol 'pending)
                     status))
-          (new-label (concat (propertize label 'font-lock-face 'eca-chat-subagent-tool-call-label-face)
+          (new-label (concat (eca-chat--subagent-label label status)
                              steps-info " " status time
                              (when approval-text (concat "\n" approval-text))))
           (has-children? (and existing-ov
@@ -5220,23 +5271,17 @@ Append STATUS symbol.  Optional PARENT-ID for nested rendering."
                (open? (overlay-get existing-ov 'eca-chat--expandable-content-toggle))
                (has-content? (or (not (eca-chat--expandable-content-empty-p ov-content))
                                  has-children?))
-               (new-icon-face (get-text-property 0 'font-lock-face new-label))
-               (label-indent (when (overlay-get existing-ov 'eca-chat--expandable-content-nested)
-                               eca-chat--expandable-content-base-indent))
-               (new-icons (eca-chat--make-expandable-icons new-icon-face label-indent)))
-          (overlay-put existing-ov 'eca-chat--expandable-content-icon-face (list new-icon-face))
-          (overlay-put existing-ov 'eca-chat--expandable-content-open-icon (car new-icons))
-          (overlay-put existing-ov 'eca-chat--expandable-content-close-icon (cdr new-icons))
+               (old-bar-face (overlay-get existing-ov 'eca-chat--expandable-content-bar-face)))
+          (when (eca-chat--expandable-set-prefixes existing-ov new-label)
+            (eca-chat--expandable-repaint-bar existing-ov old-bar-face))
           (save-excursion
             (goto-char (overlay-start existing-ov))
             (delete-region (point) (1- (overlay-start ov-content)))
             (eca-chat--insert
              (propertize (eca-chat--propertize-only-first-word
                           new-label
-                          'line-prefix (when has-content?
-                                         (if open?
-                                             (cdr new-icons)
-                                           (car new-icons))))
+                          'line-prefix (eca-chat--expandable-label-prefix
+                                        existing-ov has-content? open?))
                          'help-echo "mouse-1 / RET / tab: expand/collapse"))
             (eca-chat--paint-nested-label existing-ov)))
       ;; No children yet — safe to replace the full content body
@@ -5272,7 +5317,7 @@ Rebuilds the steps-info string with current usage and updates the overlay."
            (max-steps (overlay-get ov-label 'eca-chat--tool-call-max-steps))
            (usage-str (eca-chat--subagent-usage-str tool-call-id))
            (steps-info (eca-chat--subagent-steps-info step max-steps usage-str))
-           (new-label (concat (propertize label 'font-lock-face 'eca-chat-subagent-tool-call-label-face)
+           (new-label (concat (eca-chat--subagent-label label status)
                               steps-info " " status time))
            (open? (overlay-get ov-label 'eca-chat--expandable-content-toggle))
            (has-content? (not (eca-chat--expandable-content-empty-p ov-content))))
@@ -5283,10 +5328,8 @@ Rebuilds the steps-info string with current usage and updates the overlay."
         (eca-chat--insert
          (propertize (eca-chat--propertize-only-first-word
                       new-label
-                      'line-prefix (when has-content?
-                                     (if open?
-                                         (overlay-get ov-label 'eca-chat--expandable-content-close-icon)
-                                       (overlay-get ov-label 'eca-chat--expandable-content-open-icon))))
+                      'line-prefix (eca-chat--expandable-label-prefix
+                                    ov-label has-content? open?))
                      'help-echo "mouse-1 / RET / tab: expand/collapse"))))))
 
 (defun eca-chat--mark-tool-call-approval-resolved (id)
@@ -5315,9 +5358,10 @@ for approval, otherwise restores the loading symbol."
   (when parent-tool-call-id
     (eca-chat--update-parent-subagent-status
      parent-tool-call-id
-     (if (eca-chat--subagent-child-pending-approval-p parent-tool-call-id)
-         eca-chat-mcp-tool-call-pending-approval-symbol
-       eca-chat-mcp-tool-call-loading-symbol))))
+     (eca-chat--tool-call-status-symbol
+      (if (eca-chat--subagent-child-pending-approval-p parent-tool-call-id)
+          'pending
+        'running)))))
 
 (defun eca-chat--update-parent-subagent-status (parent-tool-call-id new-status)
   "Update to NEW-STATUS symbol of a parent subagent tool call PARENT-TOOL-CALL-ID.
@@ -5328,20 +5372,23 @@ Only updates the label line, preserving all nested child content."
               (ov-content (overlay-get ov-label 'eca-chat--expandable-content-ov-content)))
     (overlay-put ov-label 'eca-chat--tool-call-status new-status)
     (let* ((steps-info (or (overlay-get ov-label 'eca-chat--tool-call-steps-info) ""))
-           (new-label (concat (propertize label 'font-lock-face 'eca-chat-subagent-tool-call-label-face)
+           (new-label (concat (eca-chat--subagent-label label new-status)
                               steps-info " " new-status time))
            (open? (overlay-get ov-label 'eca-chat--expandable-content-toggle))
-           (has-content? (not (eca-chat--expandable-content-empty-p ov-content))))
+           (has-content? (not (eca-chat--expandable-content-empty-p ov-content)))
+           (old-bar-face (overlay-get ov-label 'eca-chat--expandable-content-bar-face)))
+      ;; The new status may change the color of the bar, which the
+      ;; nested blocks draw too.
+      (when (eca-chat--expandable-set-prefixes ov-label new-label)
+        (eca-chat--expandable-repaint-bar ov-label old-bar-face))
       (save-excursion
         (goto-char (overlay-start ov-label))
         (delete-region (point) (1- (overlay-start ov-content)))
         (eca-chat--insert
          (propertize (eca-chat--propertize-only-first-word
                       new-label
-                      'line-prefix (when has-content?
-                                     (if open?
-                                         (overlay-get ov-label 'eca-chat--expandable-content-close-icon)
-                                       (overlay-get ov-label 'eca-chat--expandable-content-open-icon))))
+                      'line-prefix (eca-chat--expandable-label-prefix
+                                    ov-label has-content? open?))
                      'help-echo "mouse-1 / RET / tab: expand/collapse"))))))
 
 (defun eca-chat--task-tool-call-p (content)
@@ -5429,7 +5476,7 @@ placeholder label is then shown while a task tool call is in flight."
      (loading?
       (eca-chat--set-task-widget
        (concat (propertize "Creating tasks... " 'font-lock-face 'eca-chat-task-prefix-face)
-               eca-chat-mcp-tool-call-loading-symbol)
+               (eca-chat--tool-call-status-symbol 'running))
        ""))
      (t
       (eca-chat--remove-expandable-content eca-chat--task-block-id)))))
@@ -5461,7 +5508,7 @@ SPACING-LINE-PREFIX build the approval prompt for the tool call id."
   (-let* (((&plist :id id :name name :server server :arguments args :summary summary) content)
           (label (concat (propertize (or summary (format "Calling tool: %s__%s" server name))
                                      'font-lock-face 'eca-chat-mcp-tool-call-label-face)
-                         " " eca-chat-mcp-tool-call-pending-approval-symbol
+                         " " (eca-chat--tool-call-status-symbol 'pending)
                          (eca-chat--build-tool-call-approval-str-content
                           session id spacing-line-prefix chat-id))))
     (eca-chat--set-task-widget label
@@ -5601,7 +5648,16 @@ approval requests.  Falls back to the buffer-local `eca-chat--id'.
 Must be called with `eca-chat--with-current-buffer' or equivalent."
   (let* ((content-id (plist-get content :contentId))
          (content-type (plist-get content :type))
-         (tool-call-next-line-spacing (make-string (1+ (length eca-chat-expandable-block-open-symbol)) ?\s))
+         ;; Prefix of the approval lines under the label of a tool call
+         ;; waiting for it, their bar like the one of the label.
+         (tool-call-next-line-spacing
+          (if eca-chat-expandable-block-arrows
+              (make-string (1+ (length eca-chat-expandable-block-open-symbol)) ?\s)
+            (concat (eca-chat--expandable-parent-prefix parent-tool-call-id)
+                    (eca-chat--expandable-line-prefix
+                     (if (equal "subagent" (plist-get (plist-get content :details) :type))
+                         'eca-chat-subagent-tool-call-bar-face
+                       'eca-chat-tool-call-pending-face)))))
          ;; Whether the user acted on this approval from within its
          ;; block; checked now, before rendering drops the buttons.
          (approval-acted-on? (and (member content-type '("toolCallRunning" "toolCalled"
@@ -5801,8 +5857,11 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
                       (label-face (if subagent?
                                       'eca-chat-subagent-tool-call-label-face
                                     'eca-chat-mcp-tool-call-label-face))
-                      (label (concat (propertize label 'font-lock-face label-face)
-                                     " " eca-chat-mcp-tool-call-loading-symbol))
+                      (status (eca-chat--tool-call-status-symbol 'running))
+                      (label (concat (if subagent?
+                                         (eca-chat--subagent-label label status)
+                                       (propertize label 'font-lock-face label-face))
+                                     " " status))
                       ;; Tag body and accumulated content with `eca-no-fontify' so
                       ;; the custom `font-lock-fontify-region-function' skips them
                       ;; while the tool args are still streaming (#234).  The
@@ -5845,9 +5904,7 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
                 (label (or (plist-get content :summary)
                            (format "Calling tool: %s__%s" server name)))
                 (manual? (plist-get content :manualApproval))
-                (status (if manual?
-                            eca-chat-mcp-tool-call-pending-approval-symbol
-                          eca-chat-mcp-tool-call-loading-symbol))
+                (status (eca-chat--tool-call-status-symbol (if manual? 'pending 'running)))
                 (details (plist-get content :details))
                 (approval-text (when manual?
                                  (eca-chat--build-tool-call-approval-str-content session id tool-call-next-line-spacing chat-id details)))
@@ -5896,7 +5953,7 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
            ;; Update parent subagent status to show pending approval
            (when (and manual? parent-tool-call-id)
              (eca-chat--update-parent-subagent-status
-              parent-tool-call-id eca-chat-mcp-tool-call-pending-approval-symbol)))))
+              parent-tool-call-id (eca-chat--tool-call-status-symbol 'pending))))))
       ("toolCallRunning"
        ;; Approved (possibly from another client): drop the prompt, the
        ;; task list follows with toolCalled.
@@ -5911,7 +5968,7 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
                 (label (or (plist-get content :summary)
                            (format "Running tool: %s__%s" server name)))
                 (details (plist-get content :details))
-                (status eca-chat-mcp-tool-call-loading-symbol)
+                (status (eca-chat--tool-call-status-symbol 'running))
                 (elapsed-time (progn
                                 (eca-chat--tool-call-elapsed-start id)
                                 (eca-chat--elapsed-time-string
@@ -5958,11 +6015,10 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
                 (time (when-let ((ms (plist-get content :totalTimeMs)))
                         (concat " " (eca-chat--time->presentable-time ms))))
                 (bg? (plist-get details :background))
-                (status (cond
-                         ((plist-get content :error)
-                          (eca-chat--tool-call-error-symbol))
-                         (bg? "🟡")
-                         (t (eca-chat--tool-call-success-symbol)))))
+                (status (eca-chat--tool-call-status-symbol
+                         (cond ((plist-get content :error) 'error)
+                               (bg? 'background)
+                               (t 'success)))))
            ;; Cleanup counters for this tool-call id to avoid unbounded growth
            (remhash id eca-chat--tool-call-prepare-counters)
            (remhash id eca-chat--tool-call-prepare-content-cache)
@@ -6008,7 +6064,7 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
                            (format "Rejected tool: %s__%s" server name)))
                 (args (plist-get content :arguments))
                 (details (plist-get content :details))
-                (status (eca-chat--tool-call-error-symbol))
+                (status (eca-chat--tool-call-status-symbol 'error))
                 (id (plist-get content :id)))
            ;; Cleanup counters for this tool-call id
            (remhash id eca-chat--tool-call-prepare-counters)
