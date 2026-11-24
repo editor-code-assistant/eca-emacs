@@ -652,9 +652,10 @@ included."
   :group 'eca)
 
 (defface eca-chat-user-message-action-face
-  '((t :inherit font-lock-comment-face :slant normal))
+  '((t :inherit font-lock-comment-face :slant normal :underline t))
   "Face for the actions in the header of user messages.
-They show with `highlight' under the mouse."
+Underlined, so they read as actionable, and shown with `highlight'
+under the mouse."
   :group 'eca)
 
 (defface eca-chat-rollback-face

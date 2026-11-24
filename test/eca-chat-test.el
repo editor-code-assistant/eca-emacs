@@ -4551,13 +4551,17 @@ precedes the prompt separator.  Caller must kill the buffer."
                     :to-equal '("u1")))
         (kill-buffer buf))))
 
-  (it "highlights the actions under the mouse"
+  (it "underlines the actions, highlighted under the mouse"
     (let ((buf (eca-chat-test--make-live-render-buffer "")))
       (unwind-protect
           (with-current-buffer buf
             (eca-chat-test--render-user-message buf "first question" "u1")
             (goto-char (point-min))
             (search-forward "fork")
+            (expect (get-text-property (match-beginning 0) 'font-lock-face)
+                    :to-be 'eca-chat-user-message-action-face)
+            (expect (face-attribute 'eca-chat-user-message-action-face :underline nil t)
+                    :to-be t)
             (expect (get-text-property (match-beginning 0) 'mouse-face)
                     :to-be 'highlight)
             (expect (get-text-property (match-beginning 0) 'help-echo)
