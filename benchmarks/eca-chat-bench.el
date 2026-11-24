@@ -1187,7 +1187,9 @@ benchmark plist whose per-call column is the cost per event."
   (cond
    ((overlay-get ov 'eca-chat--expandable-content-id) 'block-label)
    ((overlay-get ov 'eca-chat--expandable-content-indent) 'block-content)
-   ((eq (overlay-get ov 'face) 'eca-chat-user-messages-face) 'user-message)
+   ((or (eq (overlay-get ov 'face) 'eca-chat-user-messages-face)
+        (overlay-get ov 'eca-chat--user-message-bar))
+    'user-message)
    ((or (overlay-get ov 'eca-chat--code-copy-scope)
         (overlay-get ov 'eca-chat--response-copy-scope))
     'copy-scope)

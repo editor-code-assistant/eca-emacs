@@ -4209,6 +4209,23 @@ QUESTION is a pending question plist, or (:tool-call-id ID)."
          (list '(:role "assistant" :content (:type "text" :text "m0"))))
         (expect (buffer-string) :to-equal "m0\n\nEXISTING"))))
 
+  (it "leaves an empty line before the header of an existing user message"
+    (with-temp-buffer
+      (insert (propertize "You" 'eca-chat-user-message-header t) "\nEXISTING")
+      (let ((session (make-eca--session)))
+        (spy-on 'eca--session-workspace-folders :and-return-value nil)
+        (spy-on 'font-lock-ensure)
+        (spy-on 'eca-chat--align-tables)
+        (spy-on 'eca-chat--beautify-tables)
+        (spy-on 'eca-chat--render-content :and-call-fake
+                (lambda (_session _buf _role content _roots &rest _)
+                  (goto-char (eca-chat--content-insertion-point))
+                  (insert (plist-get content :text))))
+        (eca-chat--render-history-contents
+         session (current-buffer)
+         (list '(:role "assistant" :content (:type "text" :text "m0"))))
+        (expect (buffer-string) :to-equal "m0\n\nYou\nEXISTING"))))
+
   (it "restores eca-chat--last-user-message-pos after prepending"
     (with-temp-buffer
       (insert "EXISTING")
@@ -4288,6 +4305,15 @@ precedes the prompt separator.  Caller must kill the buffer."
     (-first (lambda (ov) (eq 'eca-chat-user-messages-face (overlay-get ov 'face)))
             (overlays-in (point-min) (point-max)))))
 
+(defun eca-chat-test--user-bar-overlay (buf)
+  "Return the overlay drawing the bar along a user message in BUF."
+  (with-current-buffer buf
+    (-first (lambda (ov) (overlay-get ov 'eca-chat--user-message-bar))
+            (overlays-in (point-min) (point-max)))))
+
+(defconst eca-chat-test--header-re "You[^\n]*\n"
+  "Regexp matching the header line of a user message.")
+
 (describe "eca-chat--render-content user message layout (issue #265)"
   (it "leaves an empty line between the previous answer and the message"
     (let ((buf (eca-chat-test--make-live-render-buffer "Final answer.")))
@@ -4295,7 +4321,8 @@ precedes the prompt separator.  Caller must kill the buffer."
           (progn
             (eca-chat-test--render-user-message buf "next question" "u1")
             (expect (eca-chat-test--history-text buf)
-                    :to-match "\\`Final answer\\.\n\nnext question\n"))
+                    :to-match (concat "\\`Final answer\\.\n\n"
+                                      eca-chat-test--header-re "next question\n")))
         (kill-buffer buf))))
 
   (it "leaves a single empty line when the answer already ends a line"
@@ -4304,7 +4331,8 @@ precedes the prompt separator.  Caller must kill the buffer."
           (progn
             (eca-chat-test--render-user-message buf "next question" "u1")
             (expect (eca-chat-test--history-text buf)
-                    :to-match "\\`Final answer\\.\n\nnext question\n"))
+                    :to-match (concat "\\`Final answer\\.\n\n"
+                                      eca-chat-test--header-re "next question\n")))
         (kill-buffer buf))))
 
   (it "does not add another empty line after a collapsed block"
@@ -4313,16 +4341,18 @@ precedes the prompt separator.  Caller must kill the buffer."
           (progn
             (eca-chat-test--render-user-message buf "next question" "u1")
             (expect (eca-chat-test--history-text buf)
-                    :to-match "\\`Reading foo\\.el\n\nnext question\n"))
+                    :to-match (concat "\\`Reading foo\\.el\n\n"
+                                      eca-chat-test--header-re "next question\n")))
         (kill-buffer buf))))
 
-  (it "starts a fresh chat with the message on the first line"
+  (it "starts a fresh chat with the message header on the first line"
     (let ((buf (eca-chat-test--make-live-render-buffer "")))
       (unwind-protect
           (progn
             (eca-chat-test--render-user-message buf "first question" "u1")
             (expect (eca-chat-test--history-text buf)
-                    :to-match "\\`first question\n"))
+                    :to-match (concat "\\`" eca-chat-test--header-re
+                                      "first question\n")))
         (kill-buffer buf))))
 
   (it "paints the message and its line end with the user face overlay"
@@ -4361,12 +4391,15 @@ precedes the prompt separator.  Caller must kill the buffer."
       (unwind-protect
           (with-current-buffer buf
             (eca-chat-test--render-user-message buf "first question" "u1")
-            (let ((ov (eca-chat-test--user-face-overlay buf))
-                  (inhibit-read-only t))
-              (goto-char (overlay-start ov))
+            (let ((inhibit-read-only t))
+              (goto-char (overlay-start (eca-chat--get-expandable-content "u1")))
               (insert "older answer\n")
-              (expect (char-after (overlay-start ov)) :to-equal ?f)
-              (expect (get-char-property (point-min) 'face) :to-be nil)))
+              (expect (char-after (overlay-start (eca-chat-test--user-face-overlay buf)))
+                      :to-equal ?f)
+              (expect (char-after (overlay-start (eca-chat-test--user-bar-overlay buf)))
+                      :to-equal ?Y)
+              (expect (get-char-property (point-min) 'face) :to-be nil)
+              (expect (get-char-property (point-min) 'line-prefix) :to-be nil)))
         (kill-buffer buf)))))
 
 (defun eca-chat-test--expandable-ids (buf)
@@ -4390,10 +4423,11 @@ precedes the prompt separator.  Caller must kill the buffer."
             (let ((id (car (eca-chat-test--expandable-ids buf))))
               (expect id :to-be-truthy)
               (eca-chat--expandable-content-toggle id t nil))
+            ;; Its header has no actions.
             (expect (eca-chat-test--history-text buf)
-                    :to-match "\\`a compaction summary\n")
+                    :to-match "\\`You\na compaction summary\n")
             (expect (eca-chat-test--history-text buf)
-                    :not :to-match "Rollback chat to before this message")
+                    :not :to-match "rollback")
             (expect (eca-chat-test--user-face-overlay buf) :to-be-truthy))
         (kill-buffer buf))))
 
@@ -4402,9 +4436,8 @@ precedes the prompt separator.  Caller must kill the buffer."
       (unwind-protect
           (with-current-buffer buf
             (eca-chat-test--render-user-message buf "first question" "u1")
-            (eca-chat--expandable-content-toggle "u1" t nil)
             (expect (eca-chat-test--history-text buf)
-                    :to-match "Rollback chat to before this message"))
+                    :to-match "\\`You   ↶ rollback  ⑂ fork  ⚑ flag\nfirst question\n"))
         (kill-buffer buf))))
 
   (it "gives each of them a block of its own"
@@ -4417,8 +4450,200 @@ precedes the prompt separator.  Caller must kill the buffer."
               (expect (length ids) :to-equal 2)
               (expect (car ids) :not :to-equal (cadr ids))
               (goto-char (overlay-start (eca-chat--get-expandable-content (car ids))))
-              (expect (looking-at-p "first summary") :to-be-truthy)))
+              (expect (looking-at-p "You\nfirst summary") :to-be-truthy)))
         (kill-buffer buf)))))
+
+(defun eca-chat-test--header-line (buf id)
+  "Return the header line of the user message block ID in BUF."
+  (with-current-buffer buf
+    (save-excursion
+      (goto-char (overlay-start (eca-chat--get-expandable-content id)))
+      (buffer-substring (point) (line-end-position)))))
+
+(defun eca-chat-test--action-ret (buf action)
+  "Return what RET runs on the ACTION of the first user message in BUF."
+  (with-current-buffer buf
+    (save-excursion
+      (goto-char (point-min))
+      (search-forward action)
+      (lookup-key (get-text-property (match-beginning 0) 'keymap) (kbd "RET")))))
+
+(describe "eca-chat--render-content user message header"
+
+  (it "shows who sent the message and its actions above it"
+    (let ((buf (eca-chat-test--make-live-render-buffer "Final answer.")))
+      (unwind-protect
+          (progn
+            (eca-chat-test--render-user-message buf "next question" "u1")
+            (expect (substring-no-properties (eca-chat-test--header-line buf "u1"))
+                    :to-equal "You   ↶ rollback  ⑂ fork  ⚑ flag")
+            (expect (eca-chat-test--history-text buf)
+                    :to-match "\nYou   ↶ rollback  ⑂ fork  ⚑ flag\nnext question\n"))
+        (kill-buffer buf))))
+
+  (it "shows when a message just sent was sent"
+    (let ((buf (eca-chat-test--make-live-render-buffer "")))
+      (unwind-protect
+          (progn
+            (with-current-buffer buf
+              (setq-local eca-chat--chat-loading t))
+            (eca-chat-test--render-user-message buf "next question" "u1")
+            (let* ((header (eca-chat-test--header-line buf "u1"))
+                   (pos (text-property-any 0 (length header) 'font-lock-face
+                                           'eca-chat-user-message-time-face header)))
+              (expect (substring header pos (+ pos 5))
+                      :to-match "\\`[0-9][0-9]:[0-9][0-9]\\'")
+              (expect (overlay-get (with-current-buffer buf
+                                     (eca-chat--get-expandable-content "u1"))
+                                   'eca-chat--timestamp)
+                      :to-be-truthy)))
+        (kill-buffer buf))))
+
+  (it "shows the time as hours and minutes, the date on hover"
+    (let* ((time (float-time (encode-time (list 0 2 9 24 11 2026 nil -1 nil))))
+           (header (eca-chat--user-message-header (make-eca--session) "u1" "q" time)))
+      (expect (substring-no-properties header)
+              :to-equal "You  09:02   ↶ rollback  ⑂ fork  ⚑ flag")
+      (expect (get-text-property (string-search "09:02" header) 'help-echo header)
+              :to-equal "Sent on 2026-11-24 at 09:02:00")))
+
+  (it "leaves the time out of messages from the history"
+    (let ((buf (eca-chat-test--make-live-render-buffer "")))
+      (unwind-protect
+          (progn
+            (eca-chat-test--render-user-message buf "old question" "u1")
+            (expect (substring-no-properties (eca-chat-test--header-line buf "u1"))
+                    :to-equal "You   ↶ rollback  ⑂ fork  ⚑ flag")
+            (expect (overlay-get (with-current-buffer buf
+                                   (eca-chat--get-expandable-content "u1"))
+                                 'eca-chat--timestamp)
+                    :to-be nil))
+        (kill-buffer buf))))
+
+  (it "leaves the time out of older pages loaded while a prompt runs"
+    (let ((buf (eca-chat-test--make-live-render-buffer "")))
+      (unwind-protect
+          (with-current-buffer buf
+            (setq-local eca-chat--chat-loading t)
+            (let ((eca-chat--insertion-point-override (copy-marker (point-min) t)))
+              (eca-chat-test--render-user-message buf "old question" "u1"))
+            (expect (substring-no-properties (eca-chat-test--header-line buf "u1"))
+                    :to-equal "You   ↶ rollback  ⑂ fork  ⚑ flag"))
+        (kill-buffer buf))))
+
+  (it "runs the actions on the message with RET"
+    (let ((buf (eca-chat-test--make-live-render-buffer "")))
+      (unwind-protect
+          (progn
+            (spy-on 'eca-chat--rollback)
+            (spy-on 'eca-chat--fork-from-flag)
+            (spy-on 'eca-chat--add-flag)
+            (eca-chat-test--render-user-message buf "  first question\n" "u1")
+            (with-current-buffer buf
+              (funcall (eca-chat-test--action-ret buf "rollback"))
+              (funcall (eca-chat-test--action-ret buf "fork"))
+              (funcall (eca-chat-test--action-ret buf "flag")))
+            (expect (cdr (spy-calls-args-for 'eca-chat--rollback 0))
+                    :to-equal '("u1" "first question"))
+            (expect (cdr (spy-calls-args-for 'eca-chat--fork-from-flag 0))
+                    :to-equal '("u1"))
+            (expect (cdr (spy-calls-args-for 'eca-chat--add-flag 0))
+                    :to-equal '("u1")))
+        (kill-buffer buf))))
+
+  (it "highlights the actions under the mouse"
+    (let ((buf (eca-chat-test--make-live-render-buffer "")))
+      (unwind-protect
+          (with-current-buffer buf
+            (eca-chat-test--render-user-message buf "first question" "u1")
+            (goto-char (point-min))
+            (search-forward "fork")
+            (expect (get-text-property (match-beginning 0) 'mouse-face)
+                    :to-be 'highlight)
+            (expect (get-text-property (match-beginning 0) 'help-echo)
+                    :to-match "Fork a new chat"))
+        (kill-buffer buf))))
+
+  (it "no longer expands the message"
+    (let ((buf (eca-chat-test--make-live-render-buffer "")))
+      (unwind-protect
+          (with-current-buffer buf
+            (eca-chat-test--render-user-message buf "first question" "u1")
+            (goto-char (point-min))
+            (search-forward "first question")
+            (expect (get-text-property (match-beginning 0) 'keymap) :to-be nil)
+            (expect (get-text-property (match-beginning 0) 'help-echo) :to-be nil)
+            (expect (eca-chat-test--block-shown "u1") :to-equal ""))
+        (kill-buffer buf))))
+
+  (it "draws a bar along the header and the message lines"
+    (let ((buf (eca-chat-test--make-live-render-buffer "")))
+      (unwind-protect
+          (with-current-buffer buf
+            (eca-chat-test--render-user-message buf "first line\nsecond line" "u1")
+            (goto-char (point-min))
+            (expect (substring-no-properties (get-char-property (point) 'line-prefix))
+                    :to-equal "▍ ")
+            (search-forward "second line")
+            (goto-char (match-beginning 0))
+            (expect (substring-no-properties (get-char-property (point) 'line-prefix))
+                    :to-equal "▍ ")
+            (expect (substring-no-properties (get-char-property (point) 'wrap-prefix))
+                    :to-equal "▍ ")
+            (expect (get-text-property 0 'face (get-char-property (point) 'line-prefix))
+                    :to-be 'eca-chat-user-message-bar-face)
+            ;; The empty line after the message has no bar.
+            (forward-line 1)
+            (expect (get-char-property (point) 'line-prefix) :to-be nil))
+        (kill-buffer buf))))
+
+  (it "keeps the header out of the text of the message in the timeline"
+    (let ((buf (eca-chat-test--make-live-render-buffer "")))
+      (unwind-protect
+          (progn
+            (eca-chat-test--render-user-message buf "first line\nsecond line" "u1")
+            (spy-on 'eca-session :and-return-value (make-eca--session))
+            (let ((messages (eca-chat--get-user-messages buf)))
+              (expect (length messages) :to-equal 1)
+              (expect (plist-get (car messages) :text)
+                      :to-equal "first line\nsecond line")
+              (expect (plist-get (car messages) :id) :to-equal "u1")))
+        (kill-buffer buf))))
+
+  (it "flags the message nearest to point with eca-chat-add-flag"
+    (let ((buf (eca-chat-test--make-live-render-buffer "")))
+      (unwind-protect
+          (with-current-buffer buf
+            (eca-chat-test--render-user-message buf "first question" "u1")
+            (spy-on 'eca-session :and-return-value 'session)
+            (spy-on 'eca-assert-session-running)
+            (spy-on 'eca-chat--add-flag)
+            (goto-char (point-min))
+            (search-forward "first question")
+            (eca-chat-add-flag)
+            (expect 'eca-chat--add-flag :to-have-been-called-with 'session "u1"))
+        (kill-buffer buf)))))
+
+(describe "eca-chat--add-flag"
+
+  (it "asks for the flag name and adds it after the block"
+    (with-temp-buffer
+      (setq-local eca-chat--id "chat-1")
+      (spy-on 'read-string :and-return-value "checkpoint")
+      (spy-on 'eca-api-request-sync)
+      (eca-chat--add-flag 'session "u1")
+      (expect 'eca-api-request-sync
+              :to-have-been-called-with
+              'session :method "chat/addFlag"
+              :params '(:chatId "chat-1" :contentId "u1" :text "checkpoint"))))
+
+  (it "adds no flag without a name"
+    (with-temp-buffer
+      (setq-local eca-chat--id "chat-1")
+      (spy-on 'read-string :and-return-value "")
+      (spy-on 'eca-api-request-sync)
+      (eca-chat--add-flag 'session "u1")
+      (expect 'eca-api-request-sync :not :to-have-been-called))))
 
 (describe "eca-chat--create-buffer"
   ;; Regression (#323): the buffer used to inherit `default-directory'
@@ -5938,6 +6163,16 @@ CHOOSE receives the candidate list the command offers."
 
 (describe "eca-chat--rollback"
 
+  (it "refuses to rollback while a prompt runs"
+    (with-temp-buffer
+      (setq-local eca-chat--chat-loading t)
+      (spy-on 'completing-read)
+      (spy-on 'eca-api-request-sync)
+      (expect (eca-chat--rollback (make-eca--session) "content-1" "old msg")
+              :to-throw 'user-error)
+      (expect 'completing-read :not :to-have-been-called)
+      (expect 'eca-api-request-sync :not :to-have-been-called)))
+
   (it "stashes restored text plus draft for a messages rollback"
     (let ((buf (eca-chat-test--make-prompt-buffer "draft edit"))
           (session (make-eca--session))
@@ -6113,9 +6348,13 @@ CHOOSE receives the candidate list the command offers."
                                 (list :chatId "chat-1" :contentId "u2"))
             (with-current-buffer buf
               (expect (eca-chat-test--history-text buf)
-                      :to-match "\\`Final answer\\.\n\nfirst question\n")
+                      :to-match (concat "\\`Final answer\\.\n\n"
+                                        eca-chat-test--header-re "first question\n"))
               (expect (eca-chat-test--history-text buf)
                       :not :to-match "second question")
+              ;; Its header goes with it.
+              (expect (s-count-matches "^You" (eca-chat-test--history-text buf))
+                      :to-equal 1)
               (expect (eca-chat--get-expandable-content "u2") :to-be nil)
               (expect (eca-chat--get-expandable-content "u1") :not :to-be nil)
               ;; Same position `eca-chat--mark-header' set for u1.
@@ -6133,7 +6372,8 @@ CHOOSE receives the candidate list the command offers."
                                 (list :chatId "chat-1" :contentId "u1"))
             (eca-chat-test--render-user-message buf "retry" "u3")
             (expect (eca-chat-test--history-text buf)
-                    :to-match "\\`Final answer\\.\n\nretry\n"))
+                    :to-match (concat "\\`Final answer\\.\n\n"
+                                      eca-chat-test--header-re "retry\n")))
         (kill-buffer buf))))
 
   (it "restores the stashed prompt"
@@ -6194,7 +6434,8 @@ CHOOSE receives the candidate list the command offers."
             (eca-chat-test--render-user-message buf "second question" "u2")
             (eca-chat-test--render-flag buf "checkpoint" "f1" "u1")
             (expect (eca-chat-test--history-text buf)
-                    :to-match "first question\n\n🚩️️ checkpoint\n\n+second question")
+                    :to-match (concat "first question\n\n🚩️️ checkpoint\n\n+"
+                                      eca-chat-test--header-re "second question"))
             (expect (< (eca-chat-test--block-start buf "u1")
                        (eca-chat-test--block-start buf "f1")
                        (eca-chat-test--block-start buf "u2"))

@@ -379,13 +379,15 @@ Like `eca-chat-mode' and `eca-chat-compose-mode' do."
               (search-forward "@/nope/gone.png")
               (expect (get-text-property (match-beginning 0) 'eca-chat-image-path)
                       :to-be nil)
+              ;; The message no longer toggles: its actions are in its
+              ;; header line.
               (goto-char (point-min))
               (search-forward "look")
               (expect (get-text-property (match-beginning 0) 'keymap)
-                      :to-be-truthy))
+                      :to-be nil))
           (kill-buffer buf))))
 
-    (it "toggles the thumbnail on RET, the rollback block elsewhere"
+    (it "toggles the thumbnail on RET, nothing elsewhere in the message"
       (eca-chat-image-test--allow-display)
       (spy-on 'eca-chat--expandable-content-toggle)
       (let* ((file (eca-chat-image-test--image-file))
@@ -407,8 +409,7 @@ Like `eca-chat-mode' and `eca-chat-compose-mode' do."
               (goto-char (point-min))
               (search-forward "look")
               (eca-chat--key-pressed-return)
-              (expect 'eca-chat--expandable-content-toggle
-                      :to-have-been-called-with "u1"))
+              (expect 'eca-chat--expandable-content-toggle :not :to-have-been-called))
           (kill-buffer buf))))
 
     (it "maps server paths back to local ones"

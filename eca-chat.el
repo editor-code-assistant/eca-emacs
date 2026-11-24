@@ -628,19 +628,38 @@ like forks, following `eca-chat-history-page-size'."
   :group 'eca)
 
 (defface eca-chat-user-messages-face
-  '((t :inherit eca-chat-expandable-block-1-face :weight bold :extend t))
+  '((t nil))
   "Face for the user sent messages in chat.
-Bold on the theme-derived block background, so each turn stands out
-from the assistant text and matches the expanded rollback area below
-the message.  Falls back to plain bold where no background is
-available (TTY)."
+Plain by default: the header line above each message and the bar of
+`eca-chat-user-message-bar-face' along it already tell the turns
+apart.  It is painted over the whole message, markdown spans
+included."
+  :group 'eca)
+
+(defface eca-chat-user-message-bar-face
+  '((t :inherit font-lock-keyword-face))
+  "Face for the bar along the user messages in chat."
+  :group 'eca)
+
+(defface eca-chat-user-message-sender-face
+  '((t :inherit font-lock-keyword-face :weight bold))
+  "Face for who sent the message, in the header of user messages."
+  :group 'eca)
+
+(defface eca-chat-user-message-time-face
+  '((t :inherit font-lock-comment-face :slant normal))
+  "Face for the time in the header of user messages."
+  :group 'eca)
+
+(defface eca-chat-user-message-action-face
+  '((t :inherit font-lock-comment-face :slant normal))
+  "Face for the actions in the header of user messages.
+They show with `highlight' under the mouse."
   :group 'eca)
 
 (defface eca-chat-rollback-face
-  '((t (:inherit eca-chat-user-messages-face
-        :weight bold
-        :underline t)))
-  "Face for the rollback button."
+  '((t (:weight bold :underline t)))
+  "Face for the buttons of flags."
   :group 'eca)
 
 (defface eca-chat-system-messages-face
@@ -2030,38 +2049,39 @@ empty."
 TEXT is the rolled-back user message text; when the rollback
 removes messages, it is restored into the prompt field with any
 current draft appended, after the server clears the chat."
-  (unless eca-chat--chat-loading
-    (eca-chat--stream-flush)
-    (let ((rollback-messages-and-tools-str "1. Rollback messages and changes done by tool calls")
-          (rollback-messages-str "2. Rollback only messages")
-          (rollback-tools-str "3. Rollback only changes done by tool calls"))
-      (when-let* ((rollback-type (completing-read "Select the rollback type:"
-                                                  (lambda (s pred action)
-                                                    (if (eq 'metadata action)
-                                                        `(metadata (display-sort-function . ,#'identity))
-                                                      (complete-with-action action
-                                                                            (list rollback-messages-and-tools-str
-                                                                                  rollback-messages-str
-                                                                                  rollback-tools-str)
-                                                                            s
-                                                                            pred))) nil t)))
-        (let ((include (cond
-                        ((string= rollback-type rollback-messages-str) ["messages"])
-                        ((string= rollback-type rollback-tools-str) ["tools"])
-                        ((string= rollback-type rollback-messages-and-tools-str) ["messages" "tools"]))))
-          (when (member "messages" (append include nil))
-            (setq-local eca-chat--prompt-after-clear
-                        (eca-chat--rollback-prompt-text text)))
-          (unwind-protect
-              (eca-api-request-sync session
-                                    :method "chat/rollback"
-                                    :params (list :chatId eca-chat--id
-                                                  :contentId content-id
-                                                  :include include))
-            ;; `eca-chat-cleared' or `eca-chat-truncated' consumes the
-            ;; stash during the sync wait; this reset only drops a
-            ;; leftover on request failure.
-            (setq-local eca-chat--prompt-after-clear nil)))))))
+  (when eca-chat--chat-loading
+    (user-error "Can't rollback while a prompt is running"))
+  (eca-chat--stream-flush)
+  (let ((rollback-messages-and-tools-str "1. Rollback messages and changes done by tool calls")
+        (rollback-messages-str "2. Rollback only messages")
+        (rollback-tools-str "3. Rollback only changes done by tool calls"))
+    (when-let* ((rollback-type (completing-read "Select the rollback type:"
+                                                (lambda (s pred action)
+                                                  (if (eq 'metadata action)
+                                                      `(metadata (display-sort-function . ,#'identity))
+                                                    (complete-with-action action
+                                                                          (list rollback-messages-and-tools-str
+                                                                                rollback-messages-str
+                                                                                rollback-tools-str)
+                                                                          s
+                                                                          pred))) nil t)))
+      (let ((include (cond
+                      ((string= rollback-type rollback-messages-str) ["messages"])
+                      ((string= rollback-type rollback-tools-str) ["tools"])
+                      ((string= rollback-type rollback-messages-and-tools-str) ["messages" "tools"]))))
+        (when (member "messages" (append include nil))
+          (setq-local eca-chat--prompt-after-clear
+                      (eca-chat--rollback-prompt-text text)))
+        (unwind-protect
+            (eca-api-request-sync session
+                                  :method "chat/rollback"
+                                  :params (list :chatId eca-chat--id
+                                                :contentId content-id
+                                                :include include))
+          ;; `eca-chat-cleared' or `eca-chat-truncated' consumes the
+          ;; stash during the sync wait; this reset only drops a
+          ;; leftover on request failure.
+          (setq-local eca-chat--prompt-after-clear nil))))))
 
 (defun eca-chat--remove-flag (session content-id)
   "Remove a flag identified by CONTENT-ID from the chat via SESSION."
@@ -2071,8 +2091,20 @@ current draft appended, after the server clears the chat."
                                       :contentId content-id))
   (eca-chat--remove-expandable-content content-id))
 
+(defun eca-chat--add-flag (session content-id)
+  "Ask for a flag name and add it after CONTENT-ID via SESSION.
+CONTENT-ID is the id of any block: a user message, a tool call..."
+  (let ((flag-text (read-string "Flag: ")))
+    (unless (string-empty-p flag-text)
+      (eca-api-request-sync session
+                            :method "chat/addFlag"
+                            :params (list :chatId eca-chat--id
+                                          :contentId content-id
+                                          :text flag-text)))))
+
 (defun eca-chat--fork-from-flag (session content-id)
-  "Fork the chat from a flag identified by CONTENT-ID via SESSION."
+  "Fork the chat via SESSION, up to the flag or message CONTENT-ID.
+The new chat keeps the history up to that one, included."
   (eca-api-request-sync session
                         :method "chat/fork"
                         :params (list :chatId eca-chat--id
@@ -5455,19 +5487,98 @@ so the prompt otherwise glues to the end of the last response (#265)."
        ((not (save-excursion (forward-line -1) (eolp)))
         (eca-chat--insert "\n"))))))
 
+(defun eca-chat--user-message-action (label help callback)
+  "Return the LABEL action of a user message header.
+RET or a click on it runs CALLBACK, HELP tells what it does."
+  (let ((action (eca-buttonize
+                 eca-chat-mode-map
+                 (propertize label 'font-lock-face 'eca-chat-user-message-action-face)
+                 callback)))
+    (add-text-properties 0 (length action)
+                         (list 'help-echo help 'mouse-face 'highlight)
+                         action)
+    action))
+
+(defun eca-chat--user-message-header (session content-id text time)
+  "Return the header line of a user message, for SESSION.
+It tells who sent the message, at TIME when known, then the actions
+on it, which need its CONTENT-ID: rollback, which restores its TEXT
+in the prompt, fork and flag."
+  (propertize
+   (concat
+    (propertize "You" 'font-lock-face 'eca-chat-user-message-sender-face)
+    (when time
+      (concat "  "
+              (propertize (format-time-string "%H:%M" time)
+                          'font-lock-face 'eca-chat-user-message-time-face
+                          'help-echo (format-time-string "Sent on %F at %T" time))))
+    (when content-id
+      (concat "   "
+              (eca-chat--user-message-action
+               "↶ rollback" "Rollback the chat to before this message"
+               (lambda () (eca-chat--rollback session content-id text)))
+              "  "
+              (eca-chat--user-message-action
+               "⑂ fork" "Fork a new chat with the history up to this message"
+               (lambda () (eca-chat--fork-from-flag session content-id)))
+              "  "
+              (eca-chat--user-message-action
+               "⚑ flag" "Add a flag after this message"
+               (lambda () (eca-chat--add-flag session content-id))))))
+   'eca-chat-user-message-header t
+   ;; Above a message starting with a `---' line, markdown would
+   ;; fontify the header as a heading.
+   'eca-no-fontify t))
+
+(defun eca-chat--user-message-text-start (pos)
+  "Return where the text of the user message starting at POS begins.
+That is after its header line, unless it has none."
+  (if (get-text-property pos 'eca-chat-user-message-header)
+      (save-excursion
+        (goto-char pos)
+        (forward-line 1)
+        (point))
+    pos))
+
+(defun eca-chat--insert-user-message-header (session ov-label content-id text time)
+  "Insert the header line of the user message of OV-LABEL, for SESSION.
+See `eca-chat--user-message-header' for CONTENT-ID, TEXT and TIME.
+The header holds the actions on the message, so it no longer expands
+like the block it is: its label loses the toggle keymap.  The header
+starts the block, so a rollback to the message removes it too."
+  (let ((start (overlay-start ov-label))
+        (inhibit-read-only t))
+    (remove-text-properties
+     start (overlay-start (overlay-get ov-label 'eca-chat--expandable-content-ov-content))
+     '(keymap nil help-echo nil))
+    (save-excursion
+      ;; The label overlay is empty, so it stays at the header start.
+      (goto-char start)
+      (eca-chat--insert (eca-chat--user-message-header session content-id text time)
+                        "\n"))))
+
 (defun eca-chat--paint-user-message (ov-label)
-  "Apply `eca-chat-user-messages-face' over the user message of OV-LABEL.
-Markdown fontification sets `face' on spans of the message (bold,
-inline code), hiding the label's `font-lock-face' there, while an
-overlay face merges over both, so the background covers the whole
-message.  The trailing newline is included so `:extend' reaches the
-window edge on the last line too.  Text inserted at the overlay start
-\(an older history page) stays outside of it."
+  "Paint the user message of OV-LABEL and its header.
+A bar of `eca-chat-user-message-bar-face' runs along their lines,
+wrapped ones too.  `eca-chat-user-messages-face' covers the message
+text: markdown fontification sets `face' on spans of it (bold, inline
+code), hiding the label's `font-lock-face' there, while an overlay
+face merges over both.  The trailing newline is included so `:extend'
+reaches the window edge on the last line too.  Text inserted at their
+start (an older history page) stays outside of them."
   (when-let* ((ov-content (overlay-get ov-label 'eca-chat--expandable-content-ov-content))
+              (start (overlay-start ov-label))
               (end (overlay-start ov-content)))
-    (let ((ov (make-overlay (overlay-start ov-label) end (current-buffer) t nil)))
-      (overlay-put ov 'face 'eca-chat-user-messages-face)
-      (overlay-put ov 'evaporate t))))
+    (let ((bar (make-overlay start end (current-buffer) t nil))
+          (prefix (propertize "▍ " 'face 'eca-chat-user-message-bar-face))
+          (face (make-overlay (eca-chat--user-message-text-start start) end
+                              (current-buffer) t nil)))
+      (overlay-put bar 'eca-chat--user-message-bar t)
+      (overlay-put bar 'line-prefix prefix)
+      (overlay-put bar 'wrap-prefix prefix)
+      (overlay-put bar 'evaporate t)
+      (overlay-put face 'face 'eca-chat-user-messages-face)
+      (overlay-put face 'evaporate t))))
 
 (defun eca-chat--linkify-user-message (session ov-label roots)
   "Make the image mentions of the user message of OV-LABEL toggleable.
@@ -5476,7 +5587,8 @@ back to local ones, relative paths are resolved against ROOTS."
   (when-let* ((ov-content (overlay-get ov-label 'eca-chat--expandable-content-ov-content)))
     (let ((eca--path-session (or eca--path-session session)))
       (eca-chat--linkify-image-mentions
-       (overlay-start ov-label) (overlay-start ov-content) roots))))
+       (eca-chat--user-message-text-start (overlay-start ov-label))
+       (overlay-start ov-content) roots))))
 
 (defun eca-chat--render-content (session chat-buffer role content roots &optional parent-tool-call-id chat-id)
   "Render CONTENT inside CHAT-BUFFER for SESSION.
@@ -5523,22 +5635,26 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
                     ;; summary, can't be rolled back to, and get a block
                     ;; id of their own instead of all sharing nil.
                     (block-id (or content-id
-                                  (symbol-name (gensym "eca-user-message-")))))
+                                  (symbol-name (gensym "eca-user-message-"))))
+                    (msg-text (string-trim text))
+                    ;; A prompt just sent comes back while the chat
+                    ;; loads.  Resumed chats and older history pages
+                    ;; don't tell when their messages were sent.
+                    (time (when (and eca-chat--chat-loading
+                                     (not eca-chat--insertion-point-override))
+                            (float-time))))
                 (when eca-chat--steered-prompt
                   (setq-local eca-chat--steered-prompt nil)
                   (eca-chat--update-steer-area))
                 (eca-chat--ensure-empty-line-before user-msg-start)
                 (eca-chat--add-expandable-content
                  block-id
-                 (propertize (string-trim text) 'font-lock-face 'eca-chat-user-messages-face)
-                 (when content-id
-                   (eca-buttonize
-                    eca-chat-mode-map
-                    (propertize "Rollback chat to before this message" 'font-lock-face 'eca-chat-rollback-face)
-                    (lambda () (eca-chat--rollback session content-id (string-trim text))))))
+                 (propertize msg-text 'font-lock-face 'eca-chat-user-messages-face)
+                 "")
                 (when-let* ((ov (eca-chat--get-expandable-content block-id)))
                   (overlay-put ov 'eca-chat--user-message-id content-id)
-                  (overlay-put ov 'eca-chat--timestamp (float-time))
+                  (overlay-put ov 'eca-chat--timestamp time)
+                  (eca-chat--insert-user-message-header session ov content-id msg-text time)
                   (eca-chat--paint-user-message ov)
                   (eca-chat--linkify-user-message session ov roots))
                 (setq-local eca-chat--last-response-copy-start nil)
@@ -6114,8 +6230,9 @@ prepended region explicitly.  Callers are expected to re-apply
           (when (and (> pos (point-min))
                      (< pos (point-max)))
             (cond
-             ((eq (get-text-property pos 'font-lock-face)
-                  'eca-chat-user-messages-face)
+             ((or (get-text-property pos 'eca-chat-user-message-header)
+                  (eq (get-text-property pos 'font-lock-face)
+                      'eca-chat-user-messages-face))
               (eca-chat--ensure-empty-line-before pos))
              ((and (not (eq (char-before pos) ?\n))
                    (not (eq (char-after pos) ?\n)))
@@ -6986,13 +7103,7 @@ point.  Works with any message type (user, tool call, etc)."
                    (not (overlay-get ov 'eca-chat--flag-text)))
           (setq nearest-id id nearest-pos pos))))
     (if nearest-id
-        (when-let* ((flag-text (read-string "Flag: ")))
-          (unless (string-empty-p flag-text)
-            (eca-api-request-sync (eca-session)
-                                  :method "chat/addFlag"
-                                  :params (list :chatId eca-chat--id
-                                                :contentId nearest-id
-                                                :text flag-text))))
+        (eca-chat--add-flag (eca-session) nearest-id)
       (message "No message found before point"))))
 
 ;;;###autoload
@@ -7996,7 +8107,7 @@ Resteps empty list if session is not running or buffer is not available."
       (let ((messages '()))
         (dolist (ov (overlays-in (point-min) (point-max)))
           (when-let* ((msg-id (overlay-get ov 'eca-chat--user-message-id))
-                      (start (overlay-start ov))
+                      (start (eca-chat--user-message-text-start (overlay-start ov)))
                       (end (save-excursion
                              (goto-char start)
                              (while (and (not (eobp))
@@ -8004,14 +8115,14 @@ Resteps empty list if session is not running or buffer is not available."
                                                 (eq (get-text-property (point) 'font-lock-face)
                                                     'eca-chat-user-messages-face))))
                              (line-end-position 0)))
-                      (text (string-trim (buffer-substring-no-properties start end)))
-                      (timestamp (overlay-get ov 'eca-chat--timestamp)))
+                      (text (string-trim (buffer-substring-no-properties start end))))
             (unless (string-empty-p text)
               (push (list :text text
                           :start start
                           :end end
                           :id msg-id
-                          :timestamp timestamp
+                          ;; Unknown for the messages of the history.
+                          :timestamp (overlay-get ov 'eca-chat--timestamp)
                           :line (line-number-at-pos start))
                     messages))))
         messages))))
@@ -8159,8 +8270,13 @@ relative to the on-disk `.el'."
                          (< kpr-exp-pos kpr-md-pos))
                         (t 'unknown)))
          (label-ov (with-current-buffer src-buf
+                     ;; User messages don't toggle: their label line
+                     ;; is the header, whose keymaps run its actions.
                      (-first (lambda (o)
-                               (overlay-get o 'eca-chat--expandable-content-id))
+                               (and (overlay-get o 'eca-chat--expandable-content-id)
+                                    (not (get-text-property
+                                          (overlay-start o)
+                                          'eca-chat-user-message-header))))
                              (overlays-in (point-min) (point-max)))))
          (label-ret
           (and label-ov
