@@ -239,7 +239,7 @@ The timer skips the ticks run where the text must not change, see
         (insert (propertize "Background Jobs" 'font-lock-face 'eca-settings-heading))
         (insert "\n\n")
         (if (or (null jobs) (seq-empty-p jobs))
-            (insert (propertize "No background jobs" 'font-lock-face font-lock-doc-face))
+            (insert (propertize "No background jobs" 'font-lock-face 'font-lock-doc-face))
           (let ((groups (eca-jobs--group-by-chat jobs))
                 (first-group t))
             (dolist (group groups)

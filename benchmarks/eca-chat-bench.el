@@ -362,8 +362,8 @@ Caller must ensure `inhibit-read-only' is set."
 In batch mode without a frame `face-background' returns the literal
 string \"unspecified-bg\" rather than nil, which breaks downstream
 callers like `eca-chat--update-expandable-block-faces' that pass the
-result to `color-lighten-name'.  Treat the sentinel as nil so those
-guards short-circuit cleanly."
+result to `color-lighten-name'.  Call ORIG with ARGS and treat the
+sentinel as nil so those guards short-circuit cleanly."
   (let ((res (apply orig args)))
     (if (and (stringp res)
              (or (string= res "unspecified-bg")
@@ -734,7 +734,7 @@ post-context-bar graphical hot path."
        iters))))
 
 (defun eca-chat-bench--bench-usage-event (buf iters label mode-format)
-  "Time usage events plus mode-line rendering in BUF.
+  "Time usage events plus mode-line rendering in BUF, ITERS times.
 LABEL names the result row.  MODE-FORMAT is bound while rendering the
 mode-line after each event to approximate post-update redisplay work."
   (with-current-buffer buf
@@ -880,7 +880,7 @@ and repeated current-turn protection during assistant text streaming."
      "\n")))
 
 (defun eca-chat-bench-run-size (size)
-  "Build a SIZE-turn fixture and run all benchmarks against it.
+  "Build a fixture of SIZE turns and run all benchmarks against it.
 Each benchmark uses a fresh fixture so destructive ops do not
 contaminate later measurements."
   (let ((iters eca-chat-bench-iters))
@@ -1117,7 +1117,7 @@ turn."
   "Return COUNT assistant text chunk events.
 The text comes in paragraphs of three lines, as replies usually do:
 markdown fontification scans a whole paragraph, so one huge
-paragraph would measure markdown-mode more than the chat."
+paragraph would measure `markdown-mode' more than the chat."
   (let ((line (eca-chat-bench--stream-chunk)))
     (mapcar (lambda (chunk) (cons "assistant" (list :type "text" :text chunk)))
             (eca-chat-bench--repeat-split (concat line line line "\n")

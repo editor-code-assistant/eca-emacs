@@ -377,7 +377,7 @@ When all methods are just API key entry, returns nil."
       (eca-warn "Login failed: %s" err))))
 
 (defun eca-providers--collect-fields (fields)
-  "Collect input for FIELDS via minibuffer prompt. Return a plist."
+  "Collect input for FIELDS via minibuffer prompt.  Return a plist."
   (let ((data '()))
     (seq-doseq (field fields)
       (let* ((key (plist-get field :key))

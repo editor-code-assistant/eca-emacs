@@ -874,7 +874,7 @@ from the files inside it, see `eca-chat-file-change-label-face'."
   :group 'eca)
 
 (defface eca-chat-trust-on-face
-  '((t :weight bold :inherit 'error))
+  '((t :weight bold :inherit error))
   "Face for trust mode when on in mode-line."
   :group 'eca)
 
@@ -1239,7 +1239,7 @@ and resume link are not left behind under the replayed messages.")
 
 (defun eca-chat--get-last-buffer (session)
   "Get the eca chat buffer for SESSION."
-  (or (when-let (last-buff (eca--session-last-chat-buffer session))
+  (or (when-let* ((last-buff (eca--session-last-chat-buffer session)))
         (when (buffer-live-p last-buff)
           last-buff))
       (get-buffer (eca-chat-new-buffer-name session))))
@@ -1799,7 +1799,10 @@ auto-compaction threshold marker at that fraction of the bar."
 
 (defun eca-chat--context-bar-make-cache-key
     (breakdown categories width graphic? compact-pct)
-  "Return a cache key for the context bar rendering inputs."
+  "Return a cache key for the context bar rendering inputs.
+The inputs are the context BREAKDOWN, its CATEGORIES, the bar WIDTH,
+GRAPHIC? (non-nil in graphical frames) and COMPACT-PCT, the
+auto-compaction marker percentage or nil."
   (list width
         graphic?
         (when graphic? (frame-char-width))
@@ -2661,8 +2664,8 @@ the prompt/context line."
 
          ;; Handle some evil commands
          ((and in-prompt?
-               (or (eq #'evil-delete this-command)
-                   (eq #'evil-change-line this-command)))
+               (or (eq 'evil-delete this-command)
+                   (eq 'evil-change-line this-command)))
           (setf (nth 2 args) nil) ;; do not delete prompt line passing nil argument
           (apply side-effect-fn args))
 
@@ -2796,7 +2799,7 @@ Above the prompt field the kill is blocked like other deletions."
 
 (defun eca-chat--prompt-content ()
   "Return the current prompt content."
-  (when-let ((prompt-start (eca-chat--prompt-field-start-point)))
+  (when-let* ((prompt-start (eca-chat--prompt-field-start-point)))
     (save-excursion
       (goto-char prompt-start)
       (string-trim (buffer-substring (point) (point-max))))))
@@ -2807,12 +2810,12 @@ Resteps a list of context plists found in the prompt field, plus
 raw @path tokens that resolve to existing files or directories
 under a workspace root (e.g. after drilling into a directory
 without finalizing it)."
-  (when-let ((prompt-start (eca-chat--prompt-field-start-point)))
+  (when-let* ((prompt-start (eca-chat--prompt-field-start-point)))
     (let ((contexts '())
           (pos prompt-start)
           (end (point-max)))
       (while (< pos end)
-        (when-let ((context (get-text-property pos 'eca-chat-context-item)))
+        (when-let* ((context (get-text-property pos 'eca-chat-context-item)))
           (unless (member context contexts)
             (push context contexts)))
         (setq pos (next-single-property-change pos 'eca-chat-context-item nil end)))
@@ -3611,7 +3614,7 @@ non-selected active (loading/approval) tabs."
 Each tab is an alist with `name', `buffer', `active' and
 `selected' entries.  Tabs are ordered oldest-first so new chats
 appear on the right."
-  (when-let ((session (ignore-errors (eca-session))))
+  (when-let* ((session (ignore-errors (eca-session))))
     (let ((current-buf (current-buffer)))
       (-keep (lambda (tab)
                (let ((buf (cdr (assq 'buffer tab))))
@@ -3685,14 +3688,14 @@ chat.  E is the mouse event."
 
 (defun eca-chat--sync-last-buffer ()
   "Update session last-chat-buffer to track the current chat buffer."
-  (when-let ((session (ignore-errors (eca-session))))
+  (when-let* ((session (ignore-errors (eca-session))))
     (unless (eq (eca--session-last-chat-buffer session) (current-buffer))
       (setf (eca--session-last-chat-buffer session) (current-buffer)))))
 
 (defun eca-chat-add-workspace-root ()
   "Prompt for a directory and add it as workspace."
   (interactive)
-  (when-let ((session (eca-session)))
+  (when-let* ((session (eca-session)))
     (let ((folder (read-directory-name "Add workspace: ")))
       (eca--session-add-workspace-folder session folder)
       (force-mode-line-update))))
@@ -3703,7 +3706,7 @@ Refuses when only one folder remains.  In `merged' worktree mode, a
 removed folder sharing its git-common-dir with another session folder
 may be auto-re-added on the next buffer visit."
   (interactive)
-  (when-let ((session (eca-session)))
+  (when-let* ((session (eca-session)))
     (let ((folders (eca--session-workspace-folders session)))
       (cond
        ((null folders)
@@ -4635,8 +4638,8 @@ values from their own buffer, so switching to
 `eca-chat--get-last-buffer' would apply them to the wrong
 buffer when multiple sessions exist."
   (let ((get-fn (if first? #'-first #'-last)))
-    (when-let ((ov (funcall get-fn (-lambda (ov) (overlay-get ov ov-key))
-                            (overlays-in range-min range-max))))
+    (when-let* ((ov (funcall get-fn (-lambda (ov) (overlay-get ov ov-key))
+                             (overlays-in range-min range-max))))
       (goto-char (overlay-start ov)))))
 
 (defun eca-chat--parse-unified-diff (diff-text)
@@ -5839,7 +5842,7 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
       ("reasonFinished"
        (let* ((id (plist-get content :id))
               (base (propertize "Thought" 'font-lock-face 'eca-chat-reason-label-face))
-              (time (when-let ((ms (plist-get content :totalTimeMs)))
+              (time (when-let* ((ms (plist-get content :totalTimeMs)))
                       (concat " " (eca-chat--time->presentable-time ms))))
               (label (concat base time)))
          (eca-chat--update-expandable-content id label "" t parent-tool-call-id)))
@@ -6048,7 +6051,7 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
                                  (mapconcat (lambda (o) (or (plist-get o :text) "")) outputs "\n")
                                ""))
                 (details (plist-get content :details))
-                (time (when-let ((ms (plist-get content :totalTimeMs)))
+                (time (when-let* ((ms (plist-get content :totalTimeMs)))
                         (concat " " (eca-chat--time->presentable-time ms))))
                 (bg? (plist-get details :background))
                 (status (eca-chat--tool-call-status-symbol
@@ -6515,7 +6518,9 @@ re-open the chat from the server instead."
             (eca-chat--reopen session chat-id new-prompt)))))))
 
 (defun eca-chat--legacy-open-config-p (chat-config)
-  "Return non-nil for a legacy unscoped chat/open restore update."
+  "Return non-nil if CHAT-CONFIG is a legacy unscoped chat/open update.
+Such restore updates carry selection fields only, none of the
+session-level ones (models, agents, welcomeMessage)."
   (and (or (plist-member chat-config :selectModel)
            (plist-member chat-config :selectVariant)
            (plist-member chat-config :selectTrust))
@@ -6597,7 +6602,7 @@ a `config/updated' broadcast."
 
 Session-level fields (welcomeMessage, models, agents) are always
 applied to the session record.  Variants and per-chat fields
-(selectModel, selectAgent, selectVariant, selectTrust) are scoped by
+\(selectModel, selectAgent, selectVariant, selectTrust) are scoped by
 CHAT-ID:
 
 - when CHAT-ID is present the per-chat fields apply only to that
@@ -7421,7 +7426,7 @@ Just open if FORCE-OPEN? is non-nil."
   (eca-chat--with-current-buffer (eca-chat--get-last-buffer (eca-session))
     (unless (eca-chat--expandable-content-at-point-dwim)
       (eca-chat-go-to-prev-expandable-block))
-    (when-let ((ov (eca-chat--expandable-content-at-point-dwim)))
+    (when-let* ((ov (eca-chat--expandable-content-at-point-dwim)))
       (eca-chat--expandable-content-toggle (overlay-get ov 'eca-chat--expandable-content-id) (when force-open? t) (not force-open?)))))
 
 ;;;###autoload
@@ -7507,7 +7512,7 @@ window, leaving point where it was."
   (let* ((contexts (eca-chat--get-contexts-dwim)))
     (eca-chat--with-current-buffer (eca-chat--get-last-buffer (eca-session))
       (seq-doseq (context contexts)
-        (when-let ((path (plist-get context :path)))
+        (when-let* ((path (plist-get context :path)))
           (eca-chat--insert-prompt (concat (eca-chat--filepath->str path (plist-get context :linesRange))
                                            " "))))
       (unless arg
@@ -7571,7 +7576,7 @@ if ARG is current prefix, ask for file, otherwise drop current file."
     (eca-assert-session-running session)
     (let ((buffer (eca-chat--get-last-buffer session)))
       (if (buffer-live-p buffer)
-          (if-let ((win (get-buffer-window buffer)))
+          (if-let* ((win (get-buffer-window buffer)))
               ;; If visible, hide it
               (quit-window nil win)
             ;; If not visible, display it according to user settings
@@ -7626,18 +7631,18 @@ title, and elapsed time annotation."
                                   display))))
                           (eca-vals (eca--session-chats session))))
                   (list eca-chat-new-chat-label))))
-      (when-let (chosen (completing-read
-                         "Select the chat: "
-                         (lambda (string pred action)
-                           (if (eq action 'metadata)
-                               `(metadata
-                                 (display-sort-function . ,#'identity)
-                                 (annotation-function
-                                  . ,(lambda (candidate)
-                                       (gethash candidate annotation-by-label))))
-                             (complete-with-action action items string pred)))
-                         nil t))
-        (if-let (buffer (gethash chosen buf-by-label))
+      (when-let* ((chosen (completing-read
+                           "Select the chat: "
+                           (lambda (string pred action)
+                             (if (eq action 'metadata)
+                                 `(metadata
+                                   (display-sort-function . ,#'identity)
+                                   (annotation-function
+                                    . ,(lambda (candidate)
+                                         (gethash candidate annotation-by-label))))
+                               (complete-with-action action items string pred)))
+                           nil t)))
+        (if-let* ((buffer (gethash chosen buf-by-label)))
             (progn
               (setf (eca--session-last-chat-buffer session) buffer)
               (eca-chat-open session))
@@ -8245,17 +8250,17 @@ Returns a list of plists ordered newest to oldest."
 (defun eca-chat--select-message-from-completion (prompt)
   "Show completion with user messages using PROMPT.
 Resteps selected message plist or nil if no messages or cancelled."
-  (when-let ((messages (eca-chat--get-user-messages)))
+  (when-let* ((messages (eca-chat--get-user-messages)))
     (let ((table (make-hash-table :test 'equal)))
       (dolist (msg (reverse messages))
         (puthash (eca-chat--format-message-for-completion msg) msg table))
-      (when-let ((choice (completing-read
-                          prompt
-                          (lambda (string pred action)
-                            (if (eq action 'metadata)
-                                `(metadata (display-sort-function . identity))
-                              (complete-with-action action (hash-table-keys table) string pred)))
-                          nil t)))
+      (when-let* ((choice (completing-read
+                           prompt
+                           (lambda (string pred action)
+                             (if (eq action 'metadata)
+                                 `(metadata (display-sort-function . identity))
+                               (complete-with-action action (hash-table-keys table) string pred)))
+                           nil t)))
         (gethash choice table)))))
 
 ;;;###autoload
@@ -8291,7 +8296,7 @@ Resteps selected message plist or nil if no messages or cancelled."
   "Clear the prompt input field in chat.
 Rebuilds the prompt block markup when it is corrupted (see #305)."
   (interactive)
-  (when-let ((chat-buffer (eca-chat--get-last-buffer (eca-session))))
+  (when-let* ((chat-buffer (eca-chat--get-last-buffer (eca-session))))
     (with-current-buffer chat-buffer
       (if (eca-chat--prompt-block-broken-p)
           (eca-chat--rebuild-prompt-area)
@@ -8605,7 +8610,7 @@ markdown-link  %s\n"
 Auto-finds the chat buffer via `eca-chat--doctor-find-buffer'.  When
 no chat buffer is available, returns a single-line notice instead.
 Used by `eca-doctor'."
-  (if-let ((src-buf (eca-chat--doctor-find-buffer)))
+  (if-let* ((src-buf (eca-chat--doctor-find-buffer)))
       (eca-chat--doctor-format src-buf)
     "No chat buffer found in any running session.\n"))
 

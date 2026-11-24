@@ -4,6 +4,10 @@
 (require 'buttercup)
 (require 'eca-process)
 
+;; Defined by `tramp-sh', which the specs load before reading them.
+(defvar tramp-ssh-controlmaster-options)
+(defvar tramp-use-ssh-controlmaster-options)
+
 (describe "eca-process--server-command"
   (before-each
     (setq eca-custom-command nil)
@@ -119,21 +123,21 @@
       (setq eca-process--releases-cache
             (cons (float-time) (vector '(:tag_name "0.1.0"))))
       (spy-on 'eca--curl-download-string
-              :and-call-fake (lambda (_) (error "github down")))
+              :and-call-fake (lambda (_) (error "GitHub down")))
       (expect (eca-process--get-latest-server-version) :to-equal "0.1.0")
       (expect 'eca-warn :to-have-been-called)
       (expect eca-process--releases-fetch-failed-at :not :to-be nil)))
 
   (it "does not refetch while within the failure cooldown"
     (spy-on 'eca--curl-download-string
-            :and-call-fake (lambda (_) (error "github down")))
+            :and-call-fake (lambda (_) (error "GitHub down")))
     (expect (eca-process--fetch-releases) :to-be nil)
     (expect (eca-process--fetch-releases) :to-be nil)
     (expect (spy-calls-count 'eca--curl-download-string) :to-equal 1))
 
   (it "refetches after the cooldown has passed"
     (spy-on 'eca--curl-download-string
-            :and-call-fake (lambda (_) (error "github down")))
+            :and-call-fake (lambda (_) (error "GitHub down")))
     (eca-process--fetch-releases)
     (setq eca-process--releases-fetch-failed-at
           (- (float-time) (1+ eca-process--releases-failure-cooldown)))
@@ -162,7 +166,7 @@
           (on-error-err nil)
           (downloaded nil))
       (spy-on 'eca--curl-download-file
-              :and-call-fake (lambda (&rest _) (error "boom")))
+              :and-call-fake (lambda (&rest _) (error "Boom")))
       (eca-process--download-server (lambda () (setq downloaded t))
                                     "0.2.0"
                                     (lambda (err) (setq on-error-err err)))
@@ -172,7 +176,7 @@
   (it "reports the error when no on-error is given"
     (let ((eca-server-download-method 'curl))
       (spy-on 'eca--curl-download-file
-              :and-call-fake (lambda (&rest _) (error "boom")))
+              :and-call-fake (lambda (&rest _) (error "Boom")))
       (eca-process--download-server (lambda ()) "0.2.0")
       (expect 'eca-error :to-have-been-called))))
 

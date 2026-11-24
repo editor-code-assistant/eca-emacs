@@ -1100,7 +1100,8 @@ Empty input resets to the server default."
     (eca-info "Inline variant: %s"
               (or eca-chat-inline-variant "server default"))))
 
-(with-eval-after-load 'transient
+;; `transient' is optional: `eca-util' requires it only when available.
+(when (featurep 'transient)
   (transient-define-prefix eca-chat-inline--menu-prefix ()
     "ECA inline prompt menu."
     [["Settings (next prompts)"

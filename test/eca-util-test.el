@@ -490,7 +490,8 @@
 ;; ---------------------------------------------------------------------------
 
 (defface eca-util-test-button-face '((t :foreground "#ff0000"))
-  "Face of the test buttons.")
+  "Face of the test buttons."
+  :group 'eca)
 
 (describe "eca-buttonize"
 

@@ -157,7 +157,7 @@ frames captured via `backtrace-get-frames'."
       (with-current-buffer buffer
         (rename-buffer (concat (buffer-name) ":closed") t)
         (setq-local mode-line-format '("*Closed session*"))
-        (when-let ((win (get-buffer-window (current-buffer))))
+        (when-let* ((win (get-buffer-window (current-buffer))))
           (quit-window nil win))
         ;; Keep only the most recently closed errors buffer; kill older ones.
         (let ((current (current-buffer)))
@@ -189,7 +189,7 @@ frames captured via `backtrace-get-frames'."
 
 (defun eca-config-updated (session config)
   "Handle CONFIG updated notification for SESSION."
-  (when-let ((chat (plist-get config :chat)))
+  (when-let* ((chat (plist-get config :chat)))
     (eca-chat-config-updated session chat (plist-get config :chatId))))
 
 (defun eca--tool-server-updated (session server)
@@ -369,7 +369,7 @@ is only usable asynchronously."
       (goto-char (point-min))
       (when (re-search-forward "started on port \\([0-9]+\\)" nil t)
 
-        (when-let ((nrepl-port (string-to-number (match-string 1))))
+        (when-let* ((nrepl-port (string-to-number (match-string 1))))
           (save-match-data
             (when (functionp 'cider-connect-clj)
               (cider-connect-clj `(:host "localhost"

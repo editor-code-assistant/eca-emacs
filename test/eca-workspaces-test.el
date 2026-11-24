@@ -20,7 +20,12 @@
 (cl-defun eca-workspaces-test--make-chat (&key title loading cost approval
                                                question model variant
                                                duration-secs)
-  "Create a fake chat buffer with the given buffer-local state."
+  "Create a fake chat buffer with the given buffer-local state.
+TITLE, LOADING and COST set the chat's title, loading flag and session
+cost.  Non-nil APPROVAL adds a tool call pending approval and non-nil
+QUESTION a pending question.  MODEL (\"test-model\" by default),
+VARIANT and DURATION-SECS set the selected model and variant and the
+turn duration."
   (let ((buffer (generate-new-buffer " *test-eca-chat*")))
     (push buffer eca-workspaces-test--buffers)
     (with-current-buffer buffer

@@ -45,6 +45,7 @@
 (declare-function flycheck-error-message "flycheck" (err))
 (declare-function flycheck-error-id "flycheck" (err))
 (declare-function flycheck-error-checker "flycheck" (err))
+(defvar flycheck-current-errors)
 
 (defun eca-editor--lsp-to-eca-severity (severity)
   "Convert lsp SEVERITY to eca one."
@@ -101,7 +102,7 @@ If URI is nil find all diagnostics otherwise filter to that uri."
                                  (end-r (lsp-get range :end)))
                             (push (list :uri uri
                                         :severity (eca-editor--lsp-to-eca-severity (lsp-get it :severity))
-                                        :code (when-let ((code (lsp-get it :code)))
+                                        :code (when-let* ((code (lsp-get it :code)))
                                                 (if (symbolp code)
                                                     (symbol-name code)
                                                   (format "%s" code)))
@@ -109,7 +110,7 @@ If URI is nil find all diagnostics otherwise filter to that uri."
                                                                   :character (lsp-get start-r :character))
                                                      :end (list :line (lsp-get end-r :line)
                                                                 :character (lsp-get end-r :character)))
-                                        :source (when-let ((source (lsp-get it :source)))
+                                        :source (when-let* ((source (lsp-get it :source)))
                                                   (if (symbolp source)
                                                       (symbol-name source)
                                                     (format "%s" source)))
@@ -145,11 +146,11 @@ If URI is nil find all diagnostics otherwise filter to that uri."
                                          :character (if end (cdr end) (cdr beg)))))))
            (list :uri diag-uri
                  :severity (eca-editor--flymake-to-eca-severity (flymake-diagnostic-type it))
-                 :code (when-let ((code (and (fboundp 'flymake-diagnostic-code)
-                                             (flymake-diagnostic-code it))))
+                 :code (when-let* ((code (and (fboundp 'flymake-diagnostic-code)
+                                              (flymake-diagnostic-code it))))
                          (if (symbolp code) (symbol-name code) (format "%s" code)))
                  :range range
-                 :source (when-let ((backend (flymake-diagnostic-backend it)))
+                 :source (when-let* ((backend (flymake-diagnostic-backend it)))
                            (if (symbolp backend) (symbol-name backend) (format "%s" backend)))
                  :message (flymake-diagnostic-text it)))))
      (flymake--project-diagnostics))))
@@ -160,7 +161,7 @@ Skips buffers where `lsp-mode' is active to avoid duplicates.
 If URI is non-nil, filter to that uri."
   (let ((diagnostics '()))
     (dolist (buf (buffer-list))
-      (when-let ((file (buffer-file-name buf)))
+      (when-let* ((file (buffer-file-name buf)))
         (let ((file-uri (eca--path-to-uri file)))
           (when (and (or (null uri) (string= uri file-uri))
                      (seq-some (lambda (ws)
@@ -184,13 +185,13 @@ If URI is non-nil, filter to that uri."
                     (push (list :uri err-uri
                                 :severity (eca-editor--flycheck-to-eca-severity
                                            (flycheck-error-level err))
-                                :code (when-let ((id (flycheck-error-id err)))
+                                :code (when-let* ((id (flycheck-error-id err)))
                                         (format "%s" id))
                                 :range (list :start (list :line start-line
                                                           :character start-char)
                                              :end (list :line e-line
                                                         :character e-char))
-                                :source (when-let ((checker (flycheck-error-checker err)))
+                                :source (when-let* ((checker (flycheck-error-checker err)))
                                           (symbol-name checker))
                                 :message (flycheck-error-message err))
                           diagnostics)))))))))
@@ -401,8 +402,8 @@ which must never happen while answering a server request."
 
 (defun eca-editor--xref-marker->location (marker)
   "Convert MARKER into an eca location with a 1-based point range."
-  (when-let ((buffer (marker-buffer marker))
-             (file (buffer-file-name (marker-buffer marker))))
+  (when-let* ((buffer (marker-buffer marker))
+              (file (buffer-file-name (marker-buffer marker))))
     (with-current-buffer buffer
       (save-excursion
         (save-restriction
@@ -463,7 +464,7 @@ backend.  METHOD decides between definitions and references and
 PARAMS carry the position, mirroring the lsp-mode path.  Schedule
 the lookup outside the process filter and return `:async' when a
 usable backend exists, otherwise return NO-SERVER-RESPONSE."
-  (if-let ((backend (eca-editor--xref-backend)))
+  (if-let* ((backend (eca-editor--xref-backend)))
       (let ((buffer (current-buffer))
             (position (plist-get params :position))
             (references-p (string= method "textDocument/references"))

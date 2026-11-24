@@ -236,10 +236,10 @@ MODEL is the LLM model used."
 (defun eca-rewrite--reject (ovs)
   "Reject (discard) one or more rewrite overlays.
 
-OVS may be a single overlay or a list of overlays. For each
+OVS may be a single overlay or a list of overlays.  For each
 overlay, remove it from the internal tracking list
 `eca-rewrite--overlays' and delete it with `delete-overlay'.
-No confirmation is asked; a nil OVS is ignored. Returns nil."
+No confirmation is asked; a nil OVS is ignored.  Returns nil."
   (when eca-rewrite--restore-paren-mode-after-clean
     (setq eca-rewrite--restore-paren-mode-after-clean nil)
     (show-paren-local-mode 1))
@@ -473,7 +473,7 @@ accepts, shows menu, or diffs according to `eca-rewrite-finished-action',
          (buffer (eca-rewrite--get-buffer id)))
     (when (buffer-live-p buffer)
       (with-current-buffer buffer
-        (when-let ((ov (eca-rewrite--overlay-from-id id)))
+        (when-let* ((ov (eca-rewrite--overlay-from-id id)))
           (pcase (plist-get content :type)
             ("reasoning" (eca-rewrite--refresh-overlay-actions ov 'reasoning))
             ("text" (eca-rewrite--add-text ov (plist-get content :text)))
@@ -530,7 +530,7 @@ PROMPT is the instructions prompt for the LLM."
 (defun eca-rewrite-reject ()
   "Reject rewrite overlay at point."
   (interactive)
-  (if-let ((ov (eca-rewrite--overlay-at-point)))
+  (if-let* ((ov (eca-rewrite--overlay-at-point)))
     (eca-rewrite--reject (list ov))
     (eca-error "No rewrite overlay found at point")))
 
@@ -538,7 +538,7 @@ PROMPT is the instructions prompt for the LLM."
 (defun eca-rewrite-accept ()
   "Accept rewrite overlay at point."
   (interactive)
-  (if-let ((ov (eca-rewrite--overlay-at-point)))
+  (if-let* ((ov (eca-rewrite--overlay-at-point)))
     (eca-rewrite--accept ov)
     (eca-error "No rewrite overlay found at point")))
 
@@ -547,7 +547,7 @@ PROMPT is the instructions prompt for the LLM."
   "Retry rewrite overlay at point."
   (interactive)
   (eca-assert-session-running (eca-session))
-  (if-let ((ov (eca-rewrite--overlay-at-point)))
+  (if-let* ((ov (eca-rewrite--overlay-at-point)))
     (eca-rewrite--retry ov (eca-session))
     (eca-error "No rewrite overlay found at point")))
 
@@ -555,7 +555,7 @@ PROMPT is the instructions prompt for the LLM."
 (defun eca-rewrite-diff ()
   "Apply diff between original text and rewrite overlay at point."
   (interactive)
-  (if-let ((ov (eca-rewrite--overlay-at-point)))
+  (if-let* ((ov (eca-rewrite--overlay-at-point)))
     (eca-rewrite--diff ov)
     (eca-error "No rewrite overlay found at point")))
 
@@ -563,7 +563,7 @@ PROMPT is the instructions prompt for the LLM."
 (defun eca-rewrite-merge ()
   "Merge between original text and rewrite overlay OV."
   (interactive)
-  (if-let ((ov (eca-rewrite--overlay-at-point)))
+  (if-let* ((ov (eca-rewrite--overlay-at-point)))
     (eca-rewrite--merge ov)
     (eca-error "No rewrite overlay found at point")))
 

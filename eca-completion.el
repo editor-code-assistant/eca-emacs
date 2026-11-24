@@ -299,7 +299,7 @@ to mutate and does not yet carry `eca-completion-overlay-face'."
 Call ON-ERROR when error."
   (let ((line (+ (1- (line-number-at-pos)) eca-completion--line-bias))
         (character (1+ (- (point) (line-beginning-position)))))
-    (when-let ((session (eca-session)))
+    (when-let* ((session (eca-session)))
       (eca-api-request-async session
                              :method "completion/inline"
                              :params (list :doc-text (buffer-substring-no-properties (point-min) (point-max))

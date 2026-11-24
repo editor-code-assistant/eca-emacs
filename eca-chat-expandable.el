@@ -307,9 +307,9 @@ refills the cache."
 
 (defun eca-chat--propertize-only-first-word (str &rest properties)
   "Return a new string propertizing PROPERTIES to the first word of STR.
-If STR is empty or PROPERTIES is nil, return STR unchanged. Existing
+If STR is empty or PROPERTIES is nil, return STR unchanged.  Existing
 text properties on STR are preserved; only the first word gets the
-additional PROPERTIES. The first word is the substring up to the first
+additional PROPERTIES.  The first word is the substring up to the first
 space, tab, or newline."
   (if (or (string-empty-p str) (null properties))
       str

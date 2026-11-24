@@ -709,7 +709,8 @@ Asks for an optional extra prompt to guide the compaction."
     (with-current-buffer chat-buffer
       (eca-chat-resume))))
 
-(with-eval-after-load 'transient
+;; `transient' is optional: `eca-util' requires it only when available.
+(when (featurep 'transient)
   (transient-define-prefix eca-workspaces--menu-prefix ()
     "ECA workspaces actions menu."
     [["Open"
@@ -775,18 +776,18 @@ Requires the `transient' package."
   (define-key map (kbd "R") #'eca-workspaces-resume)
   (define-key map (kbd "?") #'eca-workspaces-menu))
 
-;; Under evil (e.g. Doom), state maps beat major-mode maps, so keys
-;; like `?', `d' or `r' would trigger evil commands instead.  Mark the
-;; dashboard map as overriding: its bound keys win over evil state
-;; bindings while unbound keys (`j'/`k', ...) stay with evil.
-(with-eval-after-load 'evil
-  (when (fboundp 'evil-make-overriding-map)
-    (evil-make-overriding-map eca-workspaces-mode-map nil)))
-
 (define-derived-mode eca-workspaces-mode special-mode "ECA-Workspaces"
   "Major mode for the ECA workspaces dashboard buffer.
 
 \\{eca-workspaces-mode-map}"
+  ;; Under evil (e.g. Doom), state maps beat major-mode maps, so keys
+  ;; like `?', `d' or `r' would trigger evil commands instead.  Mark
+  ;; the dashboard map as overriding: its bound keys win over evil
+  ;; state bindings while unbound keys (`j'/`k', ...) stay with evil.
+  ;; Done here, before evil sets up the buffer's keymaps, so it works
+  ;; whether evil is loaded before or after this package.
+  (when (fboundp 'evil-make-overriding-map)
+    (evil-make-overriding-map eca-workspaces-mode-map nil))
   (setq-local truncate-lines t)
   (setq-local revert-buffer-function
               (lambda (&rest _) (eca-workspaces-refresh)))

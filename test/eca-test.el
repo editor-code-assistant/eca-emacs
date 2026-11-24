@@ -12,12 +12,12 @@
       (spy-on 'eca-warn)
       (spy-on 'eca--log-error)
       (spy-on 'eca-editor-get-references
-              :and-call-fake (lambda (&rest _) (error "boom")))
+              :and-call-fake (lambda (&rest _) (error "Boom")))
       (spy-on 'eca-api-send-request-response)
       (eca--handle-message session request)
       (expect 'eca-api-send-request-response
               :to-have-been-called-with
-              session request (list :status "error" :message "boom"))
+              session request (list :status "error" :message "Boom"))
       (expect 'eca-warn :to-have-been-called)))
 
   (it "does not respond for async request handlers"

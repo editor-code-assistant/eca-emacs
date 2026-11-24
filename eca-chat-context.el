@@ -453,7 +453,7 @@ it redraws the context even though point did not move."
               (path (buffer-file-name buffer))
               (session (eca-chat--session-for-path path)))
     (with-current-buffer buffer
-      (when-let (chat-buffer (eca-chat--get-last-buffer session))
+      (when-let* ((chat-buffer (eca-chat--get-last-buffer session)))
         (when (buffer-live-p chat-buffer)
           (-let* (((start . end) (eca-chat--cur-position))
                   ((start-line . start-character) start)
@@ -552,8 +552,8 @@ Call ORIG-FUN with ARGS if not media."
 
 (defun eca-chat--find-typed-query (prefix)
   "Return the text typed after the last item after PREFIX (@ or #).
-For example: `@foo @bar @baz` => `baz`. If nothing is typed, resteps an empty
-string."
+For example: `@foo @bar @baz` => `baz`.  If nothing is typed, resteps an
+empty string."
   (when (eca-chat--point-at-new-context-p)
     (save-excursion
       (goto-char (eca-chat--new-context-start-point))
@@ -585,7 +585,7 @@ Only workspace-relative tokens are considered: absolute, ~ and
 dot prefixed mentions are already parsed by the server from the
 message text, and tokens already linked to a context chip are
 skipped."
-  (when-let ((prompt-start (eca-chat--prompt-field-start-point)))
+  (when-let* ((prompt-start (eca-chat--prompt-field-start-point)))
     (let ((contexts '())
           (regexp (concat "\\(?:^\\|[^[:alnum:]]\\)"
                           (regexp-quote eca-chat-context-prefix)
@@ -597,7 +597,7 @@ skipped."
             (unless (or (get-text-property (match-beginning 1) 'eca-chat-context-item)
                         (file-name-absolute-p token)
                         (string-prefix-p "." token))
-              (when-let ((path (eca-chat--resolve-path-token token)))
+              (when-let* ((path (eca-chat--resolve-path-token token)))
                 (let ((context (list :type (if (f-dir? path) "directory" "file")
                                      :path path)))
                   (unless (member context contexts)
@@ -621,7 +621,7 @@ file or directory."
                    (or (string-prefix-p eca-chat-context-prefix word)
                        (string-prefix-p eca-chat-filepath-prefix word))
                    (not (get-text-property start 'eca-chat-item-type)))
-          (when-let ((path (eca-chat--resolve-path-token (substring word 1))))
+          (when-let* ((path (eca-chat--resolve-path-token (substring word 1))))
             (let ((context? (string-prefix-p eca-chat-context-prefix word)))
               (cond
                ;; On the context line: add to the context list; the
@@ -710,8 +710,8 @@ that line."
            (dired-get-marked-files)))
 
    ((derived-mode-p 'treemacs-mode)
-    (when-let (path (-some-> (treemacs-node-at-point)
-                      (treemacs-button-get :path)))
+    (when-let* ((path (-some-> (treemacs-node-at-point)
+                        (treemacs-button-get :path))))
       (list
        (list :type (if (f-dir? path) "directory" "file")
              :path path))))
@@ -987,9 +987,9 @@ Calls CB with the resulting message."
         (funcall cb doc)
         t)))
    ;; Context/filepath eldoc
-   ((when-let ((item-type (get-text-property (point) 'eca-chat-item-type)))
-      (when-let ((item-str (get-text-property (point) 'eca-chat-expanded-item-str)))
-        (when-let ((face (get-text-property (point) 'font-lock-face)))
+   ((when-let* ((item-type (get-text-property (point) 'eca-chat-item-type)))
+      (when-let* ((item-str (get-text-property (point) 'eca-chat-expanded-item-str)))
+        (when-let* ((face (get-text-property (point) 'font-lock-face)))
           (funcall cb (concat (format "%s: %s"
                                       (pcase item-type
                                         ('context "Context")
@@ -1014,11 +1014,11 @@ Calls CB with the resulting message."
      ((eca-chat--point-at-new-context-p)
       'contexts-from-new-context)
 
-     ((when-let (last-word (car (last (string-split full-text "[\s]"))))
+     ((when-let* ((last-word (car (last (string-split full-text "[\s]")))))
         (string-match-p (concat "\\(?:^\\|[^[:alnum:]]\\)" (regexp-quote eca-chat-context-prefix)) last-word))
       'contexts-from-prompt)
 
-     ((when-let (last-word (car (last (string-split full-text "[\s]"))))
+     ((when-let* ((last-word (car (last (string-split full-text "[\s]")))))
         (string-match-p (concat "\\(?:^\\|[^[:alnum:]]\\)" (regexp-quote eca-chat-filepath-prefix)) last-word))
       'files-from-prompt)
 
@@ -1052,7 +1052,7 @@ cached so they are retried on the next keystroke."
          (cached (gethash query cache :eca-chat--miss)))
     (if (not (eq cached :eca-chat--miss))
         cached
-      (when-let ((resp (funcall fetch-fn)))
+      (when-let* ((resp (funcall fetch-fn)))
         (let ((items (-map to-item-fn (append (plist-get resp key) nil))))
           (when (> (hash-table-count cache) eca-chat--completion-cache-max-size)
             (clrhash cache))
@@ -1061,7 +1061,7 @@ cached so they are retried on the next keystroke."
 
 (defun eca-chat-completion-at-point ()
   "Complete at point in the chat."
-  (when-let ((type (eca-chat--completion-type-at-point)))
+  (when-let* ((type (eca-chat--completion-type-at-point)))
     (let* ((bounds-start (pcase type
                            ('prompts (1+ (line-beginning-position)))
                            ('files-from-prompt (or (eca-chat--completion-prefix-end eca-chat-filepath-prefix)

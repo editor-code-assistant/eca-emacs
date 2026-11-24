@@ -7,8 +7,11 @@
 ;; Ensure the font-lock buffer is configured for tests.
 (defvar eca-chat-parent-mode 'gfm-mode)
 
+;; A user option of `eca-chat', bound dynamically by the specs.
+(defvar eca-chat-table-beautify)
+
 (defun eca-table-test--align (text)
-  "Return TEXT after `eca-table-align' ran over it in a gfm-mode buffer."
+  "Return TEXT after `eca-table-align' ran over it in a `gfm-mode' buffer."
   (with-temp-buffer
     (gfm-mode)
     (setq-local markdown-hide-markup t)

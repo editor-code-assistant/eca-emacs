@@ -388,7 +388,7 @@ server, then gets the folders added or removed since back."
 (defun eca--session-project-name (session)
   "Return the project name for SESSION.
 Extracts the last directory component from the first
-workspace folder. Falls back to \"unknown\"."
+workspace folder.  Falls back to \"unknown\"."
   (if-let* ((roots (eca--session-workspace-folders session))
             (root (car roots)))
       (file-name-nondirectory (directory-file-name root))
@@ -777,7 +777,8 @@ Like `eca-buttonize', but TEXT keeps its look, as links like file
 paths and URLs do.  Its keymap inherits BASE-MAP."
   (eca--buttonize base-map text callback))
 
-(with-eval-after-load 'transient
+;; `transient' is optional, see its `require' above.
+(when (featurep 'transient)
   (transient-define-prefix eca--transient-menu-prefix ()
     "ECA transient menu."
     [["Chat"

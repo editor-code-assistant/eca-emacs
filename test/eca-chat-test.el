@@ -1092,7 +1092,7 @@ VISIBLE is the value `pos-visible-in-window-p' returns."
                                 (push marker markers) marker))))
           (expect (eca-chat--with-point-preserved nil
                     (goto-char (point-min))
-                    (error "receiver failed"))
+                    (error "Receiver failed"))
                   :to-throw 'error))
         (expect (point) :to-equal (point-max))
         (expect (length markers) :to-equal 1)
@@ -1411,7 +1411,9 @@ VISIBLE is the value `pos-visible-in-window-p' returns."
               (eca-chat-test--type-context-query "foo")
               (let ((this-command 'evil-delete-backward-char-and-join))
                 (eca-chat--key-pressed-deletion
-                 (lambda (n &optional _) (delete-backward-char n))
+                 (lambda (n &optional _)
+                   ;; Interactive-only, but it is what evil calls.
+                   (with-no-warnings (delete-backward-char n)))
                  1))
               (expect 'ding :not :to-have-been-called)
               (expect (eca-chat-test--context-text buf) :to-equal "@fo"))
@@ -2166,7 +2168,7 @@ VISIBLE is the value `pos-visible-in-window-p' returns."
               :to-equal '("b"))
       (expect (eca-chat--completion-cached-items
                'eca-chat--context-completion-cache "a"
-               (lambda () (error "should not fetch")) :contexts #'identity)
+               (lambda () (error "Should not fetch")) :contexts #'identity)
               :to-equal '("a")))))
 
 (describe "eca-chat--raw-prompt-contexts"
@@ -3714,7 +3716,7 @@ detected even on filesystems with a coarse modtime resolution."
            (debug-on-error nil)
            (inhibit-message t)
            (eca-chat-tool-call-functions
-            (list (lambda (_s _c) (error "boom")))))
+            (list (lambda (_s _c) (error "Boom")))))
       (expect (eca-chat--maybe-run-tool-call-functions
                session '(:type "toolCalled" :id "tool-1"))
               :not :to-throw))))
@@ -4434,6 +4436,9 @@ precedes the prompt separator.  Caller must kill the buffer."
                            (overlays-in (point-min) (point-max)))
                   (lambda (a b) (< (overlay-start a) (overlay-start b)))))))
 
+(defconst eca-chat-test--header-actions " ↶ rollback    ⑂ fork    ⚑ flag "
+  "The actions of a user message header: buttons padded as pills.")
+
 (describe "eca-chat--render-content user message without a content id"
   ;; A compaction summary has no content id: offering a rollback to it
   ;; sent a null contentId, which older servers took as a rollback to
@@ -4477,9 +4482,6 @@ precedes the prompt separator.  Caller must kill the buffer."
               (goto-char (overlay-start (eca-chat--get-expandable-content (car ids))))
               (expect (looking-at-p "You\nfirst summary") :to-be-truthy)))
         (kill-buffer buf)))))
-
-(defconst eca-chat-test--header-actions " ↶ rollback    ⑂ fork    ⚑ flag "
-  "The actions of a user message header: buttons padded as pills.")
 
 (defun eca-chat-test--header-line (buf id)
   "Return the header line of the user message block ID in BUF."
@@ -6444,6 +6446,62 @@ PROPS override the ones of `eca-chat-test--tool-call-content'."
                                                :approvalKey "ls"))))
   "Properties making a test tool call a shell command of two commands.")
 
+(defun eca-chat-test--approvals ()
+  "Return the params of each `chat/toolCallApprove' notified so far."
+  (mapcar (lambda (args) (plist-get (cdr args) :params))
+          (seq-filter (lambda (args)
+                        (equal (plist-get (cdr args) :method)
+                               "chat/toolCallApprove"))
+                      (spy-calls-all-args 'eca-api-notify))))
+
+(defun eca-chat-test--receive-params (session params)
+  "Deliver PARAMS for SESSION like the server notification does."
+  (eca-chat-content-received
+   session (append params (list :role "assistant"))))
+
+(defun eca-chat-test--receive-all (session chat-params contents)
+  "Deliver each content of CONTENTS for SESSION with CHAT-PARAMS."
+  (dolist (content contents)
+    (eca-chat-test--receive-params
+     session (append chat-params (list :content content)))))
+
+(defun eca-chat-test--prepare-batch (session ids &optional chat-params)
+  "Prepare tool calls IDS for SESSION and ask approval for the first.
+CHAT-PARAMS default to the top-level chat \"chat-1\"."
+  (let ((chat-params (or chat-params (list :chatId "chat-1"))))
+    (eca-chat-test--receive-all
+     session chat-params
+     (append (mapcar (lambda (id)
+                       (eca-chat-test--tool-call-content "toolCallPrepare" id))
+                     ids)
+             (list (eca-chat-test--tool-call-content
+                    "toolCallRun" (car ids) t))))))
+
+(defmacro eca-chat-test--with-accept-batch-chat (bindings &rest body)
+  "Run BODY with a live chat buffer of an ECA session.
+BINDINGS is (SESSION BUF): the symbols bound to them.  BUF may be
+named `_buf' when BODY does not use it."
+  (declare (indent 1) (debug (sexp body)))
+  (let ((session (car bindings))
+        (buf (cadr bindings))
+        (chat-buf (make-symbol "chat-buf")))
+    `(let* ((,chat-buf (eca-chat-test--make-render-buffer))
+            (,buf ,chat-buf)
+            (,session (make-eca--session))
+            (inhibit-message t))
+       (unwind-protect
+           (eca-chat--with-current-buffer ,chat-buf
+             (setf (eca--session-chats ,session)
+                   (list (cons "chat-1" ,chat-buf)))
+             (spy-on 'eca-session :and-return-value ,session)
+             (spy-on 'eca-assert-session-running)
+             (spy-on 'eca-chat--get-active-buffer :and-return-value ,chat-buf)
+             (spy-on 'eca-chat--get-chat-buffer :and-return-value ,chat-buf)
+             (spy-on 'eca--session-workspace-folders :and-return-value nil)
+             (spy-on 'eca-api-notify)
+             ,@body)
+         (kill-buffer ,chat-buf)))))
+
 (describe "tool call approval buttons"
 
   (it "puts Accept, Always and Reject on one line right under the label"
@@ -7434,58 +7492,6 @@ DETAILS is the task state details plist sent with toolCalled."
 ;; ---------------------------------------------------------------------------
 ;; Accept all pending tool calls of a batch
 ;; ---------------------------------------------------------------------------
-
-(defun eca-chat-test--approvals ()
-  "Return the params of each `chat/toolCallApprove' notified so far."
-  (mapcar (lambda (args) (plist-get (cdr args) :params))
-          (seq-filter (lambda (args)
-                        (equal (plist-get (cdr args) :method)
-                               "chat/toolCallApprove"))
-                      (spy-calls-all-args 'eca-api-notify))))
-
-(defun eca-chat-test--receive-params (session params)
-  "Deliver PARAMS for SESSION like the server notification does."
-  (eca-chat-content-received
-   session (append params (list :role "assistant"))))
-
-(defun eca-chat-test--receive-all (session chat-params contents)
-  "Deliver each content of CONTENTS for SESSION with CHAT-PARAMS."
-  (dolist (content contents)
-    (eca-chat-test--receive-params
-     session (append chat-params (list :content content)))))
-
-(defun eca-chat-test--prepare-batch (session ids &optional chat-params)
-  "Prepare tool calls IDS for SESSION and ask approval for the first.
-CHAT-PARAMS default to the top-level chat \"chat-1\"."
-  (let ((chat-params (or chat-params (list :chatId "chat-1"))))
-    (eca-chat-test--receive-all
-     session chat-params
-     (append (mapcar (lambda (id)
-                       (eca-chat-test--tool-call-content "toolCallPrepare" id))
-                     ids)
-             (list (eca-chat-test--tool-call-content
-                    "toolCallRun" (car ids) t))))))
-
-(defmacro eca-chat-test--with-accept-batch-chat (bindings &rest body)
-  "Run BODY with a live chat buffer of an ECA session.
-BINDINGS is (SESSION BUF): the symbols bound to them."
-  (declare (indent 1) (debug (sexp body)))
-  (let ((session (car bindings))
-        (buf (cadr bindings)))
-    `(let ((,buf (eca-chat-test--make-render-buffer))
-           (,session (make-eca--session))
-           (inhibit-message t))
-       (unwind-protect
-           (eca-chat--with-current-buffer ,buf
-             (setf (eca--session-chats ,session) (list (cons "chat-1" ,buf)))
-             (spy-on 'eca-session :and-return-value ,session)
-             (spy-on 'eca-assert-session-running)
-             (spy-on 'eca-chat--get-active-buffer :and-return-value ,buf)
-             (spy-on 'eca-chat--get-chat-buffer :and-return-value ,buf)
-             (spy-on 'eca--session-workspace-folders :and-return-value nil)
-             (spy-on 'eca-api-notify)
-             ,@body)
-         (kill-buffer ,buf)))))
 
 (describe "eca-chat-tool-call-accept-all"
   (it "accepts the visible call and auto-accepts the rest of the batch"

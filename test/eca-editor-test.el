@@ -65,7 +65,7 @@
     (spy-on 'eca-api-send-request-response))
 
   (after-each
-    (when-let ((buf (find-buffer-visiting eca-editor-test--file)))
+    (when-let* ((buf (find-buffer-visiting eca-editor-test--file)))
       (kill-buffer buf))
     (delete-file eca-editor-test--file))
 
@@ -238,7 +238,7 @@
     (spy-on 'eca-editor--lsp-request-async))
 
   (after-each
-    (when-let ((buf (find-buffer-visiting eca-editor-test--file)))
+    (when-let* ((buf (find-buffer-visiting eca-editor-test--file)))
       (kill-buffer buf))
     (delete-file eca-editor-test--file))
 
@@ -271,13 +271,16 @@ so expected URIs must come from the same source."
 ;; A fake xref backend answering fixed locations inside the temp file:
 ;; the declaration at line 1 column 6 and a usage at line 2 column 2.
 (cl-defmethod xref-backend-identifier-at-point ((_backend (eql eca-editor-test--xref)))
+  "Return the identifier at point for the fake backend."
   "my-func")
 
 (cl-defmethod xref-backend-definitions ((_backend (eql eca-editor-test--xref)) _identifier)
+  "Return the declaration of the fake backend."
   (list (xref-make "(defn my-func [x]"
                    (xref-make-file-location eca-editor-test--file 1 6))))
 
 (cl-defmethod xref-backend-references ((_backend (eql eca-editor-test--xref)) _identifier)
+  "Return the declaration and the usage of the fake backend."
   (list (xref-make "(defn my-func [x]"
                    (xref-make-file-location eca-editor-test--file 1 6))
         (xref-make "  x)"
@@ -301,7 +304,7 @@ so expected URIs must come from the same source."
       (setq-local xref-backend-functions (list (lambda () 'eca-editor-test--xref)))))
 
   (after-each
-    (when-let ((buf (find-buffer-visiting eca-editor-test--file)))
+    (when-let* ((buf (find-buffer-visiting eca-editor-test--file)))
       (kill-buffer buf))
     (delete-file eca-editor-test--file))
 

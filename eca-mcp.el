@@ -256,29 +256,34 @@ nil when the form is closed.")
   (eca-settings-refresh-tab "mcps" session))
 
 (defun eca-mcp--add-form-edit-field (field prompt session)
-  "Read a single-line value for FIELD from minibuffer using PROMPT."
+  "Read a single-line value for FIELD from minibuffer using PROMPT.
+Store it in the add-server form and refresh SESSION's MCPs tab."
   (let ((cur (or (plist-get eca-mcp--add-form-state field) "")))
     (eca-mcp--add-form-set field (read-string prompt cur) session)))
 
 (defun eca-mcp--add-form-edit-list-field (field prompt session)
-  "Read multiple lines for list FIELD (env or headers) until empty."
+  "Read multiple lines for list FIELD (env or headers) until empty.
+Each line is read with PROMPT.  Store the lines in the add-server
+form and refresh SESSION's MCPs tab."
   (let (acc next)
     (while (not (string-empty-p (setq next (read-string prompt ""))))
       (push next acc))
     (eca-mcp--add-form-set field (nreverse acc) session)))
 
 (defun eca-mcp--open-add-form (session)
-  "Open the inline add-server form."
+  "Open the inline add-server form in SESSION's MCPs tab."
   (setq eca-mcp--add-form-state (eca-mcp--add-form-default))
   (eca-settings-refresh-tab "mcps" session))
 
 (defun eca-mcp--cancel-add-form (session)
-  "Close the add-server form without submitting."
+  "Close the add-server form in SESSION's MCPs tab without submitting."
   (setq eca-mcp--add-form-state nil)
   (eca-settings-refresh-tab "mcps" session))
 
 (defun eca-mcp--submit-add-server (session)
-  "Validate current form state and send `mcp/addServer' to the server."
+  "Validate current form state and send `mcp/addServer' to the server.
+The request goes through SESSION, whose MCPs tab is refreshed on
+success."
   (let* ((st eca-mcp--add-form-state)
          (name (string-trim (or (plist-get st :name) "")))
          (transport (plist-get st :transport))
@@ -310,7 +315,7 @@ nil when the form is closed.")
             (setq params (plist-put params :url url))
             (when headers (setq params (plist-put params :headers headers)))))
         (when (string= scope "workspace")
-          (when-let ((folder (car (eca--session-workspace-folders session))))
+          (when-let* ((folder (car (eca--session-workspace-folders session))))
             (setq params (plist-put params :workspaceUri (eca--path-to-uri folder)))))
         (eca-api-request-async
          session
@@ -332,7 +337,7 @@ nil when the form is closed.")
                       (or (plist-get err :message) (format "%S" err))))))))))
 
 (defun eca-mcp--request-confirm-remove (session name)
-  "Start two-step remove-confirmation for server NAME."
+  "Start two-step remove-confirmation in SESSION's MCPs tab for NAME."
   (setq eca-mcp--confirming-remove name)
   (eca-settings-refresh-tab "mcps" session))
 
@@ -342,7 +347,7 @@ nil when the form is closed.")
   (eca-settings-refresh-tab "mcps" session))
 
 (defun eca-mcp--submit-remove-server (session name)
-  "Send `mcp/removeServer' for NAME."
+  "Send `mcp/removeServer' to SESSION's server for server NAME."
   (let ((buf (current-buffer)))
     (eca-api-request-async
      session
@@ -368,7 +373,8 @@ nil when the form is closed.")
        (eca-settings-refresh-tab "mcps" session)))))
 
 (defun eca-mcp--render-add-form (session keymap)
-  "Render the inline add-server form into the current buffer."
+  "Render the inline add-server form into the current buffer.
+Editing it refreshes SESSION's MCPs tab.  Its buttons inherit KEYMAP."
   (let* ((st eca-mcp--add-form-state)
          (transport (plist-get st :transport))
          (scope (plist-get st :scope)))
@@ -618,9 +624,9 @@ Works with both standalone and settings panel buffers."
                          (lambda () (eca-mcp--request-confirm-remove session name)))))))
             (insert "\n")
             (if (seq-empty-p tools)
-                (insert (propertize "No tools available" 'font-lock-face font-lock-doc-face))
+                (insert (propertize "No tools available" 'font-lock-face 'font-lock-doc-face))
               (progn
-                (insert (propertize "Tools: " 'font-lock-face font-lock-doc-face))
+                (insert (propertize "Tools: " 'font-lock-face 'font-lock-doc-face))
                 (seq-doseq (tool tools)
                   (insert (propertize (plist-get tool :name)
                                       'eca-mcp-tool tool
@@ -630,25 +636,25 @@ Works with both standalone and settings panel buffers."
             (when-let* ((prompts (plist-get server :prompts))
                         (_ (not (seq-empty-p prompts))))
               (insert "\n")
-              (insert (propertize "Prompts: " 'font-lock-face font-lock-doc-face))
+              (insert (propertize "Prompts: " 'font-lock-face 'font-lock-doc-face))
               (seq-doseq (prompt prompts)
                 (insert (propertize (plist-get prompt :name)
                                     'font-lock-face 'eca-mcp-details-tool-face) " ")))
             (when-let* ((resources (plist-get server :resources))
                         (_ (not (seq-empty-p resources))))
               (insert "\n")
-              (insert (propertize "Resources: " 'font-lock-face font-lock-doc-face))
+              (insert (propertize "Resources: " 'font-lock-face 'font-lock-doc-face))
               (seq-doseq (resource resources)
                 (insert (propertize (plist-get resource :name)
                                     'font-lock-face 'eca-mcp-details-tool-face) " ")))
             (when command
               (insert "\n")
-              (insert (propertize "Command: " 'font-lock-face font-lock-doc-face))
+              (insert (propertize "Command: " 'font-lock-face 'font-lock-doc-face))
               (insert (propertize (concat command " " (string-join args " "))
                                  'font-lock-face 'eca-mcp-details-command-value-face)))
             (when-let* ((url (plist-get server :url)))
               (insert "\n")
-              (insert (propertize "URL: " 'font-lock-face font-lock-doc-face))
+              (insert (propertize "URL: " 'font-lock-face 'font-lock-doc-face))
               (insert (propertize url
                                  'font-lock-face 'eca-mcp-details-command-value-face)))
             (when (string= "failed" status)
