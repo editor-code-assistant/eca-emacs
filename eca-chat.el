@@ -664,11 +664,6 @@ Underlined, so they read as actionable, and shown with `highlight'
 under the mouse."
   :group 'eca)
 
-(defface eca-chat-rollback-face
-  '((t (:weight bold :underline t)))
-  "Face for the buttons of flags."
-  :group 'eca)
-
 (defface eca-chat-system-messages-face
   '((t :inherit font-lock-builtin-face))
   "Face for the system messages in chat."
@@ -986,6 +981,20 @@ are not currently selected."
   '((t :inherit font-lock-number-face))
   "Face for flag markers in chat."
   :group 'eca)
+
+(defface eca-chat-flag-bar-face
+  '((t :inherit eca-chat-flag-face))
+  "Face for the bar along the line of flags in chat."
+  :group 'eca)
+
+(defface eca-chat-flag-action-face
+  '((t :inherit eca-chat-user-message-action-face))
+  "Face for the actions on the line of flags.
+They look like the actions in the header of user messages."
+  :group 'eca)
+
+(define-obsolete-face-alias 'eca-chat-rollback-face
+  'eca-chat-flag-action-face "0.12.0")
 
 (defface eca-chat-question-face
   '((t :inherit font-lock-string-face :weight bold))
@@ -2077,7 +2086,9 @@ empty."
      (t (concat restored "\n\n" draft)))))
 
 (defun eca-chat--rollback (session content-id &optional text)
-  "Rollback chat messages for SESSION to before CONTENT-ID.
+  "Rollback chat messages for SESSION to CONTENT-ID.
+CONTENT-ID is a user message, removed with all after it, or a flag,
+which servers supporting it keep, removing only what came after it.
 TEXT is the rolled-back user message text; when the rollback
 removes messages, it is restored into the prompt field with any
 current draft appended, after the server clears the chat."
@@ -2115,13 +2126,31 @@ current draft appended, after the server clears the chat."
           ;; leftover on request failure.
           (setq-local eca-chat--prompt-after-clear nil))))))
 
+(defun eca-chat--delete-flag (content-id)
+  "Delete the flag CONTENT-ID from the chat, as if it was never added.
+That is its line and the empty line closing it.  The newline before it
+stays, as it ends the block the flag follows, unlike what
+`eca-chat--remove-expandable-content' does.  The saved turn positions
+after it move back with the text."
+  (when-let* ((ov-label (eca-chat--get-expandable-content content-id))
+              (end (eca-chat--expandable-block-end content-id)))
+    (let ((start (overlay-start ov-label))
+          (inhibit-read-only t))
+      (-some-> (overlay-get ov-label 'eca-chat--expandable-content-ov-content)
+        (delete-overlay))
+      (delete-overlay ov-label)
+      (remhash content-id eca-chat-expandable--id->ov)
+      ;; Its bar evaporates with its text.
+      (delete-region start end)
+      (eca-chat--shift-saved-positions end (- start end)))))
+
 (defun eca-chat--remove-flag (session content-id)
   "Remove a flag identified by CONTENT-ID from the chat via SESSION."
   (eca-api-request-sync session
                         :method "chat/removeFlag"
                         :params (list :chatId eca-chat--id
                                       :contentId content-id))
-  (eca-chat--remove-expandable-content content-id))
+  (eca-chat--delete-flag content-id))
 
 (defun eca-chat--add-flag (session content-id)
   "Ask for a flag name and add it after CONTENT-ID via SESSION.
@@ -5575,17 +5604,24 @@ so the prompt otherwise glues to the end of the last response (#265)."
        ((not (save-excursion (forward-line -1) (eolp)))
         (eca-chat--insert "\n"))))))
 
-(defun eca-chat--user-message-action (label help callback)
-  "Return the LABEL action of a user message header.
-RET or a click on it runs CALLBACK, HELP tells what it does."
+(defun eca-chat--action-button (face label help callback)
+  "Return the LABEL action, a button in FACE, of a line of the chat.
+Like the actions of user message headers and of flags.  RET or a
+click on it runs CALLBACK, HELP tells what it does."
   (let ((action (eca-buttonize
                  eca-chat-mode-map
-                 (propertize label 'font-lock-face 'eca-chat-user-message-action-face)
+                 (propertize label 'font-lock-face face)
                  callback)))
     (add-text-properties 0 (length action)
                          (list 'help-echo help 'mouse-face 'highlight)
                          action)
     action))
+
+(defun eca-chat--user-message-action (label help callback)
+  "Return the LABEL action of a user message header.
+RET or a click on it runs CALLBACK, HELP tells what it does."
+  (eca-chat--action-button 'eca-chat-user-message-action-face
+                           label help callback))
 
 (defun eca-chat--user-message-header (session content-id text time)
   "Return the header line of a user message, for SESSION.
@@ -5667,6 +5703,63 @@ start (an older history page) stays outside of them."
       (overlay-put bar 'evaporate t)
       (overlay-put face 'face 'eca-chat-user-messages-face)
       (overlay-put face 'evaporate t))))
+
+(defun eca-chat--flag-action (label help callback)
+  "Return the LABEL action of the line of a flag.
+RET or a click on it runs CALLBACK, HELP tells what it does."
+  (eca-chat--action-button 'eca-chat-flag-action-face label help callback))
+
+(defun eca-chat--flag-line (session content-id text)
+  "Return the line of the flag CONTENT-ID named TEXT, for SESSION.
+It shows the flag, then the actions on it, which need CONTENT-ID:
+rollback the chat to the flag, fork from it and remove it."
+  (propertize
+   (concat
+    (propertize (concat "🚩️️ " text) 'font-lock-face 'eca-chat-flag-face)
+    "   "
+    (eca-chat--flag-action
+     "↶ rollback" "Rollback the chat to this flag, removing what came after it"
+     (lambda () (eca-chat--rollback session content-id)))
+    "  "
+    (eca-chat--flag-action
+     "⑂ fork" "Fork a new chat with the history up to this flag"
+     (lambda () (eca-chat--fork-from-flag session content-id)))
+    "  "
+    (eca-chat--flag-action
+     "✕ remove" "Remove this flag"
+     (lambda () (eca-chat--remove-flag session content-id))))
+   ;; Its name shows as typed, not as markdown.
+   'eca-no-fontify t))
+
+(defun eca-chat--remove-block-toggle (start end)
+  "Remove the toggle of blocks from the text between START and END.
+That is the keymap and help expanding them, which buttons don't get:
+they keep their own."
+  (let ((inhibit-read-only t)
+        (pos start))
+    (while (< pos end)
+      (let ((next (next-single-property-change pos 'eca-button-on-action nil end)))
+        (unless (get-text-property pos 'eca-button-on-action)
+          (remove-text-properties pos next '(keymap nil help-echo nil)))
+        (setq pos next)))))
+
+(defun eca-chat--paint-flag (ov-label)
+  "Make the flag of OV-LABEL a line of actions, with a bar along it.
+Like the header of user messages, it has nothing to expand: its text
+loses the toggle of blocks, its actions keep their keymaps.  The bar
+is drawn in `eca-chat-flag-bar-face', wrapped lines too.  Text inserted
+at the start of the flag (an older history page, another flag) stays
+outside of the bar."
+  (when-let* ((ov-content (overlay-get ov-label 'eca-chat--expandable-content-ov-content))
+              (start (overlay-start ov-label))
+              (end (overlay-start ov-content)))
+    (eca-chat--remove-block-toggle start end)
+    (let ((bar (make-overlay start end (current-buffer) t nil))
+          (prefix (propertize "▍ " 'face 'eca-chat-flag-bar-face)))
+      (overlay-put bar 'eca-chat--flag-bar t)
+      (overlay-put bar 'line-prefix prefix)
+      (overlay-put bar 'wrap-prefix prefix)
+      (overlay-put bar 'evaporate t))))
 
 (defun eca-chat--linkify-user-message (session ov-label roots)
   "Make the image mentions of the user message of OV-LABEL toggleable.
@@ -5800,17 +5893,6 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
       ("flag"
        (let* ((flag-text (plist-get content :text))
               (flag-content-id (plist-get content :contentId))
-              (flag-str (propertize (concat "🚩️️ " flag-text)
-                                    'font-lock-face 'eca-chat-flag-face))
-              (fork-btn (eca-buttonize
-                         eca-chat-mode-map
-                         (propertize "Fork from here" 'font-lock-face 'eca-chat-rollback-face)
-                         (lambda () (eca-chat--fork-from-flag session flag-content-id))))
-              (remove-btn (eca-buttonize
-                           eca-chat-mode-map
-                           (propertize "Remove flag" 'font-lock-face 'eca-chat-rollback-face)
-                           (lambda () (eca-chat--remove-flag session flag-content-id))))
-              (actions (concat fork-btn "\n" remove-btn))
               (after-id (plist-get content :afterContentId))
               (at-point (when after-id
                           (eca-chat--expandable-block-end after-id))))
@@ -5819,15 +5901,21 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
          ;; renders it in place.
          (unless (and after-id (not at-point))
            (let ((size (buffer-size)))
+             ;; A block with nothing to expand, so that it keeps its
+             ;; id: flags placed after it, truncations and navigation
+             ;; find it like the other blocks.
              (eca-chat--with-overlays-pushed-past at-point
-               (eca-chat--add-expandable-content flag-content-id flag-str actions
-                                                 nil at-point))
+               (eca-chat--add-expandable-content
+                flag-content-id
+                (eca-chat--flag-line session flag-content-id flag-text)
+                "" nil at-point))
              (when at-point
                (eca-chat--shift-saved-positions at-point
                                                 (- (buffer-size) size))))
            (when-let* ((ov (eca-chat--get-expandable-content flag-content-id)))
              (overlay-put ov 'eca-chat--flag-text flag-text)
-             (overlay-put ov 'eca-chat--timestamp (float-time)))
+             (overlay-put ov 'eca-chat--timestamp (float-time))
+             (eca-chat--paint-flag ov))
            (when at-point
              (eca-chat--protect-non-prompt at-point)))))
       ("reasonStarted"
@@ -6451,31 +6539,44 @@ Needed after inserting text above them, as they are plain numbers."
            (end (if ov-content (overlay-end ov-content) (overlay-end ov))))
       (if (eq (char-after end) ?\n) (1+ end) end))))
 
+(defun eca-chat--delete-content-from (start)
+  "Delete the chat content from START up to the prompt, with its blocks."
+  (let ((end (eca-chat--content-insertion-point))
+        (inhibit-read-only t))
+    (when (< start end)
+      (dolist (o (overlays-in start end))
+        (when (and (>= (overlay-start o) start)
+                   (<= (overlay-end o) end))
+          (when-let* ((id (overlay-get o 'eca-chat--expandable-content-id)))
+            (remhash id eca-chat-expandable--id->ov))
+          (delete-overlay o)))
+      (delete-region start end))
+    ;; Like `eca-chat--mark-header', point at the end of the last
+    ;; user message, where its response starts.
+    (setq-local eca-chat--last-user-message-pos
+                (-some-> (eca-chat--last-user-message-id)
+                  (eca-chat--expandable-block-end)))
+    (setq-local eca-chat--last-response-copy-start nil)
+    (setq-local eca-chat--last-response-copy-kind nil)))
+
 (defun eca-chat--truncate-from (content-id)
   "Delete the block with CONTENT-ID and all chat content after it.
 Return nil when CONTENT-ID is not rendered in the current buffer."
   (when-let* ((ov (eca-chat--get-expandable-content content-id)))
     ;; The blank line before the block is kept, so the next user
     ;; message reuses it instead of adding another.
-    (let* ((start (overlay-start ov))
-           (end (eca-chat--content-insertion-point))
-           (inhibit-read-only t))
-      (when (< start end)
-        (dolist (o (overlays-in start end))
-          (when (and (>= (overlay-start o) start)
-                     (<= (overlay-end o) end))
-            (when-let* ((id (overlay-get o 'eca-chat--expandable-content-id)))
-              (remhash id eca-chat-expandable--id->ov))
-            (delete-overlay o)))
-        (delete-region start end))
-      ;; Like `eca-chat--mark-header', point at the end of the last
-      ;; user message, where its response starts.
-      (setq-local eca-chat--last-user-message-pos
-                  (-some-> (eca-chat--last-user-message-id)
-                    (eca-chat--expandable-block-end)))
-      (setq-local eca-chat--last-response-copy-start nil)
-      (setq-local eca-chat--last-response-copy-kind nil)
-      t)))
+    (eca-chat--delete-content-from (overlay-start ov))
+    t))
+
+(defun eca-chat--truncate-after (content-id)
+  "Delete all chat content after the block with CONTENT-ID, keeping it.
+That is the flag a chat was rolled back to.  Return nil when
+CONTENT-ID is not rendered in the current buffer."
+  (when-let* ((start (eca-chat--expandable-block-end content-id)))
+    ;; The empty line closing the block is kept, so the next user
+    ;; message reuses it instead of adding another.
+    (eca-chat--delete-content-from start)
+    t))
 
 (defun eca-chat--reopen (session chat-id &optional prompt)
   "Re-render CHAT-ID for SESSION from the server via `chat/open'.
@@ -6501,18 +6602,24 @@ PROMPT, when non-nil, replaces the prompt field once it is rendered."
      (eca-warn "Failed to refresh chat %s: %s" chat-id err))))
 
 (defun eca-chat-truncated (session params)
-  "Remove a message and all after it, for SESSION and PARAMS.
-When the message is not rendered (e.g. on an unloaded history page),
-re-open the chat from the server instead."
+  "Remove messages from the chat, for SESSION and PARAMS.
+PARAMS tell the first removed message, `:contentId', removed with all
+after it, or the last kept one, `:afterContentId', like the flag the
+chat was rolled back to, all after it being removed.  When that
+message is not rendered (e.g. on an unloaded history page), or none is
+told, re-open the chat from the server instead."
   (let* ((chat-id (plist-get params :chatId))
          (content-id (plist-get params :contentId))
+         (after-id (plist-get params :afterContentId))
          (chat-buffer (eca-chat--get-chat-buffer session chat-id)))
     (when (buffer-live-p chat-buffer)
       (eca-chat--with-current-buffer chat-buffer
         (eca-chat--stream-flush)
         (let ((new-prompt eca-chat--prompt-after-clear))
           (setq-local eca-chat--prompt-after-clear nil)
-          (if (eca-chat--truncate-from content-id)
+          ;; Looking up a nil id would match any overlay without one.
+          (if (cond (after-id (eca-chat--truncate-after after-id))
+                    (content-id (eca-chat--truncate-from content-id)))
               (when new-prompt
                 (eca-chat--set-prompt new-prompt))
             (eca-chat--reopen session chat-id new-prompt)))))))
@@ -8371,10 +8478,12 @@ relative to the on-disk `.el'."
                          (< kpr-exp-pos kpr-md-pos))
                         (t 'unknown)))
          (label-ov (with-current-buffer src-buf
-                     ;; User messages don't toggle: their label line
-                     ;; is the header, whose keymaps run its actions.
+                     ;; User messages and flags don't toggle: their
+                     ;; label line holds their actions, whose keymaps
+                     ;; run them.
                      (-first (lambda (o)
                                (and (overlay-get o 'eca-chat--expandable-content-id)
+                                    (not (overlay-get o 'eca-chat--flag-text))
                                     (not (get-text-property
                                           (overlay-start o)
                                           'eca-chat-user-message-header))))

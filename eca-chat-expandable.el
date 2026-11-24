@@ -81,7 +81,7 @@ and the color of the label for other blocks.  When non-nil, the label
 of these blocks starts with `eca-chat-expandable-block-open-symbol' or
 `eca-chat-expandable-block-close-symbol' instead, in the color of the
 label.  Either way, blocks without content to expand show neither, and
-user messages keep their bar."
+user messages and flags keep their bar."
   :type 'boolean
   :group 'eca)
 

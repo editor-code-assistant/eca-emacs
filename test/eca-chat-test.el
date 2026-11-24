@@ -6411,6 +6411,19 @@ PROPS override the ones of `eca-chat-test--tool-call-content'."
             (expect (substring-no-properties
                      (get-char-property (match-beginning 0) 'line-prefix))
                     :to-equal "▍ "))
+        (kill-buffer buf))))
+
+  (it "keeps the bar of flags, which have nothing to expand"
+    (let ((buf (eca-chat-test--make-live-render-buffer ""))
+          (eca-chat-expandable-block-arrows t))
+      (unwind-protect
+          (with-current-buffer buf
+            (eca-chat-test--render-flag buf "checkpoint" "f1")
+            (goto-char (point-min))
+            (search-forward "checkpoint")
+            (expect (substring-no-properties
+                     (get-char-property (match-beginning 0) 'line-prefix))
+                    :to-equal "▍ "))
         (kill-buffer buf)))))
 
 ;; ---------------------------------------------------------------------------
@@ -6643,23 +6656,27 @@ named `_buf' when BODY does not use it."
           (session (make-eca--session)))
       (unwind-protect
           (eca-chat--with-current-buffer buf
-            (eca-chat--render-content
-             session buf "system" (list :type "flag" :text "a flag" :contentId "f1") nil)
+            (spy-on 'eca-chat--get-chat-buffer :and-return-value buf)
+            (spy-on 'eca-chat--notify-status-changed)
+            (eca-chat-test--add-tool-calls session "tc-1")
             (expect (eca-chat-test--pill-overlays) :to-be nil)
-            (eca-chat--expandable-content-toggle "f1" t nil)
+            ;; The question opens the block of its tool call.
+            (eca-chat-test--ask session "tc-1" 1 '("A1" "B1"))
             (let ((ovs (eca-chat-test--pill-overlays)))
-              ;; Fork from here and Remove flag.
-              (expect (length ovs) :to-equal 2)
+              ;; Its options and Cancel.
+              (expect (length ovs) :to-equal 3)
               (dolist (ov ovs)
                 (expect (overlay-get ov 'priority) :to-be-greater-than 1)
                 (expect (overlay-get ov 'face)
                         :to-be (get-text-property (overlay-start ov) 'font-lock-face))))
             ;; They go away with their buttons, and come back once.
-            (eca-chat--expandable-content-toggle "f1" t t)
+            (eca-chat--expandable-content-toggle "tc-1" t t)
             (expect (eca-chat-test--pill-overlays) :to-be nil)
-            (eca-chat--expandable-content-toggle "f1" t nil)
-            (eca-chat--overlay-buttons (point-min) (point-max))
-            (expect (length (eca-chat-test--pill-overlays)) :to-equal 2))
+            (eca-chat--expandable-content-toggle "tc-1" t nil)
+            (let ((ov-content (eca-chat-test--block-ov-content "tc-1")))
+              (eca-chat--overlay-buttons (overlay-start ov-content)
+                                         (overlay-end ov-content)))
+            (expect (length (eca-chat-test--pill-overlays)) :to-equal 3))
         (kill-buffer buf))))
 
   (it "covers the approval buttons of a tool call nested in a subagent"
@@ -6925,6 +6942,56 @@ CHOOSE receives the candidate list the command offers."
             (eca-chat--rollback session "content-1" "old msg")
             (expect captured :to-be nil)
             (expect 'eca-api-request-sync :to-have-been-called))
+        (kill-buffer buf))))
+
+  (it "rolls back to a flag, keeping the draft"
+    (let ((buf (eca-chat-test--make-prompt-buffer "draft edit"))
+          (session (make-eca--session))
+          (captured 'unset))
+      (unwind-protect
+          (with-current-buffer buf
+            (setq-local eca-chat--id "chat-1")
+            (spy-on 'completing-read
+                    :and-return-value "1. Rollback messages and changes done by tool calls")
+            (spy-on 'eca-api-request-sync :and-call-fake
+                    (lambda (&rest _)
+                      (setq captured eca-chat--prompt-after-clear)))
+            (eca-chat--rollback session "f1")
+            ;; No message text to restore: the flag stays.
+            (expect captured :to-equal "draft edit")
+            (expect 'eca-api-request-sync
+                    :to-have-been-called-with
+                    session :method "chat/rollback"
+                    :params '(:chatId "chat-1" :contentId "f1"
+                              :include ["messages" "tools"])))
+        (kill-buffer buf))))
+
+  (it "rolls the chat back to a flag from its rollback action"
+    (let ((buf (eca-chat-test--make-live-render-buffer "Final answer."))
+          (session (make-eca--session)))
+      (unwind-protect
+          (progn
+            (eca-chat-test--render-user-message buf "first question" "u1")
+            (eca-chat-test--render-flag buf "checkpoint" "f1")
+            (eca-chat-test--render-user-message buf "second question" "u2")
+            (with-current-buffer buf
+              (eca-chat--set-prompt "draft edit"))
+            (spy-on 'eca-chat--get-chat-buffer :and-return-value buf)
+            (spy-on 'completing-read :and-return-value "2. Rollback only messages")
+            ;; Answered like a server supporting rollbacks to flags.
+            (spy-on 'eca-api-request-sync :and-call-fake
+                    (lambda (_session &rest args)
+                      (let ((params (plist-get args :params)))
+                        (expect (plist-get params :include) :to-equal ["messages"])
+                        (eca-chat-truncated session
+                                            (list :chatId (plist-get params :chatId)
+                                                  :afterContentId (plist-get params :contentId))))))
+            (with-current-buffer buf
+              (funcall (eca-chat-test--flag-action-ret buf "rollback")))
+            (expect (eca-chat-test--history-text buf)
+                    :to-match "first question\n\n🚩️️ checkpoint")
+            (expect (eca-chat-test--history-text buf) :not :to-match "second question")
+            (expect (eca-chat-test--prompt-text buf) :to-equal "draft edit"))
         (kill-buffer buf)))))
 
 (describe "eca-chat--usage-str"
@@ -7123,6 +7190,67 @@ CHOOSE receives the candidate list the command offers."
                     :to-have-been-called-with session "chat-1" "old msg")
             (expect (eca-chat-test--history-text buf)
                     :to-match "\\`Final answer\\."))
+        (kill-buffer buf))))
+
+  (it "removes what came after the flag the chat was rolled back to, keeping it"
+    (let ((buf (eca-chat-test--make-live-render-buffer "Final answer."))
+          (session (make-eca--session))
+          (eca-chat-stream-flush-interval nil))
+      (unwind-protect
+          (progn
+            (eca-chat-test--render-user-message buf "first question" "u1")
+            (eca-chat-test--render-flag buf "checkpoint" "f1")
+            ;; Text has no id: only the flag tells where to cut.
+            (eca-chat-test--render-assistant-text session buf "the answer")
+            (eca-chat-test--render-user-message buf "second question" "u2")
+            (with-current-buffer buf
+              (setq-local eca-chat--prompt-after-clear "draft edit"))
+            (spy-on 'eca-chat--get-chat-buffer :and-return-value buf)
+            (eca-chat-truncated session (list :chatId "chat-1" :afterContentId "f1"))
+            (expect (eca-chat-test--history-text buf)
+                    :to-match (concat eca-chat-test--header-re
+                                      "first question\n\n🚩️️ checkpoint [^\n]*\n\n"))
+            (expect (eca-chat-test--history-text buf) :not :to-match "the answer")
+            (expect (eca-chat-test--history-text buf) :not :to-match "second question")
+            (expect (eca-chat-test--prompt-text buf) :to-equal "draft edit")
+            (with-current-buffer buf
+              (expect (eca-chat--get-expandable-content "f1") :not :to-be nil)
+              (expect (eca-chat--get-expandable-content "u2") :to-be nil)
+              (expect eca-chat--last-user-message-pos
+                      :to-equal (eca-chat--expandable-block-end "u1")))
+            ;; The next message reuses the empty line after the flag.
+            (eca-chat-test--render-user-message buf "retry" "u3")
+            (expect (eca-chat-test--history-text buf)
+                    :to-match (concat "🚩️️ checkpoint [^\n]*\n\n"
+                                      eca-chat-test--header-re "retry\n")))
+        (kill-buffer buf))))
+
+  (it "re-opens the chat when the flag is not rendered"
+    (let ((buf (eca-chat-test--make-live-render-buffer "Final answer."))
+          (session (make-eca--session)))
+      (unwind-protect
+          (progn
+            (eca-chat-test--render-user-message buf "first question" "u1")
+            (spy-on 'eca-chat--get-chat-buffer :and-return-value buf)
+            (spy-on 'eca-chat--reopen)
+            (eca-chat-truncated session (list :chatId "chat-1" :afterContentId "missing"))
+            (expect 'eca-chat--reopen :to-have-been-called-with session "chat-1" nil)
+            (expect (eca-chat-test--history-text buf) :to-match "first question"))
+        (kill-buffer buf))))
+
+  (it "re-opens the chat when no message is told, without removing any"
+    (let ((buf (eca-chat-test--make-live-render-buffer "Final answer."))
+          (session (make-eca--session)))
+      (unwind-protect
+          (progn
+            (eca-chat-test--render-user-message buf "first question" "u1")
+            (eca-chat-test--render-flag buf "checkpoint" "f1")
+            (let ((before (eca-chat-test--history-text buf)))
+              (spy-on 'eca-chat--get-chat-buffer :and-return-value buf)
+              (spy-on 'eca-chat--reopen)
+              (eca-chat-truncated session (list :chatId "chat-1"))
+              (expect 'eca-chat--reopen :to-have-been-called-with session "chat-1" nil)
+              (expect (eca-chat-test--history-text buf) :to-equal before)))
         (kill-buffer buf)))))
 
 (defun eca-chat-test--render-flag (buf text id &optional after-id)
@@ -7150,7 +7278,7 @@ CHOOSE receives the candidate list the command offers."
             (eca-chat-test--render-user-message buf "second question" "u2")
             (eca-chat-test--render-flag buf "checkpoint" "f1" "u1")
             (expect (eca-chat-test--history-text buf)
-                    :to-match (concat "first question\n\n🚩️️ checkpoint\n\n+"
+                    :to-match (concat "first question\n\n🚩️️ checkpoint [^\n]*\n\n+"
                                       eca-chat-test--header-re "second question"))
             (expect (< (eca-chat-test--block-start buf "u1")
                        (eca-chat-test--block-start buf "f1")
@@ -7210,6 +7338,192 @@ CHOOSE receives the candidate list the command offers."
             (expect (< (eca-chat-test--block-start buf "u2")
                        (eca-chat-test--block-start buf "f1"))
                     :to-be t))
+        (kill-buffer buf)))))
+
+(defconst eca-chat-test--flag-actions " ↶ rollback    ⑂ fork    ✕ remove "
+  "The actions of the line of a flag: buttons padded as pills.")
+
+(defun eca-chat-test--flag-line (buf id)
+  "Return the line of the flag ID in BUF."
+  (with-current-buffer buf
+    (save-excursion
+      (goto-char (overlay-start (eca-chat--get-expandable-content id)))
+      (buffer-substring (point) (line-end-position)))))
+
+(defun eca-chat-test--flag-action-pos (buf action)
+  "Return where the ACTION of the first flag of BUF starts."
+  (with-current-buffer buf
+    (save-excursion
+      (goto-char (point-min))
+      (search-forward "🚩")
+      (search-forward action)
+      (match-beginning 0))))
+
+(defun eca-chat-test--flag-action-ret (buf action)
+  "Return what RET runs on the ACTION of the first flag of BUF."
+  (with-current-buffer buf
+    (lookup-key (get-text-property (eca-chat-test--flag-action-pos buf action)
+                                   'keymap)
+                (kbd "RET"))))
+
+(describe "eca-chat--render-content flag line"
+
+  (it "shows the flag then its actions on one line"
+    (let ((buf (eca-chat-test--make-live-render-buffer "Final answer.")))
+      (unwind-protect
+          (progn
+            (eca-chat-test--render-user-message buf "first question" "u1")
+            (eca-chat-test--render-flag buf "checkpoint" "f1")
+            (expect (substring-no-properties (eca-chat-test--flag-line buf "f1"))
+                    :to-equal (concat "🚩️️ checkpoint   " eca-chat-test--flag-actions))
+            ;; An empty line before and after it.
+            (expect (eca-chat-test--history-text buf)
+                    :to-match (concat eca-chat-test--header-re "first question\n\n"
+                                      (regexp-quote (concat "🚩️️ checkpoint   "
+                                                            eca-chat-test--flag-actions))
+                                      "\n\n")))
+        (kill-buffer buf))))
+
+  (it "runs the actions on the flag with RET"
+    (let ((buf (eca-chat-test--make-live-render-buffer "")))
+      (unwind-protect
+          (progn
+            (spy-on 'eca-chat--rollback)
+            (spy-on 'eca-chat--fork-from-flag)
+            (spy-on 'eca-chat--remove-flag)
+            (eca-chat-test--render-flag buf "checkpoint" "f1")
+            (with-current-buffer buf
+              (funcall (eca-chat-test--flag-action-ret buf "rollback"))
+              (funcall (eca-chat-test--flag-action-ret buf "fork"))
+              (funcall (eca-chat-test--flag-action-ret buf "remove")))
+            ;; Nothing to restore in the prompt: the flag stays.
+            (expect (cdr (spy-calls-args-for 'eca-chat--rollback 0))
+                    :to-equal '("f1"))
+            (expect (cdr (spy-calls-args-for 'eca-chat--fork-from-flag 0))
+                    :to-equal '("f1"))
+            (expect (cdr (spy-calls-args-for 'eca-chat--remove-flag 0))
+                    :to-equal '("f1")))
+        (kill-buffer buf))))
+
+  (it "draws the actions as buttons, highlighted under the mouse"
+    (let ((buf (eca-chat-test--make-live-render-buffer "")))
+      (unwind-protect
+          (progn
+            (eca-chat-test--render-flag buf "checkpoint" "f1")
+            (with-current-buffer buf
+              (let* ((pos (eca-chat-test--flag-action-pos buf "rollback"))
+                     (face (get-text-property pos 'font-lock-face)))
+                ;; Pills in the color of the flag action face, which
+                ;; looks like the actions of user messages.
+                (expect face :to-be (eca--button-face 'eca-chat-flag-action-face))
+                (expect (face-attribute face :inherit) :to-be 'eca-chat-flag-action-face)
+                (expect (face-attribute 'eca-chat-flag-action-face :inherit)
+                        :to-be 'eca-chat-user-message-action-face)
+                (expect (get-text-property pos 'mouse-face) :to-be 'highlight)
+                (expect (get-text-property pos 'help-echo)
+                        :to-match "Rollback the chat to this flag"))))
+        (kill-buffer buf))))
+
+  (it "no longer expands the flag"
+    (let ((buf (eca-chat-test--make-live-render-buffer "")))
+      (unwind-protect
+          (with-current-buffer buf
+            (eca-chat-test--render-flag buf "checkpoint" "f1")
+            (goto-char (point-min))
+            (search-forward "checkpoint")
+            (expect (get-text-property (match-beginning 0) 'keymap) :to-be nil)
+            (expect (get-text-property (match-beginning 0) 'help-echo) :to-be nil)
+            (expect (eca-chat-test--block-shown "f1") :to-equal "")
+            ;; Expanding it shows nothing more.
+            (eca-chat--expandable-content-toggle "f1" t nil)
+            (expect (eca-chat-test--block-shown "f1") :to-equal ""))
+        (kill-buffer buf))))
+
+  (it "draws a bar along the flag line"
+    (let ((buf (eca-chat-test--make-live-render-buffer "")))
+      (unwind-protect
+          (with-current-buffer buf
+            (eca-chat-test--render-flag buf "checkpoint" "f1")
+            (goto-char (overlay-start (eca-chat--get-expandable-content "f1")))
+            (let ((prefix (get-char-property (point) 'line-prefix)))
+              (expect (substring-no-properties prefix) :to-equal "▍ ")
+              (expect (get-text-property 0 'face prefix) :to-be 'eca-chat-flag-bar-face))
+            (expect (substring-no-properties (get-char-property (point) 'wrap-prefix))
+                    :to-equal "▍ ")
+            (expect (face-attribute 'eca-chat-flag-bar-face :inherit)
+                    :to-be 'eca-chat-flag-face)
+            ;; The empty line after the flag has no bar.
+            (forward-line 1)
+            (expect (get-char-property (point) 'line-prefix) :to-be nil))
+        (kill-buffer buf))))
+
+  (it "leaves the line of the flag out of markdown fontification"
+    (let ((buf (eca-chat-test--make-live-render-buffer "")))
+      (unwind-protect
+          (progn
+            (eca-chat-test--render-flag buf "*not emphasis*" "f1")
+            (with-current-buffer buf
+              (goto-char (overlay-start (eca-chat--get-expandable-content "f1")))
+              (expect (text-property-not-all (point) (line-end-position) 'eca-no-fontify t)
+                      :to-be nil)))
+        (kill-buffer buf))))
+
+  (it "keeps the obsolete eca-chat-rollback-face as an alias of the action face"
+    (expect (get 'eca-chat-rollback-face 'face-alias)
+            :to-be 'eca-chat-flag-action-face)))
+
+(describe "eca-chat--remove-flag"
+
+  (it "removes the flag on the server, then its lines from the chat"
+    (let ((buf (eca-chat-test--make-live-render-buffer "Final answer.")))
+      (unwind-protect
+          (progn
+            (eca-chat-test--render-user-message buf "first question" "u1")
+            (eca-chat-test--render-user-message buf "second question" "u2")
+            (let ((before (eca-chat-test--history-text buf))
+                  (pos (buffer-local-value 'eca-chat--last-user-message-pos buf)))
+              (eca-chat-test--render-flag buf "checkpoint" "f1" "u1")
+              (spy-on 'eca-api-request-sync)
+              (with-current-buffer buf
+                (eca-chat--remove-flag 'session "f1"))
+              (expect 'eca-api-request-sync
+                      :to-have-been-called-with
+                      'session :method "chat/removeFlag"
+                      :params '(:chatId "chat-1" :contentId "f1"))
+              ;; As if it was never added: the empty line closing the
+              ;; message before it is kept.
+              (expect (eca-chat-test--history-text buf) :to-equal before)
+              (expect (buffer-local-value 'eca-chat--last-user-message-pos buf)
+                      :to-equal pos)
+              (with-current-buffer buf
+                (expect (eca-chat--get-expandable-content "f1") :to-be nil)
+                (expect (-some (lambda (ov) (overlay-get ov 'eca-chat--flag-bar))
+                               (overlays-in (point-min) (point-max)))
+                        :to-be nil))))
+        (kill-buffer buf))))
+
+  (it "removes a flag appended at the end of the chat"
+    (let ((buf (eca-chat-test--make-live-render-buffer "Final answer.")))
+      (unwind-protect
+          (progn
+            (eca-chat-test--render-user-message buf "first question" "u1")
+            (let ((before (eca-chat-test--history-text buf)))
+              (eca-chat-test--render-flag buf "checkpoint" "f1")
+              (expect (eca-chat-test--history-text buf) :to-match "checkpoint")
+              (with-current-buffer buf
+                (eca-chat--delete-flag "f1"))
+              (expect (eca-chat-test--history-text buf) :to-equal before)))
+        (kill-buffer buf)))))
+
+(describe "eca-chat--doctor-self-check"
+
+  (it "skips flags, whose line holds actions instead of toggling"
+    (let ((buf (eca-chat-test--make-live-render-buffer "")))
+      (unwind-protect
+          (progn
+            (eca-chat-test--render-flag buf "checkpoint" "f1")
+            (expect (plist-get (eca-chat--doctor-self-check buf) :has-label)
+                    :to-be nil))
         (kill-buffer buf)))))
 
 (describe "eca-chat-cleared"
