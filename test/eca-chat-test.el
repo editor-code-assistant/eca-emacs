@@ -1732,8 +1732,9 @@ VISIBLE is the value `pos-visible-in-window-p' returns."
           (with-current-buffer buf
             (setq-local eca-chat--chat-loading t)
             (eca-chat--refresh-transient-area)
+            ;; The stop button is a pill, padded with spaces.
             (expect (eca-chat-test--transient-text)
-                    :to-equal (concat eca-chat-prompt-prefix-loading "stop\n"))
+                    :to-equal (concat eca-chat-prompt-prefix-loading " stop \n"))
             (expect (eca-chat-test--context-text buf) :to-equal "@")
             (expect (eca-chat-test--prompt-text buf) :to-equal "foo")
             (expect (eca-chat--prompt-block-broken-p) :to-be nil))
@@ -1748,9 +1749,10 @@ VISIBLE is the value `pos-visible-in-window-p' returns."
             (setq-local eca-chat--queued-prompt "queue me")
             (eca-chat--refresh-transient-area)
             (expect (eca-chat-test--transient-text)
-                    :to-equal (concat eca-chat-prompt-prefix-loading "stop\n"
-                                      "Steering: steer me [-]\n"
-                                      "Queued: queue me [-]\n"))
+                    :to-equal (concat eca-chat-prompt-prefix-loading " stop \n"
+                                      ;; Pills drop the brackets of [-].
+                                      "Steering: steer me  - \n"
+                                      "Queued: queue me  - \n"))
             (expect (eca-chat-test--context-text buf) :to-equal "@"))
         (kill-buffer buf))))
 
@@ -1763,8 +1765,8 @@ VISIBLE is the value `pos-visible-in-window-p' returns."
             (eca-chat--refresh-transient-area)
             (eca-chat--refresh-transient-area)
             (expect (eca-chat-test--transient-text)
-                    :to-equal (concat eca-chat-prompt-prefix-loading "stop\n"
-                                      "Queued: queue me [-]\n"))
+                    :to-equal (concat eca-chat-prompt-prefix-loading " stop \n"
+                                      "Queued: queue me  - \n"))
             (setq-local eca-chat--chat-loading nil)
             (setq-local eca-chat--queued-prompt nil)
             (eca-chat--refresh-transient-area)
@@ -1798,7 +1800,7 @@ VISIBLE is the value `pos-visible-in-window-p' returns."
               (expect (buffer-substring-no-properties
                        (eca-chat--prompt-area-start-point) (point-max))
                       :to-equal (concat "\n--- \n"
-                                        eca-chat-prompt-prefix-loading "stop\n"
+                                        eca-chat-prompt-prefix-loading " stop \n"
                                         "@\n"))
               (expect (buffer-substring-no-properties
                        (overlay-start chip-ov) (overlay-end chip-ov))
@@ -2461,10 +2463,11 @@ ROOTS are the workspace roots."
              nil)
             (goto-char (eca-chat-test--label-start "tool-1"))
             (let ((label (buffer-substring-no-properties (point) (line-end-position))))
-              (expect label :to-match " diff\\'")
+              ;; A pill, padded with spaces.
+              (expect label :to-match " diff \\'")
               (expect label :not :to-match "view diff"))
             (expect (eca-chat-test--label-face "tool-1" "diff")
-                    :to-be 'eca-chat-diff-view-face))
+                    :to-be (eca--button-face 'eca-chat-diff-view-face)))
         (kill-buffer buf)))))
 
 (describe "eca-chat copy command"
@@ -3910,8 +3913,9 @@ QUESTION is a pending question plist, or (:tool-call-id ID)."
       (eca-chat-test--ask session "tc-1" 1 '("A1"))
       (eca-chat-test--ask session "tc-2" 2 '("A2"))
       (eca-chat-test--press '(:tool-call-id "tc-1") "A1")
-      (expect (buffer-substring-no-properties (point) (+ (point) 2))
-              :to-equal "A2")
+      ;; On the pill of the option, at its padding.
+      (expect (buffer-substring-no-properties (point) (+ (point) 3))
+              :to-equal " A2")
       (expect (get-text-property (point) 'eca-button-on-action) :to-be-truthy)
       (eca-chat-test--press '(:tool-call-id "tc-2") "A2")
       (expect (point) :to-equal (eca-chat--prompt-field-start-point))))
@@ -4456,7 +4460,9 @@ precedes the prompt separator.  Caller must kill the buffer."
           (with-current-buffer buf
             (eca-chat-test--render-user-message buf "first question" "u1")
             (expect (eca-chat-test--history-text buf)
-                    :to-match "\\`You   ↶ rollback  ⑂ fork  ⚑ flag\nfirst question\n"))
+                    :to-match (concat "\\`" (regexp-quote
+                                             (concat "You   " eca-chat-test--header-actions))
+                                      "\nfirst question\n")))
         (kill-buffer buf))))
 
   (it "gives each of them a block of its own"
@@ -4471,6 +4477,9 @@ precedes the prompt separator.  Caller must kill the buffer."
               (goto-char (overlay-start (eca-chat--get-expandable-content (car ids))))
               (expect (looking-at-p "You\nfirst summary") :to-be-truthy)))
         (kill-buffer buf)))))
+
+(defconst eca-chat-test--header-actions " ↶ rollback    ⑂ fork    ⚑ flag "
+  "The actions of a user message header: buttons padded as pills.")
 
 (defun eca-chat-test--header-line (buf id)
   "Return the header line of the user message block ID in BUF."
@@ -4495,9 +4504,11 @@ precedes the prompt separator.  Caller must kill the buffer."
           (progn
             (eca-chat-test--render-user-message buf "next question" "u1")
             (expect (substring-no-properties (eca-chat-test--header-line buf "u1"))
-                    :to-equal "You   ↶ rollback  ⑂ fork  ⚑ flag")
+                    :to-equal (concat "You   " eca-chat-test--header-actions))
             (expect (eca-chat-test--history-text buf)
-                    :to-match "\nYou   ↶ rollback  ⑂ fork  ⚑ flag\nnext question\n"))
+                    :to-match (concat "\n" (regexp-quote
+                                            (concat "You   " eca-chat-test--header-actions))
+                                      "\nnext question\n")))
         (kill-buffer buf))))
 
   (it "shows when a message just sent was sent"
@@ -4522,7 +4533,7 @@ precedes the prompt separator.  Caller must kill the buffer."
     (let* ((time (float-time (encode-time (list 0 2 9 24 11 2026 nil -1 nil))))
            (header (eca-chat--user-message-header (make-eca--session) "u1" "q" time)))
       (expect (substring-no-properties header)
-              :to-equal "You  09:02   ↶ rollback  ⑂ fork  ⚑ flag")
+              :to-equal (concat "You  09:02   " eca-chat-test--header-actions))
       (expect (get-text-property (string-search "09:02" header) 'help-echo header)
               :to-equal "Sent on 2026-11-24 at 09:02:00")))
 
@@ -4532,7 +4543,7 @@ precedes the prompt separator.  Caller must kill the buffer."
           (progn
             (eca-chat-test--render-user-message buf "old question" "u1")
             (expect (substring-no-properties (eca-chat-test--header-line buf "u1"))
-                    :to-equal "You   ↶ rollback  ⑂ fork  ⚑ flag")
+                    :to-equal (concat "You   " eca-chat-test--header-actions))
             (expect (overlay-get (with-current-buffer buf
                                    (eca-chat--get-expandable-content "u1"))
                                  'eca-chat--timestamp)
@@ -4547,7 +4558,7 @@ precedes the prompt separator.  Caller must kill the buffer."
             (let ((eca-chat--insertion-point-override (copy-marker (point-min) t)))
               (eca-chat-test--render-user-message buf "old question" "u1"))
             (expect (substring-no-properties (eca-chat-test--header-line buf "u1"))
-                    :to-equal "You   ↶ rollback  ⑂ fork  ⚑ flag"))
+                    :to-equal (concat "You   " eca-chat-test--header-actions)))
         (kill-buffer buf))))
 
   (it "runs the actions on the message with RET"
@@ -4570,17 +4581,17 @@ precedes the prompt separator.  Caller must kill the buffer."
                     :to-equal '("u1")))
         (kill-buffer buf))))
 
-  (it "underlines the actions, highlighted under the mouse"
+  (it "draws the actions as buttons, highlighted under the mouse"
     (let ((buf (eca-chat-test--make-live-render-buffer "")))
       (unwind-protect
           (with-current-buffer buf
             (eca-chat-test--render-user-message buf "first question" "u1")
             (goto-char (point-min))
             (search-forward "fork")
-            (expect (get-text-property (match-beginning 0) 'font-lock-face)
-                    :to-be 'eca-chat-user-message-action-face)
-            (expect (face-attribute 'eca-chat-user-message-action-face :underline nil t)
-                    :to-be t)
+            ;; Pills in the color of the action face.
+            (let ((face (get-text-property (match-beginning 0) 'font-lock-face)))
+              (expect face :to-be (eca--button-face 'eca-chat-user-message-action-face))
+              (expect (face-attribute face :inherit) :to-be 'eca-chat-user-message-action-face))
             (expect (get-text-property (match-beginning 0) 'mouse-face)
                     :to-be 'highlight)
             (expect (get-text-property (match-beginning 0) 'help-echo)
@@ -6052,6 +6063,13 @@ and error symbols only show with `eca-chat-expandable-block-arrows'."
     (re-search-forward (concat "^" (regexp-quote string)))
     (get-text-property (match-beginning 0) 'line-prefix)))
 
+(defun eca-chat-test--approval-line-prefix ()
+  "Return the `line-prefix' of the first line of approval buttons."
+  (save-excursion
+    (goto-char (text-property-any (point-min) (point-max)
+                                  'eca-tool-call-pending-approval-accept t))
+    (get-text-property (line-beginning-position) 'line-prefix)))
+
 (defun eca-chat-test--next-line-prefix (id)
   "Return the `line-prefix' of the line after the label of block ID."
   (save-excursion
@@ -6133,11 +6151,10 @@ PROPS override the ones of `eca-chat-test--tool-call-content'."
               (expect (bar "t1") :to-be 'eca-chat-tool-call-running-face)
               (render "toolCallRun" "t1" :manualApproval t)
               (expect (bar "t1") :to-be 'eca-chat-tool-call-pending-face)
-              ;; Along its approval lines, the empty line before them
-              ;; too, and its content, opened for the approval.
+              ;; Along its line of approval buttons, right under the
+              ;; label, and its content, opened for the approval.
               (dolist (prefix (list (eca-chat-test--next-line-prefix "t1")
-                                    (eca-chat-test--line-prefix-at "Accept")
-                                    (eca-chat-test--line-prefix-at "Reject")
+                                    (eca-chat-test--approval-line-prefix)
                                     (eca-chat-test--line-prefix-at "Tool:")))
                 (expect (eca-chat-test--bar-face prefix)
                         :to-be 'eca-chat-tool-call-pending-face))
@@ -6247,8 +6264,7 @@ PROPS override the ones of `eca-chat-test--tool-call-content'."
                    :manualApproval t eca-chat-test--subagent-props)
             (dolist (prefix (list (eca-chat-test--label-prefix "sub-1")
                                   (eca-chat-test--next-line-prefix "sub-1")
-                                  (eca-chat-test--line-prefix-at "Accept")
-                                  (eca-chat-test--line-prefix-at "Reject")))
+                                  (eca-chat-test--approval-line-prefix)))
               (expect (eca-chat-test--bar-face prefix)
                       :to-be 'eca-chat-subagent-tool-call-bar-face)))
         (kill-buffer buf))))
@@ -6263,7 +6279,7 @@ PROPS override the ones of `eca-chat-test--tool-call-content'."
             (eca-chat--render-content
              session buf "assistant"
              (eca-chat-test--tool-call-content "toolCallRun" "t1" t) nil "sub-1")
-            (let ((prefix (eca-chat-test--line-prefix-at "Accept")))
+            (let ((prefix (eca-chat-test--approval-line-prefix)))
               ;; The bar of the subagent, then the one of the tool call.
               (expect (substring-no-properties prefix) :to-equal "▍  ▍  ")
               (expect (eca-chat-test--bar-face prefix)
@@ -6341,7 +6357,7 @@ PROPS override the ones of `eca-chat-test--tool-call-content'."
                                              :manualApproval t)
             (expect (get-text-property 0 'face (eca-chat-test--label-prefix "t1"))
                     :to-be 'eca-chat-mcp-tool-call-label-face)
-            (expect (eca-chat-test--line-prefix-at "Accept") :to-equal "   ")
+            (expect (eca-chat-test--approval-line-prefix) :to-equal "   ")
             (eca-chat-test--render-tool-call session buf "toolCalled" "t1" :error t)
             (expect (get-text-property 0 'face (eca-chat-test--label-prefix "t1"))
                     :to-be 'eca-chat-mcp-tool-call-label-face)
@@ -6393,6 +6409,265 @@ PROPS override the ones of `eca-chat-test--tool-call-content'."
             (expect (substring-no-properties
                      (get-char-property (match-beginning 0) 'line-prefix))
                     :to-equal "▍ "))
+        (kill-buffer buf)))))
+
+;; ---------------------------------------------------------------------------
+;; Approval buttons and buttons drawn as pills
+;; ---------------------------------------------------------------------------
+
+(defun eca-chat-test--line-after-label (id)
+  "Return the text of the line after the label of block ID."
+  (save-excursion
+    (goto-char (eca-chat-test--label-start id))
+    (forward-line 1)
+    (buffer-substring-no-properties (point) (line-end-position))))
+
+(defun eca-chat-test--label-line (id)
+  "Return the text of the label line of block ID."
+  (save-excursion
+    (goto-char (eca-chat-test--label-start id))
+    (buffer-substring-no-properties (point) (line-end-position))))
+
+(defun eca-chat-test--property-at (string prop)
+  "Return PROP of the first STRING of the buffer."
+  (save-excursion
+    (goto-char (point-min))
+    (search-forward string)
+    (get-text-property (match-beginning 0) prop)))
+
+(defconst eca-chat-test--shell-props
+  (list :arguments (list :command "git status && ls")
+        :details (list :type "shellCommand"
+                       :commands (vector (list :command "git" :args ["status"]
+                                               :approvalKey "git")
+                                         (list :command "ls" :args []
+                                               :approvalKey "ls"))))
+  "Properties making a test tool call a shell command of two commands.")
+
+(describe "tool call approval buttons"
+
+  (it "puts Accept, Always and Reject on one line right under the label"
+    (let ((buf (eca-chat-test--make-render-buffer))
+          (session (make-eca--session)))
+      (unwind-protect
+          (eca-chat--with-current-buffer buf
+            (eca-chat-test--render-tool-call session buf "toolCallRun" "t1"
+                                             :manualApproval t)
+            (expect (eca-chat-test--line-after-label "t1")
+                    :to-equal (concat " Accept  C-c C-a    Always  C-c C-y"
+                                      "    Reject  C-c C-r"))
+            ;; The long explanations show on hover.
+            (expect (eca-chat-test--property-at "Accept" 'help-echo)
+                    :to-equal "Accept this tool call")
+            (expect (eca-chat-test--property-at "Always" 'help-echo)
+                    :to-equal "Accept and remember for this session")
+            (expect (eca-chat-test--property-at "Reject" 'help-echo)
+                    :to-equal "Reject and tell ECA what to do differently")
+            (expect (eca-chat-test--property-at "Accept" 'font-lock-face)
+                    :to-be (eca--button-face 'eca-chat-tool-call-accept-face))
+            (expect (eca-chat-test--property-at "Reject" 'font-lock-face)
+                    :to-be (eca--button-face 'eca-chat-tool-call-reject-face)))
+        (kill-buffer buf))))
+
+  (it "names after Always the commands it would remember"
+    (let ((buf (eca-chat-test--make-render-buffer))
+          (session (make-eca--session)))
+      (unwind-protect
+          (eca-chat--with-current-buffer buf
+            (apply #'eca-chat-test--render-tool-call session buf "toolCallRun" "t1"
+                   :manualApproval t eca-chat-test--shell-props)
+            (expect (eca-chat-test--line-after-label "t1")
+                    :to-match "Always  git, ls C-c C-y")
+            (expect (eca-chat-test--property-at "Always" 'help-echo)
+                    :to-equal "Accept, remembering git, ls for this session"))
+        (kill-buffer buf))))
+
+  (it "leaves Always out when it would remember nothing"
+    (let ((buf (eca-chat-test--make-render-buffer))
+          (session (make-eca--session)))
+      (unwind-protect
+          (eca-chat--with-current-buffer buf
+            (eca-chat-test--render-tool-call
+             session buf "toolCallRun" "t1" :manualApproval t
+             :arguments (list :command "ls")
+             :details (list :type "shellCommand"
+                            :commands (vector (list :command "ls" :args []
+                                                    :approvalKey "ls" :remembered t))))
+            (expect (eca-chat-test--line-after-label "t1")
+                    :to-equal " Accept  C-c C-a    Reject  C-c C-r")
+            (expect (text-property-any (point-min) (point-max)
+                                       'eca-tool-call-pending-approval-accept-and-remember t)
+                    :to-be nil))
+        (kill-buffer buf))))
+
+  (it "leaves the pending symbol out of the label, the bar telling it"
+    (let ((buf (eca-chat-test--make-render-buffer))
+          (session (make-eca--session)))
+      (unwind-protect
+          (eca-chat--with-current-buffer buf
+            (eca-chat-test--render-tool-call session buf "toolCallRun" "t1"
+                                             :manualApproval t)
+            (expect (eca-chat-test--label-line "t1")
+                    :to-equal "Calling tool: testServer__testTool")
+            (expect (eca-chat-test--bar-face (eca-chat-test--label-prefix "t1"))
+                    :to-be 'eca-chat-tool-call-pending-face))
+        (kill-buffer buf))))
+
+  (it "keeps the pending symbol with arrows"
+    (let ((buf (eca-chat-test--make-render-buffer))
+          (session (make-eca--session))
+          (eca-chat-expandable-block-arrows t))
+      (unwind-protect
+          (eca-chat--with-current-buffer buf
+            (eca-chat-test--render-tool-call session buf "toolCallRun" "t1"
+                                             :manualApproval t)
+            (expect (eca-chat-test--label-line "t1")
+                    :to-equal (concat "Calling tool: testServer__testTool "
+                                      eca-chat-mcp-tool-call-pending-approval-symbol)))
+        (kill-buffer buf))))
+
+  (it "leaves the pending symbol out of a subagent waiting on a tool call"
+    (let ((buf (eca-chat-test--make-render-buffer))
+          (session (make-eca--session)))
+      (unwind-protect
+          (eca-chat--with-current-buffer buf
+            (eca-chat-test--subagent-block "sub-1")
+            (eca-chat--expandable-content-toggle "sub-1" t nil)
+            (eca-chat--render-content
+             session buf "assistant"
+             (eca-chat-test--tool-call-content "toolCallRun" "t1" t) nil "sub-1")
+            (expect (eca-chat-test--label-line "sub-1")
+                    :not :to-match (regexp-quote
+                                    eca-chat-mcp-tool-call-pending-approval-symbol))
+            (expect (eca-chat-test--bar-face (eca-chat-test--label-prefix "sub-1"))
+                    :to-be 'eca-chat-subagent-tool-call-bar-face))
+        (kill-buffer buf))))
+
+  (it "runs a button with RET on the padding of its pill"
+    (eca-chat-test--with-accept-batch-chat (session _buf)
+      (eca-chat-test--prepare-batch session '("tool-1"))
+      (goto-char (text-property-any (point-min) (point-max)
+                                    'eca-tool-call-pending-approval-accept t))
+      (expect (char-after) :to-equal ?\s)
+      (eca-chat--key-pressed-return)
+      (expect (eca-chat-test--approvals)
+              :to-equal '((:chatId "chat-1" :toolCallId "tool-1"))))))
+
+(describe "eca-chat-tool-call-accept-next"
+  (it "accepts the first tool call waiting for approval"
+    (eca-chat-test--with-accept-batch-chat (session _buf)
+      (eca-chat-test--prepare-batch session '("tool-1"))
+      (eca-chat-tool-call-accept-next)
+      (expect (eca-chat-test--approvals)
+              :to-equal '((:chatId "chat-1" :toolCallId "tool-1"))))))
+
+(describe "eca-chat-tool-call-reject-next"
+  (it "rejects the first tool call waiting for approval"
+    (eca-chat-test--with-accept-batch-chat (session _buf)
+      (eca-chat-test--prepare-batch session '("tool-1"))
+      (eca-chat-tool-call-reject-next)
+      (expect (mapcar (lambda (args) (plist-get (cdr args) :params))
+                      (seq-filter (lambda (args)
+                                    (equal (plist-get (cdr args) :method)
+                                           "chat/toolCallReject"))
+                                  (spy-calls-all-args 'eca-api-notify)))
+              :to-equal '((:chatId "chat-1" :toolCallId "tool-1"))))))
+
+(defun eca-chat-test--pill-overlays ()
+  "Return the overlays drawing pills in the current buffer."
+  (seq-filter (lambda (ov) (overlay-get ov 'eca-button-pill))
+              (overlays-in (point-min) (point-max))))
+
+(describe "buttons inside open blocks"
+
+  (it "draw their pill with an overlay over the background of the block"
+    (let ((buf (eca-chat-test--make-render-buffer))
+          (session (make-eca--session)))
+      (unwind-protect
+          (eca-chat--with-current-buffer buf
+            (eca-chat--render-content
+             session buf "system" (list :type "flag" :text "a flag" :contentId "f1") nil)
+            (expect (eca-chat-test--pill-overlays) :to-be nil)
+            (eca-chat--expandable-content-toggle "f1" t nil)
+            (let ((ovs (eca-chat-test--pill-overlays)))
+              ;; Fork from here and Remove flag.
+              (expect (length ovs) :to-equal 2)
+              (dolist (ov ovs)
+                (expect (overlay-get ov 'priority) :to-be-greater-than 1)
+                (expect (overlay-get ov 'face)
+                        :to-be (get-text-property (overlay-start ov) 'font-lock-face))))
+            ;; They go away with their buttons, and come back once.
+            (eca-chat--expandable-content-toggle "f1" t t)
+            (expect (eca-chat-test--pill-overlays) :to-be nil)
+            (eca-chat--expandable-content-toggle "f1" t nil)
+            (eca-chat--overlay-buttons (point-min) (point-max))
+            (expect (length (eca-chat-test--pill-overlays)) :to-equal 2))
+        (kill-buffer buf))))
+
+  (it "covers the approval buttons of a tool call nested in a subagent"
+    (let ((buf (eca-chat-test--make-render-buffer))
+          (session (make-eca--session)))
+      (unwind-protect
+          (eca-chat--with-current-buffer buf
+            (eca-chat-test--subagent-block "sub-1")
+            (eca-chat--expandable-content-toggle "sub-1" t nil)
+            (eca-chat--render-content
+             session buf "assistant"
+             (eca-chat-test--tool-call-content "toolCallRun" "t1" t) nil "sub-1")
+            (let ((accept (text-property-any (point-min) (point-max)
+                                             'eca-tool-call-pending-approval-accept t)))
+              (expect (-some (lambda (ov) (overlay-get ov 'eca-button-pill))
+                             (overlays-at accept))
+                      :to-be-truthy)))
+        (kill-buffer buf))))
+
+  (it "are not needed by top-level labels"
+    (let ((buf (eca-chat-test--make-render-buffer))
+          (session (make-eca--session)))
+      (unwind-protect
+          (eca-chat--with-current-buffer buf
+            (eca-chat-test--render-tool-call session buf "toolCallRun" "t1"
+                                             :manualApproval t)
+            (expect (eca-chat-test--pill-overlays) :to-be nil))
+        (kill-buffer buf)))))
+
+(describe "links"
+
+  (it "keep the file path of a diff a link rather than a pill"
+    (let ((buf (eca-chat-test--make-render-buffer))
+          (file (make-temp-file "eca-chat-test" nil ".el"))
+          (eca-chat-shrink-called-tools nil))
+      (unwind-protect
+          (eca-chat--with-current-buffer buf
+            (eca-chat--render-content
+             (make-eca--session) buf "assistant"
+             (list :type "toolCalled" :id "tool-1" :name "write_file" :server "eca"
+                   :summary "Creating"
+                   :details (list :type "fileChange" :path file :diff "+x"
+                                  :linesAdded 1 :linesRemoved 0))
+             nil)
+            (eca-chat--expandable-content-toggle "tool-1" t nil)
+            (let ((name (file-name-nondirectory file)))
+              (expect (eca-chat-test--property-at (concat "/" name) 'eca-button-on-action)
+                      :to-be-truthy)
+              (expect (eca-chat-test--property-at (concat "/" name) 'eca-button-pill)
+                      :to-be nil)))
+        (kill-buffer buf)
+        (delete-file file))))
+
+  (it "keep the title of a URL a link rather than a pill"
+    (let ((buf (eca-chat-test--make-render-buffer)))
+      (unwind-protect
+          (eca-chat--with-current-buffer buf
+            ;; URLs go right after the last user message.
+            (setq-local eca-chat--last-user-message-pos (point-min))
+            (eca-chat--render-content
+             (make-eca--session) buf "assistant"
+             (list :type "url" :title "ECA docs" :url "https://eca.dev") nil)
+            (expect (eca-chat-test--property-at "ECA docs" 'eca-button-on-action)
+                    :to-be-truthy)
+            (expect (eca-chat-test--property-at "ECA docs" 'eca-button-pill)
+                    :to-be nil))
         (kill-buffer buf)))))
 
 ;; ---------------------------------------------------------------------------

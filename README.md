@@ -187,6 +187,7 @@ Chat
 - `eca-chat-expandable-block-open-symbol`: Symbol used for expandable blocks in open state, with `eca-chat-expandable-block-arrows`.
 - `eca-chat-expandable-block-close-symbol`: Symbol used for expandable blocks in closed state, with `eca-chat-expandable-block-arrows`.
 - `eca-chat-mcp-tool-call-loading-symbol`: Symbol used for MCP tool calls while loading.
+- `eca-chat-mcp-tool-call-pending-approval-symbol`: Symbol used for MCP tool calls waiting for approval (default `🚧`), with `eca-chat-expandable-block-arrows` only: the bar tells it otherwise.
 - `eca-chat-mcp-tool-call-error-symbol`: Symbol used for MCP tool calls when they fail or are rejected (default `✕`), shown with `eca-chat-tool-call-error-face`, with `eca-chat-expandable-block-arrows` only: the bar tells it otherwise.
 - `eca-chat-mcp-tool-call-success-symbol`: Symbol used for MCP tool calls when they succeed (default `✔`), shown with `eca-chat-tool-call-success-face`, with `eca-chat-expandable-block-arrows` only: the bar tells it otherwise.
 - `eca-chat-expand-pending-approval-tools`: Whether to auto-expand tool calls that are pending approval.
@@ -246,7 +247,7 @@ API / requests
 
 UI / misc
 
-- `eca-buttons-allow-mouse`: Whether ECA buttons can be clicked with the mouse.
+- `eca-buttons-allow-mouse`: Whether ECA buttons can be clicked with the mouse. Buttons are drawn as pills: their text in the color of their face, on a background tinted by it, which follows theme switches. Links, like file paths and URLs, keep their look.
 
 ### Keybindings
 
@@ -272,7 +273,7 @@ You can access the transient menu with common commands via `M-x eca-transient-me
 | Chat: send prompt at chat buffer              | <kbd>C-c</kbd> <kbd>C-RET</kbd>    |
 | Chat: accept all pending tool calls           | <kbd>C-c</kbd> <kbd>C-a</kbd>      |
 | Chat: accept next pending tool call           | <kbd>C-c</kbd> <kbd>C-S-a</kbd>    |
-| Chat: accept all tool calls and remember      | <kbd>C-c</kbd> <kbd>C-s</kbd>      |
+| Chat: accept all tool calls and remember      | <kbd>C-c</kbd> <kbd>C-y</kbd>      |
 | Chat: reject next pending tool call           | <kbd>C-c</kbd> <kbd>C-r</kbd>      |
 | Chat: rename chat                             | <kbd>C-c</kbd> <kbd>C-S-r</kbd>    |
 | Chat: prev prompt history                     | <kbd>C-↑</kbd>                     |

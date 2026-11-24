@@ -116,7 +116,7 @@ whitespace."
     (pcase segment
       ('status (eca-workspaces--chat-status-glyph status))
       ('title
-       (eca-buttonize
+       (eca-buttonize-link
         nil
         (propertize (substring-no-properties (eca-chat-title))
                     'face (if (eq status 'running)
@@ -184,7 +184,7 @@ whitespace."
   (let* ((session-id (eca--session-id session))
          (folded (memq session-id eca-workspaces--folded-sessions))
          (chats-count (length (eca-chat-buffers session)))
-         (label (eca-buttonize
+         (label (eca-buttonize-link
                  nil
                  (concat
                   (propertize (if folded "▶" "▼") 'face 'shadow)

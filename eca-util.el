@@ -12,6 +12,7 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'color)
 (require 'dash)
 (require 'f)
 (require 'transient nil t)
@@ -650,9 +651,104 @@ For example \"5h: 42% used · resets in 2h 13m (14:00)\"."
     (concat (make-string filled ?█)
             (make-string (- width filled) ?░))))
 
-(defun eca-buttonize (base-map text callback)
-  "Create a actionable TEXT that call CALLBACK when actioned.
-Inheirits BASE-MAP."
+;;;; Buttons
+
+(defconst eca--button-tint 0.2
+  "How much of its color tints the background of a button.")
+
+(defvar eca--button-faces nil
+  "Alist of (SOURCE . FACE), the faces drawing buttons as pills.
+SOURCE is the face of the text of the buttons, or nil.")
+
+(defun eca--button-source (text)
+  "Return the face whose color the button TEXT takes, or nil.
+That is the `font-lock-face' or `face' of TEXT, the first face of a
+list of them."
+  (let ((face (or (get-text-property 0 'font-lock-face text)
+                  (get-text-property 0 'face text))))
+    (if (consp face)
+        (-first (lambda (f) (and (symbolp f) (facep f))) face)
+      (and face (symbolp face) (facep face) face))))
+
+(defun eca--button-tint-color (source)
+  "Return the background of buttons in face SOURCE, or nil.
+That is `eca--button-tint' of the color of SOURCE over the default
+background, or nil when one of them is unknown, as on terminals that
+don't tell their colors."
+  (let ((fg (face-foreground (or source 'default) nil t))
+        (bg (eca-safe-face-background 'default nil t)))
+    (when-let* (((not (member fg '("unspecified-fg" "unspecified-bg"))))
+                (fg-rgb (and fg (color-name-to-rgb fg)))
+                (bg-rgb (and bg (color-name-to-rgb bg))))
+      (apply #'color-rgb-to-hex
+             (append (cl-mapcar (lambda (f b)
+                                  (+ (* eca--button-tint f) (* (- 1 eca--button-tint) b)))
+                                fg-rgb bg-rgb)
+                     '(2))))))
+
+(defun eca--button-face-attributes (source)
+  "Return the attributes of the face of buttons in face SOURCE.
+They make a pill in the color of SOURCE, on a background tinted by
+it, or in inverse video when the tint is unknown."
+  (let ((tint (eca--button-tint-color source)))
+    (append (list :inherit source :underline nil :weight 'bold
+                  :slant 'normal :height 0.9)
+            (if tint
+                (list :background tint :inverse-video nil
+                      ;; Inside the pill, a little out on its sides.
+                      :box (list :line-width -2 :color tint))
+              (list :background 'unspecified :inverse-video t :box nil)))))
+
+(defun eca--refresh-button-faces (&rest _)
+  "Recompute the faces of buttons from the colors of the current theme."
+  (pcase-dolist (`(,source . ,face) eca--button-faces)
+    (apply #'set-face-attribute face nil (eca--button-face-attributes source))))
+
+(defun eca--register-button-faces-refresh ()
+  "Recompute the faces of buttons after a theme switch.
+Emacs < 29 has no `enable-theme-functions', so advise `enable-theme'
+and `disable-theme' there instead."
+  (if (>= emacs-major-version 29)
+      (progn
+        (add-hook 'enable-theme-functions #'eca--refresh-button-faces)
+        (add-hook 'disable-theme-functions #'eca--refresh-button-faces))
+    (advice-add 'enable-theme :after #'eca--refresh-button-faces)
+    (advice-add 'disable-theme :after #'eca--refresh-button-faces)))
+
+(defun eca--button-face (source)
+  "Return the face drawing as pills the buttons in face SOURCE.
+It is made on first use, then follows theme switches."
+  (or (alist-get source eca--button-faces)
+      (let ((face (intern (format "eca-button-%s" (or source 'default)))))
+        (make-face face)
+        (set-face-documentation
+         face (format "Face of buttons in `%s', drawn as pills." (or source 'default)))
+        (apply #'set-face-attribute face nil (eca--button-face-attributes source))
+        (push (cons source face) eca--button-faces)
+        (eca--register-button-faces-refresh)
+        face)))
+
+(defun eca--button-pill (text)
+  "Return TEXT padded and drawn as a pill, the look of buttons.
+The pill takes the color of the face of TEXT, see `eca--button-face',
+and keeps its other properties, the padding too.  Brackets around
+TEXT, as in \"[Submit]\", are dropped since the pill tells it's a
+button.  The pill gets its face as `eca-button-pill' too."
+  (let* ((face (eca--button-face (eca--button-source text)))
+         (label (if (string-match-p "\\`\\[[^]]*\\]\\'" text)
+                    (substring text 1 -1)
+                  text))
+         (props (and (> (length label) 0) (text-properties-at 0 label)))
+         (pill (concat (apply #'propertize " " props)
+                       label
+                       (apply #'propertize " " props))))
+    (add-text-properties 0 (length pill)
+                         (list 'face face 'font-lock-face face 'eca-button-pill face)
+                         pill)
+    pill))
+
+(defun eca--buttonize (base-map text callback)
+  "Return TEXT calling CALLBACK when actioned, its keymap inheriting BASE-MAP."
   (let ((km (make-composed-keymap (make-sparse-keymap) base-map))
         (callback-int (lambda (&rest _)
                         (interactive)
@@ -664,9 +760,22 @@ Inheirits BASE-MAP."
     (propertize text
                 'eca-button-on-action callback
                 'pointer 'hand
-                'help-echo text
+                'help-echo (string-trim (substring-no-properties text))
                 'local-map km
                 'keymap km)))
+
+(defun eca-buttonize (base-map text callback)
+  "Return TEXT as a button calling CALLBACK when actioned.
+The button is drawn as a pill in the color of the face of TEXT, see
+`eca--button-pill'.  Its keymap inherits BASE-MAP.  Links, like file
+paths and URLs, use `eca-buttonize-link' instead."
+  (eca--buttonize base-map (eca--button-pill text) callback))
+
+(defun eca-buttonize-link (base-map text callback)
+  "Return TEXT as a link calling CALLBACK when actioned.
+Like `eca-buttonize', but TEXT keeps its look, as links like file
+paths and URLs do.  Its keymap inherits BASE-MAP."
+  (eca--buttonize base-map text callback))
 
 (with-eval-after-load 'transient
   (transient-define-prefix eca--transient-menu-prefix ()

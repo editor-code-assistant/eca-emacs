@@ -485,5 +485,96 @@
         (with-silent-modifications
           (expect (eca--text-change-unsafe-p) :to-be-truthy))))))
 
+;; ---------------------------------------------------------------------------
+;; Buttons drawn as pills
+;; ---------------------------------------------------------------------------
+
+(defface eca-util-test-button-face '((t :foreground "#ff0000"))
+  "Face of the test buttons.")
+
+(describe "eca-buttonize"
+
+  (it "draws a padded pill in the color of the face of the text"
+    (let* ((eca--button-faces nil)
+           (button (eca-buttonize
+                    nil (propertize "Accept" 'font-lock-face 'eca-util-test-button-face)
+                    #'ignore))
+           (face (get-text-property 0 'font-lock-face button)))
+      (expect (substring-no-properties button) :to-equal " Accept ")
+      (expect face :to-be 'eca-button-eca-util-test-button-face)
+      (expect (face-attribute face :inherit) :to-be 'eca-util-test-button-face)
+      (expect (face-attribute face :underline) :to-be nil)
+      (expect (face-attribute face :weight) :to-be 'bold)
+      ;; Every char of the pill is the button, its padding too.
+      (dotimes (i (length button))
+        (expect (get-text-property i 'font-lock-face button) :to-be face)
+        (expect (get-text-property i 'eca-button-pill button) :to-be face)
+        (expect (get-text-property i 'eca-button-on-action button) :to-be #'ignore))
+      (expect (get-text-property 0 'help-echo button) :to-equal "Accept")))
+
+  (it "keeps the other properties of the text, on its padding too"
+    (let ((button (eca-buttonize
+                   nil (propertize "Reject" 'font-lock-face 'error 'eca-util-test-marker t)
+                   #'ignore)))
+      (expect (get-text-property 0 'eca-util-test-marker button) :to-be t)
+      (expect (get-text-property (1- (length button)) 'eca-util-test-marker button)
+              :to-be t)))
+
+  (it "drops the brackets around the text, the pill telling it's a button"
+    (expect (substring-no-properties (eca-buttonize nil "[Submit]" #'ignore))
+            :to-equal " Submit ")
+    (expect (substring-no-properties (eca-buttonize nil "[x] stdio" #'ignore))
+            :to-equal " [x] stdio "))
+
+  (it "shares one face between the buttons of a face"
+    (let ((eca--button-faces nil))
+      (expect (get-text-property
+               0 'font-lock-face
+               (eca-buttonize nil (propertize "a" 'font-lock-face 'eca-util-test-button-face)
+                              #'ignore))
+              :to-be (get-text-property
+                      0 'font-lock-face
+                      (eca-buttonize nil (propertize "b" 'font-lock-face
+                                                     '(eca-util-test-button-face :underline t))
+                                     #'ignore)))
+      (expect (length eca--button-faces) :to-equal 1)))
+
+  (it "tints the background of the pill with its color"
+    (spy-on 'face-foreground :and-return-value "#ffffff")
+    (spy-on 'eca-safe-face-background :and-return-value "#000000")
+    (let ((attributes (eca--button-face-attributes 'eca-util-test-button-face)))
+      (expect (plist-get attributes :background) :to-equal "#333333")
+      (expect (plist-get attributes :box) :to-equal '(:line-width -2 :color "#333333"))
+      (expect (plist-get attributes :inverse-video) :to-be nil)))
+
+  (it "falls back to inverse video when the colors are unknown"
+    (spy-on 'face-foreground :and-return-value "unspecified-fg")
+    (let ((attributes (eca--button-face-attributes 'eca-util-test-button-face)))
+      (expect (plist-get attributes :inverse-video) :to-be t)
+      (expect (plist-get attributes :box) :to-be nil)))
+
+  (it "follows theme switches"
+    (let ((eca--button-faces nil)
+          (tint "#111111"))
+      (spy-on 'eca--button-tint-color :and-call-fake (lambda (_) tint))
+      (let ((face (eca--button-face 'eca-util-test-button-face)))
+        (expect (face-attribute face :background) :to-equal "#111111")
+        (setq tint "#222222")
+        (eca--refresh-button-faces)
+        (expect (face-attribute face :background) :to-equal "#222222")
+        (when (>= emacs-major-version 29)
+          (expect (memq #'eca--refresh-button-faces enable-theme-functions)
+                  :to-be-truthy))))))
+
+(describe "eca-buttonize-link"
+
+  (it "keeps the look of the text"
+    (let ((link (eca-buttonize-link
+                 nil (propertize "src/a.el" 'font-lock-face 'link) #'ignore)))
+      (expect (substring-no-properties link) :to-equal "src/a.el")
+      (expect (get-text-property 0 'font-lock-face link) :to-be 'link)
+      (expect (get-text-property 0 'eca-button-pill link) :to-be nil)
+      (expect (get-text-property 0 'eca-button-on-action link) :to-be #'ignore))))
+
 (provide 'eca-util-test)
 ;;; eca-util-test.el ends here

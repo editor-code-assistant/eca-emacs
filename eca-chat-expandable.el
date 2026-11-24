@@ -322,6 +322,22 @@ space, tab, or newline."
       (add-text-properties 0 (length first) properties first)
       (concat first rest))))
 
+(defun eca-chat--propertize-unset (string &rest properties)
+  "Return a copy of STRING with PROPERTIES on its text that has none.
+For each property and value of PROPERTIES, the parts of STRING that
+already have the property keep it, like the buttons of a label keep
+their `keymap' and `help-echo'."
+  (let ((string (copy-sequence string)))
+    (cl-loop for (prop value) on properties by #'cddr
+             do (let ((pos 0))
+                  (while (< pos (length string))
+                    (let ((next (or (next-single-property-change pos prop string)
+                                    (length string))))
+                      (unless (get-text-property pos prop string)
+                        (put-text-property pos next prop value string))
+                      (setq pos next)))))
+    string))
+
 (defconst eca-chat--expandable-content-base-indent (make-string 3 ?\s))
 
 (defconst eca-chat--expandable-bar-symbol "▍"
@@ -486,6 +502,24 @@ preserved."
                   (put-text-property pos next-change prop new-prefix)))))
           (setq pos next-change))))))
 
+(defun eca-chat--overlay-buttons (start end)
+  "Draw the buttons between START and END with overlays of their own.
+An open block paints its background with an overlay face, which wins
+over the text faces of the pills of `eca-buttonize', leaving only
+their edge: an overlay of a higher priority keeps their background.
+It goes away with the text of its button."
+  (let ((pos start))
+    (while (and (< pos end)
+                (setq pos (text-property-not-all pos end 'eca-button-pill nil)))
+      (let ((next (or (next-single-property-change pos 'eca-button-pill nil end) end)))
+        (unless (-some (lambda (ov) (overlay-get ov 'eca-button-pill)) (overlays-at pos))
+          (let ((ov (make-overlay pos next nil t nil)))
+            (overlay-put ov 'eca-button-pill t)
+            (overlay-put ov 'face (get-text-property pos 'eca-button-pill))
+            (overlay-put ov 'priority 10)
+            (overlay-put ov 'evaporate t)))
+        (setq pos next)))))
+
 (defun eca-chat--paint-nested-label (ov-label)
   "Paint OV-LABEL's `line-prefix` with the parent block's background face.
 So are the other lines of the label, like the approval lines of a tool
@@ -500,6 +534,8 @@ face set."
                 (ov-content (overlay-get ov-label 'eca-chat--expandable-content-ov-content)))
       (eca-chat--apply-face-to-line-prefixes
        (overlay-start ov-label) (overlay-start ov-content) parent-face)
+      ;; Its buttons, like approvals, sit on the background of the parent.
+      (eca-chat--overlay-buttons (overlay-start ov-label) (overlay-start ov-content))
       (let ((end (overlay-end ov-content)))
         (when (< end (point-max))
           (eca-chat--apply-face-to-line-prefixes end (1+ end) parent-face))))))
@@ -533,11 +569,13 @@ NESTED-PROPS is a plist with :parent-id and :label-indent for nested blocks."
                    (list (get-text-property 0 'font-lock-face label) bar-face))
       (overlay-put ov-label 'eca-chat--expandable-content-plain-prefix
                    (eca-chat--expandable-plain-prefix label-indent)))
-    (eca-chat--insert (propertize (eca-chat--propertize-only-first-word label
-                                                                        'line-prefix (eca-chat--expandable-label-prefix
-                                                                                      ov-label
-                                                                                      (not (eca-chat--expandable-text-empty-p text))
-                                                                                      nil))
+    ;; Buttons of the label, like approvals, keep their own keymap.
+    (eca-chat--insert (eca-chat--propertize-unset
+                       (eca-chat--propertize-only-first-word label
+                                                             'line-prefix (eca-chat--expandable-label-prefix
+                                                                           ov-label
+                                                                           (not (eca-chat--expandable-text-empty-p text))
+                                                                           nil))
                                   'keymap (let ((km (make-sparse-keymap)))
                                             (define-key km (kbd "<mouse-1>") (lambda () (interactive) (eca-chat--expandable-content-toggle id)))
                                             (define-key km (kbd "TAB") (lambda () (interactive) (eca-chat--expandable-content-toggle id)))
@@ -742,9 +780,10 @@ in parent."
                                   (and (stringp cur-prefix) (substring-no-properties cur-prefix))))
                 (goto-char label-start)
                 (delete-region (point) label-end)
-                (eca-chat--insert (propertize (eca-chat--propertize-only-first-word label
-                                                                                    'line-prefix label-prefix)
-                                              'help-echo "mouse-1 / RET / tab: expand/collapse"))
+                (eca-chat--insert (eca-chat--propertize-unset
+                                   (eca-chat--propertize-only-first-word label
+                                                                         'line-prefix label-prefix)
+                                   'help-echo "mouse-1 / RET / tab: expand/collapse"))
                 ;; Repaint nested label's line-prefix after label replacement
                 (eca-chat--paint-nested-label ov-label))))
           (when open?
@@ -758,14 +797,17 @@ in parent."
                     (eca-chat--insert delta)
                     (when block-face
                       (eca-chat--apply-face-to-line-prefixes
-                       insert-start (overlay-end ov-content) block-face)))
+                       insert-start (overlay-end ov-content) block-face)
+                      (eca-chat--overlay-buttons insert-start (overlay-end ov-content))))
                 (progn
                   (delete-region (overlay-start ov-content) (overlay-end ov-content))
                   (goto-char (overlay-start ov-content))
                   (eca-chat--insert delta)
                   (when block-face
                     (eca-chat--apply-face-to-line-prefixes
-                     (overlay-start ov-content) (overlay-end ov-content) block-face)))))))
+                     (overlay-start ov-content) (overlay-end ov-content) block-face)
+                    (eca-chat--overlay-buttons
+                     (overlay-start ov-content) (overlay-end ov-content))))))))
         ;; When nested, sync the updated label back to parent's child spec
         ;; so that toggling the parent closed and reopened preserves it.
         ;; The spec shares this block's content text, so it is in sync.
@@ -871,7 +913,8 @@ If FORCE? decide to CLOSE? or not."
                                   (overlay-get ov-content 'eca-chat--expandable-block-nested))))
                   (overlay-put ov-content 'face block-face)
                   (eca-chat--apply-face-to-line-prefixes
-                   (overlay-start ov-content) (overlay-end ov-content) block-face))
+                   (overlay-start ov-content) (overlay-end ov-content) block-face)
+                  (eca-chat--overlay-buttons (overlay-start ov-content) (overlay-end ov-content)))
                 (overlay-put ov-label 'eca-chat--expandable-content-toggle t)))
             ;; Repaint nested label's line-prefix after icon swap
             (eca-chat--paint-nested-label ov-label)))

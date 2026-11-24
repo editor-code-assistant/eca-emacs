@@ -180,7 +180,9 @@ to nil to keep the whole chat buffer writable."
   :group 'eca)
 
 (defcustom eca-chat-mcp-tool-call-pending-approval-symbol "🚧"
-  "The string used in eca chat buffer for mcp tool calls waiting for approval."
+  "The string used in eca chat buffer for mcp tool calls waiting for approval.
+Only shown with `eca-chat-expandable-block-arrows': the bar of the
+block tells it otherwise."
   :type 'string
   :group 'eca)
 
@@ -1860,15 +1862,26 @@ per-category tokens are in the tooltip."
 
 (defun eca-chat--build-tool-call-approval-str-content (session id spacing-line-prefix &optional chat-id details)
   "Build the tool call approval string for SESSION, ID and SPACING-LINE-PREFIX.
+That is one line under the label of the tool call: its Accept, Always
+and Reject buttons, each followed by the keys doing it for the
+pending tool calls, see `eca-chat-tool-call-accept-all'.
 CHAT-ID overrides the buffer-local `eca-chat--id' for the approval
 request, useful for subagent tool calls.
 DETAILS is the tool call details, used for shellCommand breakdowns to
-show which commands an approve & remember would remember, hiding the
-remember action when nothing can be remembered."
-  (let* ((keybinding-for (lambda (command)
-                           (concat "("
-                                   (key-description (car (where-is-internal command eca-chat-mode-map)))
-                                   ")")))
+show after Always the commands it would remember, hiding it when
+nothing can be remembered."
+  (let* ((keys-of (lambda (command)
+                    (concat " " (propertize (key-description
+                                             (car (where-is-internal command eca-chat-mode-map)))
+                                            'font-lock-face 'eca-chat-tool-call-keybinding-face))))
+         (action (lambda (label face help properties callback)
+                   (let ((button (eca-buttonize
+                                  eca-chat-mode-map
+                                  (apply #'propertize label 'font-lock-face face properties)
+                                  callback)))
+                     (add-text-properties 0 (length button) (list 'help-echo help) button)
+                     button)))
+         (gap (propertize "   " 'font-lock-face 'eca-chat-tool-call-approval-content-face))
          (effective-chat-id (or chat-id eca-chat--id))
          (shell-command? (string= "shellCommand" (plist-get details :type)))
          ;; Only the keys that would be newly remembered: already-remembered
@@ -1882,71 +1895,57 @@ remember action when nothing can be remembered."
                                              (plist-get details :commands))))))
          ;; When remembering would save nothing new (no generalizable command,
          ;; or everything already remembered), hide the remember action.
-         (hide-remember? (and shell-command? (null remember-keys)))
-         (remember-suffix
-          (if remember-keys
-              (concat (propertize " " 'font-lock-face 'eca-chat-tool-call-approval-content-face)
-                      (mapconcat (lambda (key)
-                                   (propertize key 'font-lock-face 'eca-chat--tool-call-argument-value-face))
-                                 remember-keys
-                                 (propertize ", " 'font-lock-face 'eca-chat-tool-call-approval-content-face))
-                      (propertize " " 'font-lock-face 'eca-chat-tool-call-approval-content-face))
-            (propertize " for this session "
-                        'font-lock-face 'eca-chat-tool-call-approval-content-face))))
-    (concat (propertize "\n" 'font-lock-face 'eca-chat-tool-call-spacing-face
-                        ;; Under a label ending its line, it starts an
-                        ;; empty line, which keeps the bar of the block.
-                        'line-prefix spacing-line-prefix)
-            (eca-buttonize
-             eca-chat-mode-map
-             (propertize "Accept"
-                         'eca-tool-call-pending-approval-accept t
-                         'eca-tool-call-id id
-                         'line-prefix spacing-line-prefix
-                         'font-lock-face 'eca-chat-tool-call-accept-face)
-             (lambda ()
-               (eca-api-notify session
-                               :method "chat/toolCallApprove"
-                               :params (list :chatId effective-chat-id
-                                             :toolCallId id))))
-            (propertize " " 'font-lock-face 'eca-chat-tool-call-approval-content-face)
-            (propertize (funcall keybinding-for #'eca-chat-tool-call-accept-all)
-                        'font-lock-face 'eca-chat-tool-call-keybinding-face)
-            (unless hide-remember?
-              (concat
-               (propertize "\n" 'font-lock-face 'eca-chat-tool-call-spacing-face)
-               (eca-buttonize
-                eca-chat-mode-map
-                (propertize "Accept and remember"
-                            'eca-tool-call-pending-approval-accept-and-remember t
-                            'eca-tool-call-id id
-                            'line-prefix spacing-line-prefix
-                            'font-lock-face 'eca-chat-tool-call-accept-and-remember-face)
-                (lambda ()
-                  (eca-api-notify session
-                                  :method "chat/toolCallApprove"
-                                  :params (list :chatId effective-chat-id
-                                                :save "session"
-                                                :toolCallId id))))
-               remember-suffix
-               (propertize (funcall keybinding-for #'eca-chat-tool-call-accept-all-and-remember)
-                           'font-lock-face 'eca-chat-tool-call-keybinding-face)))
-            (propertize "\n" 'font-lock-face 'eca-chat-tool-call-spacing-face)
-            (eca-buttonize
-             eca-chat-mode-map
-             (propertize "Reject"
-                         'eca-tool-call-pending-approval-reject t
-                         'line-prefix spacing-line-prefix
-                         'font-lock-face 'eca-chat-tool-call-reject-face)
-             (lambda ()
-               (eca-api-notify session
-                               :method "chat/toolCallReject"
-                               :params (list :chatId effective-chat-id
-                                             :toolCallId id))))
-            (propertize " and tell ECA what to do differently "
-                        'font-lock-face 'eca-chat-tool-call-approval-content-face)
-            (propertize (funcall keybinding-for #'eca-chat-tool-call-reject-next)
-                        'font-lock-face 'eca-chat-tool-call-keybinding-face))))
+         (hide-remember? (and shell-command? (null remember-keys))))
+    (concat (propertize "\n" 'font-lock-face 'eca-chat-tool-call-spacing-face)
+            (propertize
+             (concat
+              (funcall action "Accept" 'eca-chat-tool-call-accept-face
+                       "Accept this tool call"
+                       (list 'eca-tool-call-pending-approval-accept t 'eca-tool-call-id id)
+                       (lambda ()
+                         (eca-api-notify session
+                                         :method "chat/toolCallApprove"
+                                         :params (list :chatId effective-chat-id
+                                                       :toolCallId id))))
+              (funcall keys-of #'eca-chat-tool-call-accept-all)
+              (unless hide-remember?
+                (concat
+                 gap
+                 (funcall action "Always" 'eca-chat-tool-call-accept-and-remember-face
+                          (if remember-keys
+                              (format "Accept, remembering %s for this session"
+                                      (string-join remember-keys ", "))
+                            "Accept and remember for this session")
+                          (list 'eca-tool-call-pending-approval-accept-and-remember t
+                                'eca-tool-call-id id)
+                          (lambda ()
+                            (eca-api-notify session
+                                            :method "chat/toolCallApprove"
+                                            :params (list :chatId effective-chat-id
+                                                          :save "session"
+                                                          :toolCallId id))))
+                 (when remember-keys
+                   (concat " " (mapconcat
+                                (lambda (key)
+                                  (propertize key 'font-lock-face
+                                              'eca-chat--tool-call-argument-value-face))
+                                remember-keys
+                                (propertize ", " 'font-lock-face
+                                            'eca-chat-tool-call-approval-content-face))))
+                 (funcall keys-of #'eca-chat-tool-call-accept-all-and-remember)))
+              gap
+              (funcall action "Reject" 'eca-chat-tool-call-reject-face
+                       "Reject and tell ECA what to do differently"
+                       (list 'eca-tool-call-pending-approval-reject t)
+                       (lambda ()
+                         (eca-api-notify session
+                                         :method "chat/toolCallReject"
+                                         :params (list :chatId effective-chat-id
+                                                       :toolCallId id))))
+              (funcall keys-of #'eca-chat-tool-call-reject-next))
+             ;; The bar of the block runs along the line, wrapped too.
+             'line-prefix spacing-line-prefix
+             'wrap-prefix spacing-line-prefix))))
 
 (defun eca-chat--insert-prompt-string ()
   "Insert the prompt and context string adding overlay metadatas."
@@ -3058,11 +3057,13 @@ characters as part of the URL."
          (eca-chat--toggle-image-thumbnail link)
          t))
 
-      ;; check it's an actionable text
-      ((-some->> (thing-at-point 'symbol) (get-text-property 0 'eca-button-on-action))
-       (-some->> (thing-at-point 'symbol)
-         (get-text-property 0 'eca-button-on-action)
-         (funcall)))
+      ;; check it's an actionable text: point on a button, its padding
+      ;; included, or right after one
+      ((or (get-text-property (point) 'eca-button-on-action)
+           (-some->> (thing-at-point 'symbol) (get-text-property 0 'eca-button-on-action)))
+       (funcall (or (get-text-property (point) 'eca-button-on-action)
+                    (-some->> (thing-at-point 'symbol)
+                      (get-text-property 0 'eca-button-on-action)))))
 
       ;; check is inside a expandable text
       ((eca-chat--expandable-content-at-point)
@@ -4550,14 +4551,14 @@ It tells the block the face of its bar, see
 (defun eca-chat--tool-call-label-with-status (head status &rest tail)
   "Return the label of a tool call: HEAD, its STATUS, then TAIL strings.
 STATUS is from `eca-chat--tool-call-status-symbol'.  The bar of the
-block already tells a tool call succeeded or failed, so its success
-or error symbol is left out, unless `eca-chat-expandable-block-arrows'.
-HEAD then gives the bar its color instead, unless it already does,
-like the label of a subagent."
+block already tells a tool call succeeded, failed or waits for
+approval, so the symbol of these states is left out, unless
+`eca-chat-expandable-block-arrows'.  HEAD then gives the bar its color
+instead, unless it already does, like the label of a subagent."
   (if (and (not eca-chat-expandable-block-arrows)
            (stringp status)
            (memq (get-text-property 0 'eca-chat--tool-call-state status)
-                 '(success error)))
+                 '(success error pending)))
       (apply #'concat
              (if (text-property-not-all 0 (length head)
                                         'eca-chat-expandable-bar-face nil head)
@@ -4574,7 +4575,7 @@ checked: this runs from the process filter, where a remote round
 trip blocks Emacs and may hang it."
   (concat "\n"
           (if (and path (or (file-remote-p path) (f-exists? path)))
-              (eca-buttonize
+              (eca-buttonize-link
                eca-chat-mode-map
                (propertize (eca-chat--relativize-filename-for-workspace-root path roots)
                            'font-lock-face 'eca-chat-file-path-face)
@@ -5289,8 +5290,7 @@ Append STATUS symbol.  Optional PARENT-ID for nested rendering."
                     status))
           (new-label (eca-chat--tool-call-label-with-status
                       (concat (eca-chat--subagent-label label status) steps-info)
-                      status time
-                      (when approval-text (concat "\n" approval-text))))
+                      status time approval-text))
           (has-children? (and existing-ov
                               (eca-chat--segments-children
                                (overlay-get existing-ov 'eca-chat--expandable-content-segments)))))
@@ -5309,11 +5309,12 @@ Append STATUS symbol.  Optional PARENT-ID for nested rendering."
             (goto-char (overlay-start existing-ov))
             (delete-region (point) (1- (overlay-start ov-content)))
             (eca-chat--insert
-             (propertize (eca-chat--propertize-only-first-word
-                          new-label
-                          'line-prefix (eca-chat--expandable-label-prefix
-                                        existing-ov has-content? open?))
-                         'help-echo "mouse-1 / RET / tab: expand/collapse"))
+             (eca-chat--propertize-unset
+              (eca-chat--propertize-only-first-word
+               new-label
+               'line-prefix (eca-chat--expandable-label-prefix
+                             existing-ov has-content? open?))
+              'help-echo "mouse-1 / RET / tab: expand/collapse"))
             (eca-chat--paint-nested-label existing-ov)))
       ;; No children yet — safe to replace the full content body
       (eca-chat--update-expandable-content
@@ -5358,11 +5359,12 @@ Rebuilds the steps-info string with current usage and updates the overlay."
         (goto-char (overlay-start ov-label))
         (delete-region (point) (1- (overlay-start ov-content)))
         (eca-chat--insert
-         (propertize (eca-chat--propertize-only-first-word
-                      new-label
-                      'line-prefix (eca-chat--expandable-label-prefix
-                                    ov-label has-content? open?))
-                     'help-echo "mouse-1 / RET / tab: expand/collapse"))))))
+         (eca-chat--propertize-unset
+          (eca-chat--propertize-only-first-word
+           new-label
+           'line-prefix (eca-chat--expandable-label-prefix
+                         ov-label has-content? open?))
+          'help-echo "mouse-1 / RET / tab: expand/collapse"))))))
 
 (defun eca-chat--mark-tool-call-approval-resolved (id)
   "Mark tool call ID's block as past the approval stage."
@@ -5418,11 +5420,12 @@ Only updates the label line, preserving all nested child content."
         (goto-char (overlay-start ov-label))
         (delete-region (point) (1- (overlay-start ov-content)))
         (eca-chat--insert
-         (propertize (eca-chat--propertize-only-first-word
-                      new-label
-                      'line-prefix (eca-chat--expandable-label-prefix
-                                    ov-label has-content? open?))
-                     'help-echo "mouse-1 / RET / tab: expand/collapse"))))))
+         (eca-chat--propertize-unset
+          (eca-chat--propertize-only-first-word
+           new-label
+           'line-prefix (eca-chat--expandable-label-prefix
+                         ov-label has-content? open?))
+          'help-echo "mouse-1 / RET / tab: expand/collapse"))))))
 
 (defun eca-chat--task-tool-call-p (content)
   "Return non-nil if CONTENT represents an eca__task tool call."
@@ -5539,11 +5542,12 @@ otherwise a chat with the task tool configured as `ask' hangs on
 \(editor-code-assistant/eca#584).  SESSION, CHAT-ID and
 SPACING-LINE-PREFIX build the approval prompt for the tool call id."
   (-let* (((&plist :id id :name name :server server :arguments args :summary summary) content)
-          (label (concat (propertize (or summary (format "Calling tool: %s__%s" server name))
-                                     'font-lock-face 'eca-chat-mcp-tool-call-label-face)
-                         " " (eca-chat--tool-call-status-symbol 'pending)
-                         (eca-chat--build-tool-call-approval-str-content
-                          session id spacing-line-prefix chat-id))))
+          (label (eca-chat--tool-call-label-with-status
+                  (propertize (or summary (format "Calling tool: %s__%s" server name))
+                              'font-lock-face 'eca-chat-mcp-tool-call-label-face)
+                  (eca-chat--tool-call-status-symbol 'pending)
+                  (eca-chat--build-tool-call-approval-str-content
+                   session id spacing-line-prefix chat-id))))
     (eca-chat--set-task-widget label
                                (eca-chat--tool-call-body
                                 (eca-chat--content-table `(("Tool" . ,name)
@@ -5783,7 +5787,7 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
        (unless parent-tool-call-id
          (eca-chat--add-header
           (concat "🌐 "
-                  (eca-buttonize
+                  (eca-buttonize-link
                    eca-chat-mode-map
                    (plist-get content :title)
                    (lambda () (browse-url (plist-get content :url))))
@@ -5958,10 +5962,9 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
              ("subagent" (eca-chat--tool-call-subagent-details id args label approval-text nil status parent-tool-call-id details))
              (_ (eca-chat--update-expandable-content
                  id
-                 (concat (propertize label 'font-lock-face 'eca-chat-mcp-tool-call-label-face)
-                         " " status
-                         "\n"
-                         approval-text)
+                 (eca-chat--tool-call-label-with-status
+                  (propertize label 'font-lock-face 'eca-chat-mcp-tool-call-label-face)
+                  status approval-text)
                  (eca-chat--tool-call-body
                   (eca-chat--content-table
                    `(("Tool" . ,name)
@@ -7265,6 +7268,15 @@ for the session."
   (eca-chat--accept-pending-batch
    'eca-tool-call-pending-approval-accept-and-remember "session"))
 
+(defun eca-chat--press-first-button (prop)
+  "Run the action of the first button of the buffer with property PROP."
+  (save-excursion
+    (goto-char (point-min))
+    (when-let* ((match (text-property-search-forward prop t t))
+                (action (get-text-property (prop-match-beginning match)
+                                           'eca-button-on-action)))
+      (funcall action))))
+
 ;;;###autoload
 (defun eca-chat-tool-call-accept-next ()
   "Search the next pending approval tool call in the buffer and approve it.
@@ -7272,10 +7284,7 @@ Starting from the beginning of the buffer."
   (interactive)
   (eca-assert-session-running (eca-session))
   (eca-chat--with-current-buffer (eca-chat--get-active-buffer (eca-session))
-    (save-excursion
-      (goto-char (point-min))
-      (when (text-property-search-forward 'eca-tool-call-pending-approval-accept t t)
-        (call-interactively #'eca-chat--key-pressed-return)))))
+    (eca-chat--press-first-button 'eca-tool-call-pending-approval-accept)))
 
 ;;;###autoload
 (defun eca-chat-tool-call-reject-next ()
@@ -7284,10 +7293,7 @@ Starting from the beginning of the buffer."
   (interactive)
   (eca-assert-session-running (eca-session))
   (eca-chat--with-current-buffer (eca-chat--get-active-buffer (eca-session))
-    (save-excursion
-      (goto-char (point-min))
-      (when (text-property-search-forward 'eca-tool-call-pending-approval-reject t t)
-        (call-interactively #'eca-chat--key-pressed-return)))))
+    (eca-chat--press-first-button 'eca-tool-call-pending-approval-reject)))
 
 ;;;###autoload
 (defun eca-chat-reset ()
