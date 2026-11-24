@@ -705,6 +705,56 @@ around rendering applies, as when the chat window is selected."
         (eca-chat--tool-call-elapsed-stop-all)
         (kill-buffer buf)))))
 
+(describe "eca-chat--on-window-size-change"
+  (it "lays the tables out again only when the chat window width changes"
+    (let ((buf (eca-chat-test--make-render-buffer))
+          (eca-chat-table-beautify t)
+          (scheduled 0))
+      (unwind-protect
+          (save-window-excursion
+            (set-window-buffer (selected-window) buf)
+            (with-current-buffer buf
+              (cl-letf (((symbol-function 'run-with-idle-timer)
+                         (lambda (&rest _) (cl-incf scheduled) (timer-create)))
+                        ((symbol-function 'eca-table-beautify) #'ignore))
+                (eca-chat--beautify-tables)
+                (expect eca-chat--table-layout-width
+                        :to-equal (window-body-width (selected-window)))
+                ;; E.g. the minibuffer growing: the width the tables
+                ;; were laid out for is the same, nothing to redo.
+                (eca-chat--on-window-size-change (selected-frame))
+                (expect scheduled :to-equal 0)
+                (setq-local eca-chat--table-layout-width
+                            (1+ eca-chat--table-layout-width))
+                (eca-chat--on-window-size-change (selected-frame))
+                (expect scheduled :to-equal 1))))
+        (kill-buffer buf)))))
+
+(describe "toolCallPrepare argument streaming"
+  (it "shows the arguments accumulated across chunks"
+    (let ((buf (eca-chat-test--make-render-buffer))
+          (session (make-eca--session))
+          (eca-chat-tool-call-prepare-throttle 'smart)
+          (eca-chat-tool-call-prepare-update-interval 5))
+      (unwind-protect
+          (eca-chat--with-current-buffer buf
+            (dotimes (i 6)
+              (eca-chat-test--receive
+               session buf (append (eca-chat-test--tool-call-content
+                                    "toolCallPrepare" "tool-1")
+                                   (list :argumentsText (format "c%d," i)))))
+            ;; The 1st and 6th chunks update the block, each time with
+            ;; all the arguments received so far.
+            (expect (eca-chat--expandable-text-string
+                     (eca-chat-test--block-text "tool-1"))
+                    :to-equal "c0,c1,c2,c3,c4,c5,")
+            (eca-chat-test--receive
+             session buf (eca-chat-test--tool-call-content "toolCalled" "tool-1"))
+            (expect (gethash "tool-1" eca-chat--tool-call-prepare-content-cache)
+                    :to-be nil))
+        (eca-chat--tool-call-elapsed-stop-all)
+        (kill-buffer buf)))))
+
 (describe "eca-chat--with-point-preserved"
   (it "restores point moved by the body"
     (with-temp-buffer
@@ -868,8 +918,10 @@ VISIBLE is the value `pos-visible-in-window-p' returns."
               (eca-chat-test--capture-timers
                (lambda ()
                  (eca-chat-test--receive session buf '(:type "text" :text "x"))))
+              ;; Queued text inserts nothing, so there is nothing new to
+              ;; protect: the flush protects it once rendered.
               (expect (reverse events)
-                      :to-equal '(callback protect status revert tool track))
+                      :to-equal '(callback status revert tool track))
               (expect eca-chat--stream-pending-chunks :to-equal '("x"))
               (expect (point) :to-equal cursor))
           (eca-chat--stream-cancel)))))
@@ -931,6 +983,9 @@ VISIBLE is the value `pos-visible-in-window-p' returns."
         (eca-chat--tool-call-subagent-details
          "parent" '(:agent "agent" :task "task") "Calling" nil nil
          eca-chat-mcp-tool-call-loading-symbol nil '(:type "subagent"))
+        ;; Expanded, so the nested text lands in the buffer.
+        (let ((inhibit-read-only t))
+          (eca-chat--expandable-content-toggle "parent" t nil))
         (spy-on 'eca--session-workspace-folders :and-return-value nil)
         (spy-on 'eca-chat--viewing-bottom-p :and-return-value t)
         (unwind-protect
@@ -941,6 +996,46 @@ VISIBLE is the value `pos-visible-in-window-p' returns."
               (expect 'eca-chat--viewing-bottom-p :to-have-been-called)
               (expect 'pos-visible-in-window-p :to-have-been-called)
               (expect eca-chat--stream-pending-chunks :to-be nil)
+              (expect (buffer-string) :to-match "nested"))
+          (eca-chat--stream-cancel)))))
+
+  (it "skips the end check and protection for a collapsed thinking chunk"
+    (eca-chat-test--with-streaming-prompt nil
+      (let ((session (make-eca--session)))
+        (eca-chat-test--receive session buf '(:type "reasonStarted" :id "r1"))
+        (eca-chat-test--receive
+         session buf '(:type "reasonText" :id "r1" :text "First "))
+        (spy-on 'eca-chat--ensure-prompt-end-visible)
+        (spy-on 'eca-chat--protect-non-prompt)
+        (let ((tick (buffer-chars-modified-tick)))
+          (dotimes (_ 5)
+            (eca-chat-test--receive
+             session buf '(:type "reasonText" :id "r1" :text "more ")))
+          (expect (buffer-chars-modified-tick) :to-equal tick)
+          (expect 'eca-chat--ensure-prompt-end-visible :not :to-have-been-called)
+          (expect 'eca-chat--protect-non-prompt :not :to-have-been-called)))))
+
+  (it "skips the end check for nested text in a collapsed block"
+    (eca-chat-test--with-streaming-prompt nil
+      (let ((session (make-eca--session)) (eca-chat-stream-flush-interval 1))
+        (setf (eca--session-chats session) (list (cons "chat-1" buf)))
+        (puthash "child" "parent" eca-chat--subagent-chat-id->tool-call-id)
+        (eca-chat--tool-call-subagent-details
+         "parent" '(:agent "agent" :task "task") "Calling" nil nil
+         eca-chat-mcp-tool-call-loading-symbol nil '(:type "subagent"))
+        (spy-on 'eca--session-workspace-folders :and-return-value nil)
+        (spy-on 'eca-chat--protect-non-prompt)
+        (unwind-protect
+            (let ((tick (buffer-chars-modified-tick)))
+              (eca-chat-content-received
+               session '(:chatId "child" :parentChatId "chat-1"
+                         :role "assistant" :content (:type "text" :text "nested")))
+              ;; The collapsed parent keeps the text out of the buffer:
+              ;; nothing to scroll to, nor to protect.
+              (expect (buffer-chars-modified-tick) :to-equal tick)
+              (expect 'pos-visible-in-window-p :not :to-have-been-called)
+              (expect 'recenter :not :to-have-been-called)
+              (expect 'eca-chat--protect-non-prompt :not :to-have-been-called)
               (let ((inhibit-read-only t))
                 (eca-chat--expandable-content-toggle "parent" t nil))
               (expect (buffer-string) :to-match "nested"))
@@ -1869,6 +1964,39 @@ VISIBLE is the value `pos-visible-in-window-p' returns."
               (expect (eca-chat-test--prompt-text buf) :to-equal "hi!")))
         (kill-buffer buf))))
 
+  (it "stops at TO, leaving the rest of the history alone"
+    (let ((buf (eca-chat-test--make-prompt-buffer "hello"))
+          (eca-chat-read-only-history t))
+      (unwind-protect
+          (with-current-buffer buf
+            ;; The history is "header": protect its first 3 chars only.
+            (eca-chat--protect-non-prompt (point-min) (+ (point-min) 3))
+            (expect (get-text-property (+ (point-min) 2) 'read-only) :to-be t)
+            (expect (get-text-property (+ (point-min) 3) 'read-only) :to-be nil)
+            ;; The boundary before the editable areas is not reached.
+            (expect (get-text-property (+ (point-min) 2) 'rear-nonsticky)
+                    :to-be nil))
+        (kill-buffer buf))))
+
+  (it "re-protects only the toggled block"
+    (let ((buf (eca-chat-test--make-render-buffer))
+          (eca-chat-read-only-history t))
+      (unwind-protect
+          (eca-chat--with-current-buffer buf
+            (eca-chat--add-expandable-content
+             "b1" (propertize "Block" 'font-lock-face 'error) "inside the block")
+            (spy-on 'eca-chat--protect-non-prompt :and-call-through)
+            (eca-chat--expandable-content-toggle "b1" t nil)
+            (let* ((ov-label (eca-chat--get-expandable-content "b1"))
+                   (ov-content (overlay-get ov-label
+                                            'eca-chat--expandable-content-ov-content)))
+              (expect 'eca-chat--protect-non-prompt
+                      :to-have-been-called-with
+                      (overlay-start ov-label) (overlay-end ov-content))
+              (expect (get-text-property (overlay-start ov-content) 'read-only)
+                      :to-be t)))
+        (kill-buffer buf))))
+
   ;; Issue #337: the change hooks got the whole protected range on each
   ;; streamed chunk, e.g. rescanning the turn for markdown checkboxes.
   (it "protects without running the change hooks nor recording undo"
@@ -2333,6 +2461,32 @@ ROOTS are the workspace roots."
         (eca-chat-copy-at-point)
         (expect (current-kill 0 t) :to-equal "(+ 1 2)"))))
 
+  (it "keeps no markers in code block scopes, following edits before them"
+    (let (kill-ring
+          kill-ring-yank-pointer)
+      (with-temp-buffer
+        (setq major-mode 'eca-chat-mode)
+        (insert "```elisp\n(+ 1 2)\n```\n")
+        (eca-chat--refresh-code-copy-scopes (point-min) (point-max))
+        (let ((scope (-first (lambda (ov) (overlay-get ov 'eca-chat--code-copy-scope))
+                             (overlays-in (point-min) (point-max)))))
+          ;; Every edit of the buffer has to update each marker.
+          (expect (seq-filter #'markerp (overlay-properties scope)) :to-be nil)
+          (goto-char (point-min))
+          (insert "Intro\n")
+          (expect (eca-chat--copy-scope-range scope)
+                  :to-equal (cons (save-excursion
+                                    (goto-char (point-min))
+                                    (search-forward "(+ 1 2)")
+                                    (match-beginning 0))
+                                  (save-excursion
+                                    (goto-char (point-max))
+                                    (search-backward "```")))))
+        (goto-char (point-min))
+        (search-forward "(+ 1 2)")
+        (eca-chat-copy-at-point)
+        (expect (current-kill 0 t) :to-equal "(+ 1 2)"))))
+
   (it "copies two-backtick fenced code block content"
     (let (kill-ring
           kill-ring-yank-pointer)
@@ -2525,9 +2679,27 @@ ROOTS are the workspace roots."
           (spy-on 'eca-chat--font-lock-ensure)
           (eca-chat--schedule-fontify)
           (expect scheduled :to-be-truthy)
-          (funcall scheduled)
+          (save-window-excursion
+            (set-window-buffer (selected-window) (current-buffer))
+            (funcall scheduled))
           (expect 'eca-chat--font-lock-ensure
                   :to-have-been-called-with 2 (point-max))
+          (expect eca-chat--fontify-timer :to-be nil)))))
+
+  (it "leaves a chat shown in no window to jit-lock"
+    (with-temp-buffer
+      (insert "abc")
+      (setq-local eca-chat-fontify-debounce-interval 0.15)
+      (let (scheduled)
+        (cl-letf (((symbol-function 'run-with-idle-timer)
+                   (lambda (_secs _repeat fn &rest args)
+                     (setq scheduled (lambda () (apply fn args)))
+                     'test-timer)))
+          (spy-on 'eca-chat--font-lock-ensure)
+          (eca-chat--schedule-fontify)
+          (expect (get-buffer-window (current-buffer) t) :to-be nil)
+          (funcall scheduled)
+          (expect 'eca-chat--font-lock-ensure :not :to-have-been-called)
           (expect eca-chat--fontify-timer :to-be nil))))))
 
 (describe "eca-chat prompt fontification guard"
@@ -3422,6 +3594,37 @@ detected even on filesystems with a coarse modtime resolution."
                     :to-be nil)
             (expect eca-chat--stream-flush-timer :to-be nil))
         (when (buffer-live-p buf)
+          (kill-buffer buf)))))
+
+  (it "keeps the first flush timer while a steady stream continues"
+    (let ((buf (eca-chat-test--make-render-buffer))
+          (session (make-eca--session))
+          (eca-chat-stream-flush-interval 60))
+      (unwind-protect
+          (eca-chat--with-current-buffer buf
+            (spy-on 'eca-chat--schedule-fontify)
+            (let ((timers (eca-chat-test--capture-timers
+                           (lambda ()
+                             (dolist (text '("one " "two " "three"))
+                               (eca-chat-test--render-assistant-text
+                                session buf text))))))
+              ;; Re-arming the timer on each chunk would postpone the
+              ;; flush as long as chunks come closer than the interval.
+              (expect (length timers) :to-equal 1)
+              (expect eca-chat--stream-flush-timer :to-be (nth 3 (car timers)))
+              (eca-chat-test--run-timer (car timers))
+              (expect (eca-chat-test--history-text buf)
+                      :to-match (regexp-quote "one two three"))
+              (expect eca-chat--stream-flush-timer :to-be nil)
+              ;; Once flushed, the next chunk arms a new timer.
+              (expect (length (eca-chat-test--capture-timers
+                               (lambda ()
+                                 (eca-chat-test--render-assistant-text
+                                  session buf " four"))))
+                      :to-equal 1)))
+        (when (buffer-live-p buf)
+          (with-current-buffer buf
+            (eca-chat--stream-cancel))
           (kill-buffer buf))))))
 
 (describe "eca-chat periodic timers during redisplay (#335)"
@@ -5031,6 +5234,61 @@ The prefix is returned without its text properties."
       (expect (eca-chat--expandable-text-empty-p text) :to-be-truthy))))
 
 (describe "streaming expandable block content (#337)"
+
+  (it "removes the rendered children of a block through the id table"
+    (let ((buf (eca-chat-test--make-render-buffer))
+          (session (make-eca--session)))
+      (unwind-protect
+          (eca-chat--with-current-buffer buf
+            (eca-chat-test--subagent-block "sub-1")
+            (eca-chat-test--stream-reasoning session buf "r1" '("Nested") "sub-1")
+            (eca-chat--expandable-content-toggle "sub-1" t nil)
+            (let ((child (eca-chat--get-expandable-content "r1")))
+              (expect child :to-be-truthy)
+              ;; A scan of the buffer overlays, which grow with the
+              ;; chat, would find nothing to remove here.
+              (spy-on 'overlays-in :and-return-value nil)
+              (eca-chat--destroy-nested-blocks "sub-1")
+              (expect (overlay-buffer child) :to-be nil)
+              (expect (gethash "r1" eca-chat-expandable--id->ov) :to-be nil)))
+        (kill-buffer buf))))
+
+  (it "renders the children again when their collapsed parent reopens"
+    (let ((buf (eca-chat-test--make-render-buffer))
+          (session (make-eca--session)))
+      (unwind-protect
+          (eca-chat--with-current-buffer buf
+            (eca-chat-test--subagent-block "sub-1")
+            (eca-chat-test--stream-reasoning session buf "r1" '("Nested") "sub-1")
+            (eca-chat--expandable-content-toggle "sub-1" t nil)
+            (eca-chat--expandable-content-toggle "sub-1" t t)
+            (expect (gethash "r1" eca-chat-expandable--id->ov) :to-be nil)
+            (expect (buffer-string) :not :to-match "Thinking")
+            (eca-chat--expandable-content-toggle "sub-1" t nil)
+            (expect (eca-chat--get-expandable-content "r1") :to-be-truthy)
+            (expect (buffer-string) :to-match "Thinking"))
+        (kill-buffer buf))))
+
+  (it "keeps the stored icons while the label face stays the same"
+    (let ((buf (eca-chat-test--make-render-buffer))
+          (session (make-eca--session)))
+      (unwind-protect
+          (eca-chat--with-current-buffer buf
+            (eca-chat-test--stream-reasoning session buf "r1" '("Let me "))
+            (let* ((ov (eca-chat--get-expandable-content "r1"))
+                   (icon (overlay-get ov 'eca-chat--expandable-content-open-icon)))
+              (eca-chat-test--render-assistant
+               session buf (list :type "reasonText" :id "r1" :text "think."))
+              ;; Storing a new, equal icon on each chunk would be an
+              ;; overlay change, making redisplay redo the layout.
+              (expect (overlay-get ov 'eca-chat--expandable-content-open-icon)
+                      :to-be icon)
+              (eca-chat--update-expandable-content
+               "r1" (propertize "Failed" 'font-lock-face 'error) "" t)
+              (let ((new-icon (overlay-get ov 'eca-chat--expandable-content-open-icon)))
+                (expect new-icon :not :to-be icon)
+                (expect (get-text-property 0 'face new-icon) :to-be 'error))))
+        (kill-buffer buf))))
 
   (it "queues the chunks of a collapsed block, leaving the buffer alone"
     (let ((buf (eca-chat-test--make-render-buffer))

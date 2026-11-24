@@ -193,6 +193,64 @@
 ;;  chunk inserted in the buffer adds one.
 ;;
 ;;
+;;  Event-level benchmarks (`eca-chat-bench-run-events').  These
+;;  deliver whole server notifications through
+;;  `eca-chat-content-received', so they include the work done around
+;;  rendering for each event (read-only protection, visibility
+;;  maintenance, hooks).  The per-call column is the cost per event:
+;;
+;;    * build-turns      = 300 scripted turns: user message, thinking,
+;;                         text with a code block and a table, a tool
+;;                         call from prepare to result, usage, end of
+;;                         turn (with table align/beautify).
+;;    * stream-chunks    = 2000 assistant text chunks.
+;;    * stream-tool-args = 2000 `toolCallPrepare' argument chunks.
+;;    * hidden-events    = thinking, text and tool argument chunks to
+;;                         a chat shown in no window.
+;;    * shown-events     = the same, with the chat shown in the
+;;                         selected window and redisplayed every 5
+;;                         events.  Only an interactive Emacs
+;;                         redisplays, so run it in a terminal too:
+;;
+;;    script -qfec "emacs -Q -nw -L . <deps> \
+;;      -l benchmarks/eca-chat-bench.el --eval '(progn (with-temp-file \
+;;      \"/tmp/bench.txt\" (insert (eca-chat-bench-run-events))) \
+;;      (kill-emacs))'" /dev/null
+;;
+;;  Before/after the per-event work cuts (no-op events skipping the
+;;  visibility check and the protection of the turn, icons stored only
+;;  when their face changes, throttled stream flush, tool arguments
+;;  joined only when shown), byte-compiled, best run of 3 processes.
+;;  Batch, 3000 hidden/shown events:
+;;
+;;  | op               |  size |   before |    after |
+;;  |------------------|------:|---------:|---------:|
+;;  | build-turns      |   300 | 1211 ms  | 1204 ms  |
+;;  | stream-chunks    |  2000 | 26.9 ms  | 20.2 ms  |
+;;  | stream-tool-args |  2000 | 66.1 ms  | 38.1 ms  |
+;;  | hidden-events    |  3000 | 29.3 ms  | 24.7 ms  |
+;;  | shown-events     |  3000 | 51.4 ms  | 23.2 ms  |
+;;
+;;  Terminal (`emacs -nw', default GC threshold), 1000 events, best
+;;  of 2 processes:
+;;
+;;  | op               |  size |   before |    after |
+;;  |------------------|------:|---------:|---------:|
+;;  | build-turns      |   300 | 3008 ms  | 2948 ms  |
+;;  | stream-chunks    |  2000 | 79.0 ms  | 56.2 ms  |
+;;  | stream-tool-args |  2000 |  686 ms  |  363 ms  |
+;;  | hidden-events    |  1000 | 42.4 ms  | 32.6 ms  |
+;;  | shown-events     |  1000 | 4522 ms  | 4203 ms  |
+;;
+;;  In the shown chat, the visibility checks of events changing no
+;;  text are gone; what remains is markdown-mode fontifying the
+;;  paragraph being streamed on each flush, and the GC it causes
+;;  (half of the time with the default threshold).  build-turns is
+;;  dominated by the end of each turn: fontification and the table
+;;  align/beautify.  After 300 turns the chat holds 9913 overlays,
+;;  7500 of them from beautified tables (25 per 3x3 table).
+;;
+;;
 ;;; Code:
 
 (require 'benchmark)
@@ -916,6 +974,354 @@ the table is printed to standard output."
           (insert table))
         (display-buffer (current-buffer)))))
     table))
+
+;;;; Event-level benchmarks
+;;
+;;  These deliver whole server notifications through
+;;  `eca-chat-content-received', the production entry point, so they
+;;  also measure the work done around rendering for each event:
+;;  receiver hooks, point preservation, read-only protection and
+;;  visibility maintenance.  Timers don't run inside the timed loops,
+;;  so pending assistant text is flushed every
+;;  `eca-chat-bench-events-flush-every' events, as the flush timer
+;;  would.
+
+(defvar eca-chat-bench-events-turns 300
+  "Number of scripted turns delivered by the `build-turns' benchmark.")
+
+(defvar eca-chat-bench-events-stream-chunks 2000
+  "Number of chunks streamed by the `stream-chunks' benchmarks.")
+
+(defvar eca-chat-bench-events-mixed 1000
+  "Number of streamed events sent to the hidden and the shown chat.")
+
+(defvar eca-chat-bench-events-flush-every 5
+  "Events between explicit flushes of pending assistant text.")
+
+(defvar eca-chat-bench-events-redisplay-every 5
+  "Events between forced redisplays in the `shown-events' benchmark.
+Only meaningful in an interactive Emacs: batch mode has no redisplay.")
+
+(defvar eca-chat-bench-events-runs 3
+  "Runs of each event-level benchmark; the fastest one is reported.")
+
+(defvar eca-chat-bench--events-chat-count 0
+  "Number of chats created by the event-level benchmarks.")
+
+(defun eca-chat-bench--events-chat (session)
+  "Return a new chat buffer registered in SESSION."
+  (let* ((id (format "events-%d" (cl-incf eca-chat-bench--events-chat-count)))
+         (buf (generate-new-buffer (format "*eca-bench-%s*" id))))
+    (with-current-buffer buf
+      (let ((eca--chat-init-session session)
+            (eca-chat-tab-line nil)
+            (eca-chat-override-mode-line nil))
+        (eca-chat-mode)
+        (setq-local eca-chat--id id)
+        ;; Let the deferred mode setup run now, as it does in a real
+        ;; chat, instead of after the chat is killed.
+        (sleep-for 0.1)))
+    (setf (eca--session-chats session)
+          (eca-assoc (eca--session-chats session) id buf))
+    buf))
+
+(defun eca-chat-bench--with-events-chat (fn)
+  "Call FN with the benchmark session and a new chat buffer.
+Return FN's value.  The chat is unregistered and killed afterwards."
+  (let* ((session (eca-chat-bench--ensure-session))
+         (buf nil))
+    (advice-add 'face-background :around #'eca-chat-bench--safe-face-background)
+    (unwind-protect
+        (progn
+          (setq buf (eca-chat-bench--events-chat session))
+          (funcall fn session buf))
+      (advice-remove 'face-background #'eca-chat-bench--safe-face-background)
+      (when (buffer-live-p buf)
+        (with-current-buffer buf
+          (eca-chat--stream-cancel)
+          (eca-chat--spinner-stop)
+          (eca-chat--tool-call-elapsed-stop-all)
+          (when (timerp eca-chat--fontify-timer)
+            (cancel-timer eca-chat--fontify-timer))
+          (setf (eca--session-chats session)
+                (eca-dissoc (eca--session-chats session) eca-chat--id)))
+        (kill-buffer buf)))))
+
+(defun eca-chat-bench--split (text size)
+  "Return TEXT split into chunks of SIZE chars."
+  (let ((chunks nil)
+        (start 0)
+        (len (length text)))
+    (while (< start len)
+      (push (substring text start (min len (+ start size))) chunks)
+      (setq start (+ start size)))
+    (nreverse chunks)))
+
+(defun eca-chat-bench--repeat-split (unit count size)
+  "Return COUNT chunks of SIZE chars of UNIT repeated."
+  (let ((text (apply #'concat
+                     (make-list (1+ (/ (* count size) (length unit))) unit))))
+    (seq-take (eca-chat-bench--split text size) count)))
+
+(defun eca-chat-bench--turn-events (i)
+  "Return the events of scripted turn I as (ROLE . CONTENT) pairs.
+Mirrors one agentic turn: the echoed user message, progress, a
+thinking block, assistant text with a code block and a table, a tool
+call from prepare to result, more text, usage and the end of the
+turn."
+  (let* ((reason-id (format "reason-%d" i))
+         (args (format "{\"path\": \"src/bench/file_%d.clj\", \"limit\": 200}" i))
+         (tool (lambda (type &rest props)
+                 (cons "assistant"
+                       (append (list :type type :id (format "tool-%d" i)
+                                     :name "read_file" :server "eca"
+                                     :details (list :type "generic"))
+                               props))))
+         (text (lambda (string)
+                 (mapcar (lambda (chunk)
+                           (cons "assistant" (list :type "text" :text chunk)))
+                         (eca-chat-bench--split string 24)))))
+    (append
+     (list (cons "user" (list :type "text" :contentId (format "content-%d" i)
+                              :text (format "User message %d about benchmarking ECA." i)))
+           (cons "system" (list :type "progress" :state "running" :text "Generating"))
+           (cons "assistant" (list :type "reasonStarted" :id reason-id)))
+     (mapcar (lambda (chunk)
+               (cons "assistant" (list :type "reasonText" :id reason-id :text chunk)))
+             (eca-chat-bench--reason-chunks 200 20))
+     (list (cons "assistant" (list :type "reasonFinished" :id reason-id
+                                   :totalTimeMs 1200)))
+     (funcall text (concat (format "This is assistant turn #%d. " i)
+                           "Some lorem ipsum dolor sit amet text to fill in. "
+                           "Aliquam tincidunt mauris eu risus.\n"
+                           (eca-chat-bench--sample-code-block)
+                           (eca-chat-bench--sample-table)))
+     (mapcar (lambda (chunk) (funcall tool "toolCallPrepare" :argumentsText chunk))
+             (eca-chat-bench--split args 8))
+     (list (funcall tool "toolCallRun" :arguments args)
+           (funcall tool "toolCallRunning" :arguments args)
+           (funcall tool "toolCalled" :arguments args :totalTimeMs 35
+                    :outputs (vector (list :type "text" :text "(ns bench.file)"))))
+     (funcall text "The file only declares its namespace, nothing to change.\n")
+     (list (cons "system" (eca-chat-bench--usage-content))
+           (cons "system" (list :type "progress" :state "finished"))))))
+
+(defun eca-chat-bench--stream-setup-events ()
+  "Return the events opening the streamed turn of the stream benchmarks."
+  (list (cons "user" (list :type "text" :contentId "stream-content"
+                           :text "Stream a long answer."))
+        (cons "system" (list :type "progress" :state "running" :text "Generating"))
+        (cons "assistant" (list :type "reasonStarted" :id "stream-reason"))))
+
+(defun eca-chat-bench--text-events (count)
+  "Return COUNT assistant text chunk events.
+The text comes in paragraphs of three lines, as replies usually do:
+markdown fontification scans a whole paragraph, so one huge
+paragraph would measure markdown-mode more than the chat."
+  (let ((line (eca-chat-bench--stream-chunk)))
+    (mapcar (lambda (chunk) (cons "assistant" (list :type "text" :text chunk)))
+            (eca-chat-bench--repeat-split (concat line line line "\n")
+                                          count 30))))
+
+(defun eca-chat-bench--reason-events (count)
+  "Return COUNT `reasonText' events for the streamed turn's thinking block."
+  (mapcar (lambda (chunk)
+            (cons "assistant" (list :type "reasonText" :id "stream-reason"
+                                    :text chunk)))
+          (eca-chat-bench--reason-chunks (* count eca-chat-bench-reason-chunk-size)
+                                         eca-chat-bench-reason-chunk-size)))
+
+(defun eca-chat-bench--tool-args-events (count)
+  "Return COUNT `toolCallPrepare' events streaming a tool's arguments."
+  (mapcar (lambda (chunk)
+            (cons "assistant" (list :type "toolCallPrepare" :id "stream-tool"
+                                    :name "write_file" :server "eca"
+                                    :argumentsText chunk)))
+          (eca-chat-bench--repeat-split (eca-chat-bench--tool-prep-sample-delta)
+                                        count 20)))
+
+(defun eca-chat-bench--mixed-events (count)
+  "Return COUNT streamed events: thinking, text, then tool arguments.
+They come in the 2:2:1 proportions."
+  (let* ((reasoning (/ (* 2 count) 5))
+         (text (/ (* 2 count) 5)))
+    (append (eca-chat-bench--reason-events reasoning)
+            (eca-chat-bench--text-events text)
+            (eca-chat-bench--tool-args-events (- count reasoning text)))))
+
+(defun eca-chat-bench--deliver (session buf event)
+  "Deliver EVENT, a (ROLE . CONTENT) pair, to the chat BUF of SESSION.
+A user message starts a turn, so the chat is marked loading first,
+as sending a prompt does."
+  (when (equal (car event) "user")
+    (with-current-buffer buf
+      (setq-local eca-chat--chat-loading t)))
+  (eca-chat-content-received
+   session (list :chatId (buffer-local-value 'eca-chat--id buf)
+                 :role (car event)
+                 :content (cdr event))))
+
+(defun eca-chat-bench--time-events (label session buf events &optional redisplay-every)
+  "Time delivering EVENTS to the chat BUF of SESSION, labeled LABEL.
+Pending assistant text is flushed every
+`eca-chat-bench-events-flush-every' events and after the last one.
+When REDISPLAY-EVERY is non-nil, also redisplay that often.  Return a
+benchmark plist whose per-call column is the cost per event."
+  (let ((pending events)
+        (count 0))
+    (eca-chat-bench--time
+     label
+     (lambda ()
+       (eca-chat-bench--deliver session buf (pop pending))
+       (setq count (1+ count))
+       (when (or (zerop (% count eca-chat-bench-events-flush-every))
+                 (null pending))
+         (with-current-buffer buf
+           (eca-chat--stream-flush)))
+       (when (and redisplay-every (zerop (% count redisplay-every)))
+         (redisplay t)))
+     (length events))))
+
+(defun eca-chat-bench--overlay-kind (ov)
+  "Return a symbol naming what the chat overlay OV is used for."
+  (cond
+   ((overlay-get ov 'eca-chat--expandable-content-id) 'block-label)
+   ((overlay-get ov 'eca-chat--expandable-content-indent) 'block-content)
+   ((eq (overlay-get ov 'face) 'eca-chat-user-messages-face) 'user-message)
+   ((or (overlay-get ov 'eca-chat--code-copy-scope)
+        (overlay-get ov 'eca-chat--response-copy-scope))
+    'copy-scope)
+   ((overlay-get ov 'eca-table-overlay) 'table)
+   ((seq-some (lambda (prop) (overlay-get ov prop))
+              '(eca-chat-prompt-area eca-chat-task-area eca-chat-progress-area
+                                     eca-chat-context-area eca-chat-prompt-field))
+    'prompt)
+   (t 'other)))
+
+(defun eca-chat-bench--overlay-census (buf)
+  "Return an alist of (KIND . COUNT) for the overlays of BUF.
+The last entry is the total."
+  (with-current-buffer buf
+    (let ((counts nil)
+          (total 0))
+      (dolist (ov (overlays-in (point-min) (point-max)))
+        (cl-incf (alist-get (eca-chat-bench--overlay-kind ov) counts 0))
+        (cl-incf total))
+      (append (sort counts (lambda (a b) (> (cdr a) (cdr b))))
+              (list (cons 'total total))))))
+
+(defun eca-chat-bench--format-census (census turns)
+  "Return a markdown table of the overlay CENSUS after TURNS turns."
+  (concat (format "Overlays after %d turns:\n\n" turns)
+          "| kind          |  count |\n"
+          "|---------------|-------:|\n"
+          (mapconcat (lambda (entry)
+                       (format "| %-13s | %6d |" (car entry) (cdr entry)))
+                     census
+                     "\n")
+          "\n"))
+
+(defun eca-chat-bench--fastest (fn)
+  "Call FN `eca-chat-bench-events-runs' times; return its fastest result.
+FN returns a benchmark plist."
+  (let ((best nil))
+    (dotimes (_ eca-chat-bench-events-runs)
+      (let ((result (funcall fn)))
+        (when (or (null best)
+                  (< (plist-get result :elapsed) (plist-get best :elapsed)))
+          (setq best result))))
+    best))
+
+(defun eca-chat-bench--bench-build-turns (turns)
+  "Time building a chat of TURNS scripted turns.
+Return (RESULT . CENSUS), CENSUS counting the overlays left in it."
+  (eca-chat-bench--with-events-chat
+   (lambda (session buf)
+     (let ((events (apply #'append
+                          (mapcar #'eca-chat-bench--turn-events
+                                  (number-sequence 0 (1- turns))))))
+       (cons (eca-chat-bench--time-events 'build-turns session buf events)
+             (eca-chat-bench--overlay-census buf))))))
+
+(defun eca-chat-bench--bench-stream (label events &optional shown)
+  "Time delivering EVENTS in a streamed turn, labeled LABEL.
+When SHOWN is non-nil, the chat is shown in the selected window with
+point in the prompt, and redisplayed every
+`eca-chat-bench-events-redisplay-every' events."
+  (eca-chat-bench--with-events-chat
+   (lambda (session buf)
+     (dolist (event (eca-chat-bench--stream-setup-events))
+       (eca-chat-bench--deliver session buf event))
+     (with-current-buffer buf
+       (eca-chat--stream-flush))
+     (if shown
+         (save-window-excursion
+           (switch-to-buffer buf)
+           (goto-char (point-max))
+           (redisplay t)
+           (eca-chat-bench--time-events
+            label session buf events eca-chat-bench-events-redisplay-every))
+       (eca-chat-bench--time-events label session buf events)))))
+
+;;;###autoload
+(defun eca-chat-bench-run-events ()
+  "Run the event-level benchmarks; print a markdown report.
+Server notifications go through `eca-chat-content-received', so the
+rows include the work done around rendering for each event.  The
+`shown-events' row includes display work only in an interactive
+Emacs, batch mode has no redisplay.  Return the report."
+  (interactive)
+  (eca-chat-bench--reset)
+  (let ((turns eca-chat-bench-events-turns)
+        (chunks eca-chat-bench-events-stream-chunks)
+        (mixed eca-chat-bench-events-mixed)
+        (census nil))
+    (message "[eca-chat-bench] build %d turns ..." turns)
+    (eca-chat-bench--add-result
+     turns (eca-chat-bench--fastest
+            (lambda ()
+              (let ((build (eca-chat-bench--bench-build-turns turns)))
+                (setq census (cdr build))
+                (car build)))))
+    (message "[eca-chat-bench] stream %d text chunks ..." chunks)
+    (eca-chat-bench--add-result
+     chunks (eca-chat-bench--fastest
+             (lambda ()
+               (eca-chat-bench--bench-stream
+                'stream-chunks (eca-chat-bench--text-events chunks)))))
+    (message "[eca-chat-bench] stream %d tool argument chunks ..." chunks)
+    (eca-chat-bench--add-result
+     chunks (eca-chat-bench--fastest
+             (lambda ()
+               (eca-chat-bench--bench-stream
+                'stream-tool-args (eca-chat-bench--tool-args-events chunks)))))
+    (message "[eca-chat-bench] %d events to a hidden chat ..." mixed)
+    (eca-chat-bench--add-result
+     mixed (eca-chat-bench--fastest
+            (lambda ()
+              (eca-chat-bench--bench-stream
+               'hidden-events (eca-chat-bench--mixed-events mixed)))))
+    (message "[eca-chat-bench] %d events to a shown chat ..." mixed)
+    (eca-chat-bench--add-result
+     mixed (eca-chat-bench--fastest
+            (lambda ()
+              (eca-chat-bench--bench-stream
+               'shown-events (eca-chat-bench--mixed-events mixed) t))))
+    (let ((report (concat (eca-chat-bench--format-results)
+                          "\n"
+                          (eca-chat-bench--format-census census turns))))
+      (cond
+       (noninteractive
+        (princ "\n")
+        (princ report)
+        (princ "\n"))
+       (t
+        (with-current-buffer (get-buffer-create "*eca-chat-bench-events*")
+          (let ((inhibit-read-only t))
+            (erase-buffer)
+            (insert report))
+          (display-buffer (current-buffer)))))
+      report)))
 
 (provide 'eca-chat-bench)
 ;;; eca-chat-bench.el ends here

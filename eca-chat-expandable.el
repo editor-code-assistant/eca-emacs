@@ -418,14 +418,27 @@ NESTED-PROPS is a plist with :parent-id and :label-indent for nested blocks."
         (eca-chat--paint-nested-label child-ov)))))
 
 (defun eca-chat--destroy-nested-blocks (parent-id)
-  "Remove all nested block overlays that belong to PARENT-ID."
-  (dolist (ov (overlays-in (point-min) (point-max)))
-    (when (string= parent-id (overlay-get ov 'eca-chat--expandable-content-parent-id))
-      (when-let* ((content-ov (overlay-get ov 'eca-chat--expandable-content-ov-content)))
-        (delete-overlay content-ov))
-      (when-let* ((id (overlay-get ov 'eca-chat--expandable-content-id)))
-        (remhash id eca-chat-expandable--id->ov))
-      (delete-overlay ov))))
+  "Remove all nested block overlays that belong to PARENT-ID.
+The rendered children are found from the child ids in the parent
+segments, through `eca-chat-expandable--id->ov', instead of scanning
+all the buffer overlays, which grow with the chat.  Their own nested
+blocks are removed too."
+  (when-let* ((parent-ov (eca-chat--get-expandable-content parent-id)))
+    (dolist (spec (eca-chat--segments-children
+                   (overlay-get parent-ov 'eca-chat--expandable-content-segments)))
+      (let* ((id (plist-get spec :id))
+             (ov (gethash id eca-chat-expandable--id->ov)))
+        ;; Children of a collapsed parent are not rendered, so they
+        ;; have no overlay to remove.
+        (when (and (overlayp ov)
+                   (eq (overlay-buffer ov) (current-buffer))
+                   (equal parent-id
+                          (overlay-get ov 'eca-chat--expandable-content-parent-id)))
+          (eca-chat--destroy-nested-blocks id)
+          (when-let* ((content-ov (overlay-get ov 'eca-chat--expandable-content-ov-content)))
+            (delete-overlay content-ov))
+          (remhash id eca-chat-expandable--id->ov)
+          (delete-overlay ov))))))
 
 (defun eca-chat--segments-total-text (segments)
   "Return the concatenation of all text segment contents in SEGMENTS."
@@ -538,12 +551,18 @@ in parent."
           (eca-chat--expandable-text-replace text content))
         (save-excursion
           (when label
-            ;; Update stored icons when the label face changes
-            (let* ((new-icon-face (get-text-property 0 'font-lock-face label))
-                   (label-indent (when nested? eca-chat--expandable-content-base-indent))
-                   (new-icons (eca-chat--make-expandable-icons new-icon-face label-indent)))
-              (overlay-put ov-label 'eca-chat--expandable-content-open-icon (car new-icons))
-              (overlay-put ov-label 'eca-chat--expandable-content-close-icon (cdr new-icons)))
+            ;; Update stored icons when the label face changes.  Storing
+            ;; equal icons again on every streamed chunk would count as
+            ;; an overlay change, making redisplay and the visibility
+            ;; checks redo the window layout for nothing.
+            (let ((new-icon-face (get-text-property 0 'font-lock-face label))
+                  (icon-face (overlay-get ov-label 'eca-chat--expandable-content-icon-face)))
+              (unless (and icon-face (equal (car icon-face) new-icon-face))
+                (let* ((label-indent (when nested? eca-chat--expandable-content-base-indent))
+                       (new-icons (eca-chat--make-expandable-icons new-icon-face label-indent)))
+                  (overlay-put ov-label 'eca-chat--expandable-content-icon-face (list new-icon-face))
+                  (overlay-put ov-label 'eca-chat--expandable-content-open-icon (car new-icons))
+                  (overlay-put ov-label 'eca-chat--expandable-content-close-icon (cdr new-icons)))))
             (let* ((children (eca-chat--segments-children
                               (overlay-get ov-label 'eca-chat--expandable-content-segments)))
                    (has-content? (or (not (eca-chat--expandable-text-empty-p text)) children))
@@ -703,9 +722,11 @@ If FORCE? decide to CLOSE? or not."
             ;; Repaint nested label's line-prefix after icon swap
             (eca-chat--paint-nested-label ov-label)))
         ;; Toggling open inserts block content into the read-only history
-        ;; region, so re-protect it (from point-min, since the block may
-        ;; belong to an earlier turn outside the streamed scope).
-        (eca-chat--protect-non-prompt))
+        ;; region, so re-protect the block, which may belong to an
+        ;; earlier turn outside the streamed scope.  Only the block
+        ;; changed, so the rest of the chat does not need the walk.
+        (eca-chat--protect-non-prompt (overlay-start ov-label)
+                                      (overlay-end ov-content)))
       close?)))
 
 (defun eca-chat--content-table (key-vals)

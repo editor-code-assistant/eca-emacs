@@ -243,12 +243,10 @@ one, and every fontification then goes back to the table start."
 
 (defun eca-table--any-truncated-p ()
   "Return non-nil if any table action overlay in the buffer wants truncation."
-  (let ((found nil))
-    (dolist (ov (overlays-in (point-min) (point-max)))
-      (when (and (overlay-get ov 'eca-table-action)
-                 (overlay-get ov 'eca-table-truncated))
-        (setq found t)))
-    found))
+  (seq-some (lambda (ov)
+              (and (overlay-get ov 'eca-table-action)
+                   (overlay-get ov 'eca-table-truncated)))
+            (overlays-in (point-min) (point-max))))
 
 (defun eca-table--max-line-width (beg end)
   "Return the maximum display line width between BEG and END.

@@ -377,10 +377,11 @@ Must be a positive integer."
   :group 'eca)
 
 (defcustom eca-chat-stream-flush-interval 0.05
-  "Seconds to buffer assistant text chunks before rendering.
+  "Seconds between renders of streamed assistant text.
 Default is 0.05.  When nil, assistant text renders immediately.
 When set to a non-negative number, top-level assistant text chunks
-are combined and rendered on a timer."
+are combined and rendered on a timer, at most once per interval,
+so a steady stream renders at a steady pace."
   :type '(choice (const :tag "Immediate rendering" nil)
                  (number :tag "Seconds"))
   :group 'eca)
@@ -2269,7 +2270,7 @@ area start when the progress overlay does not exist yet."
   (or (-some-> (eca-chat--prompt-progress-field-ov) (overlay-start))
       (eca-chat--prompt-area-start-point)))
 
-(defun eca-chat--protect-non-prompt (&optional from)
+(defun eca-chat--protect-non-prompt (&optional from to)
   "Make the chat history, separator and task area read-only.
 Apply the `read-only' text property from FROM (default
 `point-min') up to the progress area so the history, the prompt
@@ -2279,6 +2280,8 @@ is `front-sticky' and the last is `rear-nonsticky' for
 `read-only', so the locked region rejects edits while typing in
 the progress/context/prompt still works.  No-op when
 `eca-chat-read-only-history' is nil or the boundary is absent.
+When TO is non-nil, stop there instead: callers that know the text
+they changed, like a toggled block, only protect that range.
 
 The properties are put silently, as font-lock does with faces: they
 don't change the text, and the change hooks would otherwise run over
@@ -2286,11 +2289,13 @@ the whole range on each streamed chunk that adds some text in it,
 e.g. rescanning the current turn for markdown checkboxes (#337)."
   (when eca-chat-read-only-history
     (when-let* ((end (eca-chat--read-only-end-point)))
-      (let ((beg (max (point-min) (or from (point-min)))))
-        (when (< beg end)
+      (let ((beg (max (point-min) (or from (point-min))))
+            (stop (min end (or to end))))
+        (when (< beg stop)
           (with-silent-modifications
-            (put-text-property beg end 'read-only t)
-            (put-text-property (1- end) end 'rear-nonsticky '(read-only))
+            (put-text-property beg stop 'read-only t)
+            (when (= stop end)
+              (put-text-property (1- end) end 'rear-nonsticky '(read-only)))
             (when (= beg (point-min))
               (put-text-property (point-min) (1+ (point-min))
                                  'front-sticky '(read-only)))))))))
@@ -2309,13 +2314,17 @@ point deliberately set `eca-chat--keep-point' to keep the new
 position: a plain `save-excursion' would undo it whenever the chat
 window is the selected one.  When MAINTAIN-VISIBILITY is non-nil,
 point is in the prompt and the bottom of the chat is shown, keep
-the end of the prompt visible.  Queue-only updates can pass nil
-to avoid layout checks while still preserving point."
+the end of the prompt visible if BODY changed the text: content
+that changes nothing, like a chunk of a collapsed block, skips
+the layout work.  Queue-only updates can pass nil to avoid
+layout checks while still preserving point."
   (declare (indent 1) (debug (form body)))
   (let ((saved (gensym "saved-point-"))
+        (tick (gensym "chars-tick-"))
         (win (gensym "chat-window-")))
     `(let* ((eca-chat--keep-point nil)
             (,saved (point-marker))
+            (,tick (buffer-chars-modified-tick))
             (,win (when ,maintain-visibility
                     (when-let* ((w (get-buffer-window (current-buffer))))
                       (and (eca-chat--point-at-prompt-field-p)
@@ -2325,9 +2334,18 @@ to avoid layout checks while still preserving point."
          (when (and (not eca-chat--keep-point)
                     (eq (marker-buffer ,saved) (current-buffer)))
            (goto-char ,saved)
-           (when ,win
+           (when (and ,win (/= ,tick (buffer-chars-modified-tick)))
              (eca-chat--ensure-prompt-end-visible ,win)))
          (set-marker ,saved nil)))))
+
+(defun eca-chat--protect-changed-turn (tick)
+  "Re-protect the current turn when its text changed since TICK.
+TICK is a `buffer-chars-modified-tick' value.  Content that inserts
+nothing, like a chunk queued for the next flush or appended to a
+collapsed block, has nothing new to protect, so it skips the walk
+over the whole turn."
+  (unless (= tick (buffer-chars-modified-tick))
+    (eca-chat--protect-non-prompt eca-chat--last-user-message-pos)))
 
 (defun eca-chat--ensure-prompt-end-visible (win)
   "Scroll WIN so the end of the prompt is fully visible, keeping point.
@@ -3971,38 +3989,56 @@ when the prompt area overlay is missing (see #283)."
   (eca-table-align (or from eca-chat--last-user-message-pos (point-min))
                    (or (eca-chat--prompt-area-start-point) (point-max))))
 
+(defvar-local eca-chat--table-layout-width nil
+  "Body width of the window the tables were last beautified for.
+Nil when the chat was shown in no window.  The tables only depend on
+the window width, so `eca-chat--on-window-size-change' lays them out
+again only when it changes.")
+
+(defun eca-chat--table-window-width ()
+  "Return the body width of the window tables are beautified for.
+That is the chat window in the selected frame, as
+`eca-table--beautify-at-point' uses, or nil when there is none."
+  (when-let* ((win (get-buffer-window (current-buffer))))
+    (window-body-width win)))
+
 (defun eca-chat--beautify-tables (&optional from)
   "Apply visual enhancements to markdown tables in the chat buffer.
 When FROM is non-nil, scan from that position; otherwise scan from
 the last user message.  Respects `eca-chat-table-beautify'.  Falls
 back to `point-max' as the end bound when the prompt area overlay
 is missing (see #283)."
+  (setq eca-chat--table-layout-width (eca-chat--table-window-width))
   (eca-table-beautify (or from eca-chat--last-user-message-pos (point-min))
                       (or (eca-chat--prompt-area-start-point) (point-max))))
 
 (defun eca-chat--on-window-size-change (frame)
   "Debounced handler for window resize; re-evaluates table action bars.
-FRAME is the resized frame."
+FRAME is the resized frame.  Changes that keep the width the tables
+were laid out for, like the minibuffer or a window below growing,
+are skipped: beautifying redoes all the tables of the chat."
   (dolist (win (window-list frame 'no-mini))
     (let ((buf (window-buffer win)))
       (when (and (buffer-live-p buf)
                  (eq (buffer-local-value 'major-mode buf) 'eca-chat-mode)
                  (buffer-local-value 'eca-chat-table-beautify buf))
         (with-current-buffer buf
-          (when (timerp eca-chat--table-resize-timer)
-            (cancel-timer eca-chat--table-resize-timer))
-          (setq eca-chat--table-resize-timer
-                (run-with-idle-timer
-                 0.3 nil
-                 (lambda (b)
-                   (when (buffer-live-p b)
-                     (with-current-buffer b
-                       (eca-chat--beautify-tables (point-min))
-                       ;; Reset truncation if no table wants it anymore
-                       (unless (eca-table--any-truncated-p)
-                         (setq-local truncate-lines nil)
-                         (setq-local word-wrap t)))))
-                 buf)))))))
+          (unless (equal (eca-chat--table-window-width)
+                         eca-chat--table-layout-width)
+            (when (timerp eca-chat--table-resize-timer)
+              (cancel-timer eca-chat--table-resize-timer))
+            (setq eca-chat--table-resize-timer
+                  (run-with-idle-timer
+                   0.3 nil
+                   (lambda (b)
+                     (when (buffer-live-p b)
+                       (with-current-buffer b
+                         (eca-chat--beautify-tables (point-min))
+                         ;; Reset truncation if no table wants it anymore
+                         (unless (eca-table--any-truncated-p)
+                           (setq-local truncate-lines nil)
+                           (setq-local word-wrap t)))))
+                   buf))))))))
 
 (defun eca-chat--untagged-stretch (beg end)
   "Return the bounds of the untagged text around BEG..END.
@@ -4094,7 +4130,11 @@ end-of-stream for correctness.
 
 The scoped region runs from `eca-chat--last-user-message-pos' (the
 start of the current turn) to `point-max', so cost is bounded by
-the new turn instead of the full chat history."
+the new turn instead of the full chat history.
+
+The timer skips a chat not shown in any window: there is no layout
+to settle, jit-lock fontifies the text once the chat is shown, and
+the final ensure at end-of-stream still runs."
   (when (timerp eca-chat--fontify-timer)
     (cancel-timer eca-chat--fontify-timer))
   (setq eca-chat--fontify-timer nil)
@@ -4107,9 +4147,10 @@ the new turn instead of the full chat history."
                (when (buffer-live-p buf)
                  (with-current-buffer buf
                    (setq eca-chat--fontify-timer nil)
-                   (eca-chat--font-lock-ensure
-                    (or eca-chat--last-user-message-pos (point-min))
-                    (point-max))))))))))
+                   (when (get-buffer-window buf t)
+                     (eca-chat--font-lock-ensure
+                      (or eca-chat--last-user-message-pos (point-min))
+                      (point-max)))))))))))
 
 (defun eca-chat--copy-region-text (beg end)
   "Return plain text between BEG and END."
@@ -4126,15 +4167,14 @@ the new turn instead of the full chat history."
                  (eca-chat--copy-region-text beg finish))))
     (message "Copied %s" description)))
 
-(defun eca-chat--make-copy-scope (start end kind prop &rest extra-props)
+(defun eca-chat--make-copy-scope (start end kind prop &optional front-advance)
   "Create an invisible copy scope overlay from START to END.
 KIND is the copied content kind.  PROP marks the overlay type.
-EXTRA-PROPS are additional overlay properties."
-  (let ((overlay (make-overlay start end nil nil nil)))
+When FRONT-ADVANCE is non-nil, text inserted at START stays out of
+the scope."
+  (let ((overlay (make-overlay start end nil front-advance nil)))
     (overlay-put overlay prop t)
     (overlay-put overlay 'eca-chat--copy-kind kind)
-    (while extra-props
-      (overlay-put overlay (pop extra-props) (pop extra-props)))
     overlay))
 
 (defun eca-chat--code-fence-close-regexp (fence)
@@ -4152,14 +4192,13 @@ EXTRA-PROPS are additional overlay properties."
       (while (re-search-forward "^[ \t]*\\(``+\\|~~+\\).*$" limit t)
         (let* ((open-start (line-beginning-position))
                (fence (match-string-no-properties 1))
-               (body-start (copy-marker (1+ (line-end-position)) t))
                (close-regexp (eca-chat--code-fence-close-regexp fence)))
           (when (re-search-forward close-regexp limit t)
+            ;; Spanning exactly the fence lines, the scope gives the
+            ;; code range, see `eca-chat--copy-scope-range'.
             (eca-chat--make-copy-scope
              open-start (line-end-position) 'code
-             'eca-chat--code-copy-scope
-             'eca-chat--copy-start body-start
-             'eca-chat--copy-end (copy-marker (match-beginning 0)))))))
+             'eca-chat--code-copy-scope t)))))
     (set-marker limit nil)))
 
 (defun eca-chat--refresh-response-copy-scope (&optional from to)
@@ -4175,11 +4214,18 @@ EXTRA-PROPS are additional overlay properties."
        start end 'response 'eca-chat--response-copy-scope))))
 
 (defun eca-chat--copy-scope-range (overlay)
-  "Return the copy range for OVERLAY as a cons cell."
-  (cons (or (overlay-get overlay 'eca-chat--copy-start)
-            (overlay-start overlay))
-        (or (overlay-get overlay 'eca-chat--copy-end)
-            (overlay-end overlay))))
+  "Return the copy range for OVERLAY as a cons cell.
+A code block scope spans its fence lines, the range is the code
+between them.  Deriving it from the overlay keeps it right as the
+chat changes without a pair of markers per code block, which every
+edit of the buffer would have to update."
+  (if (eq (overlay-get overlay 'eca-chat--copy-kind) 'code)
+      (save-excursion
+        (cons (progn (goto-char (overlay-start overlay))
+                     (line-beginning-position 2))
+              (progn (goto-char (overlay-end overlay))
+                     (line-beginning-position))))
+    (cons (overlay-start overlay) (overlay-end overlay))))
 
 (defun eca-chat--copy-scope-description (overlay)
   "Return a user-facing description for OVERLAY."
@@ -4274,6 +4320,9 @@ retry after `eca-chat--stream-deferred-flush-delay' instead.
 `eca--text-change-unsafe-p' tells these runs apart."
   (when (buffer-live-p buffer)
     (with-current-buffer buffer
+      ;; The timer running this is done: forget it, so that the next
+      ;; chunk, or the retry below, arms a new one.
+      (eca-chat--stream-cancel)
       (if (and eca-chat--stream-pending-chunks
                (eca--text-change-unsafe-p))
           (eca-chat--stream-schedule-flush
@@ -4291,9 +4340,14 @@ Flush after DELAY seconds, `eca-chat-stream-flush-interval' by default."
                                 buffer))))
 
 (defun eca-chat--stream-buffered-text (text)
-  "Buffer top-level assistant stream TEXT in the current chat."
+  "Buffer top-level assistant stream TEXT in the current chat.
+The first pending chunk arms the flush timer and later ones leave it
+alone, so a steady stream renders every
+`eca-chat-stream-flush-interval' seconds instead of waiting for a
+pause."
   (push text eca-chat--stream-pending-chunks)
-  (eca-chat--stream-schedule-flush))
+  (unless eca-chat--stream-flush-timer
+    (eca-chat--stream-schedule-flush)))
 
 (defun eca-chat--stream-flush ()
   "Render pending assistant stream text in the current chat."
@@ -5112,6 +5166,7 @@ Append STATUS symbol.  Optional PARENT-ID for nested rendering."
                (label-indent (when (overlay-get existing-ov 'eca-chat--expandable-content-nested)
                                eca-chat--expandable-content-base-indent))
                (new-icons (eca-chat--make-expandable-icons new-icon-face label-indent)))
+          (overlay-put existing-ov 'eca-chat--expandable-content-icon-face (list new-icon-face))
           (overlay-put existing-ov 'eca-chat--expandable-content-open-icon (car new-icons))
           (overlay-put existing-ov 'eca-chat--expandable-content-close-icon (cdr new-icons))
           (save-excursion
@@ -5585,19 +5640,23 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
                   (label (or (plist-get content :summary)
                              (format "Preparing tool: %s__%s" server name)))
                   (current-count (gethash id eca-chat--tool-call-prepare-counters 0))
-                  (cached-content (gethash id eca-chat--tool-call-prepare-content-cache ""))
-                  (new-content (concat cached-content argsText))
+                  (args (or (gethash id eca-chat--tool-call-prepare-content-cache)
+                            (puthash id (eca-chat--expandable-text-create)
+                                     eca-chat--tool-call-prepare-content-cache)))
                   (should-update-ui-p
                    (pcase eca-chat-tool-call-prepare-throttle
                      ('all t)
                      ('smart (or (= current-count 0)
                                  (= (mod current-count eca-chat-tool-call-prepare-update-interval) 0))))))
-             ;; Always cache the metadata and content
+             ;; Always count and accumulate the arguments.  Appending
+             ;; only conses the chunk: the arguments are joined when the
+             ;; UI shows them, so streaming a big file write stays linear.
              (puthash id (1+ current-count) eca-chat--tool-call-prepare-counters)
-             (puthash id new-content eca-chat--tool-call-prepare-content-cache)
+             (eca-chat--expandable-text-append args argsText)
              ;; Only update UI when throttling permits
              (when should-update-ui-p
-               (let* ((label-face (if subagent?
+               (let* ((new-content (eca-chat--expandable-text-string args))
+                      (label-face (if subagent?
                                       'eca-chat-subagent-tool-call-label-face
                                     'eca-chat-mcp-tool-call-label-face))
                       (label (concat (propertize label 'font-lock-face label-face)
@@ -5962,8 +6021,9 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
             (when-let* ((tool-call-id (gethash chat-id eca-chat--subagent-chat-id->tool-call-id)))
               ;; Preserve the user's point: streaming must not move the cursor.
               (eca-chat--with-point-preserved t
-                (eca-chat--render-content session parent-buffer role content roots tool-call-id chat-id)
-                (eca-chat--protect-non-prompt eca-chat--last-user-message-pos)
+                (let ((tick (buffer-chars-modified-tick)))
+                  (eca-chat--render-content session parent-buffer role content roots tool-call-id chat-id)
+                  (eca-chat--protect-changed-turn tick))
                 (eca-chat--maybe-notify-status-changed session content)
                 (eca-chat--maybe-revert-changed-file content)
                 (eca-chat--maybe-run-tool-call-functions session content)
@@ -5980,8 +6040,9 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
                         (equal (plist-get content :type) "text")
                         (stringp (plist-get content :text))
                         (eca-chat--stream-buffering-enabled-p)))
-            (eca-chat--render-content session chat-buffer role content roots)
-            (eca-chat--protect-non-prompt eca-chat--last-user-message-pos)
+            (let ((tick (buffer-chars-modified-tick)))
+              (eca-chat--render-content session chat-buffer role content roots)
+              (eca-chat--protect-changed-turn tick))
             (eca-chat--maybe-notify-status-changed session content)
             (eca-chat--maybe-revert-changed-file content)
             (eca-chat--maybe-run-tool-call-functions session content)
