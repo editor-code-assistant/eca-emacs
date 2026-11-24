@@ -5721,6 +5721,73 @@ bound to FONTIFY-MARKDOWN."
               :to-equal "x"))))
 
 ;; ---------------------------------------------------------------------------
+;; Tool call status symbols
+;; ---------------------------------------------------------------------------
+
+(defun eca-chat-test--status-symbol-face (content symbol)
+  "Render tool call CONTENT and return the face of SYMBOL in its label.
+Return `:missing' when its label line has no SYMBOL."
+  (let ((buf (eca-chat-test--make-render-buffer))
+        (eca-chat-shrink-called-tools nil))
+    (unwind-protect
+        (eca-chat--with-current-buffer buf
+          (eca-chat--render-content (make-eca--session) buf "assistant" content nil)
+          (save-excursion
+            (goto-char (overlay-start (eca-chat--get-expandable-content
+                                       (plist-get content :id))))
+            (if (search-forward symbol (line-end-position) t)
+                (get-text-property (match-beginning 0) 'font-lock-face)
+              :missing)))
+      (kill-buffer buf))))
+
+(describe "tool call status symbols"
+
+  (it "shows a succeeded tool call with a check in the success face"
+    (expect (eca-chat-test--status-symbol-face
+             (eca-chat-test--tool-call-content "toolCalled" "tool-1") "✔")
+            :to-be 'eca-chat-tool-call-success-face))
+
+  (it "shows a failed tool call with a cross in the error face"
+    (expect (eca-chat-test--status-symbol-face
+             (plist-put (eca-chat-test--tool-call-content "toolCalled" "tool-1")
+                        :error t)
+             "✕")
+            :to-be 'eca-chat-tool-call-error-face))
+
+  (it "shows a rejected tool call with a cross in the error face"
+    (expect (eca-chat-test--status-symbol-face
+             (eca-chat-test--tool-call-content "toolCallRejected" "tool-1") "✕")
+            :to-be 'eca-chat-tool-call-error-face))
+
+  (it "keeps the face in labels built from the tool call details"
+    (expect (eca-chat-test--status-symbol-face
+             (plist-put (eca-chat-test--tool-call-content "toolCalled" "tool-1")
+                        :details (list :type "fileChange" :path "/tmp/a.el"
+                                       :diff "+x" :linesAdded 1 :linesRemoved 0))
+             "✔")
+            :to-be 'eca-chat-tool-call-success-face))
+
+  (it "no longer shows the emoji"
+    (expect (eca-chat-test--status-symbol-face
+             (eca-chat-test--tool-call-content "toolCalled" "tool-1") "✅")
+            :to-be :missing)
+    (expect (eca-chat-test--status-symbol-face
+             (plist-put (eca-chat-test--tool-call-content "toolCalled" "tool-1")
+                        :error t)
+             "❌")
+            :to-be :missing))
+
+  (it "paints customized symbols too"
+    (let ((eca-chat-mcp-tool-call-success-symbol "OK")
+          (eca-chat-mcp-tool-call-error-symbol "KO"))
+      (expect (eca-chat-test--status-symbol-face
+               (eca-chat-test--tool-call-content "toolCalled" "tool-1") "OK")
+              :to-be 'eca-chat-tool-call-success-face)
+      (expect (eca-chat-test--status-symbol-face
+               (eca-chat-test--tool-call-content "toolCallRejected" "tool-1") "KO")
+              :to-be 'eca-chat-tool-call-error-face))))
+
+;; ---------------------------------------------------------------------------
 ;; eca-chat--shell-command-state-face
 ;; ---------------------------------------------------------------------------
 

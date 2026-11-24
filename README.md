@@ -186,8 +186,8 @@ Chat
 - `eca-chat-expandable-block-open-symbol`: Symbol used for expandable blocks in open state.
 - `eca-chat-expandable-block-close-symbol`: Symbol used for expandable blocks in closed state.
 - `eca-chat-mcp-tool-call-loading-symbol`: Symbol used for MCP tool calls while loading.
-- `eca-chat-mcp-tool-call-error-symbol`: Symbol used for MCP tool calls when they fail.
-- `eca-chat-mcp-tool-call-success-symbol`: Symbol used for MCP tool calls when they succeed.
+- `eca-chat-mcp-tool-call-error-symbol`: Symbol used for MCP tool calls when they fail or are rejected (default `✕`), shown with `eca-chat-tool-call-error-face`.
+- `eca-chat-mcp-tool-call-success-symbol`: Symbol used for MCP tool calls when they succeed (default `✔`), shown with `eca-chat-tool-call-success-face`.
 - `eca-chat-expand-pending-approval-tools`: Whether to auto-expand tool calls that are pending approval.
 - `eca-chat-shrink-called-tools`: Whether to auto-shrink tool calls after they have been executed.
 - `eca-chat-tab-line`: Whether to show a tab line with chat tabs at the top of each chat window (default `t`). Each tab shows the chat status (pending approval, loading) and title.

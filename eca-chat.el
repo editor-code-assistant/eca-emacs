@@ -184,13 +184,15 @@ to nil to keep the whole chat buffer writable."
   :type 'string
   :group 'eca)
 
-(defcustom eca-chat-mcp-tool-call-error-symbol "❌"
-  "The string used in eca chat buffer for mcp tool calls when error."
+(defcustom eca-chat-mcp-tool-call-error-symbol "✕"
+  "The string used in eca chat buffer for mcp tool calls when error.
+Shown with `eca-chat-tool-call-error-face'."
   :type 'string
   :group 'eca)
 
-(defcustom eca-chat-mcp-tool-call-success-symbol "✅"
-  "The string used in eca chat buffer for mcp tool calls when success."
+(defcustom eca-chat-mcp-tool-call-success-symbol "✔"
+  "The string used in eca chat buffer for mcp tool calls when success.
+Shown with `eca-chat-tool-call-success-face'."
   :type 'string
   :group 'eca)
 
@@ -679,6 +681,19 @@ available (TTY)."
 (defface eca-chat-tool-call-progress-face
   '((t :inherit font-lock-comment-face :slant italic :height 0.9))
   "Face for the progress reported by a running tool call."
+  :group 'eca)
+
+(defface eca-chat-tool-call-success-face
+  '((t :inherit success :underline nil))
+  "Face for the symbol of tool calls that succeeded.
+See `eca-chat-mcp-tool-call-success-symbol'."
+  :group 'eca)
+
+(defface eca-chat-tool-call-error-face
+  '((t :inherit error :underline nil))
+  "Face for the symbol of tool calls that failed or were rejected.
+See `eca-chat-mcp-tool-call-error-symbol'.  Some themes underline
+the `error' face, which this one leaves out."
   :group 'eca)
 
 (defface eca-chat-file-change-label-face
@@ -4444,6 +4459,16 @@ inline code face instead."
       (concat "`" code "`")
     (propertize code 'font-lock-face 'markdown-inline-code-face)))
 
+(defun eca-chat--tool-call-success-symbol ()
+  "Return `eca-chat-mcp-tool-call-success-symbol' for a tool call label."
+  (propertize eca-chat-mcp-tool-call-success-symbol
+              'font-lock-face 'eca-chat-tool-call-success-face))
+
+(defun eca-chat--tool-call-error-symbol ()
+  "Return `eca-chat-mcp-tool-call-error-symbol' for a tool call label."
+  (propertize eca-chat-mcp-tool-call-error-symbol
+              'font-lock-face 'eca-chat-tool-call-error-face))
+
 (defun eca-chat--file-change-diff (path diff roots)
   "Return a diff block for relative PATH from ROOTS with DIFF.
 PATH links to its file when it exists.  Remote files aren't
@@ -5818,9 +5843,9 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
                 (bg? (plist-get details :background))
                 (status (cond
                          ((plist-get content :error)
-                          eca-chat-mcp-tool-call-error-symbol)
+                          (eca-chat--tool-call-error-symbol))
                          (bg? "🟡")
-                         (t eca-chat-mcp-tool-call-success-symbol))))
+                         (t (eca-chat--tool-call-success-symbol)))))
            ;; Cleanup counters for this tool-call id to avoid unbounded growth
            (remhash id eca-chat--tool-call-prepare-counters)
            (remhash id eca-chat--tool-call-prepare-content-cache)
@@ -5866,7 +5891,7 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
                            (format "Rejected tool: %s__%s" server name)))
                 (args (plist-get content :arguments))
                 (details (plist-get content :details))
-                (status eca-chat-mcp-tool-call-error-symbol)
+                (status (eca-chat--tool-call-error-symbol))
                 (id (plist-get content :id)))
            ;; Cleanup counters for this tool-call id
            (remhash id eca-chat--tool-call-prepare-counters)
@@ -5887,7 +5912,7 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
                  (concat (propertize label
                                      'font-lock-face 'eca-chat-mcp-tool-call-label-face)
                          " "
-                         eca-chat-mcp-tool-call-error-symbol)
+                         status)
                  (eca-chat--tool-call-body
                   (eca-chat--content-table `(("Tool" . ,name)
                                              ("Server" . ,server)
