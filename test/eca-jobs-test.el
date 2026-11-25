@@ -88,6 +88,50 @@
     (expect (eca-jobs--elapsed-since "2020-01-01T00:00:00Z")
             :to-match "^[0-9]+[dhms]")))
 
+;; elapsed-seconds
+
+(describe "eca-jobs--elapsed-seconds"
+  (it "returns nil for what is not a start time"
+    (expect (eca-jobs--elapsed-seconds nil) :to-be nil)
+    (expect (eca-jobs--elapsed-seconds 42) :to-be nil)
+    (expect (eca-jobs--elapsed-seconds "yesterday") :to-be nil))
+
+  (it "returns the whole seconds since a start told in UTC"
+    (let ((secs (eca-jobs--elapsed-seconds
+                 (format-time-string "%FT%T.123456789Z" (time-subtract nil 90) t))))
+      (expect (<= 90 secs 91) :to-be-truthy)))
+
+  (it "counts a start after the clock of Emacs as now"
+    (expect (eca-jobs--elapsed-seconds
+             (format-time-string "%FT%TZ" (time-add nil 60) t))
+            :to-equal 0)))
+
+;; parse-elapsed
+
+(describe "eca-jobs--parse-elapsed"
+  (it "returns the seconds of the durations the server tells"
+    (expect (eca-jobs--parse-elapsed "48s") :to-equal 48)
+    (expect (eca-jobs--parse-elapsed "2m31s") :to-equal 151)
+    (expect (eca-jobs--parse-elapsed "1h3m") :to-equal 3780)
+    (expect (eca-jobs--parse-elapsed "2m 31s") :to-equal 151))
+
+  (it "returns nil for what is not a duration"
+    (expect (eca-jobs--parse-elapsed nil) :to-be nil)
+    (expect (eca-jobs--parse-elapsed "") :to-be nil)
+    (expect (eca-jobs--parse-elapsed "soon") :to-be nil)))
+
+;; kill
+
+(describe "eca-jobs--kill"
+  (it "asks the server to kill the job"
+    (spy-on 'eca-api-request-async)
+    (let ((session (eca-jobs-test--make-session)))
+      (eca-jobs--kill session "job-1")
+      (let ((args (spy-calls-args-for 'eca-api-request-async 0)))
+        (expect (car args) :to-be session)
+        (expect (plist-get (cdr args) :method) :to-equal "jobs/kill")
+        (expect (plist-get (cdr args) :params) :to-equal '(:job-id "job-1"))))))
+
 ;; group-by-chat
 
 (describe "eca-jobs--group-by-chat"

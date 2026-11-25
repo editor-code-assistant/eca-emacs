@@ -58,7 +58,7 @@
 
 (declare-function eca-api-notify "eca-api")
 (declare-function eca-api-request-async "eca-api")
-(declare-function eca-chat--update-bg-job-emoji "eca-chat")
+(declare-function eca-chat--update-background-jobs "eca-chat" (session))
 
 (defvar-local eca-jobs--refresh-timer nil
   "Timer for refreshing elapsed time in the Jobs tab.")
@@ -77,25 +77,46 @@
 
 ;; Helpers
 
-(defun eca-jobs--elapsed-since (started-at)
-  "Compute human-readable elapsed time from STARTED-AT ISO 8601 string."
+(defun eca-jobs--elapsed-seconds (started-at)
+  "Return the seconds elapsed since STARTED-AT, or nil.
+STARTED-AT is an ISO 8601 string in UTC, as the server tells when a job
+started, like \"2026-01-01T12:00:00.123Z\".  The fraction of a second
+is left out, and a start after the clock of Emacs counts as now."
   (when (and started-at (stringp started-at)
              (string-match
               "\\`\\([0-9]\\{4\\}\\)-\\([0-9]\\{2\\}\\)-\\([0-9]\\{2\\}\\)T\\([0-9]\\{2\\}\\):\\([0-9]\\{2\\}\\):\\([0-9]\\{2\\}\\)"
               started-at))
-    (let* ((start (encode-time
-                   (list (string-to-number (match-string 6 started-at))
-                         (string-to-number (match-string 5 started-at))
-                         (string-to-number (match-string 4 started-at))
-                         (string-to-number (match-string 3 started-at))
-                         (string-to-number (match-string 2 started-at))
-                         (string-to-number (match-string 1 started-at))
-                         nil nil 0)))
-           (secs (floor (float-time (time-subtract nil start)))))
-      (cond
-       ((< secs 60) (format "%ds" secs))
-       ((< secs 3600) (format "%dm%ds" (/ secs 60) (mod secs 60)))
-       (t (format "%dh%dm" (/ secs 3600) (mod (/ secs 60) 60)))))))
+    (let ((start (encode-time
+                  (list (string-to-number (match-string 6 started-at))
+                        (string-to-number (match-string 5 started-at))
+                        (string-to-number (match-string 4 started-at))
+                        (string-to-number (match-string 3 started-at))
+                        (string-to-number (match-string 2 started-at))
+                        (string-to-number (match-string 1 started-at))
+                        nil nil 0))))
+      (max 0 (floor (float-time (time-subtract nil start)))))))
+
+(defun eca-jobs--elapsed-since (started-at)
+  "Compute human-readable elapsed time from STARTED-AT ISO 8601 string."
+  (when-let* ((secs (eca-jobs--elapsed-seconds started-at)))
+    (cond
+     ((< secs 60) (format "%ds" secs))
+     ((< secs 3600) (format "%dm%ds" (/ secs 60) (mod secs 60)))
+     (t (format "%dh%dm" (/ secs 3600) (mod (/ secs 60) 60))))))
+
+(defun eca-jobs--parse-elapsed (elapsed)
+  "Return the seconds of ELAPSED, how long the server tells a job ran.
+That is a string like \"48s\", \"2m31s\" or \"1h3m\".  Return nil
+when ELAPSED is not one."
+  (when (and (stringp elapsed)
+             (string-match "\\`\\(?:\\([0-9]+\\)h\\)? *\\(?:\\([0-9]+\\)m\\)? *\\(?:\\([0-9]+\\)s\\)?\\'"
+                           elapsed)
+             (or (match-beginning 1) (match-beginning 2) (match-beginning 3)))
+    (let ((part (lambda (group)
+                  (string-to-number (or (match-string group elapsed) "0")))))
+      (+ (* 3600 (funcall part 1))
+         (* 60 (funcall part 2))
+         (funcall part 3)))))
 
 (defun eca-jobs--status-emoji (status)
   "Return a colored emoji circle for STATUS."
@@ -119,23 +140,27 @@
           (push (cons chat-id (cons chat-label (list job))) groups))))
     (nreverse groups)))
 
+(defun eca-jobs--kill (session job-id)
+  "Ask the server of SESSION to kill the background job JOB-ID."
+  (eca-api-request-async session
+                         :method "jobs/kill"
+                         :params (list :job-id job-id)
+                         :success-callback
+                         (lambda (result)
+                           (if (plist-get result :killed)
+                               (message "Job %s killed" job-id)
+                             (message "Job %s was not running" job-id)))
+                         :error-callback
+                         (lambda (_err)
+                           (user-error "Failed to kill job %s" job-id))))
+
 (defun eca-jobs--kill-at-point ()
   "Kill the background job at point."
   (interactive)
   (if-let* ((session (ignore-errors (eca-session)))
             (job-id (get-text-property (point) 'eca-job-id)))
       (when (y-or-n-p (format "Kill job %s? " job-id))
-        (eca-api-request-async session
-                               :method "jobs/kill"
-                               :params (list :job-id job-id)
-                               :success-callback
-                               (lambda (result)
-                                 (if (plist-get result :killed)
-                                     (message "Job %s killed" job-id)
-                                   (message "Job %s was not running" job-id)))
-                               :error-callback
-                               (lambda (_err)
-                                 (user-error "Failed to kill job %s" job-id))))
+        (eca-jobs--kill session job-id))
     (user-error "No running job at point")))
 
 (defun eca-jobs--view-output-by-id (session job-id)
@@ -294,17 +319,7 @@ The timer skips the ticks run where the text must not change, see
                                            'font-lock-face 'eca-jobs-button-kill-face)
                                (lambda ()
                                  (when-let* ((s (ignore-errors (eca-session))))
-                                   (eca-api-request-async s
-                                                          :method "jobs/kill"
-                                                          :params (list :job-id id)
-                                                          :success-callback
-                                                          (lambda (result)
-                                                            (if (plist-get result :killed)
-                                                                (message "Job %s killed" id)
-                                                              (message "Job %s was not running" id)))
-                                                          :error-callback
-                                                          (lambda (_err)
-                                                            (user-error "Failed to kill job %s" id))))))))
+                                   (eca-jobs--kill s id))))))
                     (insert "\n")
                     ;; Line 2: command (indented)
                     (insert (propertize (concat "    " truncated-label)
@@ -327,22 +342,14 @@ The timer skips the ticks run where the text must not change, see
     (when (and (buffer-live-p buf)
                (string-match-p "eca-settings.*:jobs:" (buffer-name buf)))
       (eca-jobs--ensure-timer session buf)))
-  ;; Update modeline and bg job emoji in chat buffers
+  ;; Update the modeline and the tool calls that started the jobs, also
+  ;; those of subagents, shown in the chat of their parent.
   (dolist (chat-entry (eca--session-chats session))
     (when-let* ((chat-buf (cdr chat-entry)))
       (when (buffer-live-p chat-buf)
         (with-current-buffer chat-buf
           (force-mode-line-update)
-          ;; Update tool call labels for background jobs
-          (let ((chat-id (car chat-entry)))
-            (dolist (job (eca--session-jobs session))
-              (when-let* ((tc-id (plist-get job :toolCallId))
-                          (job-chat (plist-get job :chatId))
-                          (_ (string= job-chat chat-id))
-                          (emoji (eca-jobs--status-emoji
-                                  (plist-get job :status))))
-                (eca-chat--update-bg-job-emoji
-                 tc-id emoji)))))))))
+          (eca-chat--update-background-jobs session))))))
 
 ;; Settings tab
 

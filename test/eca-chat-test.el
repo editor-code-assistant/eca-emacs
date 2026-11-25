@@ -6241,8 +6241,10 @@ PROPS override the ones of `eca-chat-test--tool-call-content'."
       (unwind-protect
           (eca-chat--with-current-buffer buf
             (cl-flet ((render (type id &rest props)
-                        (apply #'eca-chat-test--render-tool-call
-                               session buf type id props))
+                        (eca-chat-test--capture-timers
+                         (lambda ()
+                           (apply #'eca-chat-test--render-tool-call
+                                  session buf type id props))))
                       (bar (id)
                         (eca-chat-test--bar-face (eca-chat-test--label-prefix id))))
               (render "toolCallPrepare" "t1")
@@ -6266,8 +6268,11 @@ PROPS override the ones of `eca-chat-test--tool-call-content'."
               (expect (bar "t2") :to-be 'eca-chat-tool-call-error-face)
               (render "toolCallRejected" "t3")
               (expect (bar "t3") :to-be 'eca-chat-tool-call-error-face)
+              ;; Then the job it started, see "background job tool calls".
+              (setf (eca--session-jobs session)
+                    (list (eca-chat-test--job "running" :toolCallId "t4")))
               (render "toolCalled" "t4" :details (list :type "generic" :background t))
-              (expect (bar "t4") :to-be 'eca-chat-tool-call-pending-face)))
+              (expect (bar "t4") :to-be 'eca-chat-tool-call-job-running-face)))
         (eca-chat--tool-call-elapsed-stop-all)
         (kill-buffer buf))))
 
@@ -6286,7 +6291,6 @@ PROPS override the ones of `eca-chat-test--tool-call-content'."
               (render "toolCalled" "t1" :totalTimeMs 2000)
               (render "toolCalled" "t2" :error t)
               (render "toolCallRejected" "t3")
-              (render "toolCalled" "t4" :details (list :type "generic" :background t))
               ;; Without a double space where they were.
               (expect (label "t1") :to-equal
                       (concat "Called tool: testServer__testTool "
@@ -6299,9 +6303,7 @@ PROPS override the ones of `eca-chat-test--tool-call-content'."
               (expect (eca-chat-test--bar-face (eca-chat-test--label-prefix "t2"))
                       :to-be 'eca-chat-tool-call-error-face)
               (expect (eca-chat-test--bar-face (eca-chat-test--label-prefix "t3"))
-                      :to-be 'eca-chat-tool-call-error-face)
-              ;; Other states keep their symbol.
-              (expect (label "t4") :to-equal "Called tool: testServer__testTool 🟡")))
+                      :to-be 'eca-chat-tool-call-error-face)))
         (kill-buffer buf))))
 
   (it "leaves out the symbol of a finished subagent, keeping its color"
@@ -6422,6 +6424,284 @@ PROPS override the ones of `eca-chat-test--tool-call-content'."
             (expect (substring-no-properties (eca-chat-test--label-prefix "r2"))
                     :to-equal "▍  ▍ "))
         (kill-buffer buf)))))
+
+;; ---------------------------------------------------------------------------
+;; Background job tool calls
+;; ---------------------------------------------------------------------------
+
+(defun eca-chat-test--job (status &rest props)
+  "Return a job of STATUS that the tool call bg-1 started, with PROPS.
+PROPS override its defaults, as `jobs/updated' tells them."
+  (append props
+          (list :id "job-1" :type "shell" :status status
+                :label "npm run dev" :summary "dev-server"
+                :startedAt "2026-01-01T00:00:00.000Z" :elapsed "1m12s"
+                :exitCode nil :chatId "chat-1" :chatLabel "Chat"
+                :toolCallId "bg-1")))
+
+(defun eca-chat-test--background-tool-call (&rest props)
+  "Return the toolCalled content of bg-1, which started a job, with PROPS."
+  (append props
+          (list :arguments (list :command "npm run dev" :background "dev-server")
+                :details (list :type "generic" :background t))
+          (eca-chat-test--tool-call-content "toolCalled" "bg-1")))
+
+(defun eca-chat-test--tell-jobs (session &rest jobs)
+  "Make the server of SESSION tell JOBS, like `jobs/updated'."
+  (eca-jobs--handle-jobs-updated session (list :jobs (vconcat jobs))))
+
+(defun eca-chat-test--job-duration-overlay ()
+  "Return the overlay showing how long a job has run, or nil."
+  (seq-find (lambda (ov) (overlay-get ov 'eca-chat--job-duration))
+            (overlays-in (point-min) (point-max))))
+
+(defvar eca-chat-test--job-elapsed nil
+  "Seconds the running jobs have run, in `eca-chat-test--with-job-chat'.")
+
+(defmacro eca-chat-test--with-job-chat (&rest body)
+  "Run BODY in the chat buffer `buf' of `session', chat-1.
+Its timers are never activated, see `eca-chat-test--capture-timers',
+and its running jobs have run `eca-chat-test--job-elapsed' seconds,
+72 unless BODY sets it."
+  (declare (indent 0) (debug t))
+  `(let* ((session (make-eca--session))
+          (buf (eca-chat-test--make-tab-chat session "chat-1"))
+          (eca-chat-test--job-elapsed 72))
+     (spy-on 'eca-jobs--elapsed-seconds
+             :and-call-fake (lambda (_started-at) eca-chat-test--job-elapsed))
+     (unwind-protect
+         (eca-chat--with-current-buffer buf
+           (eca-chat-test--capture-timers (lambda () ,@body)))
+       (with-current-buffer buf
+         (eca-chat--background-job-timer-stop))
+       (kill-buffer buf))))
+
+(describe "background job tool calls"
+
+  (it "tell a running job in a button, with how long it has run"
+    (eca-chat-test--with-job-chat
+      (setf (eca--session-jobs session) (list (eca-chat-test--job "running")))
+      (eca-chat-test--render-assistant session buf (eca-chat-test--background-tool-call))
+      ;; Without the time of the tool call, nor an icon.
+      (expect (eca-chat-test--label-line "bg-1")
+              :to-equal "Called tool: testServer__testTool  dev-server  1m 12s   kill ")
+      (expect (eca-chat-test--bar-face (eca-chat-test--label-prefix "bg-1"))
+              :to-be 'eca-chat-tool-call-job-running-face)
+      (expect (eca-chat-test--property-at "dev-server" 'face)
+              :to-be (eca--button-face 'eca-chat-tool-call-job-running-face))
+      (expect (eca-chat-test--property-at "dev-server" 'help-echo)
+              :to-equal "Show the output of job job-1 (dev-server)")
+      (expect (eca-chat-test--property-at "kill" 'help-echo)
+              :to-equal "Kill job job-1 (dev-server)")))
+
+  (it "show the output of the job and kill it, once confirmed, from its buttons"
+    (eca-chat-test--with-job-chat
+      (let ((confirmed nil))
+        (spy-on 'eca-jobs--view-output-by-id)
+        (spy-on 'eca-jobs--kill)
+        (spy-on 'y-or-n-p :and-call-fake (lambda (&rest _) confirmed))
+        (setf (eca--session-jobs session) (list (eca-chat-test--job "running")))
+        (eca-chat-test--render-assistant session buf (eca-chat-test--background-tool-call))
+        (funcall (eca-chat-test--property-at "dev-server" 'eca-button-on-action))
+        (expect 'eca-jobs--view-output-by-id :to-have-been-called-with session "job-1")
+        (funcall (eca-chat-test--property-at "kill" 'eca-button-on-action))
+        (expect 'y-or-n-p :to-have-been-called-with "Kill job job-1 (dev-server)? ")
+        (expect 'eca-jobs--kill :not :to-have-been-called)
+        (setq confirmed t)
+        (funcall (eca-chat-test--property-at "kill" 'eca-button-on-action))
+        (expect 'eca-jobs--kill :to-have-been-called-with session "job-1"))))
+
+  (it "tell how their job ended and how long it ran, in its color"
+    (dolist (case (list (list (eca-chat-test--job "completed" :exitCode 0 :elapsed "2m31s")
+                              "dev-server  2m 31s" 'eca-chat-tool-call-success-face)
+                        (list (eca-chat-test--job "failed" :exitCode 1 :elapsed "48s")
+                              "dev-server  exit 1 · 48s" 'eca-chat-tool-call-error-face)
+                        (list (eca-chat-test--job "killed" :elapsed "1h3m")
+                              "dev-server  killed · 1h 3m" 'eca-chat-tool-call-job-killed-face)))
+      (eca-chat-test--with-job-chat
+        (setf (eca--session-jobs session) (list (car case)))
+        (eca-chat-test--render-assistant session buf (eca-chat-test--background-tool-call))
+        ;; Nothing left to kill.
+        (expect (eca-chat-test--label-line "bg-1")
+                :to-equal (format "Called tool: testServer__testTool  %s " (nth 1 case)))
+        (expect (eca-chat-test--bar-face (eca-chat-test--label-prefix "bg-1"))
+                :to-be (nth 2 case))
+        (expect (eca-chat-test--property-at "dev-server" 'face)
+                :to-be (eca--button-face (nth 2 case)))
+        (expect (eca-chat-test--property-at "dev-server" 'eca-button-on-action)
+                :to-be-truthy))))
+
+  (it "name their job by its description, else by its id"
+    (eca-chat-test--with-job-chat
+      (setf (eca--session-jobs session)
+            (list (eca-chat-test--job "completed" :summary (make-string 40 ?a))))
+      (eca-chat-test--render-assistant session buf (eca-chat-test--background-tool-call))
+      ;; Long ones are cut.
+      (expect (eca-chat-test--label-line "bg-1")
+              :to-equal (format "Called tool: testServer__testTool  %s…  1m 12s "
+                                (make-string 29 ?a)))
+      (setf (eca--session-jobs session)
+            (list (eca-chat-test--job "completed" :summary nil)))
+      (eca-chat-test--render-assistant session buf (eca-chat-test--background-tool-call))
+      (expect (eca-chat-test--label-line "bg-1")
+              :to-equal "Called tool: testServer__testTool  dev-server  1m 12s ")
+      (eca-chat-test--render-assistant
+       session buf (eca-chat-test--background-tool-call :arguments (list :background t)))
+      (expect (eca-chat-test--label-line "bg-1")
+              :to-equal "Called tool: testServer__testTool  job-1  1m 12s ")))
+
+  (it "redraw the tool call, and its bar, as the server tells of its job"
+    (eca-chat-test--with-job-chat
+      (let ((eca-chat-shrink-called-tools nil))
+        (eca-chat-test--tell-jobs session (eca-chat-test--job "running"))
+        (eca-chat-test--render-assistant session buf (eca-chat-test--background-tool-call))
+        (eca-chat--expandable-content-toggle "bg-1" t nil)
+        (eca-chat-test--tell-jobs session (eca-chat-test--job "failed" :exitCode 2 :elapsed "3m"))
+        (expect (eca-chat-test--label-line "bg-1")
+                :to-equal "Called tool: testServer__testTool  dev-server  exit 2 · 3m ")
+        (dolist (prefix (list (eca-chat-test--label-prefix "bg-1")
+                              (eca-chat-test--line-prefix-at "Tool:")))
+          (expect (eca-chat-test--bar-face prefix) :to-be 'eca-chat-tool-call-error-face))
+        ;; Still open.
+        (expect (eca-chat-test--block-shown "bg-1") :to-match "Tool:")
+        ;; Once the model learned how it ended, the server no longer
+        ;; tells it: it keeps its last state.
+        (eca-chat-test--tell-jobs session)
+        (expect (eca-chat-test--label-line "bg-1")
+                :to-equal "Called tool: testServer__testTool  dev-server  exit 2 · 3m "))))
+
+  (it "tell a job the chat doesn't know by its name only, until it does"
+    (eca-chat-test--with-job-chat
+      ;; Like those of a chat resumed after ECA restarted.
+      (eca-chat-test--render-assistant session buf (eca-chat-test--background-tool-call))
+      (expect (eca-chat-test--label-line "bg-1")
+              :to-equal "Called tool: testServer__testTool  dev-server ")
+      (expect (eca-chat-test--bar-face (eca-chat-test--label-prefix "bg-1"))
+              :to-be 'eca-chat-tool-call-job-killed-face)
+      ;; With nothing to do, nor to count.
+      (expect (eca-chat-test--property-at "dev-server" 'eca-button-on-action) :to-be nil)
+      (expect eca-chat--background-job-timer :to-be nil)
+      (eca-chat-test--tell-jobs session (eca-chat-test--job "running"))
+      (expect (eca-chat-test--label-line "bg-1")
+              :to-equal "Called tool: testServer__testTool  dev-server  1m 12s   kill ")
+      (expect (eca-chat-test--property-at "dev-server" 'eca-button-on-action)
+              :to-be-truthy)))
+
+  (it "look like any failed tool call when they failed to start a job"
+    (eca-chat-test--with-job-chat
+      (eca-chat-test--render-assistant
+       session buf (eca-chat-test--background-tool-call :error t))
+      (expect (eca-chat-test--label-line "bg-1")
+              :to-equal "Called tool: testServer__testTool")
+      (expect (eca-chat-test--bar-face (eca-chat-test--label-prefix "bg-1"))
+              :to-be 'eca-chat-tool-call-error-face)
+      ;; A job that failed right away is told, though.
+      (setf (eca--session-jobs session)
+            (list (eca-chat-test--job "failed" :exitCode 127 :elapsed "0s")))
+      (eca-chat-test--render-assistant
+       session buf (eca-chat-test--background-tool-call :error t))
+      (expect (eca-chat-test--label-line "bg-1")
+              :to-equal "Called tool: testServer__testTool  dev-server  exit 127 · 0s ")))
+
+  (it "count how long their job has run without changing the text"
+    (eca-chat-test--with-job-chat
+      (setf (eca--session-jobs session) (list (eca-chat-test--job "running")))
+      (eca-chat-test--render-assistant session buf (eca-chat-test--background-tool-call))
+      (let ((text (buffer-string))
+            (modified (buffer-chars-modified-tick))
+            (undo buffer-undo-list))
+        (setq eca-chat-test--job-elapsed 75)
+        (eca-chat--background-job-tick)
+        (let ((ov (eca-chat-test--job-duration-overlay)))
+          ;; Over the time, in the look of its button.
+          (expect (buffer-substring-no-properties (overlay-start ov) (overlay-end ov))
+                  :to-equal "1m 12s")
+          (expect (overlay-get ov 'display) :to-equal "1m 15s")
+          (expect (get-text-property 0 'face (overlay-get ov 'display))
+                  :to-be (eca--button-face 'eca-chat-tool-call-job-running-face)))
+        ;; So the undo of the prompt keeps working.
+        (expect (buffer-chars-modified-tick) :to-equal modified)
+        (expect buffer-undo-list :to-be undo)
+        (expect (buffer-string) :to-equal text))
+      ;; Gone with the job.
+      (eca-chat-test--tell-jobs session (eca-chat-test--job "completed" :exitCode 0 :elapsed "2m"))
+      (expect (eca-chat-test--job-duration-overlay) :to-be nil)
+      (expect (eca-chat-test--label-line "bg-1")
+              :to-equal "Called tool: testServer__testTool  dev-server  2m ")))
+
+  (it "count every second while a job runs and the chat shows, across turns"
+    (eca-chat-test--with-job-chat
+      (spy-on 'eca-chat--background-job-tick)
+      (let ((timer (car (eca-chat-test--capture-timers
+                         (lambda ()
+                           (eca-chat-test--tell-jobs session (eca-chat-test--job "running"))
+                           (eca-chat-test--render-assistant
+                            session buf (eca-chat-test--background-tool-call)))))))
+        (expect (car timer) :to-equal 1)
+        (expect eca-chat--background-job-timer :to-be (nth 3 timer))
+        ;; Not while the chat doesn't show.
+        (eca-chat-test--run-timer timer)
+        (expect 'eca-chat--background-job-tick :not :to-have-been-called)
+        (save-window-excursion
+          (switch-to-buffer buf)
+          ;; Nor during redisplay (#335).
+          (let ((inhibit-redisplay t))
+            (eca-chat-test--run-timer timer))
+          (expect 'eca-chat--background-job-tick :not :to-have-been-called)
+          (eca-chat-test--run-timer timer)
+          (expect 'eca-chat--background-job-tick :to-have-been-called-times 1))
+        ;; The end of a turn leaves it on, the end of the job stops it.
+        (eca-chat--tool-call-elapsed-stop-all)
+        (expect eca-chat--background-job-timer :to-be (nth 3 timer))
+        (eca-chat-test--tell-jobs session (eca-chat-test--job "completed" :exitCode 0
+                                                              :elapsed "2m"))
+        (expect eca-chat--background-job-timer :to-be nil))))
+
+  (it "forget their jobs when the chat is cleared"
+    (eca-chat-test--with-job-chat
+      (eca-chat-test--tell-jobs session (eca-chat-test--job "running"))
+      (eca-chat-test--render-assistant session buf (eca-chat-test--background-tool-call))
+      (expect eca-chat--background-job-timer :to-be-truthy)
+      (eca-chat--clear)
+      (expect eca-chat--background-job-timer :to-be nil)
+      (expect eca-chat--background-jobs :to-be nil)))
+
+  (it "redraw the jobs of the tool calls nested in a subagent"
+    (eca-chat-test--with-job-chat
+      ;; A subagent tells its own chat, shown in the chat of its parent.
+      (eca-chat-test--subagent-block "sub-1")
+      (eca-chat--expandable-content-toggle "sub-1" t nil)
+      (eca-chat-test--tell-jobs session (eca-chat-test--job "running" :chatId "chat-2"))
+      (eca-chat--render-content session buf "assistant"
+                                (eca-chat-test--background-tool-call) nil "sub-1" "chat-2")
+      (expect (eca-chat-test--label-line "bg-1")
+              :to-equal "Called tool: testServer__testTool  dev-server  1m 12s   kill ")
+      (eca-chat-test--tell-jobs session (eca-chat-test--job "completed" :chatId "chat-2"
+                                                            :exitCode 0 :elapsed "5s"))
+      (expect (eca-chat-test--label-line "bg-1")
+              :to-equal "Called tool: testServer__testTool  dev-server  5s ")
+      (expect (eca-chat-test--bar-face (eca-chat-test--label-prefix "bg-1") 3)
+              :to-be 'eca-chat-tool-call-success-face)
+      ;; Collapsed, the subagent keeps it for when it opens again.
+      (eca-chat--expandable-content-toggle "sub-1" t t)
+      (eca-chat-test--tell-jobs session (eca-chat-test--job "killed" :chatId "chat-2"
+                                                            :elapsed "6s"))
+      (eca-chat--expandable-content-toggle "sub-1" t nil)
+      (expect (eca-chat-test--label-line "bg-1")
+              :to-equal "Called tool: testServer__testTool  dev-server  killed · 6s "))))
+
+(describe "eca-chat--format-duration"
+
+  (it "tells seconds, then minutes, then hours"
+    (expect (eca-chat--format-duration 0) :to-equal "0s")
+    (expect (eca-chat--format-duration 59) :to-equal "59s")
+    (expect (eca-chat--format-duration 60) :to-equal "1m")
+    (expect (eca-chat--format-duration 151) :to-equal "2m 31s")
+    (expect (eca-chat--format-duration 3599) :to-equal "59m 59s")
+    (expect (eca-chat--format-duration 3600) :to-equal "1h")
+    (expect (eca-chat--format-duration 7980) :to-equal "2h 13m")
+    ;; Seconds no longer matter then.
+    (expect (eca-chat--format-duration 7999) :to-equal "2h 13m")))
 
 (describe "eca-chat-expandable-block-arrows"
 

@@ -21,6 +21,7 @@
 (require 'eca-util)
 (require 'eca-api)
 (require 'eca-mcp)
+(require 'eca-jobs)
 (require 'eca-diff)
 (require 'eca-table)
 (require 'eca-chat-expandable)
@@ -720,8 +721,7 @@ See `eca-chat-expandable-block-arrows'."
 (defface eca-chat-tool-call-pending-face
   '((t :inherit warning :underline nil))
   "Face for the bar of tool calls waiting for approval.
-Also tool calls running a job in the background.  See
-`eca-chat-expandable-block-arrows'."
+See `eca-chat-expandable-block-arrows'."
   :group 'eca)
 
 (defface eca-chat-tool-call-success-face
@@ -737,6 +737,23 @@ See `eca-chat-mcp-tool-call-success-symbol' and
 See `eca-chat-mcp-tool-call-error-symbol' and
 `eca-chat-expandable-block-arrows'.  Some themes underline the `error'
 face, which this one leaves out."
+  :group 'eca)
+
+(defface eca-chat-tool-call-job-running-face
+  '((t :inherit eca-chat-tool-call-running-face))
+  "Face for tool calls whose background job runs.
+It colors the bar of their block and the button telling the job, which
+shows its output.  Once the job ends, they take
+`eca-chat-tool-call-success-face' when it completed,
+`eca-chat-tool-call-error-face' when it failed or
+`eca-chat-tool-call-job-killed-face' when it was killed."
+  :group 'eca)
+
+(defface eca-chat-tool-call-job-killed-face
+  '((t :inherit shadow :underline nil))
+  "Face for tool calls whose background job was killed.
+Also for the jobs the chat doesn't know, like those of a chat resumed
+after ECA restarted.  See `eca-chat-tool-call-job-running-face'."
   :group 'eca)
 
 (defface eca-chat-file-change-label-face
@@ -1055,6 +1072,14 @@ once by `eca-chat-cleared'.")
   "Mapping tool-call ID to `current-time' when toolCallRunning was received.")
 (defvar-local eca-chat--tool-call-elapsed-timer nil
   "Repeating timer that updates elapsed-time display for running tool calls.")
+(defvar-local eca-chat--background-jobs nil
+  "Alist of the tool calls of the chat that started a background job.
+Each is (ID . (:content CONTENT :parent-id PARENT-ID :roots ROOTS :job
+JOB)): the toolCalled CONTENT of the tool call ID, the subagent tool
+call it is nested in, if any, the workspace ROOTS to draw it with and
+the last JOB the server told of, or nil when it didn't.")
+(defvar-local eca-chat--background-job-timer nil
+  "Repeating timer showing how long the background jobs have run.")
 (defvar-local eca-chat--awaiting-tool-call-ids nil
   "Ids of tool calls shown in this chat that may still ask for approval.
 A tool call is added when prepared or run and removed once it starts
@@ -1491,19 +1516,218 @@ Cancels the shared timer when no more tool calls are being tracked."
     (setq eca-chat--tool-call-elapsed-timer nil))
   (clrhash eca-chat--tool-call-elapsed-times))
 
-(defun eca-chat--update-bg-job-emoji (tool-call-id new-emoji)
-  "Update background job status emoji in TOOL-CALL-ID.
-Replace the job status emoji with NEW-EMOJI."
-  (when-let* ((ov (eca-chat--get-expandable-content
-                   tool-call-id))
-              (ov-content (overlay-get ov 'eca-chat--expandable-content-ov-content)))
-    (let ((start (overlay-start ov))
-          (end (overlay-start ov-content))
-          (inhibit-read-only t))
-      (save-excursion
-        (goto-char start)
-        (when (re-search-forward "🟡\\|✅\\|🔴\\|⚫" end t)
-          (replace-match new-emoji t t))))))
+;;;; Background jobs
+
+(defconst eca-chat--background-job-name-max-width 30
+  "The widest the name of a background job shows in its button.")
+
+(defun eca-chat--background-job (jobs tool-call-id)
+  "Return the job of JOBS that the tool call TOOL-CALL-ID started, or nil."
+  (seq-find (lambda (job) (equal tool-call-id (plist-get job :toolCallId)))
+            jobs))
+
+(defun eca-chat--background-job-running-p (job)
+  "Return non-nil when the background JOB runs."
+  (equal "running" (plist-get job :status)))
+
+(defun eca-chat--background-job-face (job)
+  "Return the face telling the state of the background JOB, or of none."
+  (pcase (plist-get job :status)
+    ("running" 'eca-chat-tool-call-job-running-face)
+    ("completed" 'eca-chat-tool-call-success-face)
+    ("failed" 'eca-chat-tool-call-error-face)
+    (_ 'eca-chat-tool-call-job-killed-face)))
+
+(defun eca-chat--background-job-name (content job)
+  "Return the name of JOB, the background job of tool call CONTENT.
+That is the description the model gave the job, else its id."
+  (or (seq-find (lambda (name) (and (stringp name) (not (string-blank-p name))))
+                (list (plist-get job :summary)
+                      (plist-get (plist-get content :arguments) :background)))
+      (plist-get job :id)
+      "background job"))
+
+(defun eca-chat--background-job-duration (job)
+  "Return how long the background JOB ran, or has been running, or nil."
+  (when-let* ((secs (or (and (eca-chat--background-job-running-p job)
+                             (eca-jobs--elapsed-seconds (plist-get job :startedAt)))
+                        (eca-jobs--parse-elapsed (plist-get job :elapsed)))))
+    (eca-chat--format-duration secs)))
+
+(defun eca-chat--background-job-status (session content job)
+  "Return the status of CONTENT, a tool call that started background JOB.
+It tells JOB in the label of the tool call, instead of the time the
+tool call took: a button in the color of the state of JOB, which the
+bar of the block takes too, with the name of JOB, how it ended, if it
+did, and how long it ran, like \"tests  exit 1 · 48s\".  The button
+shows the output of JOB from the server of SESSION.  A running JOB
+counts its time, see `eca-chat--background-job-tick', and gets a
+button killing it too.  JOB is nil when the chat doesn't know it, like
+for a chat resumed after ECA restarted: the button then only tells its
+name and does nothing.  Return nil when CONTENT failed without a JOB,
+whose tool call looks like any failed one."
+  (unless (and (null job) (plist-get content :error))
+    (let* ((status (plist-get job :status))
+           (running? (eca-chat--background-job-running-p job))
+           (face (eca-chat--background-job-face job))
+           (job-id (plist-get job :id))
+           (name (eca-chat--background-job-name content job))
+           (title (if (equal name job-id) job-id (format "%s (%s)" job-id name)))
+           (outcome (pcase status
+                      ("failed" (if-let* ((code (plist-get job :exitCode)))
+                                    (format "exit %s" code)
+                                  "failed"))
+                      ("killed" "killed")))
+           (duration (and job (eca-chat--background-job-duration job)))
+           (text (propertize
+                  (concat (truncate-string-to-width
+                           name eca-chat--background-job-name-max-width nil nil "…")
+                          (when (or outcome duration) "  ")
+                          outcome
+                          (when (and outcome duration) " · ")
+                          (when duration
+                            ;; Where the time counts, see
+                            ;; `eca-chat--background-job-tick'.
+                            (propertize duration 'eca-chat--job-duration running?)))
+                  'font-lock-face face))
+           (button (if job-id
+                       (eca-buttonize eca-chat-mode-map text
+                                      (lambda ()
+                                        (eca-jobs--view-output-by-id session job-id)))
+                     (eca--button-pill text))))
+      (add-text-properties 0 (length button)
+                           (list 'eca-chat-expandable-bar-face face
+                                 'help-echo (if job-id
+                                                (format "Show the output of job %s" title)
+                                              name))
+                           button)
+      (concat
+       button
+       (when (and running? job-id)
+         (let ((kill (eca-buttonize
+                      eca-chat-mode-map
+                      (propertize "kill" 'font-lock-face 'eca-jobs-button-kill-face)
+                      (lambda ()
+                        (when (y-or-n-p (format "Kill job %s? " title))
+                          (eca-jobs--kill session job-id))))))
+           (add-text-properties 0 (length kill)
+                                (list 'help-echo (format "Kill job %s" title))
+                                kill)
+           (concat " " kill)))))))
+
+(defun eca-chat--track-background-job (session content parent-id roots)
+  "Keep CONTENT, a tool call that started a background job, to tell it.
+The job outlives the tool call: its label tells the job as SESSION
+does, see `eca-chat--update-background-jobs'.  PARENT-ID and ROOTS
+are those to draw CONTENT with, see
+`eca-chat--render-called-tool-call'."
+  (let ((id (plist-get content :id)))
+    (setf (alist-get id eca-chat--background-jobs nil nil #'equal)
+          (list :content content :parent-id parent-id :roots roots
+                :job (eca-chat--background-job (eca--session-jobs session) id))))
+  (eca-chat--background-job-timer-ensure))
+
+(defun eca-chat--background-job-key (job)
+  "Return what the label of the tool call of background JOB tells of it."
+  (when job
+    (list (plist-get job :id)
+          (plist-get job :status)
+          (plist-get job :summary)
+          (plist-get job :exitCode)
+          ;; A running job counts its time from its start.
+          (if (eca-chat--background-job-running-p job)
+              (plist-get job :startedAt)
+            (plist-get job :elapsed)))))
+
+(defun eca-chat--update-background-jobs (session)
+  "Redraw the tool calls of the chat whose background job changed.
+The jobs are those of SESSION, which the server just told.  The ones
+of subagents show in the chat of their parent, so are redrawn too.
+A job the server no longer tells, once the model learned how it
+ended, keeps its last state."
+  (let ((jobs (eca--session-jobs session)))
+    (eca-chat--allow-write
+     (dolist (entry eca-chat--background-jobs)
+       (when-let* ((job (eca-chat--background-job jobs (car entry)))
+                   ((not (equal (eca-chat--background-job-key job)
+                                (eca-chat--background-job-key
+                                 (plist-get (cdr entry) :job))))))
+         (setcdr entry (plist-put (cdr entry) :job job))
+         (eca-chat--render-called-tool-call
+          session (plist-get (cdr entry) :content)
+          (plist-get (cdr entry) :parent-id) (plist-get (cdr entry) :roots))))))
+  (eca-chat--background-job-timer-ensure))
+
+(defun eca-chat--show-background-job-duration (start end duration)
+  "Show DURATION over the text between START and END.
+That text tells how long a background job has been running, in the
+label of its tool call.  An overlay draws DURATION over it, leaving
+the text as it is: changing the text resets the undo of the prompt,
+see `eca-chat--insert', so every second it would leave nothing to
+undo there."
+  (let* ((ov (or (seq-find (lambda (ov) (overlay-get ov 'eca-chat--job-duration))
+                           (overlays-in start end))
+                 (let ((ov (make-overlay start end nil t nil)))
+                   (overlay-put ov 'eca-chat--job-duration t)
+                   ;; Gone with the label, when it is drawn again.
+                   (overlay-put ov 'evaporate t)
+                   ov)))
+         (shown (or (overlay-get ov 'display)
+                    (buffer-substring-no-properties start end))))
+    (unless (string= shown duration)
+      (overlay-put ov 'display
+                   (propertize duration 'face (get-text-property start 'face))))))
+
+(defun eca-chat--background-job-tick ()
+  "Show how long the running background jobs of the chat have run.
+Each one counts in the button telling it in the label of its tool
+call, see `eca-chat--background-job-status'."
+  (dolist (entry eca-chat--background-jobs)
+    (let ((job (plist-get (cdr entry) :job)))
+      (when-let* (((eca-chat--background-job-running-p job))
+                  (duration (eca-chat--background-job-duration job))
+                  (ov-label (eca-chat--get-expandable-content (car entry)))
+                  (ov-content (overlay-get ov-label 'eca-chat--expandable-content-ov-content))
+                  (end (overlay-start ov-content))
+                  (start (text-property-any (overlay-start ov-label) end
+                                            'eca-chat--job-duration t)))
+        (eca-chat--show-background-job-duration
+         start
+         (next-single-property-change start 'eca-chat--job-duration nil end)
+         duration)))))
+
+(defun eca-chat--background-job-timer-stop ()
+  "Stop the timer showing how long the background jobs have run."
+  (when eca-chat--background-job-timer
+    (cancel-timer eca-chat--background-job-timer)
+    (setq eca-chat--background-job-timer nil)))
+
+(defun eca-chat--background-job-timer-ensure ()
+  "Run the timer showing how long the background jobs have run, as needed.
+It ticks every second while a job of the chat runs, across turns, see
+`eca-chat--background-job-tick'.  It skips the ticks while the chat
+doesn't show, and those run where the display must not change, see
+`eca--text-change-unsafe-p'."
+  (if (not (seq-some (lambda (entry)
+                       (eca-chat--background-job-running-p
+                        (plist-get (cdr entry) :job)))
+                     eca-chat--background-jobs))
+      (eca-chat--background-job-timer-stop)
+    (unless eca-chat--background-job-timer
+      (let ((buffer (current-buffer))
+            (timer nil))
+        (setq timer
+              (run-with-timer
+               1 1
+               (lambda ()
+                 (cond
+                  ((not (buffer-live-p buffer))
+                   (cancel-timer timer))
+                  ((and (get-buffer-window buffer 'visible)
+                        (not (eca--text-change-unsafe-p)))
+                   (with-current-buffer buffer
+                     (eca-chat--background-job-tick)))))))
+        (setq eca-chat--background-job-timer timer)))))
 
 (defun eca-chat--selection-session ()
   "Return the session providing defaults for the current chat."
@@ -2054,6 +2278,8 @@ Recovery path for a corrupted prompt block (see #305)."
   (setq-local eca-chat--history-loading nil)
   (clrhash eca-chat--subagent-chat-id->tool-call-id)
   (clrhash eca-chat--subagent-usage)
+  (eca-chat--background-job-timer-stop)
+  (setq-local eca-chat--background-jobs nil)
   (eca-chat--insert "\n")
   (eca-chat--insert-prompt-string)
   (eca-chat--refresh-context)
@@ -3374,14 +3600,19 @@ Text properties of STR are kept."
 
 (defun eca-chat--format-duration (secs)
   "Format SECS into a human-readable duration string.
-Returns \"Xs\" for < 60s, \"Xm Ys\" for >= 60s,
-or \"Xm\" when seconds are zero."
-  (let ((mins (/ secs 60))
+Returns \"Xs\" for < 60s, \"Xm Ys\" for < 1h and \"Xh Ym\" from then
+on, like a background job running for hours, leaving out zero seconds
+or minutes: \"Xm\" and \"Xh\"."
+  (let ((hours (/ secs 3600))
+        (mins (/ (mod secs 3600) 60))
         (remaining-secs (mod secs 60)))
     (cond
-     ((< secs 60)          (format "%ds" secs))
-     ((zerop remaining-secs) (format "%dm" mins))
-     (t                      (format "%dm %ds" mins remaining-secs)))))
+     ((< secs 60)            (format "%ds" secs))
+     ((< secs 3600)          (if (zerop remaining-secs)
+                                 (format "%dm" mins)
+                               (format "%dm %ds" mins remaining-secs)))
+     ((zerop mins)           (format "%dh" hours))
+     (t                      (format "%dh %dm" hours mins)))))
 
 (defun eca-chat--turn-duration-str ()
   "Return formatted turn duration string, or nil."
@@ -4556,8 +4787,10 @@ inline code face instead."
 
 (defun eca-chat--tool-call-status-symbol (state)
   "Return the symbol of a tool call in STATE, for its label.
-STATE is `running', `pending' (approval), `background', `success'
-or `error', which the symbol keeps as `eca-chat--tool-call-state'.
+STATE is `running', `pending' (approval), `success' or `error', which
+the symbol keeps as `eca-chat--tool-call-state'.  A tool call that
+started a background job tells it instead, see
+`eca-chat--background-job-status'.
 It tells the block the face of its bar, see
 `eca-chat-expandable-block-arrows', and
 `eca-chat--tool-call-label-with-status' puts it in labels."
@@ -4567,7 +4800,6 @@ It tells the block the face of its bar, see
                                  nil 'eca-chat-tool-call-running-face))
                  ('pending (list eca-chat-mcp-tool-call-pending-approval-symbol
                                  nil 'eca-chat-tool-call-pending-face))
-                 ('background (list "🟡" nil 'eca-chat-tool-call-pending-face))
                  ('success (list eca-chat-mcp-tool-call-success-symbol
                                  'eca-chat-tool-call-success-face
                                  'eca-chat-tool-call-success-face))
@@ -5771,6 +6003,52 @@ back to local ones, relative paths are resolved against ROOTS."
        (eca-chat--user-message-text-start (overlay-start ov-label))
        (overlay-start ov-content) roots))))
 
+(defun eca-chat--render-called-tool-call (session content parent-id roots)
+  "Draw CONTENT, a tool call that was called, in the chat of SESSION.
+PARENT-ID is the subagent tool call it is nested in, if any, and ROOTS
+the workspace roots.  A tool call that started a background job tells
+the job instead of the time it took, see
+`eca-chat--background-job-status'."
+  (let* ((id (plist-get content :id))
+         (name (plist-get content :name))
+         (server (plist-get content :server))
+         (label (or (plist-get content :summary)
+                    (format "Called tool: %s__%s" server name)))
+         (args (plist-get content :arguments))
+         (outputs (plist-get content :outputs))
+         (output-text (if outputs
+                          (mapconcat (lambda (o) (or (plist-get o :text) "")) outputs "\n")
+                        ""))
+         (details (plist-get content :details))
+         (job-status (when-let* ((tracked (alist-get id eca-chat--background-jobs
+                                                     nil nil #'equal)))
+                       (eca-chat--background-job-status
+                        session content (plist-get tracked :job))))
+         (time (unless job-status
+                 (when-let* ((ms (plist-get content :totalTimeMs)))
+                   (concat " " (eca-chat--time->presentable-time ms)))))
+         (status (or job-status
+                     (eca-chat--tool-call-status-symbol
+                      (if (plist-get content :error) 'error 'success)))))
+    (pcase (plist-get details :type)
+      ("fileChange" (eca-chat--tool-call-file-change-details content label nil time status nil roots parent-id))
+      ("shellCommand" (eca-chat--tool-call-shell-command-details content label nil time status parent-id output-text t))
+      ("jsonOutputs" (eca-chat--tool-call-json-outputs-details content time status parent-id))
+      ("subagent" (eca-chat--tool-call-subagent-details id args label nil time status parent-id details output-text))
+      (_ (eca-chat--update-expandable-content
+          id
+          (eca-chat--tool-call-label-with-status
+           (propertize label 'font-lock-face 'eca-chat-mcp-tool-call-label-face)
+           status time)
+          (eca-chat--tool-call-body
+           (eca-chat--content-table
+            `(("Tool"   . ,name)
+              ("Server" . ,server)
+              ("Arguments" . ,args)
+              ("Output" . ,output-text))))
+          nil
+          parent-id)))))
+
 (defun eca-chat--render-content (session chat-buffer role content roots &optional parent-tool-call-id chat-id)
   "Render CONTENT inside CHAT-BUFFER for SESSION.
 ROLE is the message role.  ROOTS is the list of workspace roots.
@@ -6129,23 +6407,7 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
        (if (eca-chat--task-tool-call-p content)
            (eca-chat--update-task-state content)
          (let* ((id (plist-get content :id))
-                (name (plist-get content :name))
-                (server (plist-get content :server))
-                (label (or (plist-get content :summary)
-                           (format "Called tool: %s__%s" server name)))
-                (args (plist-get content :arguments))
-                (outputs (plist-get content :outputs))
-                (output-text (if outputs
-                                 (mapconcat (lambda (o) (or (plist-get o :text) "")) outputs "\n")
-                               ""))
-                (details (plist-get content :details))
-                (time (when-let* ((ms (plist-get content :totalTimeMs)))
-                        (concat " " (eca-chat--time->presentable-time ms))))
-                (bg? (plist-get details :background))
-                (status (eca-chat--tool-call-status-symbol
-                         (cond ((plist-get content :error) 'error)
-                               (bg? 'background)
-                               (t 'success)))))
+                (details (plist-get content :details)))
            ;; Cleanup counters for this tool-call id to avoid unbounded growth
            (remhash id eca-chat--tool-call-prepare-counters)
            (remhash id eca-chat--tool-call-prepare-content-cache)
@@ -6158,24 +6420,10 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
            (when (and (not parent-tool-call-id)
                       (string= "subagent" (plist-get details :type)))
              (remhash (plist-get details :subagentChatId) eca-chat--subagent-chat-id->tool-call-id))
-           (pcase (plist-get details :type)
-             ("fileChange" (eca-chat--tool-call-file-change-details content label nil time status tool-call-next-line-spacing roots parent-tool-call-id))
-             ("shellCommand" (eca-chat--tool-call-shell-command-details content label nil time status parent-tool-call-id output-text t))
-             ("jsonOutputs" (eca-chat--tool-call-json-outputs-details content time status parent-tool-call-id))
-             ("subagent" (eca-chat--tool-call-subagent-details id args label nil time status parent-tool-call-id details output-text))
-             (_ (eca-chat--update-expandable-content
-                 id
-                 (eca-chat--tool-call-label-with-status
-                  (propertize label 'font-lock-face 'eca-chat-mcp-tool-call-label-face)
-                  status time)
-                 (eca-chat--tool-call-body
-                  (eca-chat--content-table
-                   `(("Tool"   . ,name)
-                     ("Server" . ,server)
-                     ("Arguments" . ,args)
-                     ("Output" . ,output-text))))
-                 nil
-                 parent-tool-call-id)))
+           ;; The job it started outlives it, which its label keeps telling.
+           (when (plist-get details :background)
+             (eca-chat--track-background-job session content parent-tool-call-id roots))
+           (eca-chat--render-called-tool-call session content parent-tool-call-id roots)
            (when eca-chat-shrink-called-tools
              (eca-chat--expandable-content-toggle id t t)
              (eca-chat--ensure-prompt-visible))
@@ -7162,6 +7410,8 @@ When ACTIVE is non-nil, show the question prefix; otherwise restore normal."
                   ;; Cancel all timers if chat was still loading/stopping.
                   (eca-chat--spinner-stop)
                   (eca-chat--tool-call-elapsed-stop-all)
+                  ;; The server telling of its jobs is gone.
+                  (eca-chat--background-job-timer-stop)
                   (when eca-chat--modeline-timer
                     (cancel-timer eca-chat--modeline-timer)
                     (setq-local eca-chat--modeline-timer nil))
