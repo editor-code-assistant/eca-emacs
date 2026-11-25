@@ -2726,6 +2726,31 @@ ROOTS are the workspace roots."
           (expect 'eca-chat--font-lock-ensure :not :to-have-been-called)
           (expect eca-chat--fontify-timer :to-be nil))))))
 
+(describe "markdown lists in chat"
+
+  (it "show their markers in a quiet face, whatever the theme colors them"
+    (with-temp-buffer
+      (let ((eca--chat-init-session (make-eca--session))
+            (eca--chat-init-skip-welcome t))
+        (eca-chat-mode)
+        (expect (memq 'eca-chat-list-marker-face
+                      (flatten-tree (cdr (assq 'markdown-list-face face-remapping-alist))))
+                :to-be-truthy)
+        (expect (face-attribute 'eca-chat-list-marker-face :inherit) :to-be 'shadow))))
+
+  (it "show lighter bullets, unless told to keep those of markdown"
+    (with-temp-buffer
+      (let ((eca--chat-init-session (make-eca--session))
+            (eca--chat-init-skip-welcome t))
+        (eca-chat-mode)
+        (expect markdown-list-item-bullets :to-equal '("•" "◦" "▪" "▫"))))
+    (with-temp-buffer
+      (let ((eca--chat-init-session (make-eca--session))
+            (eca--chat-init-skip-welcome t)
+            (eca-chat-list-bullets nil))
+        (eca-chat-mode)
+        (expect (local-variable-p 'markdown-list-item-bullets) :to-be nil)))))
+
 (describe "eca-chat prompt fontification guard"
   (it "keeps prompt markdown after-change extension enabled by default"
     (with-temp-buffer

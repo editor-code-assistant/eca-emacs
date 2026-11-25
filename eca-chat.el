@@ -418,6 +418,15 @@ typing or streaming."
   :type 'boolean
   :group 'eca)
 
+(defcustom eca-chat-list-bullets '("•" "◦" "▪" "▫")
+  "Bullets of the items of markdown lists in chat, by nesting level.
+Lighter than the ones of `markdown-list-item-bullets' by default, which
+nil keeps.  They show with `eca-chat-list-marker-face'.  Takes effect
+in new chats."
+  :type '(choice (const :tag "Those of markdown-mode" nil)
+                 (repeat (string :tag "Bullet")))
+  :group 'eca)
+
 (defcustom eca-chat-fontify-prompt t
   "Whether ECA chat applies Markdown fontification to prompt text.
 When non-nil, preserve the historical prompt rendering behavior.
@@ -675,6 +684,13 @@ painted over the whole message, markdown spans included."
   "Face for the actions in the header of user messages.
 Underlined, so they read as actionable, and shown with `highlight'
 under the mouse."
+  :group 'eca)
+
+(defface eca-chat-list-marker-face
+  '((t :inherit shadow :weight normal))
+  "Face for the markers of markdown lists in chat, bullets and numbers.
+It goes over `markdown-list-face', which themes like Doom's make red,
+the color of errors.  See `eca-chat-list-bullets'."
   :group 'eca)
 
 (defface eca-chat-system-messages-face
@@ -5335,6 +5351,11 @@ CHILD, NAME, DOCSTRING and BODY are passed down."
   ;; Ensure tables use a monospace font for proper alignment.
   (face-remap-add-relative 'markdown-table-face
                            '(:inherit fixed-pitch))
+
+  ;; Lists keep their markers quiet, whatever the theme colors them.
+  (face-remap-add-relative 'markdown-list-face 'eca-chat-list-marker-face)
+  (when eca-chat-list-bullets
+    (setq-local markdown-list-item-bullets eca-chat-list-bullets))
 
   ;; Compute expandable-block background faces from current theme and
   ;; keep them in sync when the user switches themes (#301).
