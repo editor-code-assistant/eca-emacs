@@ -231,6 +231,15 @@ Background is computed dynamically from the current theme by
 `eca-chat--update-expandable-block-faces'."
   :group 'eca)
 
+(defface eca-chat--expandable-bar-fill-face
+  '((((type graphic)) :inverse-video t)
+    (t nil))
+  "Face filling the bar along blocks with its color in graphic frames.
+The bar is a space there, see `eca-chat--expandable-bar-display', whose
+background inverse video paints with the foreground of the face of the
+bar.  Terminals show the glyph of the bar in that foreground instead."
+  :group 'eca)
+
 ;;;; Functions
 
 (defun eca-chat--update-expandable-block-faces ()
@@ -341,7 +350,27 @@ their `keymap' and `help-echo'."
 (defconst eca-chat--expandable-content-base-indent (make-string 3 ?\s))
 
 (defconst eca-chat--expandable-bar-symbol "▍"
-  "The bar drawn along expandable blocks.")
+  "The bar drawn along expandable blocks, user messages and flags.
+Terminals show this glyph.  Graphic frames fill the part of its column
+it covers instead, see `eca-chat--expandable-bar-display'.")
+
+(defconst eca-chat--expandable-bar-display
+  '(when (display-graphic-p) space :relative-width 0.375)
+  "Display of `eca-chat--expandable-bar-symbol' in graphic frames.
+A space as wide as the part of its column the glyph covers, three
+eighths, filled with the color of the bar by
+`eca-chat--expandable-bar-fill-face'.
+Fonts draw the glyph only as high as their text, leaving gaps between
+the bars of consecutive lines whenever a line is taller, e.g. with
+`line-spacing', buttons on the line or a fallback font drawing the
+glyph.  The background of a space covers the whole height of its line,
+so the bars of the lines of a block join into one.")
+
+(defconst eca-chat--expandable-bar-gap-display
+  '(when (display-graphic-p) space :relative-width 1.625)
+  "Display of the space after the bar in graphic frames.
+It also takes the rest of the column of the bar, which the glyph of the
+bar leaves empty, so the bar and this space stay two columns wide.")
 
 (defun eca-chat--expandable-bar-face (label)
   "Return the face of the bar of a block labeled LABEL.
@@ -353,11 +382,32 @@ give their state symbol, else the face of LABEL."
         (get-text-property pos 'eca-chat-expandable-bar-face label)
       (get-text-property 0 'font-lock-face label))))
 
+(defun eca-chat--expandable-bar-faces (face)
+  "Return the faces of the bar drawn in FACE.
+`eca-chat--expandable-bar-fill-face' comes first, so that it fills the
+bar with the foreground of FACE in graphic frames whatever FACE sets."
+  (cons 'eca-chat--expandable-bar-fill-face (and face (list face))))
+
 (defun eca-chat--expandable-bar (face)
-  "Return the bar of a block in FACE.
-Return nil with `eca-chat-expandable-block-arrows', which draws none."
-  (unless eca-chat-expandable-block-arrows
-    (propertize eca-chat--expandable-bar-symbol 'face face)))
+  "Return the bar drawn in FACE along a block, and the space after it.
+They take two columns, at the start of the prefix of the lines of the
+block.  Graphic frames draw the bar as high as the line, see
+`eca-chat--expandable-bar-display'."
+  (concat (propertize eca-chat--expandable-bar-symbol
+                      'face (eca-chat--expandable-bar-faces face)
+                      'display eca-chat--expandable-bar-display)
+          (propertize " " 'display eca-chat--expandable-bar-gap-display)))
+
+(defun eca-chat--expandable-recolor-bar (face old-face new-face)
+  "Return FACE, the face of a bar drawn in OLD-FACE, drawn in NEW-FACE.
+FACE is a face or a list of faces, like the background of the block
+painted on the bar, which stays.  Return FACE when it is not the face
+of a bar, see `eca-chat--expandable-bar-faces'."
+  (let ((faces (ensure-list face)))
+    (if (memq 'eca-chat--expandable-bar-fill-face faces)
+        (append (remq 'eca-chat--expandable-bar-fill-face (remq old-face faces))
+                (eca-chat--expandable-bar-faces new-face))
+      face)))
 
 (defun eca-chat--expandable-line-prefix (bar-face)
   "Return the prefix of the content lines of a block, bar in BAR-FACE.
@@ -365,10 +415,11 @@ It is as wide as `eca-chat--expandable-content-base-indent', starting
 with the bar unless `eca-chat-expandable-block-arrows'."
   (if eca-chat-expandable-block-arrows
       eca-chat--expandable-content-base-indent
-    (concat (eca-chat--expandable-bar bar-face)
-            (make-string (max 0 (- (length eca-chat--expandable-content-base-indent)
-                                   (string-width eca-chat--expandable-bar-symbol)))
-                         ?\s))))
+    (let ((bar (eca-chat--expandable-bar bar-face)))
+      (concat bar
+              (make-string (max 0 (- (length eca-chat--expandable-content-base-indent)
+                                     (string-width bar)))
+                           ?\s)))))
 
 (defun eca-chat--expandable-parent-prefix (parent-id)
   "Return what the lines of the block PARENT-ID start with, or nil.
@@ -385,14 +436,14 @@ Both are the bar in BAR-FACE, ICON-FACE when nil, unless
 symbols in ICON-FACE.
 Uses the `face' property (not `font-lock-face') because these strings
 are used as `line-prefix' values, where `font-lock-face' is not rendered."
-  (if-let* ((bar (eca-chat--expandable-bar (or bar-face icon-face))))
-      (let ((icon (concat label-prefix bar " ")))
-        (cons icon icon))
-    (let ((icon (lambda (symbol)
-                  (concat label-prefix
-                          (if icon-face (propertize symbol 'face icon-face) symbol)))))
-      (cons (funcall icon eca-chat-expandable-block-open-symbol)
-            (funcall icon eca-chat-expandable-block-close-symbol)))))
+  (if eca-chat-expandable-block-arrows
+      (let ((icon (lambda (symbol)
+                    (concat label-prefix
+                            (if icon-face (propertize symbol 'face icon-face) symbol)))))
+        (cons (funcall icon eca-chat-expandable-block-open-symbol)
+              (funcall icon eca-chat-expandable-block-close-symbol)))
+    (let ((icon (concat label-prefix (eca-chat--expandable-bar (or bar-face icon-face)))))
+      (cons icon icon))))
 
 (defun eca-chat--expandable-plain-prefix (&optional label-prefix)
   "Return the label prefix of a block without content to expand.
@@ -464,9 +515,7 @@ parent for a nested block."
                   (prefix (get-text-property pos prop)))
               (when (and (stringp prefix) (> (length prefix) column))
                 (let* ((face (get-text-property column 'face prefix))
-                       (repainted (cond ((eq face old-face) new-face)
-                                        ((consp face) (cl-substitute new-face old-face face))
-                                        (t face))))
+                       (repainted (eca-chat--expandable-recolor-bar face old-face new-face)))
                   (unless (equal repainted face)
                     (let ((new-prefix (copy-sequence prefix)))
                       (put-text-property column (1+ column) 'face repainted new-prefix)

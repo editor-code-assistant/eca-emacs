@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- The bars along blocks, user messages and flags now fill the whole height of their lines in graphic frames, so the lines of a block show one continuous bar instead of a dashed one. They were the `▍` glyph, which fonts draw only as high as their text: whenever a line was taller, e.g. with `line-spacing`, buttons on the line or a fallback font drawing the glyph, like Doom's symbol font, a gap showed between the bars of consecutive lines. Graphic frames now draw a space instead, as wide as the glyph and filled with the color of the bar, whose background covers the whole line; the text after it stays where it was. Terminals keep the glyph, which they usually draw across the whole cell.
+
 ## 0.12.0
 
 - Flags show their actions on their line, like user messages do in their header: `↶ rollback`, `⑂ fork` and `✕ remove`, with a bar along it, instead of in a block to expand first. Rolling back to a flag is new: the flag stays, so the chat can be rolled back to it again, and what came after it goes, the messages, the changes their tool calls made or both, as when rolling back to a user message. A draft in the prompt is kept. It requires eca 0.174.0 or later, which tells to remove what came after the flag (`chat/truncated` with `afterContentId`): older servers remove the flag too. The actions use the new `eca-chat-flag-action-face`, like those of user messages by default, which replaces `eca-chat-rollback-face`, and the bar the new `eca-chat-flag-bar-face`. A `chat/truncated` telling no message now reopens the chat, instead of removing it from an unrelated position.

@@ -5694,7 +5694,7 @@ start (an older history page) stays outside of them."
               (start (overlay-start ov-label))
               (end (overlay-start ov-content)))
     (let ((bar (make-overlay start end (current-buffer) t nil))
-          (prefix (propertize "▍ " 'face 'eca-chat-user-message-bar-face))
+          (prefix (eca-chat--expandable-bar 'eca-chat-user-message-bar-face))
           (face (make-overlay (eca-chat--user-message-text-start start) end
                               (current-buffer) t nil)))
       (overlay-put bar 'eca-chat--user-message-bar t)
@@ -5755,7 +5755,7 @@ outside of the bar."
               (end (overlay-start ov-content)))
     (eca-chat--remove-block-toggle start end)
     (let ((bar (make-overlay start end (current-buffer) t nil))
-          (prefix (propertize "▍ " 'face 'eca-chat-flag-bar-face)))
+          (prefix (eca-chat--expandable-bar 'eca-chat-flag-bar-face)))
       (overlay-put bar 'eca-chat--flag-bar t)
       (overlay-put bar 'line-prefix prefix)
       (overlay-put bar 'wrap-prefix prefix)

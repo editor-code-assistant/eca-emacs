@@ -4626,8 +4626,11 @@ precedes the prompt separator.  Caller must kill the buffer."
                     :to-equal "▍ ")
             (expect (substring-no-properties (get-char-property (point) 'wrap-prefix))
                     :to-equal "▍ ")
-            (expect (get-text-property 0 'face (get-char-property (point) 'line-prefix))
+            (expect (eca-chat-test--bar-face (get-char-property (point) 'line-prefix))
                     :to-be 'eca-chat-user-message-bar-face)
+            ;; As high as the line, like the bar of blocks.
+            (expect (eca-chat-test--bar-filled-p (get-char-property (point) 'line-prefix))
+                    :to-be-truthy)
             ;; The empty line after the message has no bar.
             (forward-line 1)
             (expect (get-char-property (point) 'line-prefix) :to-be nil))
@@ -5548,7 +5551,7 @@ The prefix is returned without its text properties."
                "r1" (propertize "Failed" 'font-lock-face 'error) "" t)
               (let ((new-icon (overlay-get ov 'eca-chat--expandable-content-open-icon)))
                 (expect new-icon :not :to-be icon)
-                (expect (get-text-property 0 'face new-icon) :to-be 'error))))
+                (expect (eca-chat-test--bar-face new-icon) :to-be 'error))))
         (kill-buffer buf))))
 
   (it "queues the chunks of a collapsed block, leaving the buffer alone"
@@ -6081,12 +6084,34 @@ and error symbols only show with `eca-chat-expandable-block-arrows'."
 
 (defun eca-chat-test--bar-face (prefix &optional column)
   "Return the face of the bar at COLUMN of PREFIX, 0 by default.
-The background of the block painted on it is left out."
+The background of the block painted on it is left out, and so is the
+face filling it in graphic frames."
   (let ((face (get-text-property (or column 0) 'face prefix)))
     (if (consp face)
-        (car (remq 'eca-chat-expandable-block-1-face
-                   (remq 'eca-chat-expandable-block-2-face face)))
+        (car (remq 'eca-chat--expandable-bar-fill-face
+                   (remq 'eca-chat-expandable-block-1-face
+                         (remq 'eca-chat-expandable-block-2-face face))))
       face)))
+
+(defun eca-chat-test--bar-filled-p (prefix &optional column)
+  "Return non-nil when the bar at COLUMN of PREFIX fills its line.
+That is in graphic frames: it shows as a space whose background is the
+color of the bar, see `eca-chat--expandable-bar-display'."
+  (and (eq 'space (car (eca-chat-test--display-at prefix (or column 0) t)))
+       (memq 'eca-chat--expandable-bar-fill-face
+             (ensure-list (get-text-property (or column 0) 'face prefix)))))
+
+(defun eca-chat-test--display-at (string pos graphic?)
+  "Return the display of STRING at POS, in a graphic frame when GRAPHIC?.
+That is nil when the text shows as is.  A `when' display applies when
+its condition holds, which redisplay evaluates."
+  (let ((spec (get-text-property pos 'display string)))
+    (if (eq 'when (car-safe spec))
+        (cl-letf (((symbol-function 'display-graphic-p)
+                   (lambda (&optional _display) graphic?)))
+          (when (eval (cadr spec) t)
+            (cddr spec)))
+      spec)))
 
 (defun eca-chat-test--render-tool-call (session buf type id &rest props)
   "Render in BUF for SESSION the tool call TYPE of ID, with PROPS.
@@ -6137,6 +6162,77 @@ PROPS override the ones of `eca-chat-test--tool-call-content'."
               (expect (get-text-property (overlay-end ov) 'line-prefix)
                       :to-be nil)))
         (kill-buffer buf))))
+
+  (it "fills the whole height of the lines with the bar in graphic frames"
+    ;; Fonts draw the glyph only as high as their text, leaving gaps
+    ;; between the bars of taller lines.  Graphic frames show a space
+    ;; instead, whose background covers the whole line.
+    (let* ((bar (eca-chat--expandable-bar 'eca-chat-reason-label-face))
+           (bar-display (eca-chat-test--display-at bar 0 t))
+           (gap-display (eca-chat-test--display-at bar 1 t)))
+      (expect (substring-no-properties bar) :to-equal "▍ ")
+      (expect (car bar-display) :to-be 'space)
+      (expect (car gap-display) :to-be 'space)
+      ;; As wide as the part of its column the glyph covers, the space
+      ;; after it taking the rest: two columns, as the glyph and the
+      ;; space take.
+      (expect (plist-get (cdr bar-display) :relative-width) :to-equal 0.375)
+      (expect (+ (plist-get (cdr bar-display) :relative-width)
+                 (plist-get (cdr gap-display) :relative-width))
+              :to-equal 2.0)
+      ;; Terminals show the glyph and the space as they are.
+      (expect (eca-chat-test--display-at bar 0 nil) :to-be nil)
+      (expect (eca-chat-test--display-at bar 1 nil) :to-be nil)
+      ;; Filled with the color of the bar, the foreground of its face,
+      ;; through inverse video in graphic frames only: terminals draw
+      ;; the glyph in that foreground.
+      (expect (get-text-property 0 'face bar)
+              :to-equal '(eca-chat--expandable-bar-fill-face
+                          eca-chat-reason-label-face))
+      (let ((spec (get 'eca-chat--expandable-bar-fill-face 'face-defface-spec)))
+        (expect (face-spec-choose spec) :to-be nil)
+        (cl-letf (((symbol-function 'window-system) (lambda (&optional _frame) 'x)))
+          (expect (face-spec-choose spec) :to-equal '(:inverse-video t))))
+      ;; The bar of a block without face is filled in the text color.
+      (expect (get-text-property 0 'face (eca-chat--expandable-bar nil))
+              :to-equal '(eca-chat--expandable-bar-fill-face))))
+
+  (it "fills the bar along the label, the content and the nested blocks"
+    (let ((buf (eca-chat-test--make-render-buffer))
+          (session (make-eca--session)))
+      (unwind-protect
+          (eca-chat--with-current-buffer buf
+            (eca-chat-test--subagent-block "sub-1")
+            (eca-chat--expandable-content-toggle "sub-1" t nil)
+            (eca-chat-test--stream-reasoning session buf "r1" '("Nested") "sub-1")
+            (eca-chat--expandable-content-toggle "r1" t nil)
+            (expect (eca-chat-test--bar-filled-p (eca-chat-test--label-prefix "sub-1"))
+                    :to-be-truthy)
+            (expect (eca-chat-test--bar-filled-p (eca-chat-test--line-prefix-at "Agent:"))
+                    :to-be-truthy)
+            (let ((prefix (eca-chat-test--line-prefix-at "Nested")))
+              (expect (substring-no-properties prefix) :to-equal "▍  ▍  ")
+              (expect (eca-chat-test--bar-filled-p prefix) :to-be-truthy)
+              (expect (eca-chat-test--bar-filled-p prefix 3) :to-be-truthy)
+              ;; Only the bars: the spaces after them show as they are.
+              (expect (eca-chat-test--display-at prefix 2 t) :to-be nil)
+              (expect (eca-chat-test--display-at prefix 5 t) :to-be nil)))
+        (kill-buffer buf))))
+
+  (it "repaints a bar in its new color, still filled"
+    (let ((block 'eca-chat-expandable-block-1-face)
+          (fill 'eca-chat--expandable-bar-fill-face)
+          (old 'eca-chat-tool-call-pending-face)
+          (new 'eca-chat-tool-call-success-face))
+      ;; The background of the block painted on it stays.
+      (expect (eca-chat--expandable-recolor-bar (list block fill old) old new)
+              :to-equal (list block fill new))
+      ;; A bar drawn without face gets one.
+      (expect (eca-chat--expandable-recolor-bar (list fill) nil new)
+              :to-equal (list fill new))
+      ;; What is not a bar stays as it is.
+      (expect (eca-chat--expandable-recolor-bar old old new) :to-be old)
+      (expect (eca-chat--expandable-recolor-bar nil nil new) :to-be nil)))
 
   (it "colors the bar of tool calls by their state"
     (let ((buf (eca-chat-test--make-render-buffer))
@@ -6253,7 +6349,12 @@ PROPS override the ones of `eca-chat-test--tool-call-content'."
               (expect (eca-chat-test--bar-face prefix)
                       :to-be 'eca-chat-tool-call-error-face)
               (expect (eca-chat-test--bar-face prefix 3)
-                      :to-be 'eca-chat-reason-label-face)))
+                      :to-be 'eca-chat-reason-label-face)
+              ;; Repainted in place of its former color, still filled.
+              (expect (memq 'eca-chat-subagent-tool-call-bar-face
+                            (get-text-property 0 'face prefix))
+                      :to-be nil)
+              (expect (eca-chat-test--bar-filled-p prefix) :to-be-truthy)))
         (eca-chat--tool-call-elapsed-stop-all)
         (kill-buffer buf))))
 
@@ -7447,7 +7548,8 @@ CHOOSE receives the candidate list the command offers."
             (goto-char (overlay-start (eca-chat--get-expandable-content "f1")))
             (let ((prefix (get-char-property (point) 'line-prefix)))
               (expect (substring-no-properties prefix) :to-equal "▍ ")
-              (expect (get-text-property 0 'face prefix) :to-be 'eca-chat-flag-bar-face))
+              (expect (eca-chat-test--bar-face prefix) :to-be 'eca-chat-flag-bar-face)
+              (expect (eca-chat-test--bar-filled-p prefix) :to-be-truthy))
             (expect (substring-no-properties (get-char-property (point) 'wrap-prefix))
                     :to-equal "▍ ")
             (expect (face-attribute 'eca-chat-flag-bar-face :inherit)
