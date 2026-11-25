@@ -680,10 +680,12 @@ painted over the whole message, markdown spans included."
   :group 'eca)
 
 (defface eca-chat-user-message-action-face
-  '((t :inherit font-lock-comment-face :slant normal :underline t))
+  '((t :inherit eca-chat-user-message-bar-face))
   "Face for the actions in the header of user messages.
-Underlined, so they read as actionable, and shown with `highlight'
-under the mouse."
+In the color of the bar along the messages by default: their pills
+are tinted with it like the background of the header is, see
+`eca-chat-user-message-tint', so they match it.  Shown with
+`highlight' under the mouse."
   :group 'eca)
 
 (defface eca-chat-list-marker-face
@@ -1033,9 +1035,11 @@ are not currently selected."
   :group 'eca)
 
 (defface eca-chat-flag-action-face
-  '((t :inherit eca-chat-user-message-action-face))
+  '((t :inherit font-lock-comment-face :slant normal))
   "Face for the actions on the line of flags.
-They look like the actions in the header of user messages."
+In the color of comments: the line has no background of its own to
+match, unlike the header of user messages, whose actions take the
+color of their bar, see `eca-chat-user-message-action-face'."
   :group 'eca)
 
 (define-obsolete-face-alias 'eca-chat-rollback-face

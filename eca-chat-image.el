@@ -135,9 +135,10 @@ extension derived from the image media type (e.g. `png', `jpg')."
   :group 'eca)
 
 (defface eca-chat-image-action-face
-  '((t :inherit eca-chat-user-message-action-face))
+  '((t :inherit font-lock-comment-face :slant normal))
   "Face for the actions in the header of inline images, like zoom.
-They look like the actions in the header of user messages."
+In the color of comments, like the actions of flags, see
+`eca-chat-flag-action-face'."
   :group 'eca)
 
 ;;;; Media-type tables

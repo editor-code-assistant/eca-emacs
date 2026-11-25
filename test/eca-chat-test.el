@@ -6906,7 +6906,25 @@ In a graphic frame when GRAPHIC?, else in a terminal."
               (expect (-some (lambda (ov) (overlay-get ov 'eca-button-pill))
                              (overlays-at (match-beginning 0)))
                       :to-be-truthy)))
-        (kill-buffer buf)))))
+        (kill-buffer buf))))
+
+  (it "tint the pills of the actions of user messages with the color of their bar"
+    ;; Like the background of the header they sit on, which pills of
+    ;; another color stood out of.  Flags and images have no background
+    ;; to match, their actions keep their color.
+    (let ((color (face-attribute 'eca-chat-user-message-bar-face :foreground)))
+      (spy-on 'eca-safe-face-background :and-return-value "#000000")
+      (unwind-protect
+          (progn
+            (set-face-attribute 'eca-chat-user-message-bar-face nil :foreground "#ff0000")
+            ;; 20% of the red of the bar over the black background.
+            (expect (plist-get (eca--button-face-attributes
+                                'eca-chat-user-message-action-face)
+                               :background)
+                    :to-equal "#330000")
+            (dolist (face '(eca-chat-flag-action-face eca-chat-image-action-face))
+              (expect (face-foreground face nil t) :not :to-equal "#ff0000")))
+        (set-face-attribute 'eca-chat-user-message-bar-face nil :foreground color)))))
 
 ;; ---------------------------------------------------------------------------
 ;; Background job tool calls
@@ -8304,12 +8322,13 @@ CHOOSE receives the candidate list the command offers."
             (with-current-buffer buf
               (let* ((pos (eca-chat-test--flag-action-pos buf "rollback"))
                      (face (get-text-property pos 'font-lock-face)))
-                ;; Pills in the color of the flag action face, which
-                ;; looks like the actions of user messages.
+                ;; Pills in the color of the flag action face, the one
+                ;; of comments: unlike the header of user messages, the
+                ;; line has no background for them to match.
                 (expect face :to-be (eca--button-face 'eca-chat-flag-action-face))
                 (expect (face-attribute face :inherit) :to-be 'eca-chat-flag-action-face)
                 (expect (face-attribute 'eca-chat-flag-action-face :inherit)
-                        :to-be 'eca-chat-user-message-action-face)
+                        :to-be 'font-lock-comment-face)
                 (expect (get-text-property pos 'mouse-face) :to-be 'highlight)
                 (expect (get-text-property pos 'help-echo)
                         :to-match "Rollback the chat to this flag"))))
