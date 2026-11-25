@@ -103,6 +103,76 @@
     (expect (face-attribute 'eca-table-row-even-face :background nil)
             :not :to-equal 'unspecified)))
 
+(describe "eca-chat--expandable-tint-face"
+  (it "tints with the color of a face over the default background"
+    (let ((eca-chat--expandable-tint-faces nil)
+          (eca-chat-expandable-block-tint 50))
+      (spy-on 'eca--tint-color :and-call-fake
+              (lambda (source alpha) (format "%s %s" source alpha)))
+      (let ((face (eca-chat--expandable-tint-face 'eca-chat-reason-label-face)))
+        (expect (face-attribute face :background)
+                :to-equal "eca-chat-reason-label-face 0.5")
+        ;; Up to the window edge, past the end of the lines.
+        (expect (face-attribute face :extend) :to-be t)
+        (expect (get face 'eca-chat-expandable-tint) :to-be 'eca-chat-reason-label-face)
+        ;; Made once.
+        (expect (eca-chat--expandable-tint-face 'eca-chat-reason-label-face)
+                :to-be face))))
+
+  (it "gives nested blocks a face of their own, of the same color"
+    (let ((eca-chat--expandable-tint-faces nil))
+      (spy-on 'eca--tint-color :and-return-value "#123456")
+      (let ((top (eca-chat--expandable-tint-face 'eca-chat-reason-label-face))
+            (nested (eca-chat--expandable-tint-face 'eca-chat-reason-label-face t)))
+        (expect nested :not :to-be top)
+        (expect (face-attribute nested :background)
+                :to-equal (face-attribute top :background)))))
+
+  (it "tints failed tool calls and user messages as much as their option tells"
+    (let ((eca-chat--expandable-tint-faces nil)
+          (eca-chat-expandable-block-tint 7)
+          (eca-chat-expandable-block-error-tint 12)
+          (eca-chat-user-message-tint 10))
+      (spy-on 'eca--tint-color :and-call-fake (lambda (_source alpha) (format "%s" alpha)))
+      (cl-flet ((tint (source)
+                  (face-attribute (eca-chat--expandable-tint-face source) :background)))
+        (expect (tint 'eca-chat-tool-call-success-face) :to-equal "0.07")
+        (expect (tint 'eca-chat-tool-call-error-face) :to-equal "0.12")
+        (expect (tint 'eca-chat-user-message-bar-face) :to-equal "0.1"))))
+
+  (it "leaves the default background with no tint or unknown colors"
+    (let ((eca-chat--expandable-tint-faces nil)
+          (eca-chat-expandable-block-tint 0))
+      (spy-on 'eca--tint-color :and-return-value "#123456")
+      (expect (face-attribute (eca-chat--expandable-tint-face 'eca-chat-reason-label-face)
+                              :background)
+              :to-be 'unspecified))
+    (let ((eca-chat--expandable-tint-faces nil))
+      (spy-on 'eca--tint-color :and-return-value nil)
+      (expect (face-attribute (eca-chat--expandable-tint-face 'eca-chat-reason-label-face)
+                              :background)
+              :to-be 'unspecified)))
+
+  (it "follows theme switches"
+    (let ((eca-chat--expandable-tint-faces nil)
+          (color "#111111"))
+      (spy-on 'eca--tint-color :and-call-fake (lambda (&rest _) color))
+      (let ((face (eca-chat--expandable-tint-face 'eca-chat-reason-label-face)))
+        (setq color "#222222")
+        (cl-letf (((symbol-function 'face-background) (lambda (&rest _) "#101010")))
+          (eca-chat--refresh-theme-faces))
+        (expect (face-attribute face :background) :to-equal "#222222"))))
+
+  (it "follows theme switches on terminals not telling their colors"
+    (let ((eca-chat--expandable-tint-faces nil)
+          (color "#111111"))
+      (spy-on 'eca--tint-color :and-call-fake (lambda (&rest _) color))
+      (let ((face (eca-chat--expandable-tint-face 'eca-chat-reason-label-face)))
+        (setq color nil)
+        (cl-letf (((symbol-function 'face-background) (lambda (&rest _) "unspecified-bg")))
+          (eca-chat--update-expandable-block-faces))
+        (expect (face-attribute face :background) :to-be 'unspecified)))))
+
 (describe "eca-chat--apply-face-to-line-prefixes (issue #301)"
   (it "stores the face symbol instead of a resolved color"
     (with-temp-buffer

@@ -670,21 +670,25 @@ list of them."
         (-first (lambda (f) (and (symbolp f) (facep f))) face)
       (and face (symbolp face) (facep face) face))))
 
-(defun eca--button-tint-color (source)
-  "Return the background of buttons in face SOURCE, or nil.
-That is `eca--button-tint' of the color of SOURCE over the default
-background, or nil when one of them is unknown, as on terminals that
-don't tell their colors."
+(defun eca--tint-color (source alpha)
+  "Return ALPHA of the color of face SOURCE over the default background.
+ALPHA is between 0 and 1.  Return nil when one of the colors is
+unknown, as on terminals that don't tell their colors."
   (let ((fg (face-foreground (or source 'default) nil t))
         (bg (eca-safe-face-background 'default nil t)))
     (when-let* (((not (member fg '("unspecified-fg" "unspecified-bg"))))
                 (fg-rgb (and fg (color-name-to-rgb fg)))
                 (bg-rgb (and bg (color-name-to-rgb bg))))
       (apply #'color-rgb-to-hex
-             (append (cl-mapcar (lambda (f b)
-                                  (+ (* eca--button-tint f) (* (- 1 eca--button-tint) b)))
+             (append (cl-mapcar (lambda (f b) (+ (* alpha f) (* (- 1 alpha) b)))
                                 fg-rgb bg-rgb)
                      '(2))))))
+
+(defun eca--button-tint-color (source)
+  "Return the background of buttons in face SOURCE, or nil.
+That is `eca--button-tint' of the color of SOURCE over the default
+background, see `eca--tint-color'."
+  (eca--tint-color source eca--button-tint))
 
 (defun eca--button-face-attributes (source)
   "Return the attributes of the face of buttons in face SOURCE.
@@ -699,10 +703,38 @@ it, or in inverse video when the tint is unknown."
                       :box (list :line-width -2 :color tint))
               (list :background 'unspecified :inverse-video t :box nil)))))
 
+(defun eca--button-fill-attributes (source)
+  "Return the attributes of the fill of buttons in face SOURCE.
+That is the background and edge of their pill, without the rest of
+`eca--button-face-attributes', see `eca--button-fill-face'."
+  (let ((tint (eca--button-tint-color source)))
+    (if tint
+        (list :background tint :box (list :line-width -2 :color tint))
+      (list :background 'unspecified :box nil))))
+
+(defun eca--button-fill-face (face)
+  "Return the face filling the pills of buttons in FACE, or nil.
+FACE is from `eca--button-face'.  Drawn again over the background of
+the text of the buttons, as an overlay does, FACE itself would scale
+their height again, as relative heights add up."
+  (when (symbolp face)
+    (or (get face 'eca--button-fill-face)
+        (when-let* ((entry (rassq face eca--button-faces)))
+          (let ((fill (intern (format "%s-fill" face))))
+            (make-face fill)
+            (set-face-documentation
+             fill (format "Fill of the pills of the buttons in `%s'." face))
+            (apply #'set-face-attribute fill nil
+                   (eca--button-fill-attributes (car entry)))
+            (put face 'eca--button-fill-face fill)
+            fill)))))
+
 (defun eca--refresh-button-faces (&rest _)
   "Recompute the faces of buttons from the colors of the current theme."
   (pcase-dolist (`(,source . ,face) eca--button-faces)
-    (apply #'set-face-attribute face nil (eca--button-face-attributes source))))
+    (apply #'set-face-attribute face nil (eca--button-face-attributes source))
+    (when-let* ((fill (eca--button-fill-face face)))
+      (apply #'set-face-attribute fill nil (eca--button-fill-attributes source)))))
 
 (defun eca--register-button-faces-refresh ()
   "Recompute the faces of buttons after a theme switch.
@@ -725,6 +757,8 @@ It is made on first use, then follows theme switches."
          face (format "Face of buttons in `%s', drawn as pills." (or source 'default)))
         (apply #'set-face-attribute face nil (eca--button-face-attributes source))
         (push (cons source face) eca--button-faces)
+        (apply #'set-face-attribute (eca--button-fill-face face) nil
+               (eca--button-fill-attributes source))
         (eca--register-button-faces-refresh)
         face)))
 

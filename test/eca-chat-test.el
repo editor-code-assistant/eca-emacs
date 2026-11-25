@@ -5610,7 +5610,9 @@ The prefix is returned without its text properties."
                            (string-search "check" (eca-chat-test--block-shown "r1"))))
                    (prefix (get-text-property pos 'line-prefix)))
               (expect (substring-no-properties prefix) :to-equal "▍  ")
-              (expect (memq 'eca-chat-expandable-block-1-face
+              (expect (overlay-get ov 'face)
+                      :to-be (eca-chat--expandable-tint-face 'eca-chat-reason-label-face))
+              (expect (memq (overlay-get ov 'face)
                             (ensure-list (get-text-property 0 'face prefix)))
                       :to-be-truthy))
             ;; Collapsing and expanding again shows the same text.
@@ -6082,24 +6084,56 @@ and error symbols only show with `eca-chat-expandable-block-arrows'."
     (forward-line 1)
     (get-text-property (point) 'line-prefix)))
 
-(defun eca-chat-test--bar-face (prefix &optional column)
-  "Return the face of the bar at COLUMN of PREFIX, 0 by default.
+(defun eca-chat-test--bar-index (prefix &optional nth)
+  "Return where the NTH bar of PREFIX is, the first by default, or nil.
+The lines of a nested block start with the bar of its parent, then
+its own one, the second.  Labels have their chevron before their bar."
+  (let ((start 0)
+        (index nil))
+    (dotimes (_ (1+ (or nth 0)))
+      (setq index (and start (string-search eca-chat--expandable-bar-symbol
+                                            prefix start))
+            start (and index (1+ index))))
+    index))
+
+(defun eca-chat-test--background-face-p (face)
+  "Return non-nil when FACE paints the background of a block."
+  (or (memq face '(eca-chat-expandable-block-1-face eca-chat-expandable-block-2-face))
+      (and (symbolp face) (get face 'eca-chat-expandable-tint))))
+
+(defun eca-chat-test--bar-face (prefix &optional nth)
+  "Return the face of the NTH bar of PREFIX, the first by default.
 The background of the block painted on it is left out, and so is the
 face filling it in graphic frames."
-  (let ((face (get-text-property (or column 0) 'face prefix)))
-    (if (consp face)
-        (car (remq 'eca-chat--expandable-bar-fill-face
-                   (remq 'eca-chat-expandable-block-1-face
-                         (remq 'eca-chat-expandable-block-2-face face))))
-      face)))
+  (when-let* ((index (eca-chat-test--bar-index prefix nth)))
+    (let ((face (get-text-property index 'face prefix)))
+      (if (consp face)
+          (car (seq-remove (lambda (f)
+                             (or (eq f 'eca-chat--expandable-bar-fill-face)
+                                 (eca-chat-test--background-face-p f)))
+                           face))
+        face))))
 
-(defun eca-chat-test--bar-filled-p (prefix &optional column)
-  "Return non-nil when the bar at COLUMN of PREFIX fills its line.
+(defun eca-chat-test--bar-filled-p (prefix &optional nth)
+  "Return non-nil when the NTH bar of PREFIX fills its line.
 That is in graphic frames: it shows as a space whose background is the
 color of the bar, see `eca-chat--expandable-bar-display'."
-  (and (eq 'space (car (eca-chat-test--display-at prefix (or column 0) t)))
-       (memq 'eca-chat--expandable-bar-fill-face
-             (ensure-list (get-text-property (or column 0) 'face prefix)))))
+  (when-let* ((index (eca-chat-test--bar-index prefix nth)))
+    (and (eq 'space (car (eca-chat-test--display-at prefix index t)))
+         (memq 'eca-chat--expandable-bar-fill-face
+               (ensure-list (get-text-property index 'face prefix))))))
+
+(defun eca-chat-test--chevron (prefix)
+  "Return the chevron PREFIX, the prefix of a label, shows, or nil.
+Top-level labels show it in the left margin, followed by a space,
+nested ones before their bar."
+  (cl-loop for i below (length prefix)
+           for display = (get-text-property i 'display prefix)
+           when (equal (car-safe display) '(margin left-margin))
+           return (string-trim-right (substring-no-properties (cadr display)))
+           when (memq 'eca-chat-expandable-block-chevron-face
+                      (ensure-list (get-text-property i 'face prefix)))
+           return (substring-no-properties prefix i (1+ i))))
 
 (defun eca-chat-test--display-at (string pos graphic?)
   "Return the display of STRING at POS, in a graphic frame when GRAPHIC?.
@@ -6136,14 +6170,15 @@ PROPS override the ones of `eca-chat-test--tool-call-content'."
           (eca-chat--with-current-buffer buf
             (eca-chat-test--stream-reasoning session buf "r1" '("Let me think."))
             (let ((prefix (eca-chat-test--label-prefix "r1")))
-              (expect (substring-no-properties prefix) :to-equal "▍ ")
+              ;; After the chevron, in the margin.
+              (expect (substring-no-properties prefix) :to-equal " ▍ ")
               ;; Blocks other than tool calls get the color of the label.
               (expect (eca-chat-test--bar-face prefix)
                       :to-be 'eca-chat-reason-label-face))
             (eca-chat--expandable-content-toggle "r1" t nil)
-            ;; No arrow tells an open block from a closed one.
+            ;; Only the chevron tells an open block from a closed one.
             (expect (substring-no-properties (eca-chat-test--label-prefix "r1"))
-                    :to-equal "▍ ")
+                    :to-equal " ▍ ")
             (let* ((ov (eca-chat-test--block-ov-content "r1"))
                    (prefix (get-text-property (overlay-start ov) 'line-prefix)))
               (expect (substring-no-properties prefix) :to-equal "▍  ")
@@ -6215,7 +6250,7 @@ PROPS override the ones of `eca-chat-test--tool-call-content'."
             (let ((prefix (eca-chat-test--line-prefix-at "Nested")))
               (expect (substring-no-properties prefix) :to-equal "▍  ▍  ")
               (expect (eca-chat-test--bar-filled-p prefix) :to-be-truthy)
-              (expect (eca-chat-test--bar-filled-p prefix 3) :to-be-truthy)
+              (expect (eca-chat-test--bar-filled-p prefix 1) :to-be-truthy)
               ;; Only the bars: the spaces after them show as they are.
               (expect (eca-chat-test--display-at prefix 2 t) :to-be nil)
               (expect (eca-chat-test--display-at prefix 5 t) :to-be nil)))
@@ -6349,10 +6384,11 @@ PROPS override the ones of `eca-chat-test--tool-call-content'."
             (expect (eca-chat-test--bar-face (eca-chat-test--line-prefix-at "Agent:"))
                     :to-be 'eca-chat-tool-call-error-face)
             (let ((prefix (eca-chat-test--label-prefix "r1")))
-              (expect (substring-no-properties prefix) :to-equal "▍  ▍ ")
+              ;; Its chevron between the bars.
+              (expect (substring-no-properties prefix) :to-equal "▍ › ▍ ")
               (expect (eca-chat-test--bar-face prefix)
                       :to-be 'eca-chat-tool-call-error-face)
-              (expect (eca-chat-test--bar-face prefix 3)
+              (expect (eca-chat-test--bar-face prefix 1)
                       :to-be 'eca-chat-reason-label-face)
               ;; Repainted in place of its former color, still filled.
               (expect (memq 'eca-chat-subagent-tool-call-bar-face
@@ -6391,10 +6427,10 @@ PROPS override the ones of `eca-chat-test--tool-call-content'."
               (expect (substring-no-properties prefix) :to-equal "▍  ▍  ")
               (expect (eca-chat-test--bar-face prefix)
                       :to-be 'eca-chat-subagent-tool-call-bar-face)
-              (expect (eca-chat-test--bar-face prefix 3)
+              (expect (eca-chat-test--bar-face prefix 1)
                       :to-be 'eca-chat-tool-call-pending-face)
               ;; On the background of the subagent block.
-              (expect (memq 'eca-chat-expandable-block-1-face
+              (expect (memq (overlay-get (eca-chat-test--block-ov-content "sub-1") 'face)
                             (ensure-list (get-text-property 0 'face prefix)))
                       :to-be-truthy)))
         (kill-buffer buf))))
@@ -6411,7 +6447,7 @@ PROPS override the ones of `eca-chat-test--tool-call-content'."
             (eca-chat-test--render-assistant
              session buf (list :type "reasonText" :id "r1" :text "Hmm."))
             (expect (substring-no-properties (eca-chat-test--label-prefix "r1"))
-                    :to-equal "▍ ")
+                    :to-equal " ▍ ")
             ;; Nested, it lines up with the text of its parent.
             (eca-chat-test--subagent-block "sub-1")
             (eca-chat--expandable-content-toggle "sub-1" t nil)
@@ -6424,7 +6460,427 @@ PROPS override the ones of `eca-chat-test--tool-call-content'."
             (eca-chat-test--render-assistant
              session buf (list :type "reasonText" :id "r2" :text "Hmm.") "sub-1")
             (expect (substring-no-properties (eca-chat-test--label-prefix "r2"))
-                    :to-equal "▍  ▍ "))
+                    :to-equal "▍ › ▍ "))
+        (kill-buffer buf)))))
+
+;; ---------------------------------------------------------------------------
+;; Expandable block chevrons and backgrounds
+;; ---------------------------------------------------------------------------
+
+(defun eca-chat-test--display-width (string pos graphic?)
+  "Return the columns the character at POS of STRING takes.
+In a graphic frame when GRAPHIC?, else in a terminal."
+  (let* ((spec (get-text-property pos 'display string))
+         (spec (if (eq 'when (car-safe (car-safe spec)))
+                   ;; Conditional specs, the one whose condition holds.
+                   (seq-some (lambda (s)
+                               (eca-chat-test--display-at
+                                (propertize " " 'display s) 0 graphic?))
+                             spec)
+                 (eca-chat-test--display-at string pos graphic?))))
+    (cond ((null spec) (string-width (substring string pos (1+ pos))))
+          ((equal (car-safe spec) '(margin left-margin)) 0)
+          ((eq 'space (car-safe spec))
+           (or (plist-get (cdr spec) :relative-width)
+               (plist-get (cdr spec) :width))))))
+
+(defun eca-chat-test--prefix-width (prefix end graphic?)
+  "Return the columns the first END characters of PREFIX take.
+In a graphic frame when GRAPHIC?, else in a terminal."
+  (apply #'+ (mapcar (lambda (pos) (eca-chat-test--display-width prefix pos graphic?))
+                     (number-sequence 0 (1- end)))))
+
+(defun eca-chat-test--faces-at (prefix pos)
+  "Return the faces of the character at POS of PREFIX, as a list."
+  (ensure-list (get-text-property pos 'face prefix)))
+
+(defun eca-chat-test--label-background (id)
+  "Return the overlay painting the label of the block ID, or nil."
+  (when-let* ((ov (overlay-get (eca-chat--get-expandable-content id)
+                               'eca-chat--expandable-label-background))
+              ((overlay-buffer ov)))
+    ov))
+
+(defun eca-chat-test--open-p (id)
+  "Return non-nil when the block ID is expanded."
+  (overlay-get (eca-chat--get-expandable-content id) 'eca-chat--expandable-content-toggle))
+
+(describe "expandable block chevrons"
+
+  (it "show before the bar of top-level blocks, in the margin"
+    (let ((buf (eca-chat-test--make-render-buffer))
+          (session (make-eca--session)))
+      (unwind-protect
+          (eca-chat--with-current-buffer buf
+            (eca-chat-test--stream-reasoning session buf "r1" '("Let me think."))
+            (let ((prefix (eca-chat-test--label-prefix "r1")))
+              (expect (eca-chat-test--chevron prefix) :to-equal "›")
+              ;; The fringe keeps it apart from the bar, first in the
+              ;; text of the line.
+              (expect (get-text-property 0 'display prefix)
+                      :to-equal '((margin left-margin) "›"))
+              (expect (get-text-property 0 'face (cadr (get-text-property 0 'display prefix)))
+                      :to-be 'eca-chat-expandable-block-chevron-face)
+              (expect (eca-chat-test--prefix-width prefix 1 t) :to-equal 0)
+              (expect (eca-chat-test--bar-index prefix) :to-equal 1))
+            ;; Pointing down while the block is expanded.
+            (eca-chat--expandable-content-toggle "r1" t nil)
+            (expect (eca-chat-test--chevron (eca-chat-test--label-prefix "r1"))
+                    :to-equal "⌄")
+            ;; Its content lines start with the bar.
+            (expect (eca-chat-test--chevron (eca-chat-test--line-prefix-at "Let me think."))
+                    :to-be nil)
+            (eca-chat--expandable-content-toggle "r1" t t)
+            (expect (eca-chat-test--chevron (eca-chat-test--label-prefix "r1"))
+                    :to-equal "›"))
+        (kill-buffer buf))))
+
+  (it "show in the indent of the parent of nested blocks, before their bar"
+    (let ((buf (eca-chat-test--make-render-buffer))
+          (session (make-eca--session)))
+      (unwind-protect
+          (eca-chat--with-current-buffer buf
+            (eca-chat-test--subagent-block "sub-1")
+            (eca-chat--expandable-content-toggle "sub-1" t nil)
+            (eca-chat-test--stream-reasoning session buf "r1" '("Nested") "sub-1")
+            (let ((prefix (eca-chat-test--label-prefix "r1")))
+              ;; The bar of the parent, a gap, the chevron and a space.
+              (expect (substring-no-properties prefix) :to-equal "▍ › ▍ ")
+              (expect (eca-chat-test--chevron prefix) :to-equal "›")
+              (expect (get-text-property 1 'display prefix)
+                      :to-be eca-chat--expandable-chevron-gap-display))
+            (eca-chat--expandable-content-toggle "r1" t nil)
+            (expect (eca-chat-test--chevron (eca-chat-test--label-prefix "r1"))
+                    :to-equal "⌄"))
+        (kill-buffer buf))))
+
+  (it "keep the bar of nested blocks where their other lines have it"
+    (let ((buf (eca-chat-test--make-render-buffer))
+          (session (make-eca--session)))
+      (unwind-protect
+          (eca-chat--with-current-buffer buf
+            (eca-chat-test--subagent-block "sub-1")
+            (eca-chat--expandable-content-toggle "sub-1" t nil)
+            (eca-chat-test--stream-reasoning session buf "r1" '("Nested") "sub-1")
+            (eca-chat--expandable-content-toggle "r1" t nil)
+            (let ((label (eca-chat-test--label-prefix "r1"))
+                  (content (eca-chat-test--line-prefix-at "Nested")))
+              (dolist (graphic? '(t nil))
+                (expect (eca-chat-test--prefix-width
+                         label (eca-chat-test--bar-index label 1) graphic?)
+                        :to-equal (eca-chat-test--prefix-width
+                                   content (eca-chat-test--bar-index content 1) graphic?)))
+              ;; Graphic frames shorten the gap after the bar of the
+              ;; parent, terminals leave it out, as their bar takes a
+              ;; whole column.
+              (expect (eca-chat-test--display-width label 1 t) :to-equal 1.25)
+              (expect (eca-chat-test--display-width label 1 nil) :to-equal 0)
+              ;; After the chevron, a gap as wide as the bar, like the
+              ;; fringe after the ones in the margin, a column on
+              ;; terminals.
+              (expect (substring-no-properties label 3 4) :to-equal " ")
+              (expect (eca-chat-test--display-width label 3 t)
+                      :to-equal eca-chat--expandable-chevron-gap)
+              (expect (eca-chat-test--display-width label 3 nil) :to-equal 1)))
+        (kill-buffer buf))))
+
+  (it "leave out the blocks without content to expand"
+    (let ((buf (eca-chat-test--make-render-buffer))
+          (session (make-eca--session)))
+      (unwind-protect
+          (eca-chat--with-current-buffer buf
+            (eca-chat-test--render-assistant
+             session buf (list :type "reasonStarted" :id "r1"))
+            (expect (eca-chat-test--label-prefix "r1") :to-be nil)
+            (eca-chat-test--subagent-block "sub-1")
+            (eca-chat--expandable-content-toggle "sub-1" t nil)
+            (eca-chat-test--render-assistant
+             session buf (list :type "reasonStarted" :id "r2") "sub-1")
+            (expect (eca-chat-test--chevron (eca-chat-test--label-prefix "r2"))
+                    :to-be nil))
+        (kill-buffer buf))))
+
+  (it "take one column of the chevrons of the options"
+    (let ((buf (eca-chat-test--make-render-buffer))
+          (session (make-eca--session))
+          (eca-chat-expandable-block-collapsed-chevron "▸")
+          (eca-chat-expandable-block-expanded-chevron "▾▾"))
+      (unwind-protect
+          (eca-chat--with-current-buffer buf
+            (eca-chat-test--stream-reasoning session buf "r1" '("Let me think."))
+            (expect (eca-chat-test--chevron (eca-chat-test--label-prefix "r1"))
+                    :to-equal "▸")
+            (eca-chat--expandable-content-toggle "r1" t nil)
+            (expect (eca-chat-test--chevron (eca-chat-test--label-prefix "r1"))
+                    :to-equal "▾"))
+        (kill-buffer buf))))
+
+  (it "can be left out, and are with arrows"
+    (dolist (options '((eca-chat-expandable-block-chevrons . nil)
+                       (eca-chat-expandable-block-arrows . t)))
+      (let ((buf (eca-chat-test--make-render-buffer))
+            (session (make-eca--session)))
+        (unwind-protect
+            (cl-progv (list (car options)) (list (cdr options))
+              (eca-chat--with-current-buffer buf
+                (eca-chat-test--stream-reasoning session buf "r1" '("Let me think."))
+                (eca-chat--expandable-content-toggle "r1" t nil)
+                (expect (eca-chat-test--chevron (eca-chat-test--label-prefix "r1"))
+                        :to-be nil)))
+          (kill-buffer buf)))))
+
+  (it "get a margin of one column in chats, the fringe after it"
+    ;; Not a `let': making a variable local within a `let' of it doesn't
+    ;; work reliably, as on Emacs 28.
+    (let ((outside (default-value 'fringes-outside-margins)))
+      (unwind-protect
+          (progn
+            ;; Like Doom, whose fringes go outside the margins elsewhere.
+            (setq-default fringes-outside-margins t)
+            (with-temp-buffer
+              (let ((eca--chat-init-session (make-eca--session))
+                    (eca--chat-init-skip-welcome t))
+                (eca-chat-mode)
+                (expect left-margin-width :to-equal 1)
+                ;; It keeps the chevrons apart from the bars, as wide as
+                ;; the gap between them.
+                (expect fringes-outside-margins :to-be nil)
+                (expect left-fringe-width
+                        :to-equal (eca-chat--expandable-chevron-fringe-width
+                                   (frame-char-width))))))
+        (setq-default fringes-outside-margins outside)))
+    (with-temp-buffer
+      (let ((eca--chat-init-session (make-eca--session))
+            (eca--chat-init-skip-welcome t)
+            (eca-chat-expandable-block-chevrons nil))
+        (eca-chat-mode)
+        (expect left-margin-width :to-equal 0))))
+
+  (it "stand as far from the bars as the bars are wide"
+    ;; 11 pixels wide columns, as with Hack 18.
+    (expect (eca-chat--expandable-chevron-fringe-width 11) :to-equal 4)
+    (expect (eca-chat--expandable-chevron-fringe-width 20) :to-equal 8)
+    ;; Terminals have no fringe.
+    (expect (eca-chat--expandable-chevron-fringe-width 1) :to-equal 0))
+
+  (it "toggle their block when clicked in the margin"
+    (expect (lookup-key eca-chat-mode-map [left-margin mouse-1])
+            :to-be #'eca-chat-expandable-toggle-at-margin)
+    (let ((buf (eca-chat-test--make-render-buffer))
+          (session (make-eca--session)))
+      (unwind-protect
+          (save-window-excursion
+            (switch-to-buffer buf)
+            (eca-chat--with-current-buffer buf
+              (eca-chat-test--stream-reasoning session buf "r1" '("Let me think."))
+              (cl-flet ((click (pos)
+                          (eca-chat-expandable-toggle-at-margin
+                           (list 'mouse-1 (list (selected-window) 'left-margin
+                                                '(0 . 0) 0 nil pos)))))
+                (click (eca-chat-test--label-start "r1"))
+                (expect (eca-chat-test--open-p "r1") :to-be-truthy)
+                ;; On a line without chevron, it sets point.
+                (let ((pos (overlay-start (eca-chat-test--block-ov-content "r1"))))
+                  (click pos)
+                  (expect (point) :to-equal pos)
+                  (expect (eca-chat-test--open-p "r1") :to-be-truthy))
+                (click (eca-chat-test--label-start "r1"))
+                (expect (eca-chat-test--open-p "r1") :to-be nil))))
+        (kill-buffer buf)))))
+
+(describe "expandable block backgrounds"
+
+  (it "tint an open block with the color of its bar, its label too"
+    (let ((buf (eca-chat-test--make-render-buffer))
+          (session (make-eca--session)))
+      (unwind-protect
+          (eca-chat--with-current-buffer buf
+            (eca-chat-test--stream-reasoning session buf "r1" '("Let me think."))
+            (expect (eca-chat-test--label-background "r1") :to-be nil)
+            (eca-chat--expandable-content-toggle "r1" t nil)
+            (let* ((tint (eca-chat--expandable-tint-face 'eca-chat-reason-label-face))
+                   (ov-content (eca-chat-test--block-ov-content "r1"))
+                   (label (eca-chat-test--label-background "r1"))
+                   (prefix (eca-chat-test--label-prefix "r1"))
+                   (content (get-text-property (overlay-start ov-content) 'line-prefix)))
+              (expect (overlay-get ov-content 'face) :to-be tint)
+              ;; The label line up to its newline, which extends it to
+              ;; the window edge.
+              (expect (overlay-get label 'face) :to-be tint)
+              (expect (overlay-start label) :to-equal (eca-chat-test--label-start "r1"))
+              (expect (overlay-end label) :to-equal (overlay-start ov-content))
+              ;; From the bar on: the chevron hangs out of it, in the
+              ;; margin.
+              (expect (memq tint (eca-chat-test--faces-at prefix 0)) :to-be nil)
+              (expect (memq tint (eca-chat-test--faces-at prefix 1)) :to-be-truthy)
+              (expect (memq tint (eca-chat-test--faces-at prefix 2)) :to-be-truthy)
+              (dotimes (pos (length content))
+                (expect (memq tint (eca-chat-test--faces-at content pos)) :to-be-truthy))
+              ;; Collapsed, it is on the background of the chat again.
+              (eca-chat--expandable-content-toggle "r1" t t)
+              (expect (overlay-get ov-content 'face) :to-be nil)
+              (expect (eca-chat-test--label-background "r1") :to-be nil)
+              (let ((prefix (eca-chat-test--label-prefix "r1")))
+                (dotimes (pos (length prefix))
+                  (expect (memq tint (eca-chat-test--faces-at prefix pos)) :to-be nil)))))
+        (kill-buffer buf))))
+
+  (it "tint the approval lines of a tool call like its label"
+    (let ((buf (eca-chat-test--make-render-buffer))
+          (session (make-eca--session)))
+      (unwind-protect
+          (eca-chat--with-current-buffer buf
+            ;; Open for its approval.
+            (eca-chat-test--render-tool-call session buf "toolCallRun" "t1" :manualApproval t)
+            (let ((tint (eca-chat--expandable-tint-face 'eca-chat-tool-call-pending-face))
+                  (prefix (eca-chat-test--approval-line-prefix)))
+              (expect (overlay-get (eca-chat-test--label-background "t1") 'face) :to-be tint)
+              (expect (memq tint (eca-chat-test--faces-at prefix 0)) :to-be-truthy)
+              ;; Collapsed, the approval lines lose it.
+              (eca-chat--expandable-content-toggle "t1" t t)
+              (expect (memq tint (eca-chat-test--faces-at
+                                  (eca-chat-test--approval-line-prefix) 0))
+                      :to-be nil)))
+        (kill-buffer buf))))
+
+  (it "follow the state of an open tool call"
+    (let ((buf (eca-chat-test--make-render-buffer))
+          (session (make-eca--session))
+          (eca-chat-shrink-called-tools nil))
+      (unwind-protect
+          (eca-chat--with-current-buffer buf
+            (cl-flet ((render (type &rest props)
+                        (eca-chat-test--capture-timers
+                         (lambda ()
+                           (apply #'eca-chat-test--render-tool-call
+                                  session buf type "t1" props))))
+                      (tinted-p (face)
+                        (let ((ov-content (eca-chat-test--block-ov-content "t1")))
+                          (and (eq face (overlay-get ov-content 'face))
+                               (eq face (overlay-get (eca-chat-test--label-background "t1")
+                                                     'face))
+                               (memq face (eca-chat-test--faces-at
+                                           (eca-chat-test--line-prefix-at "Tool:") 0))))))
+              (render "toolCallRun" :manualApproval t)
+              (expect (tinted-p (eca-chat--expandable-tint-face 'eca-chat-tool-call-pending-face))
+                      :to-be-truthy)
+              (render "toolCallRunning")
+              (expect (tinted-p (eca-chat--expandable-tint-face 'eca-chat-tool-call-running-face))
+                      :to-be-truthy)
+              (render "toolCalled" :error t)
+              (expect (tinted-p (eca-chat--expandable-tint-face 'eca-chat-tool-call-error-face))
+                      :to-be-truthy)
+              ;; No trace of the former states.
+              (dolist (face (list 'eca-chat-tool-call-pending-face
+                                  'eca-chat-tool-call-running-face))
+                (expect (memq (eca-chat--expandable-tint-face face)
+                              (eca-chat-test--faces-at (eca-chat-test--line-prefix-at "Tool:") 0))
+                        :to-be nil))))
+        (eca-chat--tool-call-elapsed-stop-all)
+        (kill-buffer buf))))
+
+  (it "keep the label of an open block on its background as it changes"
+    (let ((buf (eca-chat-test--make-render-buffer))
+          (session (make-eca--session)))
+      (unwind-protect
+          (eca-chat--with-current-buffer buf
+            (eca-chat-test--stream-reasoning session buf "r1" '("Let me think."))
+            (eca-chat--expandable-content-toggle "r1" t nil)
+            ;; The label is inserted anew.
+            (eca-chat-test--render-assistant
+             session buf (list :type "reasonFinished" :id "r1" :totalTimeMs 1000))
+            (let ((label (eca-chat-test--label-background "r1")))
+              (expect (overlay-start label) :to-equal (eca-chat-test--label-start "r1"))
+              (expect (buffer-substring-no-properties (overlay-start label) (overlay-end label))
+                      :to-match "\\`Thought .*\n\\'")
+              (expect (memq (overlay-get label 'face)
+                            (eca-chat-test--faces-at (eca-chat-test--label-prefix "r1") 1))
+                      :to-be-truthy)))
+        (kill-buffer buf))))
+
+  (it "tint a nested block from its own bar, the parent's background before"
+    (let ((buf (eca-chat-test--make-render-buffer))
+          (session (make-eca--session)))
+      (unwind-protect
+          (eca-chat--with-current-buffer buf
+            (eca-chat-test--subagent-block "sub-1")
+            (eca-chat--expandable-content-toggle "sub-1" t nil)
+            (eca-chat-test--stream-reasoning session buf "r1" '("Nested") "sub-1")
+            (eca-chat--expandable-content-toggle "r1" t nil)
+            (let* ((parent (overlay-get (eca-chat-test--block-ov-content "sub-1") 'face))
+                   (tint (overlay-get (eca-chat-test--block-ov-content "r1") 'face))
+                   (label (eca-chat-test--label-prefix "r1"))
+                   (content (eca-chat-test--line-prefix-at "Nested")))
+              (expect parent :to-be (eca-chat--expandable-tint-face
+                                     'eca-chat-subagent-tool-call-bar-face))
+              ;; Of the color of its bar, but a face of its own.
+              (expect tint :to-be (eca-chat--expandable-tint-face 'eca-chat-reason-label-face t))
+              (expect tint :not :to-be (eca-chat--expandable-tint-face 'eca-chat-reason-label-face))
+              (dolist (prefix (list label content))
+                (let ((bar (eca-chat-test--bar-index prefix 1)))
+                  (dotimes (pos (length prefix))
+                    (let ((faces (eca-chat-test--faces-at prefix pos)))
+                      (if (< pos bar)
+                          (progn
+                            (expect (memq tint faces) :to-be nil)
+                            (expect (memq parent faces) :to-be-truthy))
+                        ;; Its own one first, over the one of the parent.
+                        (expect (memq tint faces) :to-be-truthy)
+                        (expect (length (memq tint faces))
+                                :to-be-greater-than (length (memq parent faces))))))))
+              ;; Its label over the background of the parent.
+              (expect (overlay-get (eca-chat-test--label-background "r1") 'priority)
+                      :to-be-greater-than
+                      (overlay-get (eca-chat-test--block-ov-content "sub-1") 'priority))))
+        (kill-buffer buf))))
+
+  (it "repaint the start of the nested lines when their parent fails"
+    (let ((buf (eca-chat-test--make-render-buffer))
+          (session (make-eca--session))
+          (eca-chat-shrink-called-tools nil))
+      (unwind-protect
+          (eca-chat--with-current-buffer buf
+            (eca-chat-test--subagent-block "sub-1")
+            (eca-chat--expandable-content-toggle "sub-1" t nil)
+            (eca-chat-test--stream-reasoning session buf "r1" '("Nested") "sub-1")
+            (eca-chat--expandable-content-toggle "r1" t nil)
+            (apply #'eca-chat-test--render-tool-call session buf "toolCalled" "sub-1"
+                   :error t eca-chat-test--subagent-props)
+            (let ((failed (eca-chat--expandable-tint-face 'eca-chat-tool-call-error-face))
+                  (subagent (eca-chat--expandable-tint-face
+                             'eca-chat-subagent-tool-call-bar-face))
+                  (tint (eca-chat--expandable-tint-face 'eca-chat-reason-label-face t))
+                  (prefix (eca-chat-test--line-prefix-at "Nested")))
+              (expect (overlay-get (eca-chat-test--block-ov-content "sub-1") 'face)
+                      :to-be failed)
+              (expect (memq failed (eca-chat-test--faces-at prefix 0)) :to-be-truthy)
+              (expect (memq subagent (eca-chat-test--faces-at prefix 0)) :to-be nil)
+              ;; The nested block keeps its own.
+              (expect (car (eca-chat-test--faces-at prefix 4)) :to-be tint)))
+        (eca-chat--tool-call-elapsed-stop-all)
+        (kill-buffer buf))))
+
+  (it "tint user messages with the color of their bar, their header too"
+    (let ((buf (eca-chat-test--make-live-render-buffer "")))
+      (unwind-protect
+          (with-current-buffer buf
+            (eca-chat-test--render-user-message buf "first line\nsecond line" "u1")
+            (let* ((tint (eca-chat--expandable-tint-face 'eca-chat-user-message-bar-face))
+                   (ov-label (eca-chat--get-expandable-content "u1"))
+                   (end (overlay-start (overlay-get ov-label
+                                                    'eca-chat--expandable-content-ov-content)))
+                   (background (seq-find (lambda (ov) (eq tint (overlay-get ov 'face)))
+                                         (overlays-in (point-min) (point-max))))
+                   (prefix (get-char-property (overlay-start ov-label) 'line-prefix)))
+              (expect (overlay-start background) :to-equal (overlay-start ov-label))
+              (expect (overlay-end background) :to-equal end)
+              (expect (memq tint (eca-chat-test--faces-at prefix 1)) :to-be-truthy)
+              ;; Its actions keep the background of their pill.
+              (goto-char (point-min))
+              (search-forward "rollback")
+              (expect (-some (lambda (ov) (overlay-get ov 'eca-button-pill))
+                             (overlays-at (match-beginning 0)))
+                      :to-be-truthy)))
         (kill-buffer buf)))))
 
 ;; ---------------------------------------------------------------------------
@@ -6682,7 +7138,7 @@ and its running jobs have run `eca-chat-test--job-elapsed' seconds,
                                                             :exitCode 0 :elapsed "5s"))
       (expect (eca-chat-test--label-line "bg-1")
               :to-equal "Called tool: testServer__testTool  dev-server  5s ")
-      (expect (eca-chat-test--bar-face (eca-chat-test--label-prefix "bg-1") 3)
+      (expect (eca-chat-test--bar-face (eca-chat-test--label-prefix "bg-1") 1)
               :to-be 'eca-chat-tool-call-success-face)
       ;; Collapsed, the subagent keeps it for when it opens again.
       (eca-chat--expandable-content-toggle "sub-1" t t)
@@ -6740,8 +7196,11 @@ and its running jobs have run `eca-chat-test--job-elapsed' seconds,
           (eca-chat--with-current-buffer buf
             (eca-chat-test--render-tool-call session buf "toolCallRun" "t1"
                                              :manualApproval t)
-            (expect (get-text-property 0 'face (eca-chat-test--label-prefix "t1"))
-                    :to-be 'eca-chat-mcp-tool-call-label-face)
+            ;; On the background of the block, open for the approval.
+            (expect (memq 'eca-chat-mcp-tool-call-label-face
+                          (ensure-list (get-text-property
+                                        0 'face (eca-chat-test--label-prefix "t1"))))
+                    :to-be-truthy)
             (expect (eca-chat-test--approval-line-prefix) :to-equal "   ")
             (eca-chat-test--render-tool-call session buf "toolCalled" "t1" :error t)
             (expect (get-text-property 0 'face (eca-chat-test--label-prefix "t1"))
@@ -7049,9 +7508,17 @@ named `_buf' when BODY does not use it."
               ;; Its options and Cancel.
               (expect (length ovs) :to-equal 3)
               (dolist (ov ovs)
-                (expect (overlay-get ov 'priority) :to-be-greater-than 1)
-                (expect (overlay-get ov 'face)
-                        :to-be (get-text-property (overlay-start ov) 'font-lock-face))))
+                (let* ((pill (get-text-property (overlay-start ov) 'font-lock-face))
+                       (fill (overlay-get ov 'face)))
+                  (expect (overlay-get ov 'priority) :to-be-greater-than 1)
+                  ;; The background and the edge of the pill, without the
+                  ;; height of its text: drawn again, it would shrink it.
+                  (expect fill :to-be (eca--button-fill-face pill))
+                  (expect (face-attribute fill :background)
+                          :to-equal (face-attribute pill :background))
+                  (expect (face-attribute fill :box) :to-equal (face-attribute pill :box))
+                  (expect (face-attribute pill :height) :to-equal 0.9)
+                  (expect (face-attribute fill :height) :to-be 'unspecified))))
             ;; They go away with their buttons, and come back once.
             (eca-chat--expandable-content-toggle "tc-1" t t)
             (expect (eca-chat-test--pill-overlays) :to-be nil)
@@ -7079,14 +7546,30 @@ named `_buf' when BODY does not use it."
                       :to-be-truthy)))
         (kill-buffer buf))))
 
-  (it "are not needed by top-level labels"
+  (it "are not needed by the labels of closed top-level blocks"
     (let ((buf (eca-chat-test--make-render-buffer))
-          (session (make-eca--session)))
+          (session (make-eca--session))
+          (eca-chat-expand-pending-approval-tools nil))
       (unwind-protect
           (eca-chat--with-current-buffer buf
             (eca-chat-test--render-tool-call session buf "toolCallRun" "t1"
                                              :manualApproval t)
             (expect (eca-chat-test--pill-overlays) :to-be nil))
+        (kill-buffer buf))))
+
+  (it "cover the buttons of the label of an open block, on its background"
+    (let ((buf (eca-chat-test--make-render-buffer))
+          (session (make-eca--session)))
+      (unwind-protect
+          (eca-chat--with-current-buffer buf
+            ;; Open for its approval.
+            (eca-chat-test--render-tool-call session buf "toolCallRun" "t1"
+                                             :manualApproval t)
+            (let ((accept (text-property-any (point-min) (point-max)
+                                             'eca-tool-call-pending-approval-accept t)))
+              (expect (-some (lambda (ov) (overlay-get ov 'eca-button-pill))
+                             (overlays-at accept))
+                      :to-be-truthy)))
         (kill-buffer buf)))))
 
 (describe "links"

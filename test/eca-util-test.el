@@ -563,9 +563,55 @@
         (setq tint "#222222")
         (eca--refresh-button-faces)
         (expect (face-attribute face :background) :to-equal "#222222")
+        ;; Their fill too.
+        (expect (face-attribute (eca--button-fill-face face) :background)
+                :to-equal "#222222")
         (when (>= emacs-major-version 29)
           (expect (memq #'eca--refresh-button-faces enable-theme-functions)
-                  :to-be-truthy))))))
+                  :to-be-truthy)))))
+
+  (it "fills their pill with a face of its background and edge only"
+    ;; Drawn again over the text of the pill, the face of the pill
+    ;; would scale its height again: 0.9 of 0.9.
+    (let ((eca--button-faces nil))
+      (spy-on 'eca--button-tint-color :and-return-value "#333333")
+      (let* ((face (eca--button-face 'eca-util-test-button-face))
+             (fill (eca--button-fill-face face)))
+        (expect fill :to-be 'eca-button-eca-util-test-button-face-fill)
+        (expect (face-attribute fill :background) :to-equal "#333333")
+        (expect (face-attribute fill :box) :to-equal (face-attribute face :box))
+        (expect (face-attribute face :height) :to-equal 0.9)
+        (expect (face-attribute fill :height) :to-be 'unspecified)
+        (expect (face-attribute fill :inherit) :to-be 'unspecified)
+        (expect (eca--button-fill-face face) :to-be fill))))
+
+  (it "makes the fill of a pill face made before there were fills"
+    (let ((eca--button-faces nil))
+      (spy-on 'eca--button-tint-color :and-return-value "#333333")
+      (let ((face (eca--button-face 'eca-util-test-button-face)))
+        ;; As after reloading ECA in a running Emacs.
+        (put face 'eca--button-fill-face nil)
+        (expect (face-attribute (eca--button-fill-face face) :background)
+                :to-equal "#333333")
+        ;; Not for other faces.
+        (expect (eca--button-fill-face 'bold) :to-be nil)
+        (expect (eca--button-fill-face nil) :to-be nil)))))
+
+(describe "eca--tint-color"
+
+  (it "blends the color of a face over the default background"
+    (spy-on 'face-foreground :and-return-value "#ff0000")
+    (spy-on 'eca-safe-face-background :and-return-value "#000000")
+    (expect (eca--tint-color 'eca-util-test-button-face 0.2) :to-equal "#330000")
+    (expect (eca--tint-color 'eca-util-test-button-face 0) :to-equal "#000000"))
+
+  (it "is nil when a color is unknown, as on terminals"
+    (spy-on 'face-foreground :and-return-value "unspecified-fg")
+    (spy-on 'eca-safe-face-background :and-return-value "#000000")
+    (expect (eca--tint-color 'eca-util-test-button-face 0.5) :to-be nil)
+    (spy-on 'face-foreground :and-return-value "#ff0000")
+    (spy-on 'eca-safe-face-background :and-return-value nil)
+    (expect (eca--tint-color 'eca-util-test-button-face 0.5) :to-be nil)))
 
 (describe "eca-buttonize-link"
 

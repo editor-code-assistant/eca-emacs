@@ -75,18 +75,64 @@ Only shown with `eca-chat-expandable-block-arrows'."
 (defcustom eca-chat-expandable-block-arrows nil
   "Whether to mark expandable blocks with arrows instead of a bar.
 By default, a bar runs along the blocks with content to expand, like
-tool calls and reasoning.  Its color follows the state of tool calls,
-see `eca-chat-tool-call-running-face' and the other tool call faces,
-and the color of the label for other blocks.  When non-nil, the label
-of these blocks starts with `eca-chat-expandable-block-open-symbol' or
+tool calls and reasoning, after a chevron, see
+`eca-chat-expandable-block-chevrons'.  Its color follows the state of
+tool calls, see `eca-chat-tool-call-running-face' and the other tool
+call faces, and the color of the label for other blocks.  When
+non-nil, the label of these blocks starts with
+`eca-chat-expandable-block-open-symbol' or
 `eca-chat-expandable-block-close-symbol' instead, in the color of the
 label.  Either way, blocks without content to expand show neither, and
 user messages and flags keep their bar."
   :type 'boolean
   :group 'eca)
 
+(defcustom eca-chat-expandable-block-chevrons t
+  "Whether a chevron before their bar tells blocks expand.
+It points right on collapsed blocks, see
+`eca-chat-expandable-block-collapsed-chevron', and down on expanded
+ones, see `eca-chat-expandable-block-expanded-chevron'.  Top-level
+blocks show it in the left margin of the chat, one column wide, and
+nested blocks in the indent of their parent.  Clicking it expands or
+collapses the block.  Has no effect with
+`eca-chat-expandable-block-arrows'.  Takes effect in new chats."
+  :type 'boolean
+  :group 'eca)
+
+(defcustom eca-chat-expandable-block-collapsed-chevron "›"
+  "The chevron before the bar of collapsed blocks.
+It takes one column, see `eca-chat-expandable-block-chevrons'."
+  :type 'string
+  :group 'eca)
+
+(defcustom eca-chat-expandable-block-expanded-chevron "⌄"
+  "The chevron before the bar of expanded blocks.
+It takes one column, see `eca-chat-expandable-block-chevrons'."
+  :type 'string
+  :group 'eca)
+
+(defcustom eca-chat-expandable-block-tint 7
+  "Percentage of the color of their bar in the background of open blocks.
+Expanded blocks, like tool calls and reasoning, get a background
+tinted with the color of their bar, the state of tool calls, from
+their bar to the window edge, their label lines included.  0 leaves
+them on the default background.  Failed tool calls take
+`eca-chat-expandable-block-error-tint' instead.  Takes effect in new
+chats."
+  :type 'number
+  :group 'eca)
+
+(defcustom eca-chat-expandable-block-error-tint 12
+  "Percentage of the error color in the background of open failed blocks.
+More than `eca-chat-expandable-block-tint', so that failures stand
+out.  Takes effect in new chats."
+  :type 'number
+  :group 'eca)
+
 (defcustom eca-chat-expandable-block-bg-shift-1 5
   "Percentage to shift background for level-1 blocks.
+That is for the blocks whose bar has no color, which the others tint
+their background with, see `eca-chat-expandable-block-tint'.
 Higher values make the block background more distinct from the
 surrounding buffer.  The shift direction is automatic: lightens
 for dark themes and darkens for light themes."
@@ -95,6 +141,8 @@ for dark themes and darkens for light themes."
 
 (defcustom eca-chat-expandable-block-bg-shift-2 20
   "Percentage to shift background for level-2 nested blocks.
+That is for the blocks whose bar has no color, see
+`eca-chat-expandable-block-bg-shift-1'.
 Higher values make the nested block background more distinct.
 The shift direction is automatic: lightens for dark themes and
 darkens for light themes."
@@ -220,6 +268,8 @@ STRING's), exceeds `eca-chat-expandable-block-fontify-max-length'."
 (defface eca-chat-expandable-block-1-face
   '((t :extend t))
   "Face for the background of top-level expanded blocks.
+That is of the blocks whose bar has no color, the others tint their
+background with it, see `eca-chat-expandable-block-tint'.
 Background is computed dynamically from the current theme by
 `eca-chat--update-expandable-block-faces'."
   :group 'eca)
@@ -227,8 +277,16 @@ Background is computed dynamically from the current theme by
 (defface eca-chat-expandable-block-2-face
   '((t :extend t))
   "Face for the background of nested expanded blocks (level 2).
+That is of the blocks whose bar has no color, see
+`eca-chat-expandable-block-1-face'.
 Background is computed dynamically from the current theme by
 `eca-chat--update-expandable-block-faces'."
+  :group 'eca)
+
+(defface eca-chat-expandable-block-chevron-face
+  '((t :inherit shadow))
+  "Face for the chevrons before the bars of blocks.
+See `eca-chat-expandable-block-chevrons'."
   :group 'eca)
 
 (defface eca-chat--expandable-bar-fill-face
@@ -242,18 +300,64 @@ bar.  Terminals show the glyph of the bar in that foreground instead."
 
 ;;;; Functions
 
+(defvar eca-chat--expandable-tint-faces nil
+  "Alist of ((SOURCE . NESTED?) . FACE), the backgrounds of open blocks.
+SOURCE is the face whose color tints FACE, the one of the bar of the
+blocks, NESTED? non-nil for blocks nested in another one.  See
+`eca-chat--expandable-tint-face'.")
+
+(defvar eca-chat--expandable-tint-percents
+  '((eca-chat-tool-call-error-face . eca-chat-expandable-block-error-tint))
+  "Alist of (SOURCE . VARIABLE): how much of the color of SOURCE tints.
+VARIABLE holds the percentage, see `eca-chat--expandable-tint-face'.
+Other faces tint as much as `eca-chat-expandable-block-tint' tells.")
+
+(defun eca-chat--expandable-set-tint (face)
+  "Set the background of FACE, from `eca-chat--expandable-tint-face'.
+That is from the colors of the current theme."
+  (let* ((source (get face 'eca-chat-expandable-tint))
+         (var (or (alist-get source eca-chat--expandable-tint-percents)
+                  'eca-chat-expandable-block-tint))
+         (percent (if (boundp var) (symbol-value var) 0))
+         (color (and (numberp percent) (> percent 0)
+                     (eca--tint-color source (/ (min percent 100) 100.0)))))
+    (set-face-attribute face nil :background (or color 'unspecified) :extend t)))
+
+(defun eca-chat--expandable-tint-face (source &optional nested?)
+  "Return the face tinting backgrounds with the color of face SOURCE.
+Open blocks get it, SOURCE being the face of their bar, see
+`eca-chat-expandable-block-tint', and so do user messages.  Nested in
+another block, NESTED?, a block gets a face of its own, of the same
+color: painting one of them leaves the background of the other alone.
+Made on first use, then follows theme switches, see
+`eca-chat--update-expandable-block-faces'."
+  (let ((key (cons source (and nested? t))))
+    (or (cdr (assoc key eca-chat--expandable-tint-faces))
+        (let ((face (intern (format "eca-chat--%stint-%s"
+                                    (if nested? "nested-" "") source))))
+          (make-face face)
+          (set-face-documentation
+           face (format "Background of open blocks, tinted by `%s'." source))
+          (put face 'eca-chat-expandable-tint source)
+          (eca-chat--expandable-set-tint face)
+          (push (cons key face) eca-chat--expandable-tint-faces)
+          face))))
+
 (defun eca-chat--update-expandable-block-faces ()
   "Recompute expandable-block background faces from the current theme.
 Shift percentages are controlled by `eca-chat-expandable-block-bg-shift-1'
 and `eca-chat-expandable-block-bg-shift-2'.  Lightens for dark themes,
-darkens for light themes."
+darkens for light themes.  So are the tints of
+`eca-chat--expandable-tint-face'."
   (when-let* ((bg (eca-safe-face-background 'default nil t)))
     (let* ((dark? (eq 'dark (frame-parameter nil 'background-mode)))
            (fn (if dark? #'color-lighten-name #'color-darken-name))
            (bg1 (funcall fn bg eca-chat-expandable-block-bg-shift-1))
            (bg2 (funcall fn bg eca-chat-expandable-block-bg-shift-2)))
       (set-face-attribute 'eca-chat-expandable-block-1-face nil :background bg1)
-      (set-face-attribute 'eca-chat-expandable-block-2-face nil :background bg2))))
+      (set-face-attribute 'eca-chat-expandable-block-2-face nil :background bg2)))
+  (dolist (entry eca-chat--expandable-tint-faces)
+    (eca-chat--expandable-set-tint (cdr entry))))
 
 (defun eca-chat--expandable-content-at-point ()
   "Return expandable content overlay at point, or nil if none."
@@ -372,6 +476,45 @@ so the bars of the lines of a block join into one.")
 It also takes the rest of the column of the bar, which the glyph of the
 bar leaves empty, so the bar and this space stay two columns wide.")
 
+(defconst eca-chat--expandable-chevron-margin-width 1
+  "Columns of the left margin of chats, where top-level chevrons show.
+The fringe goes between the margin and the text, which keeps the
+chevrons apart from the bars, see `eca-chat--expandable-chevron-gap'.
+See `eca-chat-expandable-block-chevrons'.")
+
+(defconst eca-chat--expandable-chevron-gap 0.375
+  "Columns between the chevrons of blocks and their bar, as wide as it.
+The left fringe of chats takes them after the chevrons of top-level
+blocks, see `eca-chat--expandable-chevron-fringe-width', and a space
+after those of nested blocks in graphic frames, see
+`eca-chat--expandable-chevron-space-display'.")
+
+(defconst eca-chat--expandable-chevron-gap-display
+  ;; The columns of the prefix of the parent, less its bar, the chevron
+  ;; and the gap after it.
+  `((when (display-graphic-p) space
+          :relative-width ,(- (length eca-chat--expandable-content-base-indent)
+                              0.375 1 eca-chat--expandable-chevron-gap))
+    (when (not (display-graphic-p)) space :width 0))
+  "Display of the gap before the chevron of a nested block.
+The chevron and the gap after it take the end of the gap after the bar
+of the parent and the space after it: in graphic frames, this gap is
+the rest, so the bar of the nested block stays where it is on its
+other lines.  Terminals draw the bar of the parent as wide as a
+column, and a space after the chevron, so the gap takes none there.")
+
+(defconst eca-chat--expandable-chevron-space-display
+  `(when (display-graphic-p) space :relative-width ,eca-chat--expandable-chevron-gap)
+  "Display of the space after the chevron of a nested block.
+In graphic frames it is the gap after the chevrons, see
+`eca-chat--expandable-chevron-gap'.  Terminals show a space.")
+
+(defun eca-chat--expandable-chevron-fringe-width (char-width)
+  "Return the width in pixels of the left fringe of chats.
+That is `eca-chat--expandable-chevron-gap' of CHAR-WIDTH, the width of
+a column in pixels: none on terminals, whose columns are one wide."
+  (round (* eca-chat--expandable-chevron-gap char-width)))
+
 (defun eca-chat--expandable-bar-face (label)
   "Return the face of the bar of a block labeled LABEL.
 That is the `eca-chat-expandable-bar-face' of LABEL, which tool calls
@@ -429,11 +572,41 @@ The lines of blocks nested in it start with it too, its bar first."
      (-some-> (eca-chat--get-expandable-content parent-id)
        (overlay-get 'eca-chat--expandable-content-bar-face)))))
 
+(defun eca-chat--expandable-chevron (open?)
+  "Return the chevron of a block, expanded when OPEN?, one column wide.
+See `eca-chat-expandable-block-chevrons'."
+  (propertize (truncate-string-to-width
+               (if open?
+                   eca-chat-expandable-block-expanded-chevron
+                 eca-chat-expandable-block-collapsed-chevron)
+               1 nil ?\s)
+              'face 'eca-chat-expandable-block-chevron-face))
+
+(defun eca-chat--expandable-chevron-prefix (open? &optional label-prefix)
+  "Return what the label of a block starts with, up to its bar.
+That is its chevron, expanded when OPEN?.  A top-level block shows it
+in the left margin, which the fringe keeps apart from the bar, see
+`eca-chat--expandable-chevron-margin-width'.  A nested block shows it
+and a gap after it, keeping it apart from the bar, in LABEL-PREFIX,
+what the lines of its parent start with, in place of its last two
+columns: the gap after the bar of the parent gets shorter, see
+`eca-chat--expandable-chevron-gap-display'."
+  (let ((chevron (eca-chat--expandable-chevron open?)))
+    (if (and label-prefix (>= (length label-prefix) 2))
+        (concat (substring label-prefix 0 -2)
+                (propertize " " 'display eca-chat--expandable-chevron-gap-display)
+                chevron
+                (propertize " " 'display eca-chat--expandable-chevron-space-display))
+      (concat label-prefix
+              (propertize " " 'display `((margin left-margin) ,chevron))))))
+
 (defun eca-chat--make-expandable-icons (icon-face &optional label-prefix bar-face)
   "Create open/close icons with ICON-FACE and optional LABEL-PREFIX.
-Both are the bar in BAR-FACE, ICON-FACE when nil, unless
+Both are the bar in BAR-FACE, ICON-FACE when nil, after a chevron
+pointing right on the open icon, shown while the block is collapsed,
+and down on the close one, see `eca-chat-expandable-block-chevrons'.
 `eca-chat-expandable-block-arrows' makes them the open and close
-symbols in ICON-FACE.
+symbols in ICON-FACE instead.
 Uses the `face' property (not `font-lock-face') because these strings
 are used as `line-prefix' values, where `font-lock-face' is not rendered."
   (if eca-chat-expandable-block-arrows
@@ -442,8 +615,34 @@ are used as `line-prefix' values, where `font-lock-face' is not rendered."
                             (if icon-face (propertize symbol 'face icon-face) symbol)))))
         (cons (funcall icon eca-chat-expandable-block-open-symbol)
               (funcall icon eca-chat-expandable-block-close-symbol)))
-    (let ((icon (concat label-prefix (eca-chat--expandable-bar (or bar-face icon-face)))))
-      (cons icon icon))))
+    (let ((bar (eca-chat--expandable-bar (or bar-face icon-face))))
+      (if eca-chat-expandable-block-chevrons
+          (cons (concat (eca-chat--expandable-chevron-prefix nil label-prefix) bar)
+                (concat (eca-chat--expandable-chevron-prefix t label-prefix) bar))
+        (let ((icon (concat label-prefix bar)))
+          (cons icon icon))))))
+
+(defun eca-chat-expandable-toggle-at-margin (event)
+  "Expand or collapse the block whose chevron in the margin got EVENT.
+Top-level blocks show their chevron there, see
+`eca-chat-expandable-block-chevrons'.  Elsewhere, set point."
+  (interactive "e")
+  (let* ((posn (event-start event))
+         (window (posn-window posn))
+         (pos (posn-point posn))
+         (ov (when (and (windowp window) pos)
+               (with-current-buffer (window-buffer window)
+                 (save-excursion
+                   (goto-char pos)
+                   (eca-chat--expandable-content-at-point))))))
+    (if-let* ((id (and ov (overlay-get ov 'eca-chat--expandable-content-id)))
+              (ov-content (overlay-get ov 'eca-chat--expandable-content-ov-content))
+              ((or (not (eca-chat--expandable-content-empty-p ov-content))
+                   (eca-chat--segments-children
+                    (overlay-get ov 'eca-chat--expandable-content-segments)))))
+        (with-current-buffer (window-buffer window)
+          (eca-chat--expandable-content-toggle id))
+      (mouse-set-point event))))
 
 (defun eca-chat--expandable-plain-prefix (&optional label-prefix)
   "Return the label prefix of a block without content to expand.
@@ -494,11 +693,33 @@ out the window again for nothing."
                        (concat label-indent (eca-chat--expandable-line-prefix bar-face))))
         t))))
 
+(defun eca-chat--expandable-repaint-background (ov-label)
+  "Repaint the open block OV-LABEL in the background of its bar face.
+That is its content, its label lines and the start of the lines of
+its nested blocks, under their own background, see
+`eca-chat--expandable-block-face'."
+  (when-let* (((overlay-get ov-label 'eca-chat--expandable-content-toggle))
+              (ov-content (overlay-get ov-label 'eca-chat--expandable-content-ov-content))
+              (old (overlay-get ov-content 'face))
+              (new (eca-chat--expandable-block-face
+                    (overlay-get ov-label 'eca-chat--expandable-content-nested)
+                    (overlay-get ov-label 'eca-chat--expandable-content-bar-face)))
+              ((not (eq old new))))
+    (overlay-put ov-content 'face new)
+    (when-let* ((ov (overlay-get ov-label 'eca-chat--expandable-label-background))
+                ((overlay-buffer ov)))
+      (overlay-put ov 'face new))
+    (with-silent-modifications
+      (eca-chat--swap-face-in-line-prefixes
+       (overlay-start ov-label) (overlay-end ov-content) old new))))
+
 (defun eca-chat--expandable-repaint-bar (ov-label old-face)
   "Repaint in its current face the bar of the open block OV-LABEL.
 Its content lines, nested blocks included, drew it in OLD-FACE.  The
 bar sits at the start of their prefixes, after the prefix of the
-parent for a nested block."
+parent for a nested block.  Its background follows, see
+`eca-chat--expandable-repaint-background'."
+  (eca-chat--expandable-repaint-background ov-label)
   (when-let* (((not eca-chat-expandable-block-arrows))
               ((overlay-get ov-label 'eca-chat--expandable-content-toggle))
               (ov-content (overlay-get ov-label 'eca-chat--expandable-content-ov-content))
@@ -522,15 +743,34 @@ parent for a nested block."
                       (put-text-property pos next prop new-prefix)))))
               (setq pos next))))))))
 
-(defun eca-chat--expandable-block-face (nested?)
-  "Return the appropriate background face for an expandable block.
-When NESTED? is non-nil, return the level-2 face; otherwise level-1."
-  (if nested?
-      'eca-chat-expandable-block-2-face
-    'eca-chat-expandable-block-1-face))
+(defun eca-chat--expandable-block-face (nested? &optional bar-face)
+  "Return the background face of an open block, nested when NESTED?.
+That is the tint of BAR-FACE, the face of its bar, see
+`eca-chat--expandable-tint-face'.  Without one, the level-2 face when
+NESTED? is non-nil, otherwise level-1."
+  (cond (bar-face (eca-chat--expandable-tint-face bar-face nested?))
+        (nested? 'eca-chat-expandable-block-2-face)
+        (t 'eca-chat-expandable-block-1-face)))
 
-(defun eca-chat--apply-face-to-line-prefixes (start end face)
+(defun eca-chat--expandable-bar-column (nested?)
+  "Return a function telling where the bar of a block is in a prefix.
+That is its first bar, or for a NESTED? block, the second one, after
+the bar of its parent: the background of the block starts there.
+Prefixes without that bar, as with `eca-chat-expandable-block-arrows',
+start the block after the indent of its parent."
+  (lambda (prefix)
+    (let ((index (string-search eca-chat--expandable-bar-symbol prefix)))
+      (when (and index nested?)
+        (setq index (string-search eca-chat--expandable-bar-symbol prefix (1+ index))))
+      (or index
+          (if nested? (length eca-chat--expandable-content-base-indent) 0)))))
+
+(defun eca-chat--apply-face-to-line-prefixes (start end face &optional column append)
   "Add FACE to every `line-prefix' and `wrap-prefix' between START and END.
+From COLUMN on, a function of a prefix returning where FACE starts in
+it, or from its start.  FACE goes before the faces there, unless
+APPEND puts it after them: the background of the parent of a nested
+block goes under the one of the block.
 The face symbol itself is stored instead of its resolved background
 color, so prefixes follow theme switches (#301).  FACE only defines a
 background, so existing foreground colors (e.g. icon faces) are
@@ -539,55 +779,150 @@ preserved."
     (let ((pos start))
       (while (< pos end)
         (let* ((next-change (or (next-single-property-change pos prop nil end) end))
-               (prefix (get-text-property pos prop)))
-          (when (and prefix (stringp prefix))
-            (let ((existing (get-text-property 0 'face prefix)))
+               (prefix (get-text-property pos prop))
+               (from (when (stringp prefix)
+                       (or (and column (funcall column prefix)) 0))))
+          (when (and from (< from (length prefix)))
+            (let ((existing (get-text-property from 'face prefix)))
               ;; Skip when already painted to avoid re-consing the same
               ;; face onto frequently repainted prefixes.
               (unless (or (eq existing face)
                           (and (listp existing) (memq face existing)))
                 (let ((new-prefix (copy-sequence prefix)))
-                  (add-face-text-property 0 (length new-prefix) face nil new-prefix)
+                  (add-face-text-property from (length new-prefix) face append new-prefix)
                   (put-text-property pos next-change prop new-prefix)))))
           (setq pos next-change))))))
+
+(defun eca-chat--swap-face-in-line-prefixes (start end old new)
+  "Replace face OLD by NEW in the prefixes between START and END.
+That is in their `line-prefix' and `wrap-prefix'.  A nil NEW removes
+OLD instead."
+  (dolist (prop '(line-prefix wrap-prefix))
+    (let ((pos start))
+      (while (< pos end)
+        (let ((next (or (next-single-property-change pos prop nil end) end))
+              (prefix (get-text-property pos prop))
+              (new-prefix nil))
+          (when (stringp prefix)
+            (dotimes (i (length prefix))
+              (let ((faces (ensure-list (get-text-property i 'face prefix))))
+                (when (memq old faces)
+                  (let ((swapped (delq nil (mapcar (lambda (f) (if (eq f old) new f))
+                                                   faces))))
+                    (unless new-prefix
+                      (setq new-prefix (copy-sequence prefix)))
+                    (put-text-property i (1+ i) 'face
+                                       (if (cdr swapped) swapped (car swapped))
+                                       new-prefix)))))
+            (when new-prefix
+              (put-text-property pos next prop new-prefix)))
+          (setq pos next))))))
 
 (defun eca-chat--overlay-buttons (start end)
   "Draw the buttons between START and END with overlays of their own.
 An open block paints its background with an overlay face, which wins
 over the text faces of the pills of `eca-buttonize', leaving only
-their edge: an overlay of a higher priority keeps their background.
+their edge: an overlay of a higher priority keeps their background,
+with the fill of their pill, see `eca--button-fill-face'.
 It goes away with the text of its button."
   (let ((pos start))
     (while (and (< pos end)
                 (setq pos (text-property-not-all pos end 'eca-button-pill nil)))
       (let ((next (or (next-single-property-change pos 'eca-button-pill nil end) end)))
         (unless (-some (lambda (ov) (overlay-get ov 'eca-button-pill)) (overlays-at pos))
-          (let ((ov (make-overlay pos next nil t nil)))
+          (let ((ov (make-overlay pos next nil t nil))
+                (pill (get-text-property pos 'eca-button-pill)))
             (overlay-put ov 'eca-button-pill t)
-            (overlay-put ov 'face (get-text-property pos 'eca-button-pill))
+            (overlay-put ov 'face (or (eca--button-fill-face pill) pill))
             (overlay-put ov 'priority 10)
             (overlay-put ov 'evaporate t)))
         (setq pos next)))))
+
+(defun eca-chat--expandable-parent-face (ov-label)
+  "Return the background of the open parent of block OV-LABEL, or nil."
+  (when-let* ((parent-id (overlay-get ov-label 'eca-chat--expandable-content-parent-id))
+              (parent-ov (eca-chat--get-expandable-content parent-id))
+              (parent-content-ov (overlay-get parent-ov 'eca-chat--expandable-content-ov-content)))
+    (overlay-get parent-content-ov 'face)))
 
 (defun eca-chat--paint-nested-label (ov-label)
   "Paint OV-LABEL's `line-prefix` with the parent block's background face.
 So are the other lines of the label, like the approval lines of a tool
 call, and the empty line closing the block, which carries the bar of
-the parent.  Does nothing for top-level blocks or when parent has no
+the parent.  It goes under the background of the block, open, from
+its bar on.  Does nothing for top-level blocks or when parent has no
 face set."
   (when (overlay-get ov-label 'eca-chat--expandable-content-nested)
-    (when-let* ((parent-id (overlay-get ov-label 'eca-chat--expandable-content-parent-id))
-                (parent-ov (eca-chat--get-expandable-content parent-id))
-                (parent-content-ov (overlay-get parent-ov 'eca-chat--expandable-content-ov-content))
-                (parent-face (overlay-get parent-content-ov 'face))
+    (when-let* ((parent-face (eca-chat--expandable-parent-face ov-label))
                 (ov-content (overlay-get ov-label 'eca-chat--expandable-content-ov-content)))
       (eca-chat--apply-face-to-line-prefixes
-       (overlay-start ov-label) (overlay-start ov-content) parent-face)
+       (overlay-start ov-label) (overlay-start ov-content) parent-face nil t)
       ;; Its buttons, like approvals, sit on the background of the parent.
       (eca-chat--overlay-buttons (overlay-start ov-label) (overlay-start ov-content))
       (let ((end (overlay-end ov-content)))
         (when (< end (point-max))
-          (eca-chat--apply-face-to-line-prefixes end (1+ end) parent-face))))))
+          (eca-chat--apply-face-to-line-prefixes end (1+ end) parent-face nil t))))))
+
+(defun eca-chat--expandable-paint-content (ov-label start end)
+  "Paint the content of the open block OV-LABEL between START and END.
+That is its background from its bar on, see
+`eca-chat--expandable-block-face', and under it the background of its
+parent when nested, which the start of its lines draws.  Its buttons
+keep their own, see `eca-chat--overlay-buttons'."
+  (when-let* ((ov-content (overlay-get ov-label 'eca-chat--expandable-content-ov-content))
+              (face (overlay-get ov-content 'face)))
+    (let ((nested? (overlay-get ov-label 'eca-chat--expandable-content-nested)))
+      ;; Only text properties change, which the prompt can't undo.
+      (with-silent-modifications
+        (eca-chat--apply-face-to-line-prefixes
+         start end face (eca-chat--expandable-bar-column nested?))
+        (when-let* ((parent-face (and nested? (eca-chat--expandable-parent-face ov-label))))
+          (eca-chat--apply-face-to-line-prefixes start end parent-face nil t)))
+      (eca-chat--overlay-buttons start end))))
+
+(defun eca-chat--expandable-paint-label (ov-label)
+  "Paint the label lines of block OV-LABEL with the backgrounds of blocks.
+They get the one of the parent of a nested block, see
+`eca-chat--paint-nested-label', and while the block is open its own
+one, like its content: on their text and from its bar on in their
+prefix.  An overlay paints their text, which streaming blocks insert
+anew: call this after inserting their label."
+  ;; Only text properties change, which the prompt can't undo.
+  (with-silent-modifications
+    (eca-chat--paint-nested-label ov-label))
+  (when-let* ((ov-content (overlay-get ov-label 'eca-chat--expandable-content-ov-content))
+              (start (overlay-start ov-label))
+              (end (overlay-start ov-content)))
+    (let ((face (and (overlay-get ov-label 'eca-chat--expandable-content-toggle)
+                     (overlay-get ov-content 'face)))
+          (ov (overlay-get ov-label 'eca-chat--expandable-label-background)))
+      (cond
+       (face
+        (if (and (overlayp ov) (overlay-buffer ov))
+            (move-overlay ov start end)
+          ;; Text inserted before the label stays out of it, like an
+          ;; older history page, but not the label itself: inserted
+          ;; anew at its start, this moves it back over the label.
+          (setq ov (make-overlay start end nil t nil))
+          (overlay-put ov 'evaporate t)
+          (overlay-put ov-label 'eca-chat--expandable-label-background ov))
+        (overlay-put ov 'face face)
+        ;; Over the background of the parent, which the content of the
+        ;; parent paints.
+        (overlay-put ov 'priority (overlay-get ov-content 'priority))
+        (with-silent-modifications
+          (eca-chat--apply-face-to-line-prefixes
+           start end face (eca-chat--expandable-bar-column
+                           (overlay-get ov-label 'eca-chat--expandable-content-nested))))
+        (eca-chat--overlay-buttons start end))
+       ((overlayp ov)
+        ;; Closed: the prefix of its first line is the one of a closed
+        ;; block again, the others, like approval lines, keep theirs.
+        (when-let* ((painted (overlay-get ov 'face)))
+          (with-silent-modifications
+            (eca-chat--swap-face-in-line-prefixes start end painted nil)))
+        (delete-overlay ov)
+        (overlay-put ov-label 'eca-chat--expandable-label-background nil))))))
 
 (defun eca-chat--insert-expandable-block (id label content open-icon close-icon content-indent &optional nested-props)
   "Insert an expandable block with ID, LABEL, CONTENT, icons and indent.
@@ -668,7 +1003,7 @@ NESTED-PROPS is a plist with :parent-id and :label-indent for nested blocks."
                                                :label-indent label-indent))
       ;; Paint label's line-prefix with parent's background when parent is open
       (when-let* ((child-ov (eca-chat--get-expandable-content id)))
-        (eca-chat--paint-nested-label child-ov)))))
+        (eca-chat--expandable-paint-label child-ov)))))
 
 (defun eca-chat--destroy-nested-blocks (parent-id)
   "Remove all nested block overlays that belong to PARENT-ID.
@@ -833,30 +1168,24 @@ in parent."
                                    (eca-chat--propertize-only-first-word label
                                                                          'line-prefix label-prefix)
                                    'help-echo "mouse-1 / RET / tab: expand/collapse"))
-                ;; Repaint nested label's line-prefix after label replacement
-                (eca-chat--paint-nested-label ov-label))))
+                ;; Repaint the backgrounds of the label after replacing it
+                (eca-chat--expandable-paint-label ov-label))))
           (when open?
-            (let ((block-face (overlay-get ov-content 'face))
-                  (delta (eca-chat--expandable-content-indented
+            (let ((delta (eca-chat--expandable-content-indented
                           ov-content content
                           (eca-chat--expandable-text-length text))))
               (if append-content?
                   (let ((insert-start (overlay-end ov-content)))
                     (goto-char insert-start)
                     (eca-chat--insert delta)
-                    (when block-face
-                      (eca-chat--apply-face-to-line-prefixes
-                       insert-start (overlay-end ov-content) block-face)
-                      (eca-chat--overlay-buttons insert-start (overlay-end ov-content))))
+                    (eca-chat--expandable-paint-content
+                     ov-label insert-start (overlay-end ov-content)))
                 (progn
                   (delete-region (overlay-start ov-content) (overlay-end ov-content))
                   (goto-char (overlay-start ov-content))
                   (eca-chat--insert delta)
-                  (when block-face
-                    (eca-chat--apply-face-to-line-prefixes
-                     (overlay-start ov-content) (overlay-end ov-content) block-face)
-                    (eca-chat--overlay-buttons
-                     (overlay-start ov-content) (overlay-end ov-content))))))))
+                  (eca-chat--expandable-paint-content
+                   ov-label (overlay-start ov-content) (overlay-end ov-content)))))))
         ;; When nested, sync the updated label back to parent's child spec
         ;; so that toggling the parent closed and reopened preserves it.
         ;; The spec shares this block's content text, so it is in sync.
@@ -958,15 +1287,15 @@ If FORCE? decide to CLOSE? or not."
                                       (eca-chat--expandable-closing-line ov-content))
                     (dolist (child-spec children)
                       (eca-chat--render-nested-block ov-label child-spec))))
-                (let ((block-face (eca-chat--expandable-block-face
-                                  (overlay-get ov-content 'eca-chat--expandable-block-nested))))
-                  (overlay-put ov-content 'face block-face)
-                  (eca-chat--apply-face-to-line-prefixes
-                   (overlay-start ov-content) (overlay-end ov-content) block-face)
-                  (eca-chat--overlay-buttons (overlay-start ov-content) (overlay-end ov-content)))
+                (overlay-put ov-content 'face
+                             (eca-chat--expandable-block-face
+                              (overlay-get ov-content 'eca-chat--expandable-block-nested)
+                              (overlay-get ov-label 'eca-chat--expandable-content-bar-face)))
+                (eca-chat--expandable-paint-content
+                 ov-label (overlay-start ov-content) (overlay-end ov-content))
                 (overlay-put ov-label 'eca-chat--expandable-content-toggle t)))
-            ;; Repaint nested label's line-prefix after icon swap
-            (eca-chat--paint-nested-label ov-label)))
+            ;; Repaint the backgrounds of the label after the icon swap
+            (eca-chat--expandable-paint-label ov-label)))
         ;; Toggling open inserts block content into the read-only history
         ;; region, so re-protect the block, which may belong to an
         ;; earlier turn outside the streamed scope.  Only the block

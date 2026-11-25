@@ -634,13 +634,25 @@ like forks, following `eca-chat-history-page-size'."
   "Face for the chat title."
   :group 'eca)
 
+(defcustom eca-chat-user-message-tint 10
+  "Percentage of the color of their bar in the background of user messages.
+User messages, their header included, get a background tinted with
+the color of `eca-chat-user-message-bar-face', which sets them apart
+from the answers.  0 leaves them on the default background.  Takes
+effect in new chats."
+  :type 'number
+  :group 'eca)
+
+(add-to-list 'eca-chat--expandable-tint-percents
+             '(eca-chat-user-message-bar-face . eca-chat-user-message-tint))
+
 (defface eca-chat-user-messages-face
   '((t nil))
   "Face for the user sent messages in chat.
-Plain by default: the header line above each message and the bar of
-`eca-chat-user-message-bar-face' along it already tell the turns
-apart.  It is painted over the whole message, markdown spans
-included."
+Plain by default: the header line above each message, the bar of
+`eca-chat-user-message-bar-face' along it and the background it tints,
+see `eca-chat-user-message-tint', already tell the turns apart.  It is
+painted over the whole message, markdown spans included."
   :group 'eca)
 
 (defface eca-chat-user-message-bar-face
@@ -1250,6 +1262,9 @@ and resume link are not left behind under the replayed messages.")
     (define-key map (kbd "C-c <up>") #'eca-chat-go-to-prev-expandable-block)
     (define-key map (kbd "C-c <down>") #'eca-chat-go-to-next-expandable-block)
     (define-key map (kbd "C-c <tab>") #'eca-chat-toggle-expandable-block)
+    ;; The chevrons of top-level blocks, see
+    ;; `eca-chat-expandable-block-chevrons'.
+    (define-key map [left-margin mouse-1] #'eca-chat-expandable-toggle-at-margin)
     ;; Emacs 30 bound these in `tab-line-mode-map', but Emacs 31 only
     ;; binds them globally under `global-tab-line-mode', so the
     ;; buffer-local chat tab-line lost them.  Bind them explicitly.
@@ -5121,6 +5136,17 @@ CHILD, NAME, DOCSTRING and BODY are passed down."
   ;; visual-line-mode wraps all lines including tables, breaking their layout.
   (setq-local word-wrap t)
   (setq-local truncate-lines nil)
+  ;; Top-level blocks show their chevron in the left margin, like
+  ;; `outline-minor-mode' shows its buttons in margins.  The fringe
+  ;; goes between the margin and the text, also where it goes outside
+  ;; otherwise, as wide as the gap keeping the chevrons apart from the
+  ;; bars.
+  (when (and eca-chat-expandable-block-chevrons
+             (not eca-chat-expandable-block-arrows))
+    (setq-local left-margin-width eca-chat--expandable-chevron-margin-width)
+    (setq-local fringes-outside-margins nil)
+    (setq-local left-fringe-width
+                (eca-chat--expandable-chevron-fringe-width (frame-char-width))))
   ;; Scroll just enough to keep point visible instead of recentering,
   ;; otherwise the window jumps up and down while streamed chunks push
   ;; the prompt around (#268).  Users customizing `scroll-conservatively'
@@ -5586,7 +5612,7 @@ Append STATUS symbol.  Optional PARENT-ID for nested rendering."
                'line-prefix (eca-chat--expandable-label-prefix
                              existing-ov has-content? open?))
               'help-echo "mouse-1 / RET / tab: expand/collapse"))
-            (eca-chat--paint-nested-label existing-ov)))
+            (eca-chat--expandable-paint-label existing-ov)))
       ;; No children yet — safe to replace the full content body
       (eca-chat--update-expandable-content
        id
@@ -5635,7 +5661,8 @@ Rebuilds the steps-info string with current usage and updates the overlay."
            new-label
            'line-prefix (eca-chat--expandable-label-prefix
                          ov-label has-content? open?))
-          'help-echo "mouse-1 / RET / tab: expand/collapse"))))))
+          'help-echo "mouse-1 / RET / tab: expand/collapse")))
+      (eca-chat--expandable-paint-label ov-label))))
 
 (defun eca-chat--mark-tool-call-approval-resolved (id)
   "Mark tool call ID's block as past the approval stage."
@@ -5696,7 +5723,8 @@ Only updates the label line, preserving all nested child content."
            new-label
            'line-prefix (eca-chat--expandable-label-prefix
                          ov-label has-content? open?))
-          'help-echo "mouse-1 / RET / tab: expand/collapse"))))))
+          'help-echo "mouse-1 / RET / tab: expand/collapse")))
+      (eca-chat--expandable-paint-label ov-label))))
 
 (defun eca-chat--task-tool-call-p (content)
   "Return non-nil if CONTENT represents an eca__task tool call."
@@ -5923,23 +5951,31 @@ starts the block, so a rollback to the message removes it too."
 (defun eca-chat--paint-user-message (ov-label)
   "Paint the user message of OV-LABEL and its header.
 A bar of `eca-chat-user-message-bar-face' runs along their lines,
-wrapped ones too.  `eca-chat-user-messages-face' covers the message
-text: markdown fontification sets `face' on spans of it (bold, inline
-code), hiding the label's `font-lock-face' there, while an overlay
-face merges over both.  The trailing newline is included so `:extend'
-reaches the window edge on the last line too.  Text inserted at their
-start (an older history page) stays outside of them."
+wrapped ones too, on a background tinted with its color, see
+`eca-chat-user-message-tint'.  `eca-chat-user-messages-face' covers
+the message text: markdown fontification sets `face' on spans of it
+\(bold, inline code), hiding the label's `font-lock-face' there, while
+an overlay face merges over both.  The trailing newline is included so
+`:extend' reaches the window edge on the last line too.  Text inserted
+at their start (an older history page) stays outside of them."
   (when-let* ((ov-content (overlay-get ov-label 'eca-chat--expandable-content-ov-content))
               (start (overlay-start ov-label))
               (end (overlay-start ov-content)))
-    (let ((bar (make-overlay start end (current-buffer) t nil))
-          (prefix (eca-chat--expandable-bar 'eca-chat-user-message-bar-face))
-          (face (make-overlay (eca-chat--user-message-text-start start) end
-                              (current-buffer) t nil)))
+    (let* ((tint (eca-chat--expandable-tint-face 'eca-chat-user-message-bar-face))
+           (bar (make-overlay start end (current-buffer) t nil))
+           (prefix (eca-chat--expandable-bar 'eca-chat-user-message-bar-face))
+           (background (make-overlay start end (current-buffer) t nil))
+           (face (make-overlay (eca-chat--user-message-text-start start) end
+                               (current-buffer) t nil)))
+      (add-face-text-property 0 (length prefix) tint t prefix)
       (overlay-put bar 'eca-chat--user-message-bar t)
       (overlay-put bar 'line-prefix prefix)
       (overlay-put bar 'wrap-prefix prefix)
       (overlay-put bar 'evaporate t)
+      (overlay-put background 'face tint)
+      (overlay-put background 'evaporate t)
+      ;; Its actions keep the background of their pill.
+      (eca-chat--overlay-buttons start end)
       (overlay-put face 'face 'eca-chat-user-messages-face)
       (overlay-put face 'evaporate t))))
 
