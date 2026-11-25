@@ -452,5 +452,355 @@ Like `eca-chat-mode' and `eca-chat-compose-mode' do."
               :to-equal "/ssh:host:/proj/a.png")
       (expect 'file-exists-p :not :to-have-been-called))))
 
+;;; Inline images sent by the assistant
+
+(defconst eca-chat-image-test--native-size '(1000 . 2000)
+  "Size in pixels of the fake image of inline image specs.")
+
+(defun eca-chat-image-test--fake-create-image (data type _data-p &rest props)
+  "Return the spec of an image of DATA and TYPE with PROPS.
+Like `create-image', which batch Emacs can't run."
+  `(image :type ,type :data ,data ,@props))
+
+(defun eca-chat-image-test--fake-image-size (spec &rest _)
+  "Return the size of the fake image of SPEC, as Emacs shows it.
+That is scaled down to fit its max width and height."
+  (let* ((w (float (car eca-chat-image-test--native-size)))
+         (h (float (cdr eca-chat-image-test--native-size)))
+         (max-w (plist-get (cdr spec) :max-width))
+         (max-h (plist-get (cdr spec) :max-height))
+         (scale (min 1.0
+                     (if max-w (/ max-w w) 1.0)
+                     (if max-h (/ max-h h) 1.0))))
+    (cons (round (* w scale)) (round (* h scale)))))
+
+(defmacro eca-chat-image-test--with-chat (&rest body)
+  "Run BODY in a new buffer laid out like a chat, then kill it."
+  (declare (indent 0) (debug t))
+  (let ((buf (make-symbol "buf")))
+    `(let ((,buf (eca-chat-image-test--make-chat-buffer)))
+       (unwind-protect (with-current-buffer ,buf ,@body)
+         (kill-buffer ,buf)))))
+
+(defun eca-chat-image-test--image-content (&optional media-type)
+  "Return the content of an image of MEDIA-TYPE sent by the assistant."
+  (list :type "image" :mediaType (or media-type "image/png")
+        :base64 (base64-encode-string "fake-png-bytes")))
+
+(defun eca-chat-image-test--render-image ()
+  "Render an image sent by the assistant, return its overlay."
+  (eca-chat--render-image-content (eca-chat-image-test--image-content) nil)
+  (eca-chat--last-image-overlay))
+
+(defun eca-chat-image-test--max-height (ov)
+  "Return the max height of the image shown by OV."
+  (image-property (overlay-get ov 'display) :max-height))
+
+(defun eca-chat-image-test--shown-height (ov)
+  "Return the height in pixels the image of OV shows at."
+  (cdr (image-size (overlay-get ov 'display) t)))
+
+(defun eca-chat-image-test--header (ov)
+  "Return the text of the header line above the image of OV."
+  (let ((bounds (eca-chat--image-header-bounds ov)))
+    (buffer-substring-no-properties (car bounds) (cdr bounds))))
+
+(defun eca-chat-image-test--goto-action (ov label)
+  "Move point to the LABEL action in the header of the image of OV."
+  (let ((bounds (eca-chat--image-header-bounds ov)))
+    (goto-char (car bounds))
+    (search-forward label (cdr bounds))
+    (goto-char (match-beginning 0))))
+
+(defun eca-chat-image-test--ret-on-image (ov)
+  "Press RET on the image of OV, run by the keymap of the image."
+  (goto-char (overlay-start ov))
+  (funcall (lookup-key (overlay-get ov 'keymap) (kbd "RET"))))
+
+(describe "inline images"
+  (before-each
+    (spy-on 'eca-session :and-return-value (make-eca--session))
+    (spy-on 'display-graphic-p :and-return-value t)
+    (spy-on 'display-images-p :and-return-value t)
+    (spy-on 'image-type-available-p :and-return-value t)
+    (spy-on 'create-image :and-call-fake #'eca-chat-image-test--fake-create-image)
+    (spy-on 'image-size :and-call-fake #'eca-chat-image-test--fake-image-size)
+    ;; 600 pixels wide at most: the fake image shows 600x1200 expanded.
+    (spy-on 'eca-chat--resolve-image-max-width :and-return-value 600)
+    (spy-on 'eca-info)
+    (spy-on 'eca-warn))
+
+  (describe "rendering"
+    (it "starts compact, under a header line of actions on it"
+      (eca-chat-image-test--with-chat
+        (let ((ov (eca-chat-image-test--render-image)))
+          (expect (eca-chat-image-test--max-height ov)
+                  :to-equal eca-chat-image-compact-height)
+          (expect (eca-chat-image-test--shown-height ov) :to-equal 300)
+          (expect (image-property (overlay-get ov 'display) :max-width)
+                  :to-equal 600)
+          (expect (buffer-substring-no-properties (overlay-start ov)
+                                                  (overlay-end ov))
+                  :to-equal " ")
+          (expect (eca-chat-image-test--header ov)
+                  :to-equal "Image · PNG · 14 B    −   +    expand    save ")
+          ;; The header is the line right above the image.
+          (goto-char (overlay-start ov))
+          (forward-line -1)
+          (expect (point) :to-equal (car (eca-chat--image-header-bounds ov)))
+          (expect (get-text-property (point) 'eca-no-fontify) :to-be t))))
+
+    (it "starts expanded with eca-chat-image-start-expanded"
+      (let ((eca-chat-image-start-expanded t))
+        (eca-chat-image-test--with-chat
+          (let ((ov (eca-chat-image-test--render-image)))
+            (expect (eca-chat-image-test--max-height ov) :to-be nil)
+            (expect (eca-chat-image-test--shown-height ov) :to-equal 1200)
+            (expect (eca-chat-image-test--header ov) :to-match "shrink")))))
+
+    (it "draws the actions as buttons telling what they do"
+      (eca-chat-image-test--with-chat
+        (let ((ov (eca-chat-image-test--render-image)))
+          (eca-chat-image-test--goto-action ov "save")
+          (expect (get-text-property (point) 'font-lock-face)
+                  :to-be (eca--button-face 'eca-chat-image-action-face))
+          (expect (get-text-property (point) 'help-echo)
+                  :to-equal "Save the image to a file")
+          (expect (get-text-property (point) 'mouse-face) :to-be 'highlight)
+          (expect (funcall (overlay-get ov 'help-echo) nil ov nil)
+                  :to-equal "RET or mouse-2: expand, +/-: zoom, s: save"))))
+
+    (it "caps both sizes with eca-chat-image-max-height"
+      (expect (eca-chat--image-max-height 300) :to-equal 300)
+      (expect (eca-chat--image-max-height nil) :to-be nil)
+      (let ((eca-chat-image-max-height 200))
+        (expect (eca-chat--image-max-height 300) :to-equal 200)
+        (expect (eca-chat--image-max-height 100) :to-equal 100)
+        (expect (eca-chat--image-max-height nil) :to-equal 200)))
+
+    (it "falls back to text in frames without images"
+      (spy-on 'display-graphic-p :and-return-value nil)
+      (eca-chat-image-test--with-chat
+        (eca-chat-image-test--render-image)
+        (expect (eca-chat--last-image-overlay) :to-be nil)
+        (expect (buffer-string) :to-match "\\[Image: image/png, 14 bytes\\]")
+        (expect (text-property-any (point-min) (point-max)
+                                   'eca-chat-image-header t)
+                :to-be nil)))
+
+    (it "falls back to text inside subagent blocks"
+      (spy-on 'eca-chat--update-expandable-content)
+      (eca-chat-image-test--with-chat
+        (eca-chat--render-image-content (eca-chat-image-test--image-content)
+                                        "tool-1")
+        (expect (eca-chat--last-image-overlay) :to-be nil)
+        (expect (car (spy-calls-args-for 'eca-chat--update-expandable-content 0))
+                :to-equal "tool-1")
+        (expect (nth 2 (spy-calls-args-for 'eca-chat--update-expandable-content 0))
+                :to-match "\\[Image: image/png, 14 bytes\\]")))
+
+    (it "goes away with its text, e.g. on a rollback"
+      (eca-chat-image-test--with-chat
+        (let* ((ov (eca-chat-image-test--render-image))
+               (start (car (eca-chat--image-header-bounds ov))))
+          (let ((inhibit-read-only t))
+            (delete-region start (overlay-end ov)))
+          (expect (overlay-buffer ov) :to-be nil)
+          (expect (eca-chat--last-image-overlay) :to-be nil)))))
+
+  (describe "expanding"
+    (it "expands and shrinks back with RET on the image"
+      (eca-chat-image-test--with-chat
+        (let ((ov (eca-chat-image-test--render-image)))
+          (eca-chat-image-test--ret-on-image ov)
+          (expect (eca-chat-image-test--max-height ov) :to-be nil)
+          (expect (eca-chat-image-test--shown-height ov) :to-equal 1200)
+          (expect (eca-chat-image-test--header ov) :to-match "shrink")
+          (expect (funcall (overlay-get ov 'help-echo) nil ov nil)
+                  :to-match "RET or mouse-2: shrink")
+          (eca-chat-image-test--ret-on-image ov)
+          (expect (eca-chat-image-test--max-height ov) :to-equal 300)
+          (expect (eca-chat-image-test--header ov) :to-match "expand")
+          ;; A middle click does the same.
+          (expect (lookup-key (overlay-get ov 'keymap) [mouse-2])
+                  :to-be (lookup-key (overlay-get ov 'keymap) (kbd "RET"))))))
+
+    (it "expands and shrinks back with its button, point staying on it"
+      (eca-chat-image-test--with-chat
+        (let ((ov (eca-chat-image-test--render-image)))
+          (eca-chat-image-test--goto-action ov "expand")
+          (let ((pos (point)))
+            (eca-chat--key-pressed-return)
+            (expect (eca-chat-image-test--max-height ov) :to-be nil)
+            (expect (point) :to-equal pos)
+            (expect (looking-at-p "shrink") :to-be-truthy)
+            (eca-chat--key-pressed-return)
+            (expect (eca-chat-image-test--max-height ov) :to-equal 300)
+            (expect (point) :to-equal pos)
+            (expect (looking-at-p "expand") :to-be-truthy)))))
+
+    (it "keeps the point after the button where it was"
+      (eca-chat-image-test--with-chat
+        (let ((ov (eca-chat-image-test--render-image)))
+          (eca-chat-image-test--goto-action ov "save")
+          (let ((pos (point)))
+            (eca-chat-image-toggle-size ov)
+            (expect (point) :to-equal pos)
+            (expect (looking-at-p "save") :to-be-truthy)))))
+
+    (it "keeps the header read-only when its button changes"
+      (eca-chat-image-test--with-chat
+        (let ((ov (eca-chat-image-test--render-image)))
+          (eca-chat--protect-non-prompt)
+          (eca-chat-image-toggle-size ov)
+          (eca-chat-image-test--goto-action ov "shrink")
+          (expect (get-text-property (point) 'read-only) :to-be t)
+          (expect (get-text-property (point) 'eca-chat-image-header) :to-be t)
+          (expect (insert "x") :to-throw 'text-read-only))))
+
+    (it "toggles with RET right after the image"
+      (eca-chat-image-test--with-chat
+        (let ((ov (eca-chat-image-test--render-image)))
+          (goto-char (overlay-end ov))
+          (eca-chat--key-pressed-return)
+          (expect (eca-chat-image-test--max-height ov) :to-be nil)))))
+
+  (describe "zooming"
+    (it "zooms in and out with the + and − buttons"
+      (eca-chat-image-test--with-chat
+        (let ((ov (eca-chat-image-test--render-image)))
+          (eca-chat-image-test--goto-action ov "+")
+          (eca-chat--key-pressed-return)
+          (expect (eca-chat-image-test--max-height ov) :to-equal 360)
+          (expect 'eca-info :to-have-been-called-with "Image zoom: %d%%" 30)
+          (expect (eca-chat-image-test--header ov) :to-match "expand")
+          (eca-chat-image-test--goto-action ov "−")
+          (eca-chat--key-pressed-return)
+          (expect (eca-chat-image-test--max-height ov) :to-equal 300)
+          (expect 'eca-info :to-have-been-called-with "Image zoom: %d%%" 25))))
+
+    (it "expands an image zoomed in up to its full size"
+      (let ((eca-chat-image-scale-step 2))
+        (eca-chat-image-test--with-chat
+          (let ((ov (eca-chat-image-test--render-image)))
+            (eca-chat-image-zoom-in ov)
+            (expect (eca-chat-image-test--max-height ov) :to-equal 600)
+            (eca-chat-image-zoom-in ov)
+            (expect (eca-chat-image-test--max-height ov) :to-be nil)
+            (expect (eca-chat-image-test--header ov) :to-match "shrink")
+            (expect 'eca-info :to-have-been-called-with "Image zoom: %d%%" 100)
+            (eca-chat-image-zoom-in ov)
+            (expect 'eca-info :to-have-been-called-with
+                    "Image already at its full size")))))
+
+    (it "zooms out an expanded image from its full size"
+      (eca-chat-image-test--with-chat
+        (let ((ov (eca-chat-image-test--render-image)))
+          (eca-chat-image-toggle-size ov)
+          (eca-chat-image-zoom-out ov)
+          (expect (eca-chat-image-test--max-height ov) :to-equal 1000)
+          (expect (eca-chat-image-test--header ov) :to-match "expand"))))
+
+    (it "stops shrinking an image at a floor"
+      (let ((eca-chat-image-scale-step 2))
+        (eca-chat-image-test--with-chat
+          (let ((ov (eca-chat-image-test--render-image)))
+            (dotimes (_ 3) (eca-chat-image-zoom-out ov))
+            (expect (eca-chat-image-test--max-height ov)
+                    :to-equal eca-chat--image-min-height)
+            (eca-chat-image-zoom-out ov)
+            (expect (eca-chat-image-test--max-height ov)
+                    :to-equal eca-chat--image-min-height)
+            (expect 'eca-info :to-have-been-called-with
+                    "Image already at its smallest size")))))
+
+    (it "resets the size of an image to the one it started at"
+      (eca-chat-image-test--with-chat
+        (let ((ov (eca-chat-image-test--render-image)))
+          (eca-chat-image-zoom-in ov)
+          (eca-chat-image-zoom-reset ov)
+          (expect (eca-chat-image-test--max-height ov) :to-equal 300)
+          (let ((eca-chat-image-start-expanded t))
+            (eca-chat-image-zoom-reset ov))
+          (expect (eca-chat-image-test--max-height ov) :to-be nil))))
+
+    (it "zooms the image at point with its keys"
+      (eca-chat-image-test--with-chat
+        (let* ((ov (eca-chat-image-test--render-image))
+               (map (overlay-get ov 'keymap)))
+          (goto-char (overlay-start ov))
+          (funcall (lookup-key map "+"))
+          (expect (eca-chat-image-test--max-height ov) :to-equal 360)
+          (funcall (lookup-key map "-"))
+          (expect (eca-chat-image-test--max-height ov) :to-equal 300)
+          (expect (lookup-key map "=") :to-be #'eca-chat-image-zoom-in)
+          (expect (lookup-key map "0") :to-be #'eca-chat-image-zoom-reset)
+          (expect (lookup-key map "s") :to-be #'eca-chat-save-image-at-point)))))
+
+  (describe "commands"
+    (it "act on the image at point, below its header line or else the last"
+      (eca-chat-image-test--with-chat
+        (let ((first (eca-chat-image-test--render-image))
+              (second (eca-chat-image-test--render-image)))
+          (goto-char (overlay-start first))
+          (eca-chat-image-toggle-size)
+          (expect (eca-chat-image-test--max-height first) :to-be nil)
+          (expect (eca-chat-image-test--max-height second) :to-equal 300)
+          ;; The header line of an image, off its buttons.
+          (goto-char (car (eca-chat--image-header-bounds second)))
+          (eca-chat-image-zoom-in)
+          (expect (eca-chat-image-test--max-height second) :to-equal 360)
+          ;; The prompt: the last image of the chat.
+          (goto-char (point-max))
+          (eca-chat-image-zoom-reset)
+          (expect (eca-chat-image-test--max-height second) :to-equal 300)
+          (expect (eca-chat-image-test--max-height first) :to-be nil))))
+
+    (it "warn when the chat has no image"
+      (eca-chat-image-test--with-chat
+        (eca-chat-image-toggle-size)
+        (eca-chat-image-zoom-in)
+        (expect 'eca-warn :to-have-been-called-with
+                "No image at point or in this chat")
+        (expect 'eca-info :not :to-have-been-called)))
+
+    (it "are bound under C-c C-z in chats"
+      (expect (lookup-key eca-chat-mode-map (kbd "C-c C-z t"))
+              :to-be #'eca-chat-image-toggle-size)
+      (expect (lookup-key eca-chat-mode-map (kbd "C-c C-z +"))
+              :to-be #'eca-chat-image-zoom-in)
+      (expect (lookup-key eca-chat-mode-map (kbd "C-c C-z -"))
+              :to-be #'eca-chat-image-zoom-out)
+      (expect (lookup-key eca-chat-mode-map (kbd "C-c C-z 0"))
+              :to-be #'eca-chat-image-zoom-reset)
+      (expect (lookup-key eca-chat-mode-map (kbd "C-c C-z s"))
+              :to-be #'eca-chat-save-image-at-point))
+
+    (it "save the image of the save button"
+      (spy-on 'eca-chat-save-image-at-point)
+      (eca-chat-image-test--with-chat
+        (let ((ov (eca-chat-image-test--render-image)))
+          (eca-chat-image-test--render-image)
+          (eca-chat-image-test--goto-action ov "save")
+          (eca-chat--key-pressed-return)
+          (expect 'eca-chat-save-image-at-point :to-have-been-called-with ov))))))
+
+(describe "eca-chat--resolve-image-max-width"
+  (it "returns the configured width, unscaled"
+    (let ((eca-chat-image-max-width 640))
+      (expect (eca-chat--resolve-image-max-width) :to-equal 640))
+    (let ((eca-chat-image-max-width nil))
+      (expect (eca-chat--resolve-image-max-width) :to-be nil)))
+
+  (it "fits the frame of hidden chats, up to eca-chat-image-window-fit-cap"
+    (let ((eca-chat-image-max-width 'fit-window)
+          (eca-chat-image-window-fit-cap 800))
+      ;; Not shown in any window.
+      (with-temp-buffer
+        (spy-on 'frame-pixel-width :and-return-value 1500)
+        (expect (eca-chat--resolve-image-max-width) :to-equal 800)
+        (spy-on 'frame-pixel-width :and-return-value 500)
+        (expect (eca-chat--resolve-image-max-width) :to-equal 500)))))
+
 (provide 'eca-chat-image-test)
 ;;; eca-chat-image-test.el ends here

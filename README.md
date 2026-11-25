@@ -204,6 +204,8 @@ Chat
 - `eca-chat-tool-call-prepare-update-interval`: When using `smart` throttle, process every Nth `toolCallPrepare` update.
 - `eca-chat-tool-call-approval-content-size`: Face height used for tool call approval UI text.
 - `eca-chat-save-chat-initial-path`: Default initial path to save chats.
+- `eca-chat-image-compact-height`: Max height in pixels of the images the assistant sends, like generated ones, until they're expanded (default `300`). A header line above each image holds its actions: `−`/`+` zoom it, `expand`/`shrink` switch it between compact and the width of the chat (`eca-chat-image-max-width`), as `RET` or a middle click on the image do, and `save` saves it.
+- `eca-chat-image-start-expanded`: Whether the images the assistant sends start expanded instead of compact (default `nil`).
 - `eca-chat-image-show-thumbnails`: Whether image mentions show inline as thumbnails right away (default `t`). When `nil` they show as text until `RET` toggles their thumbnail.
 - `eca-chat-image-thumbnail-size`: Max width and height in pixels of image mention thumbnails (default `200`).
 
@@ -283,6 +285,10 @@ You can access the transient menu with common commands via `M-x eca-transient-me
 | Chat: go to prev user message                 | <kbd>C-c</kbd> <kbd>C-↑</kbd>      |
 | Chat: go to next user message                 | <kbd>C-c</kbd> <kbd>C-↓</kbd>      |
 | Chat: toggle expandable content at point      | <kbd>C-c</kbd> <kbd>Tab</kbd>      |
+| Chat: expand/shrink image at point (or last)  | <kbd>C-c</kbd> <kbd>C-z</kbd> <kbd>t</kbd> |
+| Chat: zoom in/out image at point (or last)    | <kbd>C-c</kbd> <kbd>C-z</kbd> <kbd>+</kbd> / <kbd>-</kbd> |
+| Chat: reset image size at point (or last)     | <kbd>C-c</kbd> <kbd>C-z</kbd> <kbd>0</kbd> |
+| Chat: save image at point (or last)           | <kbd>C-c</kbd> <kbd>C-z</kbd> <kbd>s</kbd> |
 | Chat: open transient menu                     | <kbd>C-c</kbd> <kbd>.</kbd>        |
 | Chat: go to settings                          | <kbd>C-c</kbd> <kbd>C-,</kbd>      |
 | Settings: go to chat                          | <kbd>C-c</kbd> <kbd>C-,</kbd>      |

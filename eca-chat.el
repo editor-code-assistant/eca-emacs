@@ -1257,12 +1257,13 @@ and resume link are not left behind under the replayed messages.")
     (define-key map (kbd "C-x <right>") #'eca-chat-next-tab)
     (define-key map (kbd "C-x C-<left>") #'eca-chat-previous-tab)
     (define-key map (kbd "C-x C-<right>") #'eca-chat-next-tab)
-    ;; Per-chat inline image zoom (browser-style).  Uses `C-c C-z' as
-    ;; the prefix because `C-c <letter>' sequences are reserved for
-    ;; users by the Emacs key binding conventions; `C-c' followed by
-    ;; a control character is reserved for major modes.  `=' is a
-    ;; no-Shift alias for `+' so users on US layouts don't need to
-    ;; press Shift.
+    ;; Inline image size, of the image at point or else the last one
+    ;; of the chat.  Uses `C-c C-z' as the prefix because `C-c
+    ;; <letter>' sequences are reserved for users by the Emacs key
+    ;; binding conventions; `C-c' followed by a control character is
+    ;; reserved for major modes.  `=' is a no-Shift alias for `+' so
+    ;; users on US layouts don't need to press Shift.
+    (define-key map (kbd "C-c C-z t") #'eca-chat-image-toggle-size)
     (define-key map (kbd "C-c C-z +") #'eca-chat-image-zoom-in)
     (define-key map (kbd "C-c C-z =") #'eca-chat-image-zoom-in)
     (define-key map (kbd "C-c C-z -") #'eca-chat-image-zoom-out)
@@ -3313,6 +3314,12 @@ characters as part of the URL."
       ;; here since font-lock strips `keymap' text properties
       ((when-let* ((link (eca-chat--image-link-at (point))))
          (eca-chat--toggle-image-thumbnail link)
+         t))
+
+      ;; expand or shrink the inline image point is right after; on
+      ;; the image itself, the keymap of its overlay handles RET
+      ((when-let* ((ov (eca-chat--image-overlay-near (point))))
+         (eca-chat-image-toggle-size ov)
          t))
 
       ;; check it's an actionable text: point on a button, its padding
