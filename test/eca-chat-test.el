@@ -6191,8 +6191,10 @@ PROPS override the ones of `eca-chat-test--tool-call-content'."
                           eca-chat-reason-label-face))
       (let ((spec (get 'eca-chat--expandable-bar-fill-face 'face-defface-spec)))
         (expect (face-spec-choose spec) :to-be nil)
-        (cl-letf (((symbol-function 'window-system) (lambda (&optional _frame) 'x)))
-          (expect (face-spec-choose spec) :to-equal '(:inverse-video t))))
+        ;; Read from the spec: making `face-spec-choose' see a graphic
+        ;; frame means redefining `window-system', which code compiled
+        ;; natively, as on Windows builds, calls without the redefinition.
+        (expect (cdr (assoc '((type graphic)) spec)) :to-equal '(:inverse-video t)))
       ;; The bar of a block without face is filled in the text color.
       (expect (get-text-property 0 'face (eca-chat--expandable-bar nil))
               :to-equal '(eca-chat--expandable-bar-fill-face))))
