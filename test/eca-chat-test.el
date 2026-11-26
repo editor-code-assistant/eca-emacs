@@ -4364,6 +4364,162 @@ precedes the prompt separator.  Caller must kill the buffer."
 (defconst eca-chat-test--header-re "You[^\n]*\n"
   "Regexp matching the header line of a user message.")
 
+(defconst eca-chat-test--turn-usage
+  (list :type "turnUsage" :model "anthropic/claude-sonnet-4-5" :totalTimeMs 9800
+        :outputTokens 412 :inputTokens 45200 :cost "0.03")
+  "A `turnUsage' content, as the server ends a turn with.")
+
+(defconst eca-chat-test--turn-usage-re
+  (regexp-quote "claude-sonnet-4-5 · 9.8s · 412 output tokens · $0.03")
+  "Regexp matching the line of `eca-chat-test--turn-usage'.")
+
+(defun eca-chat-test--turn-usage-text (content)
+  "Return the text of the turn usage line of CONTENT, or nil."
+  (-some-> (eca-chat--turn-usage-line content) (substring-no-properties)))
+
+(defun eca-chat-test--render-turn (buf answer &optional finish?)
+  "Render into BUF the ANSWER of a turn, then its `turnUsage' content.
+When FINISH? is non-nil, then its `finished' progress, as live."
+  (let ((session (make-eca--session)))
+    (eca-chat--with-current-buffer buf
+      (eca-chat-test--render-assistant-text session buf answer)
+      (eca-chat--render-content session buf "system" eca-chat-test--turn-usage nil)
+      (when finish?
+        (setq-local eca-chat--chat-loading t)
+        (spy-on 'eca-chat--font-lock-ensure)
+        (spy-on 'eca-chat--align-tables)
+        (spy-on 'eca-chat--beautify-tables)
+        (spy-on 'eca-chat--refresh-progress)
+        (spy-on 'eca-chat--set-chat-loading)
+        (spy-on 'eca-chat--send-steered-prompt)
+        (spy-on 'eca-chat--send-queued-prompt)
+        (eca-chat--render-content
+         session buf "system" (list :type "progress" :state "finished") nil)))))
+
+(describe "eca-chat--turn-usage-line"
+  (it "tells the model, the time, the output tokens and the cost"
+    (expect (eca-chat-test--turn-usage-text eca-chat-test--turn-usage)
+            :to-equal "claude-sonnet-4-5 · 9.8s · 412 output tokens · $0.03"))
+
+  (it "tells long turns in minutes and many tokens in thousands"
+    (expect (eca-chat-test--turn-usage-text
+             (list :model "openrouter/anthropic/claude-opus-4-5" :totalTimeMs 72400
+                   :outputTokens 2400 :cost "1.20"))
+            :to-equal "claude-opus-4-5 · 1m 12s · 2.4K output tokens · $1.20")
+    (expect (eca-chat-test--turn-usage-text (list :totalTimeMs 59960))
+            :to-equal "1m"))
+
+  (it "leaves out what the turn has no value for, like a subscription's cost"
+    (expect (eca-chat-test--turn-usage-text
+             (list :model "openai/gpt-5.2" :totalTimeMs 400 :outputTokens 1))
+            :to-equal "gpt-5.2 · 0.4s · 1 output token"))
+
+  (it "tells the segments of eca-chat-turn-usage-format, nothing without any"
+    (let ((eca-chat-turn-usage-format '(:input-tokens :time)))
+      (expect (eca-chat-test--turn-usage-text eca-chat-test--turn-usage)
+              :to-equal "45.2K input tokens · 9.8s"))
+    (let ((eca-chat-turn-usage-format nil))
+      (expect (eca-chat--turn-usage-line eca-chat-test--turn-usage) :to-be nil))
+    (let ((eca-chat-turn-usage-format '(:cost)))
+      (expect (eca-chat--turn-usage-line (list :model "openai/gpt-5.2")) :to-be nil)))
+
+  (it "is grey, not fontified as markdown, and tells it all on hover"
+    (let* ((line (eca-chat--turn-usage-line eca-chat-test--turn-usage))
+           (help (get-text-property 0 'help-echo line)))
+      (expect (get-text-property 0 'font-lock-face line) :to-be 'eca-chat-turn-usage-face)
+      (expect (get-text-property 0 'eca-no-fontify line) :to-be t)
+      (expect help :to-match "^Model: anthropic/claude-sonnet-4-5$")
+      (expect help :to-match "^Time: 9\\.8s")
+      (expect help :to-match "^Output tokens: 412, ")
+      (expect help :to-match "^Input tokens: 45200, ")
+      (expect help :to-match "^Cost: \\$0\\.03$"))))
+
+(describe "eca-chat--render-content turn usage"
+  (it "goes under the answer, on the line after it"
+    (let ((buf (eca-chat-test--make-live-render-buffer ""))
+          (eca-chat-stream-flush-interval nil))
+      (unwind-protect
+          (progn
+            (eca-chat-test--render-turn buf "Done.\n" t)
+            (expect (eca-chat-test--history-text buf)
+                    :to-match (concat "\\`Done\\.\n" eca-chat-test--turn-usage-re "\n")))
+        (kill-buffer buf))))
+
+  (it "starts on a line of its own under an answer not ending one"
+    (let ((buf (eca-chat-test--make-live-render-buffer ""))
+          (eca-chat-stream-flush-interval nil))
+      (unwind-protect
+          (progn
+            (eca-chat-test--render-turn buf "Done." t)
+            (expect (eca-chat-test--history-text buf)
+                    :to-match (concat "\\`Done\\.\n" eca-chat-test--turn-usage-re "\n")))
+        (kill-buffer buf))))
+
+  (it "goes after the answer still streaming"
+    (let ((buf (eca-chat-test--make-live-render-buffer ""))
+          (eca-chat-stream-flush-interval 60))
+      (unwind-protect
+          (progn
+            (eca-chat-test--render-turn buf "Done.\n")
+            (expect (eca-chat-test--history-text buf)
+                    :to-match (concat "\\`Done\\.\n" eca-chat-test--turn-usage-re "\n")))
+        (when (buffer-live-p buf)
+          (eca-chat-test--stream-flush buf)
+          (kill-buffer buf)))))
+
+  (it "goes under the answers of a chat opened again"
+    ;; Replayed, a turn has no `finished' progress: the empty line
+    ;; before the next message separates it.
+    (let ((buf (eca-chat-test--make-live-render-buffer ""))
+          (eca-chat-stream-flush-interval nil))
+      (unwind-protect
+          (progn
+            (eca-chat-test--render-user-message buf "question" "u1")
+            (eca-chat-test--render-turn buf "Answer.")
+            (eca-chat--with-current-buffer buf
+              (eca-chat--render-content (make-eca--session) buf "user"
+                                        (list :type "text" :text "next question" :contentId "u2")
+                                        nil))
+            (expect (eca-chat-test--history-text buf)
+                    :to-match (concat "Answer\\.\n" eca-chat-test--turn-usage-re "\n\n"
+                                      eca-chat-test--header-re "next question\n")))
+        (kill-buffer buf))))
+
+  (it "keeps the copy of the answer to the answer"
+    (let ((buf (eca-chat-test--make-live-render-buffer ""))
+          (eca-chat-stream-flush-interval nil)
+          kill-ring
+          kill-ring-yank-pointer)
+      (unwind-protect
+          (progn
+            (eca-chat-test--render-turn buf "Done.\n" t)
+            (with-current-buffer buf
+              (goto-char (point-min))
+              (search-forward "Done")
+              (eca-chat-copy-at-point)
+              (expect (current-kill 0 t) :to-equal "Done.")))
+        (kill-buffer buf))))
+
+  (it "is not drawn for the turns of subagents"
+    (let ((buf (eca-chat-test--make-live-render-buffer "")))
+      (unwind-protect
+          (eca-chat--with-current-buffer buf
+            (let ((before (eca-chat-test--history-text buf)))
+              (eca-chat--render-content (make-eca--session) buf "system"
+                                        eca-chat-test--turn-usage nil "sa1")
+              (expect (eca-chat-test--history-text buf) :to-equal before)))
+        (kill-buffer buf))))
+
+  (it "is not drawn when eca-chat-turn-usage-format is nil"
+    (let ((buf (eca-chat-test--make-live-render-buffer ""))
+          (eca-chat-stream-flush-interval nil)
+          (eca-chat-turn-usage-format nil))
+      (unwind-protect
+          (progn
+            (eca-chat-test--render-turn buf "Done.\n")
+            (expect (eca-chat-test--history-text buf) :to-equal "Done.\n\n"))
+        (kill-buffer buf)))))
+
 (describe "eca-chat--render-content user message layout (issue #265)"
   (it "leaves an empty line between the previous answer and the message"
     (let ((buf (eca-chat-test--make-live-render-buffer "Final answer.")))

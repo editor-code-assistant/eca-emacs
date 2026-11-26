@@ -310,6 +310,22 @@ mode-line."
   :type 'string
   :group 'eca)
 
+(defcustom eca-chat-turn-usage-format '(:model :time :output-tokens :cost)
+  "What the line under the answer of each turn tells about the turn.
+Its segments, in order, joined by \" · \", like
+\"claude-sonnet-4-5 · 9.8s · 412 output tokens · $0.03\".  The
+segments without a value are left out, like the cost with a
+subscription login.  Nil hides the line.  The server tells what a
+turn used when it ends, and again when a chat is opened again."
+  :type '(repeat
+          (choice
+           (const :tag "The model, e.g. claude-sonnet-4-5" :model)
+           (const :tag "How long the turn took" :time)
+           (const :tag "Tokens the model generated" :output-tokens)
+           (const :tag "Tokens sent to the model, cache included" :input-tokens)
+           (const :tag "The cost of the turn, when known" :cost)))
+  :group 'eca)
+
 (defcustom eca-chat-mode-line-format
   '(:workspace-folders :add-workspace-button :remove-workspace-button :spacer :init-progress "  " :bg-jobs " " :elapsed-time :tps "   " :context-bar :usage " " :trust)
   "Format for the ECA chat mode line.
@@ -992,6 +1008,12 @@ Its foreground is also used as the marker color in graphical frames."
 (defface eca-chat-tps-face
   '((t :inherit eca-chat-elapsed-time-face))
   "Face for the output tokens per second in mode-line of the chat."
+  :group 'eca)
+
+(defface eca-chat-turn-usage-face
+  '((t :inherit font-lock-comment-face :slant normal :weight normal :height 0.9))
+  "Face for the line under each answer telling what its turn used.
+See `eca-chat-turn-usage-format'."
   :group 'eca)
 
 (defface eca-chat-command-description-face
@@ -3682,6 +3704,81 @@ last model response is unknown."
                                 "excluding tool runs and approval waits.")
                         eca-chat--message-output-tps))))
 
+(defun eca-chat--model-short-name (model)
+  "Return MODEL, a full model id, without its provider.
+Like claude-sonnet-4-5 for anthropic/claude-sonnet-4-5."
+  (car (last (split-string model "/"))))
+
+(defun eca-chat--turn-time-str (ms)
+  "Return MS, how long a turn took in milliseconds, as a short string.
+In tenths of seconds under a minute, like 9.8s, else like 1m 12s."
+  (if (< ms 59950)
+      (format "%.1fs" (/ ms 1000.0))
+    (eca-chat--format-duration (round ms 1000))))
+
+(defun eca-chat--turn-tokens-str (tokens kind)
+  "Return TOKENS tokens of KIND, like 412 output tokens or 2.4K."
+  (format "%s %s token%s"
+          (eca-chat--number->friendly-number tokens) kind
+          (if (= tokens 1) "" "s")))
+
+(defun eca-chat--turn-usage-segment (segment content)
+  "Return SEGMENT of `eca-chat-turn-usage-format' for CONTENT, or nil.
+CONTENT is a `turnUsage' content, which may lack the value."
+  (pcase segment
+    (:model (-some-> (plist-get content :model) (eca-chat--model-short-name)))
+    (:time (-some-> (plist-get content :totalTimeMs) (eca-chat--turn-time-str)))
+    (:output-tokens (-some-> (plist-get content :outputTokens)
+                      (eca-chat--turn-tokens-str "output")))
+    (:input-tokens (-some-> (plist-get content :inputTokens)
+                     (eca-chat--turn-tokens-str "input")))
+    (:cost (-some->> (plist-get content :cost) (concat "$")))))
+
+(defun eca-chat--turn-usage-help (content)
+  "Return the help of the line telling what the turn of CONTENT used.
+CONTENT is a `turnUsage' content, the help tells it all."
+  (-let (((&plist :model model :totalTimeMs ms :outputTokens output
+                  :inputTokens input :cost cost)
+          content))
+    (string-join
+     (delq nil
+           (list (when model (concat "Model: " model))
+                 (when ms (format "Time: %s, from the prompt to the end of the turn"
+                                  (eca-chat--turn-time-str ms)))
+                 (when output (format "Output tokens: %d, %s" output
+                                      "thinking, tool calls and subagents included"))
+                 (when input (format "Input tokens: %d, cache and subagents included"
+                                     input))
+                 (when cost (concat "Cost: $" cost))))
+     "\n")))
+
+(defun eca-chat--turn-usage-line (content)
+  "Return the line telling what the turn of CONTENT used, or nil.
+CONTENT is the `turnUsage' content ending the turn.  The line has
+the segments of `eca-chat-turn-usage-format' with a value, nil when
+none has."
+  (when-let* ((segments (delq nil (mapcar (lambda (segment)
+                                            (eca-chat--turn-usage-segment segment content))
+                                          eca-chat-turn-usage-format))))
+    (propertize (string-join segments " · ")
+                'font-lock-face 'eca-chat-turn-usage-face
+                'help-echo (eca-chat--turn-usage-help content)
+                'eca-chat-turn-usage content
+                ;; It shows as is, not as markdown.
+                'eca-no-fontify t)))
+
+(defun eca-chat--insert-turn-usage (content)
+  "Insert under the answer of a turn the line telling what it used.
+CONTENT is the `turnUsage' content ending the turn, live or when the
+chat is opened again, see `eca-chat--turn-usage-line'.  The copy scope
+of the answer ends before the line, see `eca-chat-copy-at-point'."
+  (when-let* ((line (eca-chat--turn-usage-line content)))
+    (eca-chat--refresh-copy-scopes)
+    (let ((bol? (save-excursion
+                  (goto-char (eca-chat--content-insertion-point))
+                  (bolp))))
+      (eca-chat--add-text-content (concat (unless bol? "\n") line "\n")))))
+
 (defun eca-chat--has-pending-approvals-p ()
   "Return non-nil if current buffer has any pending approval tool call.
 The buffer scan result is cached since mode-line, tab-line and
@@ -5786,7 +5883,8 @@ Only updates the label line, preserving all nested child content."
             "reasonStarted" "reasonText" "reasonFinished"
             "hookActionStarted" "hookActionFinished"
             "toolCallPrepare" "toolCallRun" "toolCallRunning"
-            "toolCalled" "toolCallRejected")))
+            "toolCalled" "toolCallRejected"
+            "turnUsage")))
 
 (defun eca-chat--mark-response-copy-break (type parent-tool-call-id)
   "Mark TYPE as a top-level break for response copy scope.
@@ -6636,6 +6734,9 @@ Must be called with `eca-chat--with-current-buffer' or equivalent."
            (setq-local eca-chat--session-auto-compact-percentage (plist-get content :autoCompactPercentage))
            (setq-local eca-chat--context-breakdown     (plist-get content :contextBreakdown)))
          (force-mode-line-update)))
+      ("turnUsage"
+       (unless parent-tool-call-id
+         (eca-chat--insert-turn-usage content)))
       (_ nil))
     (when approval-acted-on?
       (eca-chat--move-on-from-approval))
