@@ -4366,11 +4366,11 @@ precedes the prompt separator.  Caller must kill the buffer."
 
 (defconst eca-chat-test--turn-usage
   (list :type "turnUsage" :model "anthropic/claude-sonnet-4-5" :totalTimeMs 9800
-        :outputTokens 412 :inputTokens 45200 :cost "0.03")
+        :outputTokens 412 :outputTps 87 :inputTokens 45200 :cost "0.03")
   "A `turnUsage' content, as the server ends a turn with.")
 
 (defconst eca-chat-test--turn-usage-re
-  (regexp-quote "claude-sonnet-4-5 · 9.8s · 412 output tokens · $0.03")
+  (regexp-quote "claude-sonnet-4-5 · 9.8s · 412 output tokens · 87 tok/s · $0.03")
   "Regexp matching the line of `eca-chat-test--turn-usage'.")
 
 (defun eca-chat-test--turn-usage-text (content)
@@ -4397,9 +4397,9 @@ When FINISH? is non-nil, then its `finished' progress, as live."
          session buf "system" (list :type "progress" :state "finished") nil)))))
 
 (describe "eca-chat--turn-usage-line"
-  (it "tells the model, the time, the output tokens and the cost"
+  (it "tells the model, the time, the output tokens, their speed and the cost"
     (expect (eca-chat-test--turn-usage-text eca-chat-test--turn-usage)
-            :to-equal "claude-sonnet-4-5 · 9.8s · 412 output tokens · $0.03"))
+            :to-equal "claude-sonnet-4-5 · 9.8s · 412 output tokens · 87 tok/s · $0.03"))
 
   (it "tells long turns in minutes and many tokens in thousands"
     (expect (eca-chat-test--turn-usage-text
@@ -4410,6 +4410,7 @@ When FINISH? is non-nil, then its `finished' progress, as live."
             :to-equal "1m"))
 
   (it "leaves out what the turn has no value for, like a subscription's cost"
+    ;; nor the speed, which servers up to 0.175.0 don't tell
     (expect (eca-chat-test--turn-usage-text
              (list :model "openai/gpt-5.2" :totalTimeMs 400 :outputTokens 1))
             :to-equal "gpt-5.2 · 0.4s · 1 output token"))
@@ -4418,6 +4419,9 @@ When FINISH? is non-nil, then its `finished' progress, as live."
     (let ((eca-chat-turn-usage-format '(:input-tokens :time)))
       (expect (eca-chat-test--turn-usage-text eca-chat-test--turn-usage)
               :to-equal "45.2K input tokens · 9.8s"))
+    (let ((eca-chat-turn-usage-format '(:tps)))
+      (expect (eca-chat-test--turn-usage-text eca-chat-test--turn-usage)
+              :to-equal "87 tok/s"))
     (let ((eca-chat-turn-usage-format nil))
       (expect (eca-chat--turn-usage-line eca-chat-test--turn-usage) :to-be nil))
     (let ((eca-chat-turn-usage-format '(:cost)))
@@ -4431,6 +4435,7 @@ When FINISH? is non-nil, then its `finished' progress, as live."
       (expect help :to-match "^Model: anthropic/claude-sonnet-4-5$")
       (expect help :to-match "^Time: 9\\.8s")
       (expect help :to-match "^Output tokens: 412, ")
+      (expect help :to-match "^Output speed: 87 tokens/s, on average while the model generated")
       (expect help :to-match "^Input tokens: 45200, ")
       (expect help :to-match "^Cost: \\$0\\.03$"))))
 
@@ -8229,6 +8234,187 @@ CHOOSE receives the candidate list the command offers."
         (expect (substring-no-properties
                  (eca-chat--mode-line-string (make-eca--session)))
                 :not :to-match "tok/s")))))
+
+(defun eca-chat-test--mode-line-text ()
+  "Return the text of the default mode line of the current chat buffer."
+  (let ((eca-chat-mode-line-format
+         (eca-chat-test--standard-value 'eca-chat-mode-line-format))
+        (eca-chat-tps-format
+         (eca-chat-test--standard-value 'eca-chat-tps-format)))
+    (substring-no-properties (eca-chat--mode-line-string (make-eca--session)))))
+
+(defun eca-chat-test--make-ended-turn-buffer ()
+  "Create a live chat buffer whose last turn took 42s, at 87 tok/s.
+Its mode line tells them, as before the server tells what the turn
+used.  Caller must kill the buffer."
+  (let ((buf (eca-chat-test--make-live-render-buffer "Done.")))
+    (with-current-buffer buf
+      (setq-local eca-chat--turn-duration-secs 42)
+      (setq-local eca-chat--message-output-tps 87)
+      (setq-local eca-chat--selected-trust nil))
+    buf))
+
+(defun eca-chat-test--register-chat (session buf)
+  "Register BUF in SESSION under its chat id."
+  (setf (eca--session-chats session)
+        (eca-assoc (eca--session-chats session)
+                   (buffer-local-value 'eca-chat--id buf) buf)))
+
+(defun eca-chat-test--cancel-loading-timers (buf)
+  "Cancel the timers `eca-chat--set-chat-loading' started in BUF."
+  (when (buffer-live-p buf)
+    (with-current-buffer buf
+      (dolist (timer (list eca-chat--modeline-timer
+                           eca-chat--stopping-safety-timer))
+        (when (timerp timer)
+          (cancel-timer timer))))))
+
+(describe "eca-chat mode line once a turn ended"
+  (it "leaves the time and speed of the turn to the line under its answer"
+    (let ((buf (eca-chat-test--make-ended-turn-buffer))
+          (eca-chat-stream-flush-interval nil))
+      (unwind-protect
+          (with-current-buffer buf
+            (expect (eca-chat-test--mode-line-text)
+                    :to-match (regexp-quote "⏱ 42s · 87 tok/s"))
+            (eca-chat--render-content (make-eca--session) buf "system"
+                                      eca-chat-test--turn-usage nil)
+            (expect (eca-chat-test--history-text buf)
+                    :to-match eca-chat-test--turn-usage-re)
+            (expect (eca-chat-test--mode-line-text) :not :to-match "⏱")
+            (expect (eca-chat-test--mode-line-text) :not :to-match "tok/s")
+            ;; Unlike the mode line, the workspaces dashboard and
+            ;; `eca-chat-select' don't show the line.
+            (expect (eca-chat-elapsed-str buf) :to-equal "42s"))
+        (kill-buffer buf))))
+
+  (it "does so in the order the server tells that a turn ended"
+    ;; `chat/statusChanged' idle, which finishes the turn, then what the
+    ;; turn used, then the `finished' progress.
+    (let ((buf (eca-chat-test--make-ended-turn-buffer))
+          (session (make-eca--session))
+          (eca-chat-stream-flush-interval nil))
+      (unwind-protect
+          (with-current-buffer buf
+            (eca-chat-test--register-chat session buf)
+            (setq-local eca-chat--chat-loading t)
+            (setq-local eca-chat--prompt-start-time (current-time))
+            (spy-on 'eca-chat--font-lock-ensure)
+            (spy-on 'eca-chat--align-tables)
+            (spy-on 'eca-chat--beautify-tables)
+            (eca-chat-status-changed session (list :chatId "chat-1" :status "idle"))
+            (eca-chat-content-received
+             session (list :chatId "chat-1" :role "system"
+                           :content eca-chat-test--turn-usage))
+            (eca-chat-content-received
+             session (list :chatId "chat-1" :role "system"
+                           :content (list :type "progress" :state "finished")))
+            (expect eca-chat--chat-loading :to-be nil)
+            (expect (eca-chat-test--history-text buf)
+                    :to-match eca-chat-test--turn-usage-re)
+            (expect (eca-chat-test--mode-line-text) :not :to-match "⏱")
+            (expect (eca-chat-test--mode-line-text) :not :to-match "tok/s"))
+        (eca-chat-test--cancel-loading-timers buf)
+        (kill-buffer buf))))
+
+  (it "keeps telling those of the turn a queued prompt started meanwhile"
+    ;; The queued prompt is sent as soon as `chat/statusChanged' idle
+    ;; finishes the turn, before what the turn used comes.
+    (let ((buf (eca-chat-test--make-ended-turn-buffer))
+          (session (make-eca--session))
+          (eca-chat-stream-flush-interval nil))
+      (unwind-protect
+          (with-current-buffer buf
+            (eca-chat-test--register-chat session buf)
+            (setq-local eca-chat--chat-loading t)
+            (setq-local eca-chat--prompt-start-time (current-time))
+            (setq-local eca-chat--queued-prompt "And now?")
+            (spy-on 'eca-api-request-async)
+            (spy-on 'eca-chat--font-lock-ensure)
+            (spy-on 'eca-chat--align-tables)
+            (spy-on 'eca-chat--beautify-tables)
+            (eca-chat-status-changed session (list :chatId "chat-1" :status "idle"))
+            (expect 'eca-api-request-async :to-have-been-called)
+            (expect eca-chat--chat-loading :to-be t)
+            (eca-chat-content-received
+             session (list :chatId "chat-1" :role "system"
+                           :content eca-chat-test--turn-usage))
+            (expect (eca-chat-test--history-text buf)
+                    :to-match eca-chat-test--turn-usage-re)
+            (expect (eca-chat-test--mode-line-text) :to-match "⏱ [0-9]+s…")
+            (expect (eca-chat-test--mode-line-text)
+                    :not :to-match "87 tok/s"))
+        (eca-chat-test--cancel-loading-timers buf)
+        (kill-buffer buf))))
+
+  (it "tells them again from the next turn on, not the previous speed"
+    (let ((buf (eca-chat-test--make-ended-turn-buffer))
+          (session (make-eca--session))
+          (eca-chat-stream-flush-interval nil))
+      (unwind-protect
+          (with-current-buffer buf
+            (eca-chat--render-content session buf "system"
+                                      eca-chat-test--turn-usage nil)
+            (eca-chat--set-chat-loading session t)
+            (expect (eca-chat-test--mode-line-text) :to-match "⏱ [0-9]+s…")
+            (expect (eca-chat-test--mode-line-text) :not :to-match "tok/s")
+            (eca-chat--render-content
+             session buf "system"
+             (list :type "usage" :sessionTokens 1000 :messageOutputTps 90) nil)
+            (expect (eca-chat-test--mode-line-text)
+                    :to-match "⏱ [0-9]+s… · 90 tok/s"))
+        (eca-chat-test--cancel-loading-timers buf)
+        (kill-buffer buf))))
+
+  (it "keeps them when the line under the answer tells neither"
+    (dolist (format '(nil (:model :output-tokens :cost)))
+      (let ((buf (eca-chat-test--make-ended-turn-buffer))
+            (eca-chat-stream-flush-interval nil)
+            (eca-chat-turn-usage-format format))
+        (unwind-protect
+            (with-current-buffer buf
+              (eca-chat--render-content (make-eca--session) buf "system"
+                                        eca-chat-test--turn-usage nil)
+              (expect (eca-chat-test--mode-line-text)
+                      :to-match (regexp-quote "⏱ 42s · 87 tok/s")))
+          (kill-buffer buf)))))
+
+  (it "leaves both out when the line tells one, like the time alone"
+    ;; Servers up to 0.175.0 don't tell the speed of a turn.
+    (let ((buf (eca-chat-test--make-ended-turn-buffer))
+          (eca-chat-stream-flush-interval nil))
+      (unwind-protect
+          (with-current-buffer buf
+            (eca-chat--render-content
+             (make-eca--session) buf "system"
+             (list :type "turnUsage" :model "openai/gpt-5.2" :totalTimeMs 9800
+                   :outputTokens 412 :inputTokens 45200)
+             nil)
+            (expect (eca-chat-test--history-text buf)
+                    :to-match (regexp-quote "gpt-5.2 · 9.8s · 412 output tokens\n"))
+            (expect (eca-chat-test--mode-line-text) :not :to-match "⏱")
+            (expect (eca-chat-test--mode-line-text) :not :to-match "tok/s"))
+        (kill-buffer buf))))
+
+  (it "is not changed by the turns of older history pages"
+    (let ((buf (eca-chat-test--make-ended-turn-buffer))
+          (eca-chat-stream-flush-interval nil))
+      (unwind-protect
+          (with-current-buffer buf
+            (spy-on 'eca--session-workspace-folders :and-return-value nil)
+            (spy-on 'font-lock-ensure)
+            (spy-on 'eca-chat--align-tables)
+            (spy-on 'eca-chat--beautify-tables)
+            (eca-chat--render-history-contents
+             (make-eca--session) buf
+             (list (list :role "assistant"
+                         :content (list :type "text" :text "Older answer."))
+                   (list :role "system" :content eca-chat-test--turn-usage)))
+            (expect (eca-chat-test--history-text buf)
+                    :to-match eca-chat-test--turn-usage-re)
+            (expect (eca-chat-test--mode-line-text)
+                    :to-match (regexp-quote "⏱ 42s · 87 tok/s")))
+        (kill-buffer buf)))))
 
 (describe "eca-chat--render-content usage"
   (it "keeps the output speed of the last response"

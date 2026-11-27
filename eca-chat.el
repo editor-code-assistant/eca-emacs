@@ -306,22 +306,30 @@ left empty are dropped."
 Passed to `format' with the output tokens per second of the last
 model response, as measured by the server.  The leading separator
 joins it to `:elapsed-time', which it follows in the default
-mode-line."
+mode-line.  Once a turn ended, the line under its answer tells its
+speed instead, see `eca-chat-turn-usage-format'."
   :type 'string
   :group 'eca)
 
-(defcustom eca-chat-turn-usage-format '(:model :time :output-tokens :cost)
+(defcustom eca-chat-turn-usage-format '(:model :time :output-tokens :tps :cost)
   "What the line under the answer of each turn tells about the turn.
 Its segments, in order, joined by \" · \", like
-\"claude-sonnet-4-5 · 9.8s · 412 output tokens · $0.03\".  The
-segments without a value are left out, like the cost with a
+\"claude-sonnet-4-5 · 9.8s · 412 output tokens · 87 tok/s · $0.03\".
+The segments without a value are left out, like the cost with a
 subscription login.  Nil hides the line.  The server tells what a
-turn used when it ends, and again when a chat is opened again."
+turn used when it ends, and again when a chat is opened again.
+
+`:tps' is how fast the model generated during the turn: its output
+tokens over the time its responses took, each weighing as long as
+it took, so short ones like tool calls barely sway it.  Once the
+line tells the `:time' or `:tps' of a turn, the mode line leaves
+out its `:elapsed-time' and `:tps' until the next turn starts."
   :type '(repeat
           (choice
            (const :tag "The model, e.g. claude-sonnet-4-5" :model)
            (const :tag "How long the turn took" :time)
            (const :tag "Tokens the model generated" :output-tokens)
+           (const :tag "How fast the model generated them, in tokens/s" :tps)
            (const :tag "Tokens sent to the model, cache included" :input-tokens)
            (const :tag "The cost of the turn, when known" :cost)))
   :group 'eca)
@@ -347,6 +355,10 @@ Available modules:
   `:init-progress' - init progress (auto-hides when done)
   `:trust' - trust mode indicator (🔥 when ON, 🛡 when OFF)
   `:spacer' - elastic space that right-aligns everything after it
+
+Once a turn ended, `:elapsed-time' and `:tps' leave its time and
+speed to the line under its answer until the next turn starts, see
+`eca-chat-turn-usage-format'.  They stay when the line tells neither.
 
 When the window is too narrow, the start of the mode line is elided
 with \"…\" so that the right-aligned modules stay visible.
@@ -1115,6 +1127,12 @@ once by `eca-chat-cleared'.")
   "Start time of the current prompt, from `current-time'.")
 (defvar-local eca-chat--turn-duration-secs nil
   "Duration in seconds of the last completed turn.")
+(defvar-local eca-chat--turn-usage-told nil
+  "Non-nil once the line under the last answer tells its turn's time or speed.
+Set when that line shows for a turn that ended, nil again when the
+next turn starts.  Meanwhile the mode line leaves out the
+`:elapsed-time' and `:tps' modules, which would tell them again.
+See `eca-chat--insert-turn-usage'.")
 (defvar-local eca-chat--modeline-timer nil
   "Timer that refreshes the mode-line every second during loading.")
 (defvar-local eca-chat--mode-line-layout-cache nil
@@ -2325,6 +2343,7 @@ Recovery path for a corrupted prompt block (see #305)."
     (cancel-timer eca-chat--modeline-timer)
     (setq-local eca-chat--modeline-timer nil))
   (setq-local eca-chat--chat-loading nil)
+  (setq-local eca-chat--turn-usage-told nil)
   (setq-local eca-chat--steered-prompt nil)
   (setq-local eca-chat--queued-prompt nil)
   (setq-local eca-chat--welcome-shown nil)
@@ -2464,6 +2483,10 @@ LOADING can be t (loading), \\='stopping (stop in progress), or nil (idle)."
     (pcase loading
       ('t
        (setq-local eca-chat--prompt-start-time (current-time))
+       ;; A new turn: the mode line tells its time and speed again,
+       ;; not the speed of the previous turn's last response.
+       (setq-local eca-chat--turn-usage-told nil)
+       (setq-local eca-chat--message-output-tps nil)
        (let ((buf (current-buffer))
              (timer nil))
          (setq timer
@@ -3730,6 +3753,7 @@ CONTENT is a `turnUsage' content, which may lack the value."
     (:time (-some-> (plist-get content :totalTimeMs) (eca-chat--turn-time-str)))
     (:output-tokens (-some-> (plist-get content :outputTokens)
                       (eca-chat--turn-tokens-str "output")))
+    (:tps (-some->> (plist-get content :outputTps) (format "%d tok/s")))
     (:input-tokens (-some-> (plist-get content :inputTokens)
                      (eca-chat--turn-tokens-str "input")))
     (:cost (-some->> (plist-get content :cost) (concat "$")))))
@@ -3738,7 +3762,7 @@ CONTENT is a `turnUsage' content, which may lack the value."
   "Return the help of the line telling what the turn of CONTENT used.
 CONTENT is a `turnUsage' content, the help tells it all."
   (-let (((&plist :model model :totalTimeMs ms :outputTokens output
-                  :inputTokens input :cost cost)
+                  :outputTps tps :inputTokens input :cost cost)
           content))
     (string-join
      (delq nil
@@ -3747,6 +3771,8 @@ CONTENT is a `turnUsage' content, the help tells it all."
                                   (eca-chat--turn-time-str ms)))
                  (when output (format "Output tokens: %d, %s" output
                                       "thinking, tool calls and subagents included"))
+                 (when tps (format "Output speed: %d tokens/s, %s" tps
+                                   "on average while the model generated, subagents excluded"))
                  (when input (format "Input tokens: %d, cache and subagents included"
                                      input))
                  (when cost (concat "Cost: $" cost))))
@@ -3767,17 +3793,37 @@ none has."
                 ;; It shows as is, not as markdown.
                 'eca-no-fontify t)))
 
+(defun eca-chat--turn-usage-tells-time-p (content)
+  "Return non-nil when the line of CONTENT tells the turn's time or speed.
+CONTENT is a `turnUsage' content, the line is drawn with the segments
+of `eca-chat-turn-usage-format', see `eca-chat--turn-usage-line'."
+  (seq-some (lambda (segment)
+              (and (memq segment '(:time :tps))
+                   (eca-chat--turn-usage-segment segment content)))
+            eca-chat-turn-usage-format))
+
 (defun eca-chat--insert-turn-usage (content)
   "Insert under the answer of a turn the line telling what it used.
 CONTENT is the `turnUsage' content ending the turn, live or when the
 chat is opened again, see `eca-chat--turn-usage-line'.  The copy scope
-of the answer ends before the line, see `eca-chat-copy-at-point'."
+of the answer ends before the line, see `eca-chat-copy-at-point'.
+Once the line tells the time or speed of a turn that ended, the mode
+line leaves them out, see `eca-chat--turn-usage-told'."
   (when-let* ((line (eca-chat--turn-usage-line content)))
     (eca-chat--refresh-copy-scopes)
     (let ((bol? (save-excursion
                   (goto-char (eca-chat--content-insertion-point))
                   (bolp))))
-      (eca-chat--add-text-content (concat (unless bol? "\n") line "\n")))))
+      (eca-chat--add-text-content (concat (unless bol? "\n") line "\n")))
+    ;; The server tells what a turn used after telling it ended
+    ;; (`chat/statusChanged' idle), when a queued prompt may already
+    ;; run the next turn, whose time and speed the mode line keeps
+    ;; telling.  Older history pages tell what older turns used.
+    (when (and (not eca-chat--chat-loading)
+               (not eca-chat--insertion-point-override)
+               (eca-chat--turn-usage-tells-time-p content))
+      (setq-local eca-chat--turn-usage-told t)
+      (force-mode-line-update))))
 
 (defun eca-chat--has-pending-approvals-p ()
   "Return non-nil if current buffer has any pending approval tool call.
@@ -4190,13 +4236,16 @@ are in progress."
                      'face 'shadow))))
     (:title
      (eca-chat-title))
+    ;; Once a turn ended, the line under its answer tells them.
     (:elapsed-time
-     (when-let* ((str (eca-chat--turn-duration-str)))
-       (let ((icon (if (eca-chat--has-pending-approvals-p) "🚧" "⏱")))
-         (propertize (concat icon " " str)
-                     'font-lock-face 'eca-chat-elapsed-time-face))))
+     (unless eca-chat--turn-usage-told
+       (when-let* ((str (eca-chat--turn-duration-str)))
+         (let ((icon (if (eca-chat--has-pending-approvals-p) "🚧" "⏱")))
+           (propertize (concat icon " " str)
+                       'font-lock-face 'eca-chat-elapsed-time-face)))))
     (:tps
-     (eca-chat--tps-str))
+     (unless eca-chat--turn-usage-told
+       (eca-chat--tps-str)))
     (:context-bar
      (when-let* ((bar (eca-chat--context-bar)))
        (concat bar " ")))
