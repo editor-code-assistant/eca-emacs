@@ -6328,6 +6328,41 @@ its condition holds, which redisplay evaluates."
             (cddr spec)))
       spec)))
 
+(defun eca-chat-test--relative-width-p (display)
+  "Return non-nil when DISPLAY sizes a space relative to its text.
+That is a `:relative-width' space spec, conditional or not, alone or
+in a list of specs."
+  (and (consp display)
+       (or (and (eq 'space (car display))
+                (plist-member (cdr display) :relative-width))
+           (eca-chat-test--relative-width-p (car display))
+           (eca-chat-test--relative-width-p (cdr display)))))
+
+(defun eca-chat-test--relative-width-glyphs (string)
+  "Return the characters of STRING not ASCII sized by `:relative-width'.
+Emacs looks up the font drawing them at a buffer position in STRING,
+see `eca-chat--expandable-bar-display'."
+  (let (glyphs)
+    (dotimes (pos (length string))
+      (when (and (>= (aref string pos) 128)
+                 (eca-chat-test--relative-width-p
+                  (get-text-property pos 'display string)))
+        (push (aref string pos) glyphs)))
+    glyphs))
+
+(defun eca-chat-test--prefixes ()
+  "Return the line and wrap prefixes of the current buffer.
+That is the ones its text and its overlays have."
+  (let (prefixes)
+    (dolist (prop '(line-prefix wrap-prefix))
+      (let ((pos (point-min)))
+        (while (< pos (point-max))
+          (push (get-text-property pos prop) prefixes)
+          (setq pos (next-single-property-change pos prop nil (point-max)))))
+      (dolist (ov (overlays-in (point-min) (point-max)))
+        (push (overlay-get ov prop) prefixes)))
+    (seq-filter #'stringp prefixes)))
+
 (defun eca-chat-test--render-tool-call (session buf type id &rest props)
   "Render in BUF for SESSION the tool call TYPE of ID, with PROPS.
 PROPS override the ones of `eca-chat-test--tool-call-content'."
@@ -6389,12 +6424,12 @@ PROPS override the ones of `eca-chat-test--tool-call-content'."
       (expect (substring-no-properties bar) :to-equal "▍ ")
       (expect (car bar-display) :to-be 'space)
       (expect (car gap-display) :to-be 'space)
-      ;; As wide as the part of its column the glyph covers, the space
-      ;; after it taking the rest: two columns, as the glyph and the
-      ;; space take.
-      (expect (plist-get (cdr bar-display) :relative-width) :to-equal 0.375)
-      (expect (+ (plist-get (cdr bar-display) :relative-width)
-                 (plist-get (cdr gap-display) :relative-width))
+      ;; As wide as the part of its column the glyph covers, in columns
+      ;; of the font of its face, the space after it taking the rest:
+      ;; two columns, as the glyph and the space take.
+      (expect (plist-get (cdr bar-display) :width) :to-equal '(0.375 . width))
+      (expect (+ (eca-chat-test--display-width bar 0 t)
+                 (eca-chat-test--display-width bar 1 t))
               :to-equal 2.0)
       ;; Terminals show the glyph and the space as they are.
       (expect (eca-chat-test--display-at bar 0 nil) :to-be nil)
@@ -6414,6 +6449,45 @@ PROPS override the ones of `eca-chat-test--tool-call-content'."
       ;; The bar of a block without face is filled in the text color.
       (expect (get-text-property 0 'face (eca-chat--expandable-bar nil))
               :to-equal '(eca-chat--expandable-bar-fill-face))))
+
+  (it "sizes no glyph that is not ASCII relative to its width"
+    ;; Emacs looks up the font drawing such a glyph at the buffer
+    ;; position in the prefix holding it: when the font lacks the glyph,
+    ;; redisplay signals `args-out-of-range', which froze graphic chats
+    ;; from their first message on.
+    (let ((chat (eca-chat-test--make-live-render-buffer "Final answer."))
+          (blocks (eca-chat-test--make-render-buffer))
+          (session (make-eca--session))
+          (prefixes nil))
+      (unwind-protect
+          (progn
+            (eca-chat-test--render-user-message chat "first line\nsecond line" "u1")
+            (eca-chat-test--render-flag chat "checkpoint" "f1")
+            (with-current-buffer chat
+              (setq prefixes (eca-chat-test--prefixes)))
+            (eca-chat--with-current-buffer blocks
+              (eca-chat-test--stream-reasoning session blocks "r1" '("Let me think."))
+              (eca-chat--expandable-content-toggle "r1" t nil)
+              (eca-chat-test--subagent-block "sub-1")
+              (eca-chat--expandable-content-toggle "sub-1" t nil)
+              (eca-chat-test--stream-reasoning session blocks "r2" '("Nested") "sub-1")
+              (eca-chat--expandable-content-toggle "r2" t nil)
+              (eca-chat-test--capture-timers
+               (lambda ()
+                 (eca-chat-test--render-tool-call session blocks "toolCallPrepare" "t1")
+                 (eca-chat-test--render-tool-call session blocks "toolCallRun" "t1"
+                                                  :manualApproval t)))
+              (setq prefixes (append prefixes (eca-chat-test--prefixes))))
+            ;; The bars of user messages, flags, labels with their
+            ;; chevrons, contents, nested blocks and approval lines.
+            (expect (seq-count (lambda (prefix)
+                                 (string-search eca-chat--expandable-bar-symbol prefix))
+                               prefixes)
+                    :to-be-greater-than 10)
+            (dolist (prefix prefixes)
+              (expect (eca-chat-test--relative-width-glyphs prefix) :to-be nil)))
+        (kill-buffer chat)
+        (kill-buffer blocks))))
 
   (it "fills the bar along the label, the content and the nested blocks"
     (let ((buf (eca-chat-test--make-render-buffer))
@@ -6662,8 +6736,10 @@ In a graphic frame when GRAPHIC?, else in a terminal."
     (cond ((null spec) (string-width (substring string pos (1+ pos))))
           ((equal (car-safe spec) '(margin left-margin)) 0)
           ((eq 'space (car-safe spec))
-           (or (plist-get (cdr spec) :relative-width)
-               (plist-get (cdr spec) :width))))))
+           (let ((width (plist-get (cdr spec) :width)))
+             (or (plist-get (cdr spec) :relative-width)
+                 ;; (COLUMNS . width): columns of the font of the face.
+                 (if (eq 'width (cdr-safe width)) (car width) width)))))))
 
 (defun eca-chat-test--prefix-width (prefix end graphic?)
   "Return the columns the first END characters of PREFIX take.

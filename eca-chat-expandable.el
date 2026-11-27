@@ -459,7 +459,7 @@ Terminals show this glyph.  Graphic frames fill the part of its column
 it covers instead, see `eca-chat--expandable-bar-display'.")
 
 (defconst eca-chat--expandable-bar-display
-  '(when (display-graphic-p) space :relative-width 0.375)
+  '(when (display-graphic-p) space :width (0.375 . width))
   "Display of `eca-chat--expandable-bar-symbol' in graphic frames.
 A space as wide as the part of its column the glyph covers, three
 eighths, filled with the color of the bar by
@@ -468,7 +468,14 @@ Fonts draw the glyph only as high as their text, leaving gaps between
 the bars of consecutive lines whenever a line is taller, e.g. with
 `line-spacing', buttons on the line or a fallback font drawing the
 glyph.  The background of a space covers the whole height of its line,
-so the bars of the lines of a block join into one.")
+so the bars of the lines of a block join into one.
+Its width is in columns of the font of its face, which follows
+`text-scale-adjust', not relative to the glyph: when that font lacks
+a glyph that is not ASCII, Emacs 28 to 31 look up the font drawing a
+`:relative-width' at the buffer position in the string holding the
+glyph, the prefix, which signals `args-out-of-range' in redisplay and
+freezes the chat.  Before Emacs 30, that column is the widest glyph of
+the font, as wide in monospace fonts.")
 
 (defconst eca-chat--expandable-bar-gap-display
   '(when (display-graphic-p) space :relative-width 1.625)
